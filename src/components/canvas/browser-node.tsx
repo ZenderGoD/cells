@@ -43,6 +43,8 @@ export function BrowserNode({ browser, scale, cmdHeld, isFocused, onDragStart }:
   }>({ progress: 0, direction: null })
   const [canGoBack, setCanGoBack] = useState(false)
   const [canGoForward, setCanGoForward] = useState(false)
+  const [transitionHidden, setTransitionHidden] = useState(false)
+  const prevFocusedRef = useRef(isFocused)
   const contentRef = useRef<HTMLDivElement>(null)
   const createdRef = useRef(false)
   const lastBoundsRef = useRef({ x: 0, y: 0, width: 0, height: 0 })
@@ -139,6 +141,17 @@ export function BrowserNode({ browser, scale, cmdHeld, isFocused, onDragStart }:
     return unsub
   }, [browser.id])
 
+  // Hide native view briefly when focus transitions in, so the spring animation is visible
+  useEffect(() => {
+    if (isFocused && !prevFocusedRef.current && viewReady) {
+      setTransitionHidden(true)
+      const timer = setTimeout(() => setTransitionHidden(false), 250)
+      prevFocusedRef.current = isFocused
+      return () => clearTimeout(timer)
+    }
+    prevFocusedRef.current = isFocused
+  }, [isFocused, viewReady])
+
   // Track window size so browser bounds update on resize
   const [windowHeight, setWindowHeight] = useState(window.innerHeight)
   useEffect(() => {
@@ -198,7 +211,7 @@ export function BrowserNode({ browser, scale, cmdHeld, isFocused, onDragStart }:
     }
 
     const shouldBeVisible =
-      !overlayOpen && !offline && !cmdHeld && bounds.width >= 20 && bounds.height >= 20
+      !overlayOpen && !offline && !cmdHeld && !transitionHidden && bounds.width >= 20 && bounds.height >= 20
     if (shouldBeVisible !== lastVisibleRef.current) {
       lastVisibleRef.current = shouldBeVisible
       window.cells.browser.setVisible(browser.id, shouldBeVisible)
@@ -216,6 +229,7 @@ export function BrowserNode({ browser, scale, cmdHeld, isFocused, onDragStart }:
     isFocused,
     offline,
     overlayOpen,
+    transitionHidden,
     viewReady,
     windowHeight,
   ])
@@ -349,7 +363,7 @@ export function BrowserNode({ browser, scale, cmdHeld, isFocused, onDragStart }:
           </svg>
         )}
         {/* Placeholder shown when native view is hidden */}
-        {(!isFocused || !viewReady || overlayOpen || offline || cmdHeld) && (
+        {(!isFocused || !viewReady || overlayOpen || offline || cmdHeld || transitionHidden) && (
           <div className="w-full h-full flex flex-col items-center justify-center gap-2">
             {offline ? (
               <WifiOff className="w-8 h-8 text-muted-foreground/30" />

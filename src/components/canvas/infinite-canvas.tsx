@@ -214,17 +214,21 @@ export function InfiniteCanvas() {
   }, [isPanning, terminals.length, browsers.length, scheduleSnap, snapEnabled])
 
   // Wheel handler: trackpad pan + pinch zoom, with snap-after-idle
+  // Reads canvas state directly from the store on each event so rapid trackpad
+  // events never read a stale closure value (multiple events can fire per frame).
   const handleWheel = useCallback(
     (e: WheelEvent) => {
       e.preventDefault()
       cancelSnap()
       setIsUserDriving(true)
 
+      const current = useStore.getState().canvas
+
       if (e.ctrlKey || e.metaKey) {
         const zoomIntensity = 0.01
         const newScale = Math.max(
           MIN_ZOOM,
-          Math.min(MAX_ZOOM, transform.scale * (1 - e.deltaY * zoomIntensity)),
+          Math.min(MAX_ZOOM, current.scale * (1 - e.deltaY * zoomIntensity)),
         )
 
         const rect = containerRef.current?.getBoundingClientRect()
@@ -232,18 +236,18 @@ export function InfiniteCanvas() {
 
         const mouseX = e.clientX - rect.left
         const mouseY = e.clientY - rect.top
-        const ratio = newScale / transform.scale
+        const ratio = newScale / current.scale
 
         setCanvasTransform({
-          x: mouseX - (mouseX - transform.x) * ratio,
-          y: mouseY - (mouseY - transform.y) * ratio,
+          x: mouseX - (mouseX - current.x) * ratio,
+          y: mouseY - (mouseY - current.y) * ratio,
           scale: newScale,
         })
       } else {
         setCanvasTransform({
-          ...transform,
-          x: transform.x - e.deltaX,
-          y: transform.y - e.deltaY,
+          x: current.x - e.deltaX,
+          y: current.y - e.deltaY,
+          scale: current.scale,
         })
       }
 
@@ -251,15 +255,7 @@ export function InfiniteCanvas() {
         scheduleSnap()
       }
     },
-    [
-      transform,
-      setCanvasTransform,
-      cancelSnap,
-      scheduleSnap,
-      terminals.length,
-      browsers.length,
-      snapEnabled,
-    ],
+    [setCanvasTransform, cancelSnap, scheduleSnap, terminals.length, browsers.length, snapEnabled],
   )
 
   // Terminal drag handler
