@@ -3,7 +3,7 @@ import { useStore } from '@/lib/store'
 import { terminalThemes } from '@/lib/terminal-themes'
 import { cn } from '@/lib/utils'
 import { Dialog, DialogContent, DialogTitle, DialogHeader, DialogDescription } from '../ui/dialog'
-import { Check, Download, Loader2, RefreshCw } from 'lucide-react'
+import { Check, Download, Info, Loader2, RefreshCw } from 'lucide-react'
 
 interface AppSettingsProps {
   open: boolean
@@ -23,12 +23,16 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const terminalTheme = useStore((s) => s.terminalTheme)
   const fontSize = useStore((s) => s.fontSize)
   const fontFamily = useStore((s) => s.fontFamily)
+  const windowOpacity = useStore((s) => s.windowOpacity)
+  const windowBlurRadius = useStore((s) => s.windowBlurRadius)
   const snapOnFocus = useStore((s) => s.snapOnFocus)
   const searchEngine = useStore((s) => s.searchEngine)
   const homePage = useStore((s) => s.homePage)
   const setTerminalTheme = useStore((s) => s.setTerminalTheme)
   const setFontSize = useStore((s) => s.setFontSize)
   const setFontFamily = useStore((s) => s.setFontFamily)
+  const setWindowOpacity = useStore((s) => s.setWindowOpacity)
+  const setWindowBlurRadius = useStore((s) => s.setWindowBlurRadius)
   const setSnapOnFocus = useStore((s) => s.setSnapOnFocus)
   const setSearchEngine = useStore((s) => s.setSearchEngine)
   const setHomePage = useStore((s) => s.setHomePage)
@@ -120,9 +124,29 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
           {/* Canvas */}
           <div>
             <label className="text-xs font-medium text-muted-foreground mb-2 block">Canvas</label>
+            <div className="space-y-3 rounded-lg bg-muted/20 px-2.5 py-2">
+              <SliderRow
+                label={`Window Opacity: ${windowOpacity}`}
+                min={0}
+                max={100}
+                step={1}
+                value={windowOpacity}
+                onChange={setWindowOpacity}
+              />
+              <SliderRow
+                label="Window Blur Radius"
+                detail={String(windowBlurRadius)}
+                min={0}
+                max={40}
+                step={1}
+                value={windowBlurRadius}
+                onChange={setWindowBlurRadius}
+                hint="Controls the frosted-glass softness of the canvas shell."
+              />
+            </div>
             <button
               onClick={() => setSnapOnFocus(!snapOnFocus)}
-              className="flex items-center justify-between w-full px-2.5 py-2 rounded-md text-xs hover:bg-muted transition-colors"
+              className="mt-3 flex items-center justify-between w-full px-2.5 py-2 rounded-md text-xs hover:bg-muted transition-colors"
             >
               <span className="text-foreground">Snap on focus</span>
               <div
@@ -195,6 +219,41 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
         </div>
       </DialogContent>
     </Dialog>
+  )
+}
+
+interface SliderRowProps {
+  label: string
+  value: number
+  min: number
+  max: number
+  step: number
+  onChange: (value: number) => void
+  detail?: string
+  hint?: string
+}
+
+function SliderRow({ label, value, min, max, step, onChange, detail, hint }: SliderRowProps) {
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-1.5 text-xs text-foreground">
+          <span>{label}</span>
+          {hint ? <Info className="h-3.5 w-3.5 text-muted-foreground/70" /> : null}
+        </div>
+        {detail ? <span className="text-[11px] text-muted-foreground">{detail}</span> : null}
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(event) => onChange(Number(event.target.value))}
+        className="cells-slider"
+      />
+      {hint ? <p className="text-[10px] text-muted-foreground/55">{hint}</p> : null}
+    </div>
   )
 }
 

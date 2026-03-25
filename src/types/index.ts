@@ -57,6 +57,8 @@ export interface ProjectsState {
   terminalTheme?: string
   fontSize?: number
   fontFamily?: string
+  windowOpacity?: number
+  windowBlurRadius?: number
   snapOnFocus?: boolean
   searchEngine?: string
   homePage?: string
