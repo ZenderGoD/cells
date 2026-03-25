@@ -62,6 +62,8 @@ export interface ProjectsState {
   tabSwitchMode?: 'recent' | 'chronological'
   searchEngine?: string
   homePage?: string
+  terminalLinkTarget?: 'system' | 'browser'
+  linkRules?: Array<{ pattern: string; target: 'system' | 'browser'; projectId?: string }>
 }
 
 /** @deprecated Old flat state — kept for migration */
@@ -154,6 +156,7 @@ export interface CellsAPI {
     getPathForFile(file: File): string
     saveTempFile(data: Uint8Array, filename: string): Promise<string | null>
     pasteClipboardFiles(): Promise<string[] | null>
+    openExternal(url: string): Promise<void>
   }
 }
 

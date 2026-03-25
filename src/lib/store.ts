@@ -42,6 +42,8 @@ interface StoreState {
   overlayOpen: boolean // true when popover/dialog is open — hides browser native views
   searchEngine: string
   homePage: string
+  terminalLinkTarget: 'system' | 'browser'
+  linkRules: Array<{ pattern: string; target: 'system' | 'browser'; projectId?: string }>
 
   init(): Promise<void>
   persist(): void
@@ -85,6 +87,8 @@ interface StoreState {
   setOverlayOpen(open: boolean): void
   setSearchEngine(engine: string): void
   setHomePage(url: string): void
+  setTerminalLinkTarget(target: 'system' | 'browser'): void
+  setLinkRules(rules: Array<{ pattern: string; target: 'system' | 'browser'; projectId?: string }>): void
   getSearchUrl(query: string): string
 
   // Browser actions
@@ -216,6 +220,8 @@ export const useStore = create<StoreState>((set, get) => ({
   overlayOpen: false,
   searchEngine: DEFAULT_SEARCH_ENGINE,
   homePage: DEFAULT_HOME_PAGE,
+  terminalLinkTarget: 'system',
+  linkRules: [],
   terminalTheme: DEFAULT_THEME,
   fontSize: 13,
   fontFamily: DEFAULT_FONT_FAMILY,
@@ -259,6 +265,8 @@ export const useStore = create<StoreState>((set, get) => ({
         tabSwitchMode: ps.tabSwitchMode || 'chronological',
         searchEngine: ps.searchEngine || DEFAULT_SEARCH_ENGINE,
         homePage: ps.homePage || DEFAULT_HOME_PAGE,
+        terminalLinkTarget: ps.terminalLinkTarget || 'system',
+        linkRules: ps.linkRules || [],
       }
 
       if (projects.length === 0) {
@@ -372,6 +380,8 @@ export const useStore = create<StoreState>((set, get) => ({
           tabSwitchMode: freshState.tabSwitchMode,
           searchEngine: freshState.searchEngine,
           homePage: freshState.homePage,
+          terminalLinkTarget: freshState.terminalLinkTarget,
+          linkRules: freshState.linkRules,
         })
       })
       .catch(() => {
@@ -390,6 +400,8 @@ export const useStore = create<StoreState>((set, get) => ({
           tabSwitchMode: state.tabSwitchMode,
           searchEngine: state.searchEngine,
           homePage: state.homePage,
+          terminalLinkTarget: state.terminalLinkTarget,
+          linkRules: state.linkRules,
         })
       })
   },
@@ -832,6 +844,14 @@ export const useStore = create<StoreState>((set, get) => ({
   },
   setHomePage(url) {
     set({ homePage: url })
+    get().persist()
+  },
+  setTerminalLinkTarget(target) {
+    set({ terminalLinkTarget: target })
+    get().persist()
+  },
+  setLinkRules(rules) {
+    set({ linkRules: rules })
     get().persist()
   },
 

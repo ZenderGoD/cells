@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { init, Terminal, FitAddon } from 'ghostty-web'
+import { init, Terminal, FitAddon, UrlRegexProvider, OSC8LinkProvider } from 'ghostty-web'
+import type { ILinkProvider, ILink } from 'ghostty-web'
 import { useStore, consumePendingCommand } from '@/lib/store'
 import { getTerminalTheme } from '@/lib/terminal-themes'
 import { cn } from '@/lib/utils'
@@ -501,6 +502,58 @@ export function CellTerminal({
 
       terminalRef.current = term
       fitAddonRef.current = fitAddon
+
+      // Register link providers — wraps built-in providers with custom activate
+      // that routes links based on user settings (system browser vs built-in)
+      const activateLink = (url: string) => {
+        const state = useStore.getState()
+        const rules = state.linkRules
+        // Check link rules first (most specific match wins)
+        for (const rule of rules) {
+          try {
+            if (new RegExp(rule.pattern, 'i').test(url)) {
+              if (rule.target === 'system') {
+                window.cells.app.openExternal(url)
+              } else {
+                const projectId = rule.projectId || state.activeProjectId
+                if (projectId && projectId !== state.activeProjectId) {
+                  // TODO: open in specific project — for now fall back to current
+                }
+                state.addBrowserWithUrl(url)
+              }
+              return
+            }
+          } catch {
+            // Invalid regex, skip
+          }
+        }
+        // Fall back to default behavior
+        if (state.terminalLinkTarget === 'browser') {
+          state.addBrowserWithUrl(url)
+        } else {
+          window.cells.app.openExternal(url)
+        }
+      }
+
+      const wrapProvider = (provider: ILinkProvider): ILinkProvider => ({
+        provideLinks(y, callback) {
+          provider.provideLinks(y, (links) => {
+            if (!links) return callback(undefined)
+            callback(
+              links.map((link) => ({
+                ...link,
+                activate: () => activateLink(link.text),
+              })),
+            )
+          })
+        },
+        dispose() {
+          provider.dispose?.()
+        },
+      })
+
+      term.registerLinkProvider(wrapProvider(new UrlRegexProvider(term as any)))
+      term.registerLinkProvider(wrapProvider(new OSC8LinkProvider(term as any)))
 
       if (term.textarea) {
         term.textarea.style.opacity = '0'

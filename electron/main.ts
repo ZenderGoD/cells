@@ -1,4 +1,4 @@
-import { app, BrowserWindow, WebContentsView, ipcMain, dialog, Menu, nativeImage } from 'electron'
+import { app, BrowserWindow, WebContentsView, ipcMain, dialog, Menu, nativeImage, shell } from 'electron'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'fs'
@@ -371,6 +371,10 @@ ipcMain.handle('terminal:get-codex-title', (_event, termId: string) => {
   } catch {
     return null
   }
+})
+
+ipcMain.handle('app:open-external', (_event, url: string) => {
+  shell.openExternal(url)
 })
 
 ipcMain.handle('agent:check-available', () => {

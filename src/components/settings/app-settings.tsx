@@ -15,7 +15,7 @@ interface AppSettingsProps {
   onOpenChange: (open: boolean) => void
 }
 
-type SettingsSectionId = 'appearance' | 'canvas' | 'browser' | 'about'
+type SettingsSectionId = 'appearance' | 'canvas' | 'terminal' | 'browser' | 'help' | 'about'
 
 const FONT_SIZES = [11, 12, 13, 14, 15, 16]
 const FONT_FAMILIES = [
@@ -29,7 +29,9 @@ const FONT_FAMILIES = [
 const SETTINGS_SECTIONS: Array<{ id: SettingsSectionId; label: string }> = [
   { id: 'appearance', label: 'Appearance' },
   { id: 'canvas', label: 'Canvas' },
+  { id: 'terminal', label: 'Terminal' },
   { id: 'browser', label: 'Browser' },
+  { id: 'help', label: 'Help' },
   { id: 'about', label: 'About' },
 ]
 
@@ -52,6 +54,11 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const setTabSwitchMode = useStore((s) => s.setTabSwitchMode)
   const setSearchEngine = useStore((s) => s.setSearchEngine)
   const setHomePage = useStore((s) => s.setHomePage)
+  const terminalLinkTarget = useStore((s) => s.terminalLinkTarget)
+  const setTerminalLinkTarget = useStore((s) => s.setTerminalLinkTarget)
+  const linkRules = useStore((s) => s.linkRules)
+  const setLinkRules = useStore((s) => s.setLinkRules)
+  const projects = useStore((s) => s.projects)
 
   const activeSectionLabel = useMemo(
     () =>
@@ -267,6 +274,103 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                 </div>
               ) : null}
 
+              {activeSection === 'terminal' ? (
+                <div className="space-y-5">
+                  <SettingsGroup title="Link Click Behavior">
+                    <div className="space-y-0.5">
+                      {[
+                        { value: 'system' as const, label: 'System Browser', hint: 'Default' },
+                        { value: 'browser' as const, label: 'Built-in Browser', hint: 'Opens a new tab' },
+                      ].map((opt) => (
+                        <button
+                          key={opt.value}
+                          onClick={() => setTerminalLinkTarget(opt.value)}
+                          className={cn(
+                            'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
+                            terminalLinkTarget === opt.value
+                              ? 'bg-accent text-foreground'
+                              : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
+                          )}
+                        >
+                          <span className="flex-1">{opt.label}</span>
+                          <span className="text-[10px] text-muted-foreground/40">{opt.hint}</span>
+                          {terminalLinkTarget === opt.value && (
+                            <Check className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  </SettingsGroup>
+
+                  <SettingsGroup title="Link Rules">
+                    <p className="text-[10px] text-muted-foreground/40 mb-3">
+                      Route specific URLs to different targets. Uses regex patterns. Rules are matched top to bottom.
+                    </p>
+                    <div className="space-y-2">
+                      {linkRules.map((rule, i) => (
+                        <div key={i} className="flex items-center gap-1.5 group">
+                          <input
+                            type="text"
+                            value={rule.pattern}
+                            onChange={(e) => {
+                              const next = [...linkRules]
+                              next[i] = { ...rule, pattern: e.target.value }
+                              setLinkRules(next)
+                            }}
+                            placeholder="e.g. github\.com"
+                            className="flex-1 min-w-0 rounded-md border border-border/20 bg-background/40 px-2 py-1 text-[11px] text-foreground outline-none placeholder:text-muted-foreground/30 focus:border-border/40 font-mono"
+                          />
+                          <select
+                            value={rule.target}
+                            onChange={(e) => {
+                              const next = [...linkRules]
+                              next[i] = { ...rule, target: e.target.value as 'system' | 'browser', projectId: e.target.value === 'system' ? undefined : rule.projectId }
+                              setLinkRules(next)
+                            }}
+                            className="rounded-md border border-border/20 bg-background/40 px-1.5 py-1 text-[10px] text-foreground outline-none"
+                          >
+                            <option value="system">System</option>
+                            <option value="browser">Built-in</option>
+                          </select>
+                          {rule.target === 'browser' && (
+                            <select
+                              value={rule.projectId || ''}
+                              onChange={(e) => {
+                                const next = [...linkRules]
+                                next[i] = { ...rule, projectId: e.target.value || undefined }
+                                setLinkRules(next)
+                              }}
+                              className="rounded-md border border-border/20 bg-background/40 px-1.5 py-1 text-[10px] text-foreground outline-none max-w-[100px]"
+                            >
+                              <option value="">Current project</option>
+                              {projects.map((p) => (
+                                <option key={p.id} value={p.id}>
+                                  {p.name}
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                          <button
+                            onClick={() => setLinkRules(linkRules.filter((_, j) => j !== i))}
+                            className="text-muted-foreground/30 hover:text-foreground transition-colors p-0.5"
+                          >
+                            <X className="w-2.5 h-2.5" />
+                          </button>
+                        </div>
+                      ))}
+                      <button
+                        onClick={() =>
+                          setLinkRules([...linkRules, { pattern: '', target: terminalLinkTarget }])
+                        }
+                        className="text-[10px] text-muted-foreground/50 hover:text-foreground transition-colors"
+                      >
+                        + Add rule
+                      </button>
+                    </div>
+                  </SettingsGroup>
+                </div>
+              ) : null}
+
               {activeSection === 'browser' ? (
                 <div className="space-y-5">
                   <SettingsGroup title="Search Engine">
@@ -311,6 +415,8 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                 </div>
               ) : null}
 
+              {activeSection === 'help' ? <HelpSection /> : null}
+
               {activeSection === 'about' ? <UpdateSection /> : null}
             </div>
           </div>
@@ -333,6 +439,82 @@ function SettingsGroup({ title, children }: SettingsGroupProps) {
       </h3>
       {children}
     </section>
+  )
+}
+
+const SHORTCUT_GROUPS = [
+  {
+    title: 'General',
+    shortcuts: [
+      { keys: '⌘ T', action: 'Command palette / New terminal' },
+      { keys: '⌘ W', action: 'Close focused window' },
+      { keys: '⌘ ,', action: 'Open settings' },
+      { keys: '⌘ Q', action: 'Quit' },
+    ],
+  },
+  {
+    title: 'Canvas Navigation',
+    shortcuts: [
+      { keys: '⌘ ←/→/↑/↓', action: 'Snap to nearest window' },
+      { keys: '⌘ Enter', action: 'Snap to focused terminal' },
+      { keys: '⌘ 0', action: 'Zoom to fit focused window' },
+      { keys: '⌃ H / J / K / L', action: 'Move canvas left/down/up/right' },
+      { keys: '⌃ ⇧ O', action: 'Zoom to fit all windows' },
+      { keys: '⌘ Hold + Drag', action: 'Grab and move windows' },
+    ],
+  },
+  {
+    title: 'Window Switching',
+    shortcuts: [
+      { keys: '⌃ Tab', action: 'Cycle forward through windows' },
+      { keys: '⌃ ⇧ Tab', action: 'Cycle backward' },
+      { keys: 'Release ⌃', action: 'Confirm switch' },
+    ],
+  },
+  {
+    title: 'Browser',
+    shortcuts: [
+      { keys: '⌘ [', action: 'Go back' },
+      { keys: '⌘ ]', action: 'Go forward' },
+      { keys: '⌘ L', action: 'Focus URL bar' },
+      { keys: '⌘ ⇧ C', action: 'Copy current URL' },
+      { keys: 'Swipe ←/→', action: 'Navigate back/forward (at scroll edge)' },
+    ],
+  },
+  {
+    title: 'Terminal Editing',
+    shortcuts: [
+      { keys: '⌘ V', action: 'Paste (supports files/images)' },
+      { keys: '⌥ ⌫', action: 'Delete word backward' },
+      { keys: '⌘ ⌫', action: 'Delete to start of line' },
+      { keys: '⌥ ←/→', action: 'Move word left/right' },
+      { keys: '⌘ ←/→', action: 'Move to start/end of line' },
+      { keys: 'Click link', action: 'Open link (configurable target)' },
+    ],
+  },
+]
+
+function HelpSection() {
+  return (
+    <div className="space-y-5">
+      {SHORTCUT_GROUPS.map((group) => (
+        <SettingsGroup key={group.title} title={group.title}>
+          <div className="space-y-0">
+            {group.shortcuts.map((shortcut) => (
+              <div
+                key={shortcut.keys}
+                className="flex items-center justify-between px-2.5 py-1.5 rounded-md text-[11px]"
+              >
+                <span className="text-muted-foreground/70">{shortcut.action}</span>
+                <kbd className="ml-3 shrink-0 rounded bg-muted/30 px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground/50">
+                  {shortcut.keys}
+                </kbd>
+              </div>
+            ))}
+          </div>
+        </SettingsGroup>
+      ))}
+    </div>
   )
 }
 

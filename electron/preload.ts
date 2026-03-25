@@ -138,6 +138,7 @@ const api: CellsAPI = {
       ipcRenderer.invoke('app:save-temp-file', data, filename) as Promise<string | null>,
     pasteClipboardFiles: () =>
       ipcRenderer.invoke('app:paste-clipboard-files') as Promise<string[] | null>,
+    openExternal: (url: string) => ipcRenderer.invoke('app:open-external', url),
   },
   agent: {
     checkAvailable: () => ipcRenderer.invoke('agent:check-available'),
