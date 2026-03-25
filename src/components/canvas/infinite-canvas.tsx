@@ -323,7 +323,7 @@ export function InfiniteCanvas() {
     (e: WheelEvent) => {
       const termNode = (e.target as HTMLElement).closest('.terminal-node')
       const browserNode = (e.target as HTMLElement).closest('.browser-node')
-      if ((termNode || browserNode) && !cmdHeld) return
+      if (termNode || browserNode) return
 
       e.preventDefault()
       cancelSnap()
@@ -362,15 +362,7 @@ export function InfiniteCanvas() {
         scheduleSnap()
       }
     },
-    [
-      setCanvasTransform,
-      cancelSnap,
-      scheduleSnap,
-      terminals.length,
-      browsers.length,
-      snapEnabled,
-      cmdHeld,
-    ],
+    [setCanvasTransform, cancelSnap, scheduleSnap, terminals.length, browsers.length, snapEnabled],
   )
 
   // Terminal drag handler
