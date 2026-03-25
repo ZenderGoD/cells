@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { init, Terminal, FitAddon, UrlRegexProvider, OSC8LinkProvider } from 'ghostty-web'
-import type { ILinkProvider, ILink } from 'ghostty-web'
+import type { ILinkProvider } from 'ghostty-web'
 import { useStore, consumePendingCommand } from '@/lib/store'
 import { getTerminalTheme } from '@/lib/terminal-themes'
 import { cn } from '@/lib/utils'
@@ -49,6 +49,48 @@ interface CachedTerminal {
   cleanups: Array<() => void>
 }
 const terminalCache = new Map<string, CachedTerminal>()
+
+interface TerminalPreviewOptions {
+  lines?: number
+  columns?: number
+}
+
+export function getTerminalPreviewSnapshot(
+  termId: string,
+  options: TerminalPreviewOptions = {},
+): string[] {
+  const cached = terminalCache.get(termId)
+  const term = cached?.term
+  if (!term) return []
+
+  const activeBuffer = term.buffer.active
+  const visibleRows = Math.max(1, options.lines ?? 6)
+  const maxColumns = Math.max(1, options.columns ?? 34)
+  const viewportY = Math.max(0, activeBuffer.viewportY ?? 0)
+  const start =
+    activeBuffer.type === 'alternate'
+      ? Math.max(0, activeBuffer.length - visibleRows)
+      : Math.max(0, activeBuffer.length - term.rows - viewportY)
+  const end = Math.min(activeBuffer.length, start + visibleRows)
+  const previewLines: string[] = []
+
+  for (let lineIndex = start; lineIndex < end; lineIndex += 1) {
+    const line = activeBuffer.getLine(lineIndex)
+    if (!line) {
+      previewLines.push('')
+      continue
+    }
+
+    const text = line.translateToString(false, 0, Math.min(line.length, maxColumns))
+    previewLines.push(text.replace(/\s+$/g, ''))
+  }
+
+  while (previewLines.length < visibleRows) {
+    previewLines.push('')
+  }
+
+  return previewLines
+}
 
 /** Apply a theme to every cached terminal instance (mounted or not). */
 export function applyThemeToAllTerminals(themeName: string) {
@@ -515,11 +557,7 @@ export function CellTerminal({
               if (rule.target === 'system') {
                 window.cells.app.openExternal(url)
               } else {
-                const projectId = rule.projectId || state.activeProjectId
-                if (projectId && projectId !== state.activeProjectId) {
-                  // TODO: open in specific project — for now fall back to current
-                }
-                state.addBrowserWithUrl(url)
+                state.addBrowserWithUrl(url, rule.projectId ?? null)
               }
               return
             }
@@ -529,7 +567,7 @@ export function CellTerminal({
         }
         // Fall back to default behavior
         if (state.terminalLinkTarget === 'browser') {
-          state.addBrowserWithUrl(url)
+          state.addBrowserWithUrl(url, state.terminalLinkProjectId)
         } else {
           window.cells.app.openExternal(url)
         }

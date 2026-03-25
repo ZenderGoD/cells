@@ -60,9 +60,12 @@ export interface ProjectsState {
   windowOpacity?: number
   snapOnFocus?: boolean
   tabSwitchMode?: 'recent' | 'chronological'
+  projectSwitchMode?: 'recent' | 'chronological'
+  reducedMotion?: boolean
   searchEngine?: string
   homePage?: string
   terminalLinkTarget?: 'system' | 'browser'
+  terminalLinkProjectId?: string | null
   linkRules?: Array<{ pattern: string; target: 'system' | 'browser'; projectId?: string }>
 }
 

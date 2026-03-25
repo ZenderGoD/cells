@@ -5,6 +5,7 @@ import { useStore } from '@/lib/store'
 import { getCanvasWindows, getViewportRect, orderByRecent } from '@/lib/canvas-navigation'
 import { motion, AnimatePresence } from 'motion/react'
 import { WindowOverviewMap } from './canvas/window-overview-map'
+import { getTerminalPreviewSnapshot } from './terminal/cell-terminal'
 
 interface SwitcherItem {
   id: string
@@ -12,6 +13,7 @@ interface SwitcherItem {
   type: 'terminal' | 'browser'
   url?: string
   isCurrent: boolean
+  previewLines?: string[]
 }
 
 export function TerminalSwitcher() {
@@ -24,6 +26,7 @@ export function TerminalSwitcher() {
   const snapToBrowser = useStore((s) => s.snapToBrowser)
   const setOverlayOpen = useStore((s) => s.setOverlayOpen)
   const tabSwitchMode = useStore((s) => s.tabSwitchMode)
+  const reducedMotion = useStore((s) => s.reducedMotion)
 
   const [open, setOpenRaw] = useState(false)
   const openRef = useRef(false)
@@ -39,6 +42,7 @@ export function TerminalSwitcher() {
   const selectedIndexRef = useRef(0)
   const selectedIdRef = useRef<string | null>(null)
   const ctrlHeld = useRef(false)
+  const [, setPreviewTick] = useState(0)
 
   const updateSelected = useCallback((index: number, id: string | null) => {
     selectedIndexRef.current = index
@@ -54,6 +58,7 @@ export function TerminalSwitcher() {
       title: t.title,
       type: 'terminal' as const,
       isCurrent: t.id === focusedTerminalId,
+      previewLines: getTerminalPreviewSnapshot(t.id, { lines: 6, columns: 34 }),
     })),
     ...browsers.map((b) => ({
       id: b.id,
@@ -181,16 +186,24 @@ export function TerminalSwitcher() {
     return unsub
   }, [cycle])
 
+  useEffect(() => {
+    if (!open) return
+    const interval = window.setInterval(() => {
+      setPreviewTick((tick) => tick + 1)
+    }, 120)
+    return () => window.clearInterval(interval)
+  }, [open])
+
   if (items.length < 2) return null
 
   return (
     <AnimatePresence>
       {open && (
         <motion.div
-          initial={{ opacity: 0, scale: 0.95 }}
+          initial={reducedMotion ? false : { opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
-          exit={{ opacity: 0, scale: 0.95 }}
-          transition={{ duration: 0.12 }}
+          exit={reducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.95 }}
+          transition={{ duration: reducedMotion ? 0 : 0.12 }}
           className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none"
         >
           <div className="bg-card/92 rounded-xl ring-1 ring-border/40 shadow-2xl p-3 pointer-events-auto max-w-[min(98vw,1280px)]">
@@ -226,24 +239,48 @@ export function TerminalSwitcher() {
                     {/* Preview area */}
                     <div
                       className={cn(
-                        'flex-1 flex items-center justify-center',
+                        'relative flex-1 overflow-hidden',
                         item.type === 'terminal' ? 'bg-neutral-950' : 'bg-neutral-900',
                       )}
                     >
                       {item.type === 'terminal' ? (
-                        <TerminalSquare
-                          className={cn(
-                            'w-6 h-6',
-                            i === selectedIndex ? 'text-primary/60' : 'text-muted-foreground/20',
-                          )}
-                        />
+                        item.previewLines && item.previewLines.some((line) => line.length > 0) ? (
+                          <>
+                            <pre
+                              className={cn(
+                                'absolute inset-0 overflow-hidden px-2 py-1.5 text-[8px] leading-[1.25] whitespace-pre text-left',
+                                i === selectedIndex ? 'text-primary/80' : 'text-foreground/75',
+                              )}
+                              style={{
+                                fontFamily:
+                                  '"Geist Mono", "SFMono-Regular", "JetBrains Mono", "Menlo", monospace',
+                              }}
+                            >
+                              {item.previewLines.join('\n')}
+                            </pre>
+                            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-neutral-950 via-neutral-950/70 to-transparent" />
+                          </>
+                        ) : (
+                          <div className="flex h-full items-center justify-center">
+                            <TerminalSquare
+                              className={cn(
+                                'w-6 h-6',
+                                i === selectedIndex
+                                  ? 'text-primary/60'
+                                  : 'text-muted-foreground/20',
+                              )}
+                            />
+                          </div>
+                        )
                       ) : (
-                        <Globe
-                          className={cn(
-                            'w-6 h-6',
-                            i === selectedIndex ? 'text-primary/60' : 'text-muted-foreground/20',
-                          )}
-                        />
+                        <div className="flex h-full items-center justify-center">
+                          <Globe
+                            className={cn(
+                              'w-6 h-6',
+                              i === selectedIndex ? 'text-primary/60' : 'text-muted-foreground/20',
+                            )}
+                          />
+                        </div>
                       )}
                     </div>
 

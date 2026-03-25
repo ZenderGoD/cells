@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, type KeyboardEvent } from 'react'
+import { useRef, useState, useEffect, useCallback, type KeyboardEvent } from 'react'
 import { useHotkey } from '@tanstack/react-hotkeys'
 import {
   ArrowLeft,
@@ -14,6 +14,7 @@ import {
   TerminalSquare,
   X,
 } from 'lucide-react'
+import { motion, AnimatePresence } from 'motion/react'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
 import {
@@ -65,6 +66,7 @@ export function StatusBar() {
   const projects = useStore((s) => s.projects)
   const activeProjectId = useStore((s) => s.activeProjectId)
   const switchProject = useStore((s) => s.switchProject)
+  const reorderProjects = useStore((s) => s.reorderProjects)
   const snapEnabled = useStore((s) => s.snapEnabled)
   const snapPaused = useStore((s) => s.snapPaused)
   const toggleSnap = useStore((s) => s.toggleSnap)
@@ -113,6 +115,52 @@ export function StatusBar() {
       ? allWindows.find((window) => window.id === focusedTerminalId)
       : allWindows.find((window) => window.id === focusedBrowserId)) ?? null
   const overviewAnchor = focusedWindow ?? getClosestWindow(allWindows, viewportCenter) ?? null
+
+  // --- Project tab drag-to-reorder ---
+  const [dragId, setDragId] = useState<string | null>(null)
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null)
+
+  const handleDragStart = useCallback(
+    (e: React.DragEvent<HTMLButtonElement>, projectId: string) => {
+      setDragId(projectId)
+      e.dataTransfer.effectAllowed = 'move'
+      e.dataTransfer.setData('text/plain', projectId)
+    },
+    [],
+  )
+
+  const handleDragOver = useCallback(
+    (e: React.DragEvent<HTMLButtonElement>, projectId: string) => {
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'move'
+      if (projectId !== dragId) setDropTargetId(projectId)
+    },
+    [dragId],
+  )
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent<HTMLButtonElement>, targetId: string) => {
+      e.preventDefault()
+      if (!dragId || dragId === targetId) return
+
+      const ids = projects.map((p) => p.id)
+      const fromIdx = ids.indexOf(dragId)
+      const toIdx = ids.indexOf(targetId)
+      if (fromIdx === -1 || toIdx === -1) return
+
+      ids.splice(fromIdx, 1)
+      ids.splice(toIdx, 0, dragId)
+      reorderProjects(ids)
+      setDragId(null)
+      setDropTargetId(null)
+    },
+    [dragId, projects, reorderProjects],
+  )
+
+  const handleDragEnd = useCallback(() => {
+    setDragId(null)
+    setDropTargetId(null)
+  }, [])
 
   const openUrlBar = () => {
     setUrlInput(focusedBrowser?.url ?? '')
@@ -227,33 +275,39 @@ export function StatusBar() {
           <Logo className="w-3.5 h-3.5 text-foreground/80" />
         </button>
 
-        {allWindows.length > 0 && (
-          <div
-            className="flex h-full items-center px-1.5 shrink-0 no-drag border-l border-r border-border/25"
-            title={
-              overviewAnchor
-                ? `${overviewAnchor.title} • click a window to center it • Ctrl+H/J/K/L to move`
-                : 'Click a window to center it • Ctrl+H/J/K/L to move around the canvas'
-            }
-          >
-            <WindowOverviewMap
-              windows={allWindows}
-              currentId={overviewAnchor?.id}
-              focusedId={focusedWindow?.id ?? null}
-              viewport={viewportRect}
-              width={titleBarOverviewWidth}
-              height={titleBarOverviewHeight}
-              className="border-0 bg-transparent rounded-none"
-              onSelect={(window) => {
-                if (window.type === 'browser') {
-                  snapToBrowser(window.id)
-                  return
-                }
-                snapToTerminal(window.id)
-              }}
-            />
-          </div>
-        )}
+        <AnimatePresence>
+          {allWindows.length > 0 && (
+            <motion.div
+              initial={{ opacity: 0, width: 0 }}
+              animate={{ opacity: 1, width: titleBarOverviewWidth + 12 }}
+              exit={{ opacity: 0, width: 0 }}
+              transition={{ duration: 0.2, ease: 'easeInOut' }}
+              className="flex h-full items-center px-1.5 shrink-0 no-drag border-l border-r border-border/25 overflow-hidden"
+              title={
+                overviewAnchor
+                  ? `${overviewAnchor.title} • click a window to center it • Ctrl+H/J/K/L to move`
+                  : 'Click a window to center it • Ctrl+H/J/K/L to move around the canvas'
+              }
+            >
+              <WindowOverviewMap
+                windows={allWindows}
+                currentId={overviewAnchor?.id}
+                focusedId={focusedWindow?.id ?? null}
+                viewport={viewportRect}
+                width={titleBarOverviewWidth}
+                height={titleBarOverviewHeight}
+                className="border-0 bg-transparent rounded-none"
+                onSelect={(window) => {
+                  if (window.type === 'browser') {
+                    snapToBrowser(window.id)
+                    return
+                  }
+                  snapToTerminal(window.id)
+                }}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* Project tabs — left side */}
         <div
@@ -265,16 +319,26 @@ export function StatusBar() {
             const projectWindowCount = isActive
               ? windowCount
               : (project.terminals?.length ?? 0) + (project.browsers?.length ?? 0)
+            const isDragging = dragId === project.id
+            const isDropTarget = dropTargetId === project.id && dragId !== project.id
 
             return (
               <button
                 key={project.id}
+                draggable
                 onClick={() => switchProject(project.id)}
+                onDragStart={(e) => handleDragStart(e, project.id)}
+                onDragOver={(e) => handleDragOver(e, project.id)}
+                onDragLeave={() => setDropTargetId(null)}
+                onDrop={(e) => handleDrop(e, project.id)}
+                onDragEnd={handleDragEnd}
                 className={cn(
                   'relative flex items-center gap-2 px-4 transition-colors border-r border-border/30 shrink-0',
                   isActive
                     ? 'bg-muted/60 text-foreground'
                     : 'text-muted-foreground/50 hover:text-muted-foreground hover:bg-muted/30',
+                  isDragging && 'opacity-40',
+                  isDropTarget && 'border-l-2 border-l-primary/60',
                 )}
               >
                 {isActive && (

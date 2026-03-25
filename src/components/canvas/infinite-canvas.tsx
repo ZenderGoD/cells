@@ -321,6 +321,10 @@ export function InfiniteCanvas() {
   // events never read a stale closure value (multiple events can fire per frame).
   const handleWheel = useCallback(
     (e: WheelEvent) => {
+      const termNode = (e.target as HTMLElement).closest('.terminal-node')
+      const browserNode = (e.target as HTMLElement).closest('.browser-node')
+      if ((termNode || browserNode) && !cmdHeld) return
+
       e.preventDefault()
       cancelSnap()
       setIsUserDriving(true)
@@ -358,7 +362,15 @@ export function InfiniteCanvas() {
         scheduleSnap()
       }
     },
-    [setCanvasTransform, cancelSnap, scheduleSnap, terminals.length, browsers.length, snapEnabled],
+    [
+      setCanvasTransform,
+      cancelSnap,
+      scheduleSnap,
+      terminals.length,
+      browsers.length,
+      snapEnabled,
+      cmdHeld,
+    ],
   )
 
   // Terminal drag handler
