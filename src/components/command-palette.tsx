@@ -108,15 +108,6 @@ export function CommandPalette() {
           <CommandList>
             <CommandEmpty className="hidden" />
 
-            {search.trim() && (
-              <CommandGroup heading="Search" forceMount>
-                <CommandItem forceMount onSelect={searchInBrowser} value={`search-${search}`}>
-                  <Search className="text-muted-foreground" />
-                  Search for &ldquo;{search.trim()}&rdquo;
-                </CommandItem>
-              </CommandGroup>
-            )}
-
             {projects.length > 1 && (
               <>
                 <CommandGroup heading="Projects">
@@ -213,6 +204,18 @@ export function CommandPalette() {
                       {b.title || b.url || 'New Tab'}
                     </CommandItem>
                   ))}
+                </CommandGroup>
+              </>
+            )}
+
+            {search.trim() && (
+              <>
+                <CommandSeparator />
+                <CommandGroup heading="Search" forceMount>
+                  <CommandItem forceMount onSelect={searchInBrowser} value={`search-${search}`}>
+                    <Search className="text-muted-foreground" />
+                    Search for &ldquo;{search.trim()}&rdquo;
+                  </CommandItem>
                 </CommandGroup>
               </>
             )}

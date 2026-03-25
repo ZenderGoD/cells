@@ -230,9 +230,7 @@ export function TerminalSwitcher() {
                     key={item.id}
                     className={cn(
                       'relative flex flex-col rounded-lg overflow-hidden transition-all shrink-0 bg-card',
-                      i === selectedIndex
-                        ? 'ring-2 ring-primary'
-                        : 'border border-border/30',
+                      i === selectedIndex ? 'ring-2 ring-primary' : 'border border-border/30',
                     )}
                     style={{ width: 160, height: 110 }}
                   >
