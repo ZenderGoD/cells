@@ -104,6 +104,11 @@ const api: CellsAPI = {
       ipcRenderer.on('browser:overscroll', handler)
       return () => ipcRenderer.removeListener('browser:overscroll', handler)
     },
+    onWindowCycle: (callback: (direction: 1 | -1) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, direction: 1 | -1) => callback(direction)
+      ipcRenderer.on('browser:window-cycle', handler)
+      return () => ipcRenderer.removeListener('browser:window-cycle', handler)
+    },
   },
   state: {
     load: () => ipcRenderer.invoke('state:load'),
@@ -128,6 +133,10 @@ const api: CellsAPI = {
     toggleMaximize: () => ipcRenderer.invoke('app:toggle-maximize'),
     pickFolder: () => ipcRenderer.invoke('app:pick-folder'),
     getPathForFile: (file: File) => webUtils.getPathForFile(file),
+    saveTempFile: (data: Uint8Array, filename: string) =>
+      ipcRenderer.invoke('app:save-temp-file', data, filename) as Promise<string | null>,
+    pasteClipboardFiles: () =>
+      ipcRenderer.invoke('app:paste-clipboard-files') as Promise<string[] | null>,
   },
   agent: {
     checkAvailable: () => ipcRenderer.invoke('agent:check-available'),

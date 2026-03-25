@@ -4,9 +4,18 @@ import reactHooks from 'eslint-plugin-react-hooks'
 import prettier from 'eslint-config-prettier'
 
 export default tseslint.config(
-  { ignores: ['dist/', 'dist-electron/', 'release/', 'node_modules/'] },
+  { ignores: ['dist/', 'dist-electron/', 'release/', 'node_modules/', 'electron/browser-preload.cjs'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
+  {
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      globals: {
+        console: 'readonly',
+        process: 'readonly',
+      },
+    },
+  },
   {
     plugins: { 'react-hooks': reactHooks },
     rules: {

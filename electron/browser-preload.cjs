@@ -1,19 +1,27 @@
-import { ipcRenderer } from 'electron'
+// IMPORTANT: This file must stay as plain CJS (.cjs with require()).
+// Do NOT convert to TypeScript or ESM — Electron sandboxed preloads
+// need CJS, and vite-plugin-electron cannot reliably compile a second
+// preload to CJS when the project has "type": "module". See the comment
+// in vite.config.ts for the full explanation.
+'use strict'
+
+const { ipcRenderer } = require('electron')
 
 // Detect horizontal overscroll gestures (trackpad swipe at scroll edge)
 // and report progress to the main process for Chrome-like back/forward indicators.
 
 let accDelta = 0
-let direction: 'back' | 'forward' | null = null
-let gesturePhase: 'idle' | 'scrolling' | 'overscrolling' = 'idle'
-let resetTimer: ReturnType<typeof setTimeout> | null = null
+let direction = null
+let gesturePhase = 'idle'
+let resetTimer = null
+let cooldownUntil = 0 // ignore wheel events until this timestamp (post-navigation)
 
-function isAtLeftEdge(): boolean {
+function isAtLeftEdge() {
   const el = document.scrollingElement || document.documentElement
   return el.scrollLeft <= 0
 }
 
-function isAtRightEdge(): boolean {
+function isAtRightEdge() {
   const el = document.scrollingElement || document.documentElement
   return el.scrollLeft + window.innerWidth >= el.scrollWidth - 1
 }
@@ -31,7 +39,10 @@ const THRESHOLD = 150 // px of accumulated delta to trigger navigation
 
 window.addEventListener(
   'wheel',
-  (e) => {
+  function (e) {
+    // Ignore momentum events still arriving after a navigation was committed
+    if (Date.now() < cooldownUntil) return
+
     // Only care about horizontal-dominant gestures
     if (Math.abs(e.deltaX) < Math.abs(e.deltaY) * 1.5 && gesturePhase !== 'overscrolling') {
       return
@@ -39,8 +50,8 @@ window.addEventListener(
 
     if (resetTimer) clearTimeout(resetTimer)
 
-    const atLeft = isAtLeftEdge()
-    const atRight = isAtRightEdge()
+    var atLeft = isAtLeftEdge()
+    var atRight = isAtRightEdge()
 
     // Swipe right (deltaX < 0) at left edge → go back
     // Swipe left (deltaX > 0) at right edge → go forward
@@ -71,17 +82,22 @@ window.addEventListener(
       return
     }
 
-    const progress = Math.min(accDelta / THRESHOLD, 1)
+    var progress = Math.min(accDelta / THRESHOLD, 1)
     ipcRenderer.send('browser:overscroll-update', progress, direction)
 
-    // After momentum stops, either commit navigation or cancel
-    resetTimer = setTimeout(() => {
-      if (gesturePhase !== 'overscrolling') return
-      if (progress >= 1 && direction) {
-        ipcRenderer.send('browser:overscroll-navigate', direction)
-      }
+    // Navigate immediately once the threshold is reached — no waiting
+    if (progress >= 1 && direction) {
+      ipcRenderer.send('browser:overscroll-navigate', direction)
       resetGesture()
-    }, 180)
+      cooldownUntil = Date.now() + 400 // ignore momentum events after navigating
+      return
+    }
+
+    // If threshold not reached, cancel after momentum stops
+    resetTimer = setTimeout(function () {
+      if (gesturePhase !== 'overscrolling') return
+      resetGesture()
+    }, 120)
   },
   { passive: true },
 )

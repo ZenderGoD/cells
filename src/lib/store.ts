@@ -286,16 +286,26 @@ export const useStore = create<StoreState>((set, get) => ({
       .getAllHistory()
       .then((allHistory) => {
         const state = get()
-        // Merge history into browser nodes before snapshot
+        let projects = snapshotActiveProject(state)
+
+        // Merge history into every project's browser nodes before saving so
+        // parked browsers keep their back/forward stacks across restarts too.
         if (allHistory && Object.keys(allHistory).length > 0) {
           const browsers = state.browsers.map((b) => {
             const h = allHistory[b.id]
             return h ? { ...b, history: h } : b
           })
-          set({ browsers })
+          projects = projects.map((project) => ({
+            ...project,
+            browsers: (project.browsers ?? []).map((browser) => {
+              const history = allHistory[browser.id]
+              return history ? { ...browser, history } : browser
+            }),
+          }))
+          set({ browsers, projects })
         }
+
         const freshState = get()
-        const projects = snapshotActiveProject(freshState)
         window.cells.state.save({
           version: 2,
           activeProjectId: freshState.activeProjectId,

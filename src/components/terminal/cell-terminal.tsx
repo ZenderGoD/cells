@@ -162,17 +162,24 @@ export function CellTerminal({
   useEffect(() => {
     if (!isFocused) return
 
-    const handlePaste = (event: ClipboardEvent) => {
+    const handlePaste = async (event: ClipboardEvent) => {
       const container = containerRef.current
       const inThisTerminal = Boolean(
         container && event.target instanceof Node && container.contains(event.target),
       )
       if (overlayOpen || (!inThisTerminal && isEditableTarget(event.target))) return
-      const text = event.clipboardData?.getData('text')
-      if (!text) return
       event.preventDefault()
       event.stopPropagation()
-      pasteToTerminal(text)
+
+      // Check for files/images in clipboard
+      const filePaths = await window.cells.app.pasteClipboardFiles()
+      if (filePaths && filePaths.length > 0) {
+        pasteToTerminal(filePaths.map(shellEscapePath).join(' ') + ' ')
+        return
+      }
+
+      const text = event.clipboardData?.getData('text')
+      if (text) pasteToTerminal(text)
     }
 
     document.addEventListener('paste', handlePaste, true)
@@ -284,15 +291,64 @@ export function CellTerminal({
           if (metaShortcuts.includes(e.key)) return true
         }
         if (e.ctrlKey && e.key === 'Tab') return true
-        // Handle Cmd+V paste natively via clipboard API
+
+        // Only handle keydown, not keyup
+        if (e.type !== 'keydown') return false
+
+        // Handle Cmd+V paste — check for clipboard image first, then text
         if (e.metaKey && (e.key === 'v' || e.key === 'V')) {
           e.preventDefault()
-          navigator.clipboard.readText().then((text) => {
+          ;(async () => {
+            // Try files/images from native clipboard
+            const filePaths = await window.cells.app.pasteClipboardFiles()
+            if (filePaths && filePaths.length > 0) {
+              window.cells.terminal.write(termId, filePaths.map(shellEscapePath).join(' ') + ' ')
+              return
+            }
+            // Fallback to text
+            const text = await navigator.clipboard.readText()
             if (text) window.cells.terminal.write(termId, text)
-          })
+          })()
           return true
         }
-        // Handle Cmd+C copy — let ghostty-web handle selection copy
+
+        // macOS editing shortcuts → terminal escape sequences
+        // Option+Backspace → delete word backward
+        if (e.altKey && e.key === 'Backspace') {
+          window.cells.terminal.write(termId, '\x1b\x7f')
+          return true
+        }
+        // Option+Delete → delete word forward
+        if (e.altKey && e.key === 'Delete') {
+          window.cells.terminal.write(termId, '\x1bd')
+          return true
+        }
+        // Cmd+Backspace → delete to beginning of line
+        if (e.metaKey && e.key === 'Backspace') {
+          window.cells.terminal.write(termId, '\x15')
+          return true
+        }
+        // Option+Left → move word left
+        if (e.altKey && e.key === 'ArrowLeft') {
+          window.cells.terminal.write(termId, '\x1bb')
+          return true
+        }
+        // Option+Right → move word right
+        if (e.altKey && e.key === 'ArrowRight') {
+          window.cells.terminal.write(termId, '\x1bf')
+          return true
+        }
+        // Cmd+Left → beginning of line
+        if (e.metaKey && e.key === 'ArrowLeft') {
+          window.cells.terminal.write(termId, '\x01')
+          return true
+        }
+        // Cmd+Right → end of line
+        if (e.metaKey && e.key === 'ArrowRight') {
+          window.cells.terminal.write(termId, '\x05')
+          return true
+        }
+
         return false
       })
 

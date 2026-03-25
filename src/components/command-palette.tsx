@@ -10,6 +10,7 @@ import {
   FolderOpen,
   Search,
   Sparkles,
+  LogOut,
 } from 'lucide-react'
 import {
   CommandDialog,
@@ -154,6 +155,11 @@ export function CommandPalette() {
               >
                 <FolderOpen className="text-muted-foreground" />
                 New Project
+              </CommandItem>
+              <CommandItem onSelect={() => window.close()}>
+                <LogOut className="text-muted-foreground" />
+                Quit Cells
+                <CommandShortcut>⌘Q</CommandShortcut>
               </CommandItem>
             </CommandGroup>
 

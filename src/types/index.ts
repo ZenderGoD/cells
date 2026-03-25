@@ -141,6 +141,7 @@ export interface CellsAPI {
     onOverscroll(
       callback: (browserId: string, progress: number, direction: string | null) => void,
     ): () => void
+    onWindowCycle(callback: (direction: 1 | -1) => void): () => void
   }
   app: {
     onBeforeQuit(callback: () => void): () => void
@@ -149,6 +150,8 @@ export interface CellsAPI {
     toggleMaximize(): Promise<void>
     pickFolder(): Promise<string | null>
     getPathForFile(file: File): string
+    saveTempFile(data: Uint8Array, filename: string): Promise<string | null>
+    pasteClipboardFiles(): Promise<string[] | null>
   }
 }
 

@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, type MouseEvent } from 'react'
-import { Globe } from 'lucide-react'
+import { Globe, WifiOff } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
 import type { BrowserNode as BrowserNodeType } from '@/types'
@@ -36,10 +36,7 @@ export function BrowserNode({ browser, scale, cmdHeld, isFocused, onDragStart }:
   const [isResizing, setIsResizing] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [viewReady, setViewReady] = useState(false)
-  const [overscroll, setOverscroll] = useState<{
-    progress: number
-    direction: 'back' | 'forward'
-  } | null>(null)
+  const [offline, setOffline] = useState(!navigator.onLine)
   const contentRef = useRef<HTMLDivElement>(null)
   const createdRef = useRef(false)
   const lastBoundsRef = useRef({ x: 0, y: 0, width: 0, height: 0 })
@@ -77,17 +74,19 @@ export function BrowserNode({ browser, scale, cmdHeld, isFocused, onDragStart }:
     }
   }, [browser.id, activeProjectId])
 
-  // Listen for overscroll gestures (swipe back/forward)
+  // Detect network loss — hide native view and auto-reload when back online
   useEffect(() => {
-    const unsub = window.cells.browser.onOverscroll((id, progress, direction) => {
-      if (id !== browser.id) return
-      if (progress <= 0 || !direction) {
-        setOverscroll(null)
-      } else {
-        setOverscroll({ progress, direction: direction as 'back' | 'forward' })
-      }
-    })
-    return unsub
+    const goOffline = () => setOffline(true)
+    const goOnline = () => {
+      setOffline(false)
+      window.cells.browser.reload(browser.id)
+    }
+    window.addEventListener('offline', goOffline)
+    window.addEventListener('online', goOnline)
+    return () => {
+      window.removeEventListener('offline', goOffline)
+      window.removeEventListener('online', goOnline)
+    }
   }, [browser.id])
 
   // Listen for title/URL updates and new-window requests
@@ -172,7 +171,8 @@ export function BrowserNode({ browser, scale, cmdHeld, isFocused, onDragStart }:
       window.cells.browser.setZoomFactor(browser.id, roundedZoom)
     }
 
-    const shouldBeVisible = !overlayOpen && bounds.width >= 20 && bounds.height >= 20
+    const shouldBeVisible =
+      !overlayOpen && !offline && !cmdHeld && bounds.width >= 20 && bounds.height >= 20
     if (shouldBeVisible !== lastVisibleRef.current) {
       lastVisibleRef.current = shouldBeVisible
       window.cells.browser.setVisible(browser.id, shouldBeVisible)
@@ -186,7 +186,9 @@ export function BrowserNode({ browser, scale, cmdHeld, isFocused, onDragStart }:
     canvas.x,
     canvas.y,
     canvas.scale,
+    cmdHeld,
     isFocused,
+    offline,
     overlayOpen,
     viewReady,
     windowHeight,
@@ -291,18 +293,8 @@ export function BrowserNode({ browser, scale, cmdHeld, isFocused, onDragStart }:
         ref={contentRef}
         className={cn(
           'w-full h-full rounded-lg overflow-hidden bg-background relative',
-          !overscroll && (isFocused ? 'ring-1 ring-white/10' : 'ring-1 ring-border/20'),
+          isFocused ? 'ring-1 ring-white/10' : 'ring-1 ring-border/20',
         )}
-        style={
-          overscroll
-            ? {
-                boxShadow:
-                  overscroll.direction === 'back'
-                    ? `inset ${3 + overscroll.progress * 3}px 0 0 0 ${overscroll.progress >= 1 ? 'oklch(0.7 0.15 220 / 0.9)' : `oklch(0.6 0.12 220 / ${0.2 + overscroll.progress * 0.5})`}, 0 0 ${overscroll.progress * 16}px ${overscroll.direction === 'back' ? '-2px' : '2px'} oklch(0.6 0.15 220 / ${overscroll.progress * 0.3})`
-                    : `inset -${3 + overscroll.progress * 3}px 0 0 0 ${overscroll.progress >= 1 ? 'oklch(0.7 0.15 220 / 0.9)' : `oklch(0.6 0.12 220 / ${0.2 + overscroll.progress * 0.5})`}, 0 0 ${overscroll.progress * 16}px ${overscroll.direction === 'forward' ? '2px' : '-2px'} oklch(0.6 0.15 220 / ${overscroll.progress * 0.3})`,
-              }
-            : undefined
-        }
       >
         {/* Loading indicator — traces entire border starting from bottom-left */}
         {isLoading && (
@@ -330,16 +322,22 @@ export function BrowserNode({ browser, scale, cmdHeld, isFocused, onDragStart }:
             />
           </svg>
         )}
-        {/* Placeholder shown when native view is hidden (not focused, not ready, or overlay open) */}
-        {(!isFocused || !viewReady || overlayOpen) && (
+        {/* Placeholder shown when native view is hidden (not focused, not ready, overlay, or offline) */}
+        {(!isFocused || !viewReady || overlayOpen || offline) && (
           <div className="w-full h-full flex flex-col items-center justify-center gap-2">
-            {isFocused && !viewReady ? (
+            {offline ? (
+              <WifiOff className="w-8 h-8 text-muted-foreground/30" />
+            ) : isFocused && !viewReady ? (
               <div className="w-5 h-5 border-2 border-muted-foreground/20 border-t-muted-foreground/60 rounded-full animate-spin" />
             ) : (
               <Globe className="w-8 h-8 text-muted-foreground/20" />
             )}
             <span className="text-[11px] text-muted-foreground/30 truncate max-w-[80%] text-center">
-              {isFocused && !viewReady ? 'Loading...' : browser.title || browser.url || 'New Tab'}
+              {offline
+                ? 'No internet connection — will reload automatically'
+                : isFocused && !viewReady
+                  ? 'Loading...'
+                  : browser.title || browser.url || 'New Tab'}
             </span>
           </div>
         )}

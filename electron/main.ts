@@ -20,12 +20,40 @@ if (process.platform === 'darwin') {
   app.name = 'Cells'
 }
 
+const shouldIgnoreGpuBlocklist = process.env.CELLS_IGNORE_GPU_BLOCKLIST === '1'
+if (shouldIgnoreGpuBlocklist) {
+  app.commandLine.appendSwitch('ignore-gpu-blocklist')
+}
+
 const DEV_ROOT = process.env.CELLS_DEV_ROOT
   ? path.resolve(process.env.CELLS_DEV_ROOT)
   : path.join(app.getPath('home'), '.cells-dev')
 
 function ensureDir(dir: string) {
   fs.mkdirSync(dir, { recursive: true })
+}
+
+function decodePlistString(value: string) {
+  return value.replace(/&(#x?[0-9a-f]+|amp|lt|gt|quot|apos);/gi, (match, entity) => {
+    switch (entity.toLowerCase()) {
+      case 'amp':
+        return '&'
+      case 'lt':
+        return '<'
+      case 'gt':
+        return '>'
+      case 'quot':
+        return '"'
+      case 'apos':
+        return "'"
+      default: {
+        const isHex = entity[0] === '#' && (entity[1] === 'x' || entity[1] === 'X')
+        const numeric = isHex ? entity.slice(2) : entity.slice(1)
+        const codePoint = Number.parseInt(numeric, isHex ? 16 : 10)
+        return Number.isNaN(codePoint) ? match : String.fromCodePoint(codePoint)
+      }
+    }
+  })
 }
 
 function configureDevPaths() {
@@ -95,6 +123,7 @@ function createWindow() {
     height: 900,
     minWidth: 800,
     minHeight: 600,
+    show: false, // Don't show until ready — avoids GPU race on launch
     transparent: true,
     vibrancy: 'under-window',
     visualEffectState: 'active',
@@ -108,6 +137,10 @@ function createWindow() {
       contextIsolation: true,
       webgl: true,
     },
+  })
+
+  mainWindow.once('ready-to-show', () => {
+    mainWindow?.show()
   })
 
   if (process.env.VITE_DEV_SERVER_URL) {
@@ -266,6 +299,54 @@ ipcMain.handle('app:pick-folder', async () => {
   return result.canceled ? null : result.filePaths[0]
 })
 
+ipcMain.handle('app:save-temp-file', async (_event, data: Uint8Array, filename: string) => {
+  try {
+    const tmpDir = path.join(app.getPath('temp'), 'cells-clipboard')
+    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true })
+    const filePath = path.join(tmpDir, filename)
+    fs.writeFileSync(filePath, Buffer.from(data))
+    return filePath
+  } catch {
+    return null
+  }
+})
+
+// Read clipboard — returns file paths (copied files, images) or null (caller falls back to text)
+ipcMain.handle('app:paste-clipboard-files', async () => {
+  try {
+    const { clipboard } = await import('electron')
+
+    // 1. Check for file paths (copied files in Finder, etc.)
+    if (process.platform === 'darwin') {
+      const raw = clipboard.readBuffer('NSFilenamesPboardType')
+      if (raw.length > 0) {
+        const text = raw.toString('utf8')
+        const matches = text.match(/<string>(.*?)<\/string>/g)
+        if (matches && matches.length > 0) {
+          const filePaths = matches
+            .map((m) => decodePlistString(m.replace(/<\/?string>/g, '')))
+            .filter((p) => p && fs.existsSync(p))
+          if (filePaths.length > 0) return filePaths
+        }
+      }
+    }
+
+    // 2. Check for image in clipboard
+    const image = clipboard.readImage()
+    if (!image.isEmpty()) {
+      const tmpDir = path.join(app.getPath('temp'), 'cells-clipboard')
+      if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true })
+      const filePath = path.join(tmpDir, `clipboard-${Date.now()}.png`)
+      fs.writeFileSync(filePath, image.toPNG())
+      return [filePath]
+    }
+
+    return null
+  } catch {
+    return null
+  }
+})
+
 ipcMain.on('terminal:write', (_event, termId: string, data: string) => {
   if (ptys.has(termId)) {
     ptys.write(termId, data)
@@ -301,24 +382,26 @@ function setupBrowserView(browserId: string, view: WebContentsView) {
 
   // Intercept app shortcuts before the WebContentsView consumes them
   view.webContents.on('before-input-event', (_e, input) => {
-    // Forward Ctrl+Tab / Ctrl+Shift+Tab to main renderer for terminal switching
+    // Forward Ctrl+Tab / Ctrl+Shift+Tab explicitly because the first Tab press can
+    // be lost if we rely on synthetic key events during the browser→renderer focus hop.
     if (input.control && input.key === 'Tab') {
       _e.preventDefault()
-      if (!mainWindow?.isDestroyed()) {
+      if (input.type === 'keyDown' && !mainWindow?.isDestroyed()) {
         mainWindow?.webContents.focus()
-        mainWindow?.webContents.sendInputEvent({
-          type: input.type as 'keyDown' | 'keyUp',
-          keyCode: input.key,
-          modifiers: ['control' as const, ...(input.shift ? ['shift' as const] : [])],
-        })
+        mainWindow?.webContents.send('browser:window-cycle', input.shift ? -1 : 1)
       }
       return
     }
 
     if (input.meta || input.control) {
       const key = input.key.toLowerCase()
-      // Cmd+L → focus URL bar, Cmd+W → close, Cmd+T → command palette
-      if (['l', 'w', 't', 'q', ','].includes(key)) {
+      const shouldForwardShortcut =
+        ['l', 'w', 't', 'q', ',', '[', ']'].includes(key) || (key === 'c' && input.shift)
+      // Forward browser-level app shortcuts back to the renderer so they still work
+      // while the embedded page owns keyboard focus.
+      // Cmd+Shift+C is included so the renderer can copy the current URL and show
+      // inline feedback in the address bar instead of letting the page consume it.
+      if (shouldForwardShortcut) {
         _e.preventDefault()
         if (!mainWindow?.isDestroyed()) {
           mainWindow?.webContents.focus()
@@ -469,7 +552,10 @@ ipcMain.handle(
       savedHistories.set(browserId, {
         entries: history.entries,
         activeIndex: history.activeIndex,
-        navigatingFromSaved: false,
+        // The renderer will immediately reload the current entry after create().
+        // Treat that first navigation as a restore step so we don't clear the
+        // persisted history before the toolbar has a chance to use it.
+        navigatingFromSaved: true,
       })
     }
 

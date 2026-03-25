@@ -75,8 +75,8 @@ export function TerminalSwitcher() {
     items = chronologicalItems
   }
 
-  useEffect(() => {
-    const cycle = (direction: 1 | -1) => {
+  const cycle = useCallback(
+    (direction: 1 | -1) => {
       const state = useStore.getState()
       const chronologicalItems = [
         ...state.terminals.map((t) => ({ id: t.id, type: 'terminal' as const })),
@@ -84,13 +84,10 @@ export function TerminalSwitcher() {
       ]
       if (chronologicalItems.length < 2) return
 
-      // In 'recent' mode, order by focus history (most recent first)
-      // In 'chronological' mode, keep creation order
       let allItems: typeof chronologicalItems
       if (state.tabSwitchMode === 'recent' && state.focusHistory.length > 0) {
         const currentId = state.focusedTerminalId || state.focusedBrowserId
         const itemMap = new Map(chronologicalItems.map((item) => [item.id, item]))
-        // Start with currently focused, then most-recently-focused, then the rest
         const ordered: typeof chronologicalItems = []
         if (currentId && itemMap.has(currentId)) {
           ordered.push(itemMap.get(currentId)!)
@@ -103,7 +100,6 @@ export function TerminalSwitcher() {
             itemMap.delete(id)
           }
         }
-        // Append any remaining items not in focus history
         for (const item of chronologicalItems) {
           if (itemMap.has(item.id)) ordered.push(item)
         }
@@ -131,52 +127,55 @@ export function TerminalSwitcher() {
           return next
         })
       }
-    }
+    },
+    [open, setOpen],
+  )
 
-    const commit = () => {
-      const state = useStore.getState()
-      const chronologicalItems = [
-        ...state.terminals.map((t) => ({ id: t.id, type: 'terminal' as const })),
-        ...state.browsers.map((b) => ({ id: b.id, type: 'browser' as const })),
-      ]
+  const commit = useCallback(() => {
+    const state = useStore.getState()
+    const chronologicalItems = [
+      ...state.terminals.map((t) => ({ id: t.id, type: 'terminal' as const })),
+      ...state.browsers.map((b) => ({ id: b.id, type: 'browser' as const })),
+    ]
 
-      let allItems: typeof chronologicalItems
-      if (state.tabSwitchMode === 'recent' && state.focusHistory.length > 0) {
-        const currentId = state.focusedTerminalId || state.focusedBrowserId
-        const itemMap = new Map(chronologicalItems.map((item) => [item.id, item]))
-        const ordered: typeof chronologicalItems = []
-        if (currentId && itemMap.has(currentId)) {
-          ordered.push(itemMap.get(currentId)!)
-          itemMap.delete(currentId)
-        }
-        for (let i = state.focusHistory.length - 1; i >= 0; i--) {
-          const id = state.focusHistory[i]
-          if (itemMap.has(id)) {
-            ordered.push(itemMap.get(id)!)
-            itemMap.delete(id)
-          }
-        }
-        for (const item of chronologicalItems) {
-          if (itemMap.has(item.id)) ordered.push(item)
-        }
-        allItems = ordered
-      } else {
-        allItems = chronologicalItems
+    let allItems: typeof chronologicalItems
+    if (state.tabSwitchMode === 'recent' && state.focusHistory.length > 0) {
+      const currentId = state.focusedTerminalId || state.focusedBrowserId
+      const itemMap = new Map(chronologicalItems.map((item) => [item.id, item]))
+      const ordered: typeof chronologicalItems = []
+      if (currentId && itemMap.has(currentId)) {
+        ordered.push(itemMap.get(currentId)!)
+        itemMap.delete(currentId)
       }
-
-      if (allItems.length > 0 && open) {
-        const target = allItems[selectedIndex]
-        if (target) {
-          if (target.type === 'terminal') {
-            snapToTerminal(target.id)
-          } else {
-            snapToBrowser(target.id)
-          }
+      for (let i = state.focusHistory.length - 1; i >= 0; i--) {
+        const id = state.focusHistory[i]
+        if (itemMap.has(id)) {
+          ordered.push(itemMap.get(id)!)
+          itemMap.delete(id)
         }
       }
-      setOpen(false)
+      for (const item of chronologicalItems) {
+        if (itemMap.has(item.id)) ordered.push(item)
+      }
+      allItems = ordered
+    } else {
+      allItems = chronologicalItems
     }
 
+    if (allItems.length > 0 && open) {
+      const target = allItems[selectedIndex]
+      if (target) {
+        if (target.type === 'terminal') {
+          snapToTerminal(target.id)
+        } else {
+          snapToBrowser(target.id)
+        }
+      }
+    }
+    setOpen(false)
+  }, [open, selectedIndex, setOpen, snapToBrowser, snapToTerminal])
+
+  useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Tab' && e.ctrlKey && !e.metaKey) {
         e.preventDefault()
@@ -212,7 +211,15 @@ export function TerminalSwitcher() {
       window.removeEventListener('keyup', handleKeyUp, true)
       window.removeEventListener('blur', handleBlur)
     }
-  }, [open, selectedIndex, snapToTerminal, snapToBrowser, setOpen, tabSwitchMode])
+  }, [commit, cycle])
+
+  useEffect(() => {
+    const unsub = window.cells.browser.onWindowCycle((direction) => {
+      ctrlHeld.current = true
+      cycle(direction)
+    })
+    return unsub
+  }, [cycle])
 
   if (items.length < 2) return null
 
