@@ -144,10 +144,15 @@ export function BrowserNode({ browser, scale, cmdHeld, isFocused, onDragStart }:
   // Hide native view briefly when focus transitions in, so the spring animation is visible
   useEffect(() => {
     if (isFocused && !prevFocusedRef.current && viewReady) {
-      setTransitionHidden(true)
-      const timer = setTimeout(() => setTransitionHidden(false), 250)
+      const frame = window.requestAnimationFrame(() => {
+        setTransitionHidden(true)
+      })
+      const timer = window.setTimeout(() => setTransitionHidden(false), 250)
       prevFocusedRef.current = isFocused
-      return () => clearTimeout(timer)
+      return () => {
+        window.cancelAnimationFrame(frame)
+        window.clearTimeout(timer)
+      }
     }
     prevFocusedRef.current = isFocused
   }, [isFocused, viewReady])
@@ -211,7 +216,12 @@ export function BrowserNode({ browser, scale, cmdHeld, isFocused, onDragStart }:
     }
 
     const shouldBeVisible =
-      !overlayOpen && !offline && !cmdHeld && !transitionHidden && bounds.width >= 20 && bounds.height >= 20
+      !overlayOpen &&
+      !offline &&
+      !cmdHeld &&
+      !transitionHidden &&
+      bounds.width >= 20 &&
+      bounds.height >= 20
     if (shouldBeVisible !== lastVisibleRef.current) {
       lastVisibleRef.current = shouldBeVisible
       window.cells.browser.setVisible(browser.id, shouldBeVisible)
