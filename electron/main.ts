@@ -1,9 +1,13 @@
 import { app, BrowserWindow, WebContentsView, ipcMain, dialog, Menu, nativeImage } from 'electron'
 import path from 'path'
+import { fileURLToPath } from 'url'
 import fs from 'fs'
 import { execFileSync } from 'child_process'
 import { autoUpdater } from 'electron-updater'
 import { PtyManager } from './pty'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
 
 // Catch async EIO errors from dead PTYs
 process.on('uncaughtException', (err: NodeJS.ErrnoException) => {
@@ -34,6 +38,9 @@ const STATE_DIR = path.join(app.getPath('home'), '.cells')
 const STATE_FILE = path.join(STATE_DIR, 'state.json')
 const LEGACY_STATE_DIR = path.join(app.getPath('home'), '.vector-ghost')
 const LEGACY_STATE_FILE = path.join(LEGACY_STATE_DIR, 'state.json')
+const AUTO_UPDATE_CHECK_DELAY = 15_000
+const AUTO_UPDATE_CHECK_INTERVAL = 6 * 60 * 60 * 1000
+let updateCheckInterval: ReturnType<typeof setInterval> | null = null
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -609,8 +616,12 @@ function cleanupBrowserViews() {
 
 // ---------- Auto-updater ----------
 
-autoUpdater.autoDownload = false
+autoUpdater.autoDownload = true
 autoUpdater.autoInstallOnAppQuit = true
+
+function shouldEnableAutoUpdates() {
+  return app.isPackaged
+}
 
 function sendUpdateStatus(status: string, info?: any) {
   try {
@@ -645,8 +656,28 @@ autoUpdater.on('error', (err) =>
   }),
 )
 
+function checkForAppUpdates() {
+  if (!shouldEnableAutoUpdates()) return
+  autoUpdater.checkForUpdates().catch((err) =>
+    sendUpdateStatus('error', {
+      message: err.message,
+    }),
+  )
+}
+
+function scheduleAutomaticUpdateChecks() {
+  if (!shouldEnableAutoUpdates()) return
+
+  setTimeout(() => {
+    checkForAppUpdates()
+  }, AUTO_UPDATE_CHECK_DELAY)
+
+  if (updateCheckInterval) clearInterval(updateCheckInterval)
+  updateCheckInterval = setInterval(checkForAppUpdates, AUTO_UPDATE_CHECK_INTERVAL)
+}
+
 ipcMain.handle('updater:check', () => {
-  autoUpdater.checkForUpdates().catch(() => {})
+  checkForAppUpdates()
 })
 
 ipcMain.handle('updater:download', () => {
@@ -718,6 +749,7 @@ app.whenReady().then(() => {
   }
 
   createWindow()
+  scheduleAutomaticUpdateChecks()
 })
 
 app.on('before-quit', () => {
