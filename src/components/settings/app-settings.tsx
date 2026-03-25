@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Dialog as DialogPrimitive } from '@base-ui/react/dialog'
 import { Check, Download, Loader2, RefreshCw } from 'lucide-react'
 
+import { Button } from '@/components/ui/button'
 import { useStore } from '@/lib/store'
 import { terminalThemes } from '@/lib/terminal-themes'
 import { cn } from '@/lib/utils'
 import { SETTINGS_SHEET_CLASSNAMES } from './settings-layout'
 
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../ui/dialog'
+import { Dialog, DialogDescription, DialogHeader, DialogOverlay, DialogPortal, DialogTitle } from '../ui/dialog'
 
 interface AppSettingsProps {
   open: boolean
@@ -63,36 +65,46 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent showCloseButton={false} className={SETTINGS_SHEET_CLASSNAMES.panel}>
-        <div className={SETTINGS_SHEET_CLASSNAMES.frame}>
-          <aside className={SETTINGS_SHEET_CLASSNAMES.sidebar}>
-            <DialogHeader className="px-1 pb-5">
-              <DialogTitle>Settings</DialogTitle>
-              <DialogDescription>Configure Cells from a dedicated control rail.</DialogDescription>
-            </DialogHeader>
+      <DialogPortal>
+        <DialogOverlay />
 
-            <nav className="space-y-1.5">
-              {SETTINGS_SECTIONS.map((section) => (
-                <button
-                  key={section.id}
-                  type="button"
-                  onClick={() => setActiveSection(section.id)}
-                  className={cn(
-                    'w-full rounded-xl border px-3.5 py-3 text-left transition-colors',
-                    activeSection === section.id
-                      ? 'border-border/70 bg-accent text-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]'
-                      : 'border-transparent text-muted-foreground hover:border-border/40 hover:bg-muted/40 hover:text-foreground',
-                  )}
-                >
-                  <div className="text-sm font-medium">{section.label}</div>
-                  <div className="mt-1 text-[11px] leading-4 text-muted-foreground/75">{section.description}</div>
-                </button>
-              ))}
-            </nav>
-          </aside>
+        <aside className={SETTINGS_SHEET_CLASSNAMES.sidebarPanel}>
+          <DialogHeader className="px-1 pb-5">
+            <DialogTitle>Settings</DialogTitle>
+            <DialogDescription>Configure Cells from a dedicated control rail.</DialogDescription>
+          </DialogHeader>
 
-          <section className={SETTINGS_SHEET_CLASSNAMES.contentShell}>
-            <header className="border-b border-border/60 px-8 py-6">
+          <nav className="space-y-1.5 overflow-y-auto pr-1">
+            {SETTINGS_SECTIONS.map((section) => (
+              <button
+                key={section.id}
+                type="button"
+                onClick={() => setActiveSection(section.id)}
+                className={cn(
+                  'w-full rounded-xl border px-3.5 py-3 text-left transition-colors',
+                  activeSection === section.id
+                    ? 'border-border/70 bg-accent text-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]'
+                    : 'border-transparent text-muted-foreground hover:border-border/40 hover:bg-muted/40 hover:text-foreground',
+                )}
+              >
+                <div className="text-sm font-medium">{section.label}</div>
+                <div className="mt-1 text-[11px] leading-4 text-muted-foreground/75">{section.description}</div>
+              </button>
+            ))}
+          </nav>
+        </aside>
+
+        <DialogPrimitive.Popup className={SETTINGS_SHEET_CLASSNAMES.contentPanel}>
+          <section className="min-w-0">
+            <DialogPrimitive.Close
+              data-slot="dialog-close"
+              render={<Button variant="ghost" className="absolute top-4 right-4" size="icon-sm" />}
+            >
+              <span aria-hidden="true">×</span>
+              <span className="sr-only">Close</span>
+            </DialogPrimitive.Close>
+
+            <header className={SETTINGS_SHEET_CLASSNAMES.contentHeader}>
               <h2 className="text-[1.9rem] font-semibold tracking-[-0.04em] text-foreground">
                 {activeSectionMeta.label}
               </h2>
@@ -261,8 +273,8 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
               {activeSection === 'about' ? <UpdateSection /> : null}
             </div>
           </section>
-        </div>
-      </DialogContent>
+        </DialogPrimitive.Popup>
+      </DialogPortal>
     </Dialog>
   )
 }
