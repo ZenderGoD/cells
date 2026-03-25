@@ -70,6 +70,9 @@ export function StatusBar() {
   const snapEnabled = useStore((s) => s.snapEnabled)
   const snapPaused = useStore((s) => s.snapPaused)
   const toggleSnap = useStore((s) => s.toggleSnap)
+  const selectionMode = useStore((s) => s.selectionMode)
+  const selectionCount = useStore((s) => s.selectionCount)
+  const setSelectionMode = useStore((s) => s.setSelectionMode)
   const zoomToFitAll = useStore((s) => s.zoomToFitAll)
   const snapToTerminal = useStore((s) => s.snapToTerminal)
   const snapToBrowser = useStore((s) => s.snapToBrowser)
@@ -498,19 +501,34 @@ export function StatusBar() {
 
           {/* Snap toggle */}
           <button
-            onClick={toggleSnap}
+            onClick={() => {
+              if (selectionMode) {
+                setSelectionMode(false)
+                return
+              }
+              toggleSnap()
+            }}
             className={cn(
               'flex items-center gap-1.5 px-2 py-1 rounded-md transition-colors',
-              !snapEnabled
-                ? 'text-muted-foreground/30 hover:text-muted-foreground hover:bg-muted/50'
-                : snapPaused
-                  ? 'bg-yellow-500/10 text-yellow-500/70'
-                  : 'bg-primary/15 text-primary',
+              selectionMode
+                ? 'bg-primary/15 text-primary'
+                : !snapEnabled
+                  ? 'text-muted-foreground/30 hover:text-muted-foreground hover:bg-muted/50'
+                  : snapPaused
+                    ? 'bg-yellow-500/10 text-yellow-500/70'
+                    : 'bg-primary/15 text-primary',
             )}
+            title={selectionMode ? 'Selection mode active. Click to exit.' : undefined}
           >
             <Magnet className="w-3 h-3" />
             <span className="text-[10px]">
-              {!snapEnabled ? 'Free' : snapPaused ? 'Paused' : 'Snap'}
+              {selectionMode
+                ? `Select ${selectionCount > 0 ? `(${selectionCount})` : ''}`
+                : !snapEnabled
+                  ? 'Free'
+                  : snapPaused
+                    ? 'Paused'
+                    : 'Snap'}
             </span>
           </button>
 

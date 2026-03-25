@@ -38,6 +38,8 @@ interface StoreState {
   snapPaused: boolean
   snapFast: boolean // hint for canvas to use fast spring
   snapOnFocus: boolean
+  selectionMode: boolean
+  selectionCount: number
   tabSwitchMode: 'recent' | 'chronological'
   projectSwitchMode: 'recent' | 'chronological'
   reducedMotion: boolean
@@ -84,6 +86,8 @@ interface StoreState {
   toggleSnap(): void
   setSnapPaused(paused: boolean): void
   setSnapOnFocus(enabled: boolean): void
+  setSelectionMode(enabled: boolean): void
+  setSelectionCount(count: number): void
   setTabSwitchMode(mode: 'recent' | 'chronological'): void
   setProjectSwitchMode(mode: 'recent' | 'chronological'): void
   setReducedMotion(enabled: boolean): void
@@ -246,6 +250,8 @@ export const useStore = create<StoreState>((set, get) => ({
   snapPaused: false,
   snapFast: false,
   snapOnFocus: true,
+  selectionMode: false,
+  selectionCount: 0,
   tabSwitchMode: 'chronological',
   projectSwitchMode: 'recent',
   reducedMotion: false,
@@ -858,6 +864,17 @@ export const useStore = create<StoreState>((set, get) => ({
   setSnapOnFocus(enabled) {
     set({ snapOnFocus: enabled })
     get().persist()
+  },
+
+  setSelectionMode(enabled) {
+    set({
+      selectionMode: enabled,
+      selectionCount: enabled ? get().selectionCount : 0,
+    })
+  },
+
+  setSelectionCount(count) {
+    set({ selectionCount: Math.max(0, count) })
   },
 
   setTabSwitchMode(mode) {
