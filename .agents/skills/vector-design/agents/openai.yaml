@@ -1,0 +1,3 @@
+interface:
+  display_name: 'Vector Design'
+  short_description: 'Dense Vector UI patterns for dialogs, inline selectors, row editing, and optimistic micro-interactions.'
