@@ -202,9 +202,15 @@ function UpdateSection() {
   const [version, setVersion] = useState('')
   const [status, setStatus] = useState<string>('idle')
   const [updateInfo, setUpdateInfo] = useState<any>(null)
+  const [support, setSupport] = useState<{
+    enabled: boolean
+    reason?: string
+    message?: string
+  } | null>(null)
 
   useEffect(() => {
     window.cells.updater.getVersion().then(setVersion)
+    window.cells.updater.getSupport().then(setSupport)
     const unsub = window.cells.updater.onStatus((s, info) => {
       setStatus(s)
       if (info) setUpdateInfo(info)
@@ -223,7 +229,9 @@ function UpdateSection() {
       <div className="px-2.5 py-2 rounded-md bg-muted/30 space-y-2">
         <div className="flex items-center justify-between">
           <span className="text-xs text-foreground">Cells v{version}</span>
-          {status === 'idle' || status === 'up-to-date' || status === 'error' ? (
+          {support && !support.enabled ? (
+            <span className="text-[10px] text-muted-foreground">Manual updates only</span>
+          ) : status === 'idle' || status === 'up-to-date' || status === 'error' ? (
             <button
               onClick={handleCheck}
               className="flex items-center gap-1.5 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
@@ -261,6 +269,9 @@ function UpdateSection() {
         </div>
         {status === 'up-to-date' && (
           <p className="text-[10px] text-muted-foreground/50">You're on the latest version.</p>
+        )}
+        {support && !support.enabled && (
+          <p className="text-[10px] text-muted-foreground/60">{support.message}</p>
         )}
         {status === 'error' && (
           <p className="text-[10px] text-red-400/70">Failed to check: {updateInfo?.message}</p>

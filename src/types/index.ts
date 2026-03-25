@@ -91,6 +91,11 @@ export interface CellsAPI {
     checkAvailable(): Promise<Record<string, boolean>>
   }
   updater: {
+    getSupport(): Promise<{
+      enabled: boolean
+      reason?: string
+      message?: string
+    }>
     check(): Promise<void>
     download(): Promise<void>
     install(): Promise<void>

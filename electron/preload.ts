@@ -136,6 +136,12 @@ const api: CellsAPI = {
     download: () => ipcRenderer.invoke('updater:download'),
     install: () => ipcRenderer.invoke('updater:install'),
     getVersion: () => ipcRenderer.invoke('updater:get-version') as Promise<string>,
+    getSupport: () =>
+      ipcRenderer.invoke('updater:get-support') as Promise<{
+        enabled: boolean
+        reason?: string
+        message?: string
+      }>,
     onStatus: (callback: (status: string, info?: any) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, status: string, info?: any) =>
         callback(status, info)

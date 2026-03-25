@@ -2,7 +2,7 @@ import { app, BrowserWindow, WebContentsView, ipcMain, dialog, Menu, nativeImage
 import path from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'fs'
-import { execFileSync } from 'child_process'
+import { execFileSync, spawnSync } from 'child_process'
 import { autoUpdater } from 'electron-updater'
 import { PtyManager } from './pty'
 
@@ -621,8 +621,59 @@ function cleanupBrowserViews() {
 autoUpdater.autoDownload = true
 autoUpdater.autoInstallOnAppQuit = true
 
+type UpdaterSupport = {
+  enabled: boolean
+  reason?: string
+  message?: string
+}
+
+let cachedUpdaterSupport: UpdaterSupport | null = null
+
+function resolveUpdaterSupport(): UpdaterSupport {
+  if (!app.isPackaged) {
+    return {
+      enabled: false,
+      reason: 'development-build',
+      message: 'Auto-update is only available in packaged releases.',
+    }
+  }
+
+  if (!fs.existsSync(path.join(process.resourcesPath, 'app-update.yml'))) {
+    return {
+      enabled: false,
+      reason: 'missing-feed-config',
+      message: 'Auto-update metadata is missing from this build.',
+    }
+  }
+
+  if (process.platform === 'darwin') {
+    const result = spawnSync('codesign', ['-dv', process.execPath], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`
+    if (/Signature=adhoc/i.test(output) || /TeamIdentifier=not set/i.test(output)) {
+      return {
+        enabled: false,
+        reason: 'unsigned-macos-build',
+        message:
+          'Auto-update requires a signed and notarized macOS build. Download new releases manually for now.',
+      }
+    }
+  }
+
+  return { enabled: true }
+}
+
+function getUpdaterSupport() {
+  if (!cachedUpdaterSupport) {
+    cachedUpdaterSupport = resolveUpdaterSupport()
+  }
+  return cachedUpdaterSupport
+}
+
 function shouldEnableAutoUpdates() {
-  return app.isPackaged && fs.existsSync(path.join(process.resourcesPath, 'app-update.yml'))
+  return getUpdaterSupport().enabled
 }
 
 function sendUpdateStatus(status: string, info?: any) {
@@ -679,19 +730,29 @@ function scheduleAutomaticUpdateChecks() {
 }
 
 ipcMain.handle('updater:check', () => {
+  if (!shouldEnableAutoUpdates()) {
+    sendUpdateStatus('unsupported', getUpdaterSupport())
+    return
+  }
   checkForAppUpdates()
 })
 
 ipcMain.handle('updater:download', () => {
+  if (!shouldEnableAutoUpdates()) return
   autoUpdater.downloadUpdate().catch(() => {})
 })
 
 ipcMain.handle('updater:install', () => {
+  if (!shouldEnableAutoUpdates()) return
   autoUpdater.quitAndInstall()
 })
 
 ipcMain.handle('updater:get-version', () => {
   return app.getVersion()
+})
+
+ipcMain.handle('updater:get-support', () => {
+  return getUpdaterSupport()
 })
 
 // ---------- App lifecycle ----------
