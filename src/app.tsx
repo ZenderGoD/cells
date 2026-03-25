@@ -55,6 +55,11 @@ export function App() {
     return () => clearInterval(interval)
   }, [initialized, persist])
 
+  useEffect(() => {
+    if (!initialized) return
+    void window.cells.app.setWindowAppearance(windowOpacity, windowBlurRadius)
+  }, [initialized, windowOpacity, windowBlurRadius])
+
   if (!initialized) {
     return (
       <div className="app-shell h-full flex items-center justify-center" style={shellStyle}>

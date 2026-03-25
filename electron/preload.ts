@@ -127,6 +127,8 @@ const api: CellsAPI = {
     },
     toggleMaximize: () => ipcRenderer.invoke('app:toggle-maximize'),
     pickFolder: () => ipcRenderer.invoke('app:pick-folder'),
+    setWindowAppearance: (opacity: number, blurRadius: number) =>
+      ipcRenderer.invoke('app:set-window-appearance', opacity, blurRadius),
   },
   agent: {
     checkAvailable: () => ipcRenderer.invoke('agent:check-available'),

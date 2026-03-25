@@ -40,21 +40,16 @@ export function buildWindowAppearanceStyle(
     string
   > {
   const normalized = normalizeWindowAppearance(value)
-  const windowSurfaceOpacity = normalized.windowOpacity / 100
-  const effectiveBlurRadius = Math.round(normalized.windowBlurRadius * windowSurfaceOpacity)
+  const isVisible = normalized.windowOpacity > 0
 
   return {
-    '--window-surface-opacity': String(windowSurfaceOpacity),
-    '--window-backdrop-blur': `${effectiveBlurRadius}px`,
-    '--canvas-surface-opacity': roundAlpha(windowSurfaceOpacity * 0.4),
-    '--canvas-grid-opacity': roundAlpha(windowSurfaceOpacity * 0.3),
+    '--window-surface-opacity': isVisible ? '0.82' : '0',
+    '--window-backdrop-blur': `${isVisible ? normalized.windowBlurRadius : 0}px`,
+    '--canvas-surface-opacity': isVisible ? '0.33' : '0',
+    '--canvas-grid-opacity': isVisible ? '0.25' : '0',
   }
 }
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, Math.round(value)))
-}
-
-function roundAlpha(value: number) {
-  return String(Math.round(value * 100) / 100)
 }
