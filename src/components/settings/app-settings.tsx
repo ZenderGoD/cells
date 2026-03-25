@@ -3,6 +3,14 @@ import { Dialog as DialogPrimitive } from '@base-ui/react/dialog'
 import { Check, Download, ExternalLink, Github, Loader2, RefreshCw, X } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import {
+  Combobox,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxInput,
+  ComboboxItem,
+  ComboboxList,
+} from '@/components/ui/combobox'
 import { useStore } from '@/lib/store'
 import { terminalThemes } from '@/lib/terminal-themes'
 import { cn } from '@/lib/utils'
@@ -17,14 +25,15 @@ interface AppSettingsProps {
 }
 
 type SettingsSectionId = 'appearance' | 'canvas' | 'terminal' | 'browser' | 'help' | 'about'
+type SettingsSelectOption = { value: string; label: string; hint?: string }
 
 const FONT_SIZES = [11, 12, 13, 14, 15, 16]
 const FONT_FAMILIES = [
-  { label: 'Geist Mono', value: '"Geist Mono", monospace' },
-  { label: 'JetBrains Mono', value: '"JetBrains Mono", monospace' },
-  { label: 'SF Mono', value: '"SFMono-Regular", monospace' },
-  { label: 'Menlo', value: '"Menlo", monospace' },
-  { label: 'Fira Code', value: '"Fira Code", monospace' },
+  { label: 'GeistMono Nerd Font', value: '"GeistMono NF", monospace' },
+  { label: 'JetBrainsMono Nerd Font', value: '"JetBrainsMono NF", monospace' },
+  { label: 'FiraCode Nerd Font', value: '"FiraCode NF", monospace' },
+  { label: 'Meslo Nerd Font', value: '"Meslo NF", monospace' },
+  { label: 'Hack Nerd Font', value: '"Hack NF", monospace' },
 ]
 
 const SETTINGS_SECTIONS: Array<{ id: SettingsSectionId; label: string }> = [
@@ -36,15 +45,43 @@ const SETTINGS_SECTIONS: Array<{ id: SettingsSectionId; label: string }> = [
   { id: 'about', label: 'About' },
 ]
 
+const CURRENT_PROJECT_VALUE = '__current-project__'
+
+const TERMINAL_LINK_TARGET_OPTIONS: SettingsSelectOption[] = [
+  { value: 'system', label: 'System Browser', hint: 'Default' },
+  { value: 'browser', label: 'Built-in Browser', hint: 'Opens a new tab' },
+]
+
+const LINK_RULE_TARGET_OPTIONS: SettingsSelectOption[] = [
+  { value: 'system', label: 'System', hint: 'Default browser' },
+  { value: 'browser', label: 'Built-in', hint: 'Open in Cells' },
+]
+
+const SWITCH_MODE_OPTIONS = [
+  {
+    value: 'chronological' as const,
+    label: 'Static',
+    hint: 'Creation order',
+  },
+  {
+    value: 'recent' as const,
+    label: 'Recent',
+    hint: 'Last focused',
+  },
+]
+
 export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const [activeSection, setActiveSection] = useState<SettingsSectionId>('appearance')
 
+  const activeProjectId = useStore((s) => s.activeProjectId)
   const terminalTheme = useStore((s) => s.terminalTheme)
   const fontSize = useStore((s) => s.fontSize)
   const fontFamily = useStore((s) => s.fontFamily)
   const windowOpacity = useStore((s) => s.windowOpacity)
   const snapOnFocus = useStore((s) => s.snapOnFocus)
   const tabSwitchMode = useStore((s) => s.tabSwitchMode)
+  const projectSwitchMode = useStore((s) => s.projectSwitchMode)
+  const reducedMotion = useStore((s) => s.reducedMotion)
   const searchEngine = useStore((s) => s.searchEngine)
   const homePage = useStore((s) => s.homePage)
   const setTerminalTheme = useStore((s) => s.setTerminalTheme)
@@ -53,13 +90,36 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const setWindowOpacity = useStore((s) => s.setWindowOpacity)
   const setSnapOnFocus = useStore((s) => s.setSnapOnFocus)
   const setTabSwitchMode = useStore((s) => s.setTabSwitchMode)
+  const setProjectSwitchMode = useStore((s) => s.setProjectSwitchMode)
+  const setReducedMotion = useStore((s) => s.setReducedMotion)
   const setSearchEngine = useStore((s) => s.setSearchEngine)
   const setHomePage = useStore((s) => s.setHomePage)
   const terminalLinkTarget = useStore((s) => s.terminalLinkTarget)
+  const terminalLinkProjectId = useStore((s) => s.terminalLinkProjectId)
   const setTerminalLinkTarget = useStore((s) => s.setTerminalLinkTarget)
+  const setTerminalLinkProjectId = useStore((s) => s.setTerminalLinkProjectId)
   const linkRules = useStore((s) => s.linkRules)
   const setLinkRules = useStore((s) => s.setLinkRules)
   const projects = useStore((s) => s.projects)
+  const activeProject = useMemo(
+    () => projects.find((project) => project.id === activeProjectId) ?? null,
+    [activeProjectId, projects],
+  )
+  const projectOptions = useMemo<SettingsSelectOption[]>(
+    () => [
+      {
+        value: CURRENT_PROJECT_VALUE,
+        label: 'Current Project',
+        hint: activeProject?.name ?? 'Uses the active project',
+      },
+      ...projects.map((project) => ({
+        value: project.id,
+        label: project.name,
+        hint: project.path || undefined,
+      })),
+    ],
+    [activeProject?.name, projects],
+  )
 
   const activeSectionLabel = useMemo(
     () =>
@@ -118,7 +178,10 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
               </div>
             </header>
 
-            <ScrollArea className={SETTINGS_SHEET_CLASSNAMES.contentScroll} viewportClassName="px-5 py-4">
+            <ScrollArea
+              className={SETTINGS_SHEET_CLASSNAMES.contentScroll}
+              viewportClassName="px-5 py-4"
+            >
               {activeSection === 'appearance' ? (
                 <div className="space-y-5">
                   <SettingsGroup title="Theme">
@@ -239,38 +302,80 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                     </button>
                   </SettingsGroup>
 
-                  <SettingsGroup title="Ctrl+Tab Order">
-                    <div className="space-y-0.5">
-                      {[
-                        {
-                          value: 'chronological' as const,
-                          label: 'Static',
-                          hint: 'Creation order',
-                        },
-                        {
-                          value: 'recent' as const,
-                          label: 'Recent',
-                          hint: 'Last focused',
-                        },
-                      ].map((mode) => (
-                        <button
-                          key={mode.value}
-                          onClick={() => setTabSwitchMode(mode.value)}
-                          className={cn(
-                            'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
-                            tabSwitchMode === mode.value
-                              ? 'bg-accent text-foreground'
-                              : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
-                          )}
-                        >
-                          <span className="flex-1">{mode.label}</span>
-                          <span className="text-[10px] text-muted-foreground/40">{mode.hint}</span>
-                          {tabSwitchMode === mode.value && (
-                            <Check className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
-                          )}
-                        </button>
-                      ))}
+                  <SettingsGroup title="Switcher Order">
+                    <div className="space-y-2.5">
+                      <SettingsField label="Ctrl+Tab windows">
+                        <div className="space-y-0.5">
+                          {SWITCH_MODE_OPTIONS.map((mode) => (
+                            <button
+                              key={mode.value}
+                              onClick={() => setTabSwitchMode(mode.value)}
+                              className={cn(
+                                'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
+                                tabSwitchMode === mode.value
+                                  ? 'bg-accent text-foreground'
+                                  : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
+                              )}
+                            >
+                              <span className="flex-1">{mode.label}</span>
+                              <span className="text-[10px] text-muted-foreground/40">
+                                {mode.hint}
+                              </span>
+                              {tabSwitchMode === mode.value && (
+                                <Check className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
+                              )}
+                            </button>
+                          ))}
+                        </div>
+                      </SettingsField>
+
+                      <SettingsField label="Ctrl+` projects">
+                        <div className="space-y-0.5">
+                          {SWITCH_MODE_OPTIONS.map((mode) => (
+                            <button
+                              key={mode.value}
+                              onClick={() => setProjectSwitchMode(mode.value)}
+                              className={cn(
+                                'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
+                                projectSwitchMode === mode.value
+                                  ? 'bg-accent text-foreground'
+                                  : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
+                              )}
+                            >
+                              <span className="flex-1">{mode.label}</span>
+                              <span className="text-[10px] text-muted-foreground/40">
+                                {mode.hint}
+                              </span>
+                              {projectSwitchMode === mode.value && (
+                                <Check className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
+                              )}
+                            </button>
+                          ))}
+                        </div>
+                      </SettingsField>
                     </div>
+                  </SettingsGroup>
+
+                  <SettingsGroup title="Animations">
+                    <button
+                      onClick={() => setReducedMotion(!reducedMotion)}
+                      className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-[11px] transition-colors hover:bg-muted/40"
+                    >
+                      <span className="text-foreground">Disable switcher animations</span>
+                      <div
+                        className={cn(
+                          'relative h-3.5 w-6 rounded-full transition-colors',
+                          reducedMotion ? 'bg-primary' : 'bg-muted-foreground/25',
+                        )}
+                      >
+                        <div
+                          className={cn(
+                            'absolute top-0.5 h-2.5 w-2.5 rounded-full bg-white transition-transform',
+                            reducedMotion ? 'translate-x-3' : 'translate-x-0.5',
+                          )}
+                        />
+                      </div>
+                    </button>
                   </SettingsGroup>
                 </div>
               ) : null}
@@ -278,34 +383,46 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
               {activeSection === 'terminal' ? (
                 <div className="space-y-5">
                   <SettingsGroup title="Link Click Behavior">
-                    <div className="space-y-0.5">
-                      {[
-                        { value: 'system' as const, label: 'System Browser', hint: 'Default' },
-                        { value: 'browser' as const, label: 'Built-in Browser', hint: 'Opens a new tab' },
-                      ].map((opt) => (
-                        <button
-                          key={opt.value}
-                          onClick={() => setTerminalLinkTarget(opt.value)}
-                          className={cn(
-                            'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
-                            terminalLinkTarget === opt.value
-                              ? 'bg-accent text-foreground'
-                              : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
-                          )}
-                        >
-                          <span className="flex-1">{opt.label}</span>
-                          <span className="text-[10px] text-muted-foreground/40">{opt.hint}</span>
-                          {terminalLinkTarget === opt.value && (
-                            <Check className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
-                          )}
-                        </button>
-                      ))}
+                    <div className="space-y-2.5">
+                      <SettingsField label="Default target">
+                        <SettingsCombobox
+                          value={terminalLinkTarget}
+                          options={TERMINAL_LINK_TARGET_OPTIONS}
+                          onValueChange={(value) =>
+                            setTerminalLinkTarget((value as 'system' | 'browser') ?? 'system')
+                          }
+                          placeholder="Choose where links open"
+                        />
+                      </SettingsField>
+
+                      <SettingsField
+                        label="Built-in browser project"
+                        hint={
+                          terminalLinkProjectId
+                            ? 'Switches to that project before opening the tab'
+                            : 'Uses whichever project is active when the link opens'
+                        }
+                      >
+                        <SettingsCombobox
+                          value={terminalLinkProjectId ?? CURRENT_PROJECT_VALUE}
+                          options={projectOptions}
+                          onValueChange={(value) =>
+                            setTerminalLinkProjectId(
+                              !value || value === CURRENT_PROJECT_VALUE ? null : value,
+                            )
+                          }
+                          placeholder="Choose a project"
+                          emptyText="No matching projects"
+                          disabled={projects.length === 0}
+                        />
+                      </SettingsField>
                     </div>
                   </SettingsGroup>
 
                   <SettingsGroup title="Link Rules">
                     <p className="text-[10px] text-muted-foreground/40 mb-3">
-                      Route specific URLs to different targets. Uses regex patterns. Rules are matched top to bottom.
+                      Route specific URLs to different targets. Uses regex patterns. Rules are
+                      matched top to bottom.
                     </p>
                     <div className="space-y-2">
                       {linkRules.map((rule, i) => (
@@ -321,35 +438,39 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                             placeholder="e.g. github\.com"
                             className="flex-1 min-w-0 rounded-md border border-border/20 bg-background/40 px-2 py-1 text-[11px] text-foreground outline-none placeholder:text-muted-foreground/30 focus:border-border/40 font-mono"
                           />
-                          <select
+                          <SettingsCombobox
                             value={rule.target}
-                            onChange={(e) => {
+                            options={LINK_RULE_TARGET_OPTIONS}
+                            onValueChange={(value) => {
+                              const nextTarget = (value as 'system' | 'browser') ?? 'system'
                               const next = [...linkRules]
-                              next[i] = { ...rule, target: e.target.value as 'system' | 'browser', projectId: e.target.value === 'system' ? undefined : rule.projectId }
+                              next[i] = {
+                                ...rule,
+                                target: nextTarget,
+                                projectId: nextTarget === 'system' ? undefined : rule.projectId,
+                              }
                               setLinkRules(next)
                             }}
-                            className="rounded-md border border-border/20 bg-background/40 px-1.5 py-1 text-[10px] text-foreground outline-none"
-                          >
-                            <option value="system">System</option>
-                            <option value="browser">Built-in</option>
-                          </select>
+                            placeholder="Target"
+                            className="w-[112px] shrink-0"
+                          />
                           {rule.target === 'browser' && (
-                            <select
-                              value={rule.projectId || ''}
-                              onChange={(e) => {
+                            <SettingsCombobox
+                              value={rule.projectId ?? CURRENT_PROJECT_VALUE}
+                              options={projectOptions}
+                              onValueChange={(value) => {
                                 const next = [...linkRules]
-                                next[i] = { ...rule, projectId: e.target.value || undefined }
+                                next[i] = {
+                                  ...rule,
+                                  projectId:
+                                    !value || value === CURRENT_PROJECT_VALUE ? undefined : value,
+                                }
                                 setLinkRules(next)
                               }}
-                              className="rounded-md border border-border/20 bg-background/40 px-1.5 py-1 text-[10px] text-foreground outline-none max-w-[100px]"
-                            >
-                              <option value="">Current project</option>
-                              {projects.map((p) => (
-                                <option key={p.id} value={p.id}>
-                                  {p.name}
-                                </option>
-                              ))}
-                            </select>
+                              placeholder="Project"
+                              emptyText="No matching projects"
+                              className="w-[148px] shrink-0"
+                            />
                           )}
                           <button
                             onClick={() => setLinkRules(linkRules.filter((_, j) => j !== i))}
@@ -361,7 +482,17 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                       ))}
                       <button
                         onClick={() =>
-                          setLinkRules([...linkRules, { pattern: '', target: terminalLinkTarget }])
+                          setLinkRules([
+                            ...linkRules,
+                            {
+                              pattern: '',
+                              target: terminalLinkTarget,
+                              projectId:
+                                terminalLinkTarget === 'browser'
+                                  ? (terminalLinkProjectId ?? undefined)
+                                  : undefined,
+                            },
+                          ])
                         }
                         className="text-[10px] text-muted-foreground/50 hover:text-foreground transition-colors"
                       >
@@ -432,6 +563,12 @@ interface SettingsGroupProps {
   children: React.ReactNode
 }
 
+interface SettingsFieldProps {
+  label: string
+  hint?: string
+  children: React.ReactNode
+}
+
 function SettingsGroup({ title, children }: SettingsGroupProps) {
   return (
     <section>
@@ -440,6 +577,79 @@ function SettingsGroup({ title, children }: SettingsGroupProps) {
       </h3>
       {children}
     </section>
+  )
+}
+
+function SettingsField({ label, hint, children }: SettingsFieldProps) {
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between gap-3 px-0.5">
+        <span className="text-[10px] text-muted-foreground/50">{label}</span>
+        {hint ? <span className="text-[10px] text-muted-foreground/35">{hint}</span> : null}
+      </div>
+      {children}
+    </div>
+  )
+}
+
+interface SettingsComboboxProps {
+  value: string | null
+  options: SettingsSelectOption[]
+  onValueChange: (value: string | null) => void
+  placeholder: string
+  emptyText?: string
+  disabled?: boolean
+  className?: string
+}
+
+function SettingsCombobox({
+  value,
+  options,
+  onValueChange,
+  placeholder,
+  emptyText = 'No matches',
+  disabled = false,
+  className,
+}: SettingsComboboxProps) {
+  const selectedOption = options.find((option) => option.value === value) ?? null
+
+  return (
+    <Combobox<SettingsSelectOption>
+      value={selectedOption}
+      onValueChange={(next) => onValueChange(next?.value ?? null)}
+      itemToStringLabel={(item) => item.label}
+      itemToStringValue={(item) => item.value}
+      isItemEqualToValue={(item, selected) => item.value === selected.value}
+    >
+      <ComboboxInput
+        disabled={disabled}
+        placeholder={placeholder}
+        className={cn(
+          'w-full border-border/20 bg-background/40 dark:bg-background/40',
+          '[&_[data-slot=input-group-control]]:h-7 [&_[data-slot=input-group-control]]:px-2.5 [&_[data-slot=input-group-control]]:text-[11px] [&_[data-slot=input-group-control]]:text-foreground [&_[data-slot=input-group-control]]:placeholder:text-muted-foreground/30 [&_[data-slot=input-group-addon]]:text-muted-foreground/35',
+          className,
+        )}
+      />
+      <ComboboxContent>
+        <ComboboxEmpty className="py-2 text-[11px]">{emptyText}</ComboboxEmpty>
+        <ComboboxList>
+          {options.map((option) => (
+            <ComboboxItem
+              key={option.value}
+              value={option}
+              className="items-start gap-2 px-2 py-1.5 text-[11px]"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-foreground">{option.label}</div>
+                {option.hint ? (
+                  <div className="truncate text-[10px] text-muted-foreground/40">{option.hint}</div>
+                ) : null}
+              </div>
+            </ComboboxItem>
+          ))}
+        </ComboboxList>
+      </ComboboxContent>
+    </Combobox>
   )
 }
 
@@ -470,6 +680,17 @@ const SHORTCUT_GROUPS = [
       { keys: '⌃ Tab', action: 'Cycle forward through windows' },
       { keys: '⌃ ⇧ Tab', action: 'Cycle backward' },
       { keys: 'Release ⌃', action: 'Confirm switch' },
+    ],
+  },
+  {
+    title: 'Project Switching',
+    shortcuts: [
+      { keys: '⌃ `', action: 'Cycle forward through projects' },
+      { keys: '⌃ ~', action: 'Cycle backward' },
+      { keys: 'Release ⌃', action: 'Confirm project switch' },
+      { keys: '⌃ A', action: 'Open project switcher panel' },
+      { keys: '1 – 9', action: 'Switch to project by number' },
+      { keys: 'Esc', action: 'Close project switcher panel' },
     ],
   },
   {

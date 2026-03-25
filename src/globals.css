@@ -12,6 +12,72 @@
   src: local("Geist Mono");
 }
 
+/* Nerd Font Mono variants — bundled for terminal use */
+@font-face {
+  font-family: "GeistMono NF";
+  font-weight: 400;
+  font-style: normal;
+  src: url("./fonts/GeistMonoNerdFontMono-Regular.otf") format("opentype");
+}
+@font-face {
+  font-family: "GeistMono NF";
+  font-weight: 700;
+  font-style: normal;
+  src: url("./fonts/GeistMonoNerdFontMono-Bold.otf") format("opentype");
+}
+
+@font-face {
+  font-family: "JetBrainsMono NF";
+  font-weight: 400;
+  font-style: normal;
+  src: url("./fonts/JetBrainsMonoNerdFontMono-Regular.ttf") format("truetype");
+}
+@font-face {
+  font-family: "JetBrainsMono NF";
+  font-weight: 700;
+  font-style: normal;
+  src: url("./fonts/JetBrainsMonoNerdFontMono-Bold.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "FiraCode NF";
+  font-weight: 400;
+  font-style: normal;
+  src: url("./fonts/FiraCodeNerdFontMono-Regular.ttf") format("truetype");
+}
+@font-face {
+  font-family: "FiraCode NF";
+  font-weight: 700;
+  font-style: normal;
+  src: url("./fonts/FiraCodeNerdFontMono-Bold.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "Meslo NF";
+  font-weight: 400;
+  font-style: normal;
+  src: url("./fonts/MesloLGSNerdFontMono-Regular.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Meslo NF";
+  font-weight: 700;
+  font-style: normal;
+  src: url("./fonts/MesloLGSNerdFontMono-Bold.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "Hack NF";
+  font-weight: 400;
+  font-style: normal;
+  src: url("./fonts/HackNerdFontMono-Regular.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Hack NF";
+  font-weight: 700;
+  font-style: normal;
+  src: url("./fonts/HackNerdFontMono-Bold.ttf") format("truetype");
+}
+
 @custom-variant dark (&:is(.dark *));
 
 /* shadcn variable mappings */
@@ -75,8 +141,8 @@
     Arial, sans-serif;
   --font-title: "Urbanist", "Avenir Next", "Inter", "Segoe UI",
     "Helvetica Neue", Arial, sans-serif;
-  --font-geist-mono: "Geist Mono", "SFMono-Regular", "JetBrains Mono", "Menlo",
-    "Monaco", "Consolas", monospace;
+  --font-geist-mono: "GeistMono NF", "Geist Mono", "JetBrainsMono NF", "Meslo NF",
+    monospace;
   --radius: 0.45rem;
   --window-surface-opacity: 0.82;
   --canvas-surface-opacity: 0.33;

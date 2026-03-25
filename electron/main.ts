@@ -1,4 +1,13 @@
-import { app, BrowserWindow, WebContentsView, ipcMain, dialog, Menu, nativeImage, shell } from 'electron'
+import {
+  app,
+  BrowserWindow,
+  WebContentsView,
+  ipcMain,
+  dialog,
+  Menu,
+  nativeImage,
+  shell,
+} from 'electron'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'fs'

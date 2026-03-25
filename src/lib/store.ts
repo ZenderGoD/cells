@@ -39,10 +39,13 @@ interface StoreState {
   snapFast: boolean // hint for canvas to use fast spring
   snapOnFocus: boolean
   tabSwitchMode: 'recent' | 'chronological'
+  projectSwitchMode: 'recent' | 'chronological'
+  reducedMotion: boolean
   overlayOpen: boolean // true when popover/dialog is open — hides browser native views
   searchEngine: string
   homePage: string
   terminalLinkTarget: 'system' | 'browser'
+  terminalLinkProjectId: string | null
   linkRules: Array<{ pattern: string; target: 'system' | 'browser'; projectId?: string }>
 
   init(): Promise<void>
@@ -53,6 +56,7 @@ interface StoreState {
   switchProject(id: string): void
   removeProject(id: string): void
   renameProject(id: string, name: string): void
+  reorderProjects(ids: string[]): void
   getActiveProject(): Project | undefined
   getActiveProjectPath(): string | undefined
 
@@ -81,6 +85,8 @@ interface StoreState {
   setSnapPaused(paused: boolean): void
   setSnapOnFocus(enabled: boolean): void
   setTabSwitchMode(mode: 'recent' | 'chronological'): void
+  setProjectSwitchMode(mode: 'recent' | 'chronological'): void
+  setReducedMotion(enabled: boolean): void
 
   setCanvasTransform(transform: CanvasTransform): void
   zoomToFitAll(): void
@@ -88,12 +94,15 @@ interface StoreState {
   setSearchEngine(engine: string): void
   setHomePage(url: string): void
   setTerminalLinkTarget(target: 'system' | 'browser'): void
-  setLinkRules(rules: Array<{ pattern: string; target: 'system' | 'browser'; projectId?: string }>): void
+  setTerminalLinkProjectId(projectId: string | null): void
+  setLinkRules(
+    rules: Array<{ pattern: string; target: 'system' | 'browser'; projectId?: string }>,
+  ): void
   getSearchUrl(query: string): string
 
   // Browser actions
   addBrowser(): BrowserNode
-  addBrowserWithUrl(url: string): BrowserNode
+  addBrowserWithUrl(url: string, projectId?: string | null): BrowserNode
   removeBrowser(id: string): void
   snapToBrowser(id: string): void
   moveBrowser(id: string, x: number, y: number): void
@@ -110,9 +119,30 @@ const TERMINAL_PAD = 8
 const pendingCommands = new Map<string, string>()
 const TERMINAL_GAP = 60
 const DEFAULT_CANVAS: CanvasTransform = { x: 0, y: 0, scale: 1 }
-const DEFAULT_FONT_FAMILY = '"Geist Mono", "SFMono-Regular", "JetBrains Mono", "Menlo", monospace'
+const DEFAULT_FONT_FAMILY = '"GeistMono NF", "Geist Mono", monospace'
 const DEFAULT_SEARCH_ENGINE = 'https://www.google.com/search?q=%s'
 const DEFAULT_HOME_PAGE = ''
+
+function sanitizeProjectLinkSettings(
+  projects: Project[],
+  terminalLinkProjectId?: string | null,
+  linkRules: Array<{ pattern: string; target: 'system' | 'browser'; projectId?: string }> = [],
+) {
+  const validProjectIds = new Set(projects.map((project) => project.id))
+  return {
+    terminalLinkProjectId:
+      terminalLinkProjectId && validProjectIds.has(terminalLinkProjectId)
+        ? terminalLinkProjectId
+        : null,
+    linkRules: linkRules.map((rule) => ({
+      ...rule,
+      projectId:
+        rule.target === 'browser' && rule.projectId && validProjectIds.has(rule.projectId)
+          ? rule.projectId
+          : undefined,
+    })),
+  }
+}
 
 function normalizeTerminals(terminals: TerminalNode[]) {
   return terminals.map((terminal, index) => ({
@@ -217,10 +247,13 @@ export const useStore = create<StoreState>((set, get) => ({
   snapFast: false,
   snapOnFocus: true,
   tabSwitchMode: 'chronological',
+  projectSwitchMode: 'recent',
+  reducedMotion: false,
   overlayOpen: false,
   searchEngine: DEFAULT_SEARCH_ENGINE,
   homePage: DEFAULT_HOME_PAGE,
   terminalLinkTarget: 'system',
+  terminalLinkProjectId: null,
   linkRules: [],
   terminalTheme: DEFAULT_THEME,
   fontSize: 13,
@@ -253,6 +286,11 @@ export const useStore = create<StoreState>((set, get) => ({
     if (saved && (saved as any).version === 2) {
       const ps = saved as ProjectsState
       const projects = ps.projects ?? []
+      const projectLinkSettings = sanitizeProjectLinkSettings(
+        projects,
+        ps.terminalLinkProjectId,
+        ps.linkRules ?? [],
+      )
 
       const globalSettings = {
         terminalTheme: ps.terminalTheme || DEFAULT_THEME,
@@ -263,10 +301,13 @@ export const useStore = create<StoreState>((set, get) => ({
         }),
         snapOnFocus: ps.snapOnFocus ?? true,
         tabSwitchMode: ps.tabSwitchMode || 'chronological',
+        projectSwitchMode: ps.projectSwitchMode || 'recent',
+        reducedMotion: ps.reducedMotion ?? false,
         searchEngine: ps.searchEngine || DEFAULT_SEARCH_ENGINE,
         homePage: ps.homePage || DEFAULT_HOME_PAGE,
         terminalLinkTarget: ps.terminalLinkTarget || 'system',
-        linkRules: ps.linkRules || [],
+        terminalLinkProjectId: projectLinkSettings.terminalLinkProjectId,
+        linkRules: projectLinkSettings.linkRules,
       }
 
       if (projects.length === 0) {
@@ -378,9 +419,12 @@ export const useStore = create<StoreState>((set, get) => ({
           windowOpacity: freshState.windowOpacity,
           snapOnFocus: freshState.snapOnFocus,
           tabSwitchMode: freshState.tabSwitchMode,
+          projectSwitchMode: freshState.projectSwitchMode,
+          reducedMotion: freshState.reducedMotion,
           searchEngine: freshState.searchEngine,
           homePage: freshState.homePage,
           terminalLinkTarget: freshState.terminalLinkTarget,
+          terminalLinkProjectId: freshState.terminalLinkProjectId,
           linkRules: freshState.linkRules,
         })
       })
@@ -398,9 +442,12 @@ export const useStore = create<StoreState>((set, get) => ({
           windowOpacity: state.windowOpacity,
           snapOnFocus: state.snapOnFocus,
           tabSwitchMode: state.tabSwitchMode,
+          projectSwitchMode: state.projectSwitchMode,
+          reducedMotion: state.reducedMotion,
           searchEngine: state.searchEngine,
           homePage: state.homePage,
           terminalLinkTarget: state.terminalLinkTarget,
+          terminalLinkProjectId: state.terminalLinkProjectId,
           linkRules: state.linkRules,
         })
       })
@@ -469,6 +516,11 @@ export const useStore = create<StoreState>((set, get) => ({
   removeProject(id) {
     const state = get()
     const remaining = state.projects.filter((p) => p.id !== id)
+    const projectLinkSettings = sanitizeProjectLinkSettings(
+      remaining,
+      state.terminalLinkProjectId === id ? null : state.terminalLinkProjectId,
+      state.linkRules,
+    )
 
     // Kill PTYs and browser views for the removed project
     const removedProject =
@@ -492,6 +544,8 @@ export const useStore = create<StoreState>((set, get) => ({
         set({
           projects: remaining,
           activeProjectId: next.id,
+          terminalLinkProjectId: projectLinkSettings.terminalLinkProjectId,
+          linkRules: projectLinkSettings.linkRules,
           ...projectToWorkingState(next),
         })
       } else {
@@ -504,10 +558,16 @@ export const useStore = create<StoreState>((set, get) => ({
           focusedTerminalId: null,
           focusedBrowserId: null,
           topZIndex: 1,
+          terminalLinkProjectId: projectLinkSettings.terminalLinkProjectId,
+          linkRules: projectLinkSettings.linkRules,
         })
       }
     } else {
-      set({ projects: remaining })
+      set({
+        projects: remaining,
+        terminalLinkProjectId: projectLinkSettings.terminalLinkProjectId,
+        linkRules: projectLinkSettings.linkRules,
+      })
     }
     get().persist()
   },
@@ -516,6 +576,18 @@ export const useStore = create<StoreState>((set, get) => ({
     set((s) => ({
       projects: s.projects.map((p) => (p.id === id ? { ...p, name } : p)),
     }))
+    get().persist()
+  },
+
+  reorderProjects(ids) {
+    const { projects } = get()
+    const map = new Map(projects.map((p) => [p.id, p]))
+    const reordered = ids.map((id) => map.get(id)).filter(Boolean) as Project[]
+    // Append any projects not in the provided ids (safety)
+    for (const p of projects) {
+      if (!ids.includes(p.id)) reordered.push(p)
+    }
+    set({ projects: reordered })
     get().persist()
   },
 
@@ -793,6 +865,16 @@ export const useStore = create<StoreState>((set, get) => ({
     get().persist()
   },
 
+  setProjectSwitchMode(mode) {
+    set({ projectSwitchMode: mode })
+    get().persist()
+  },
+
+  setReducedMotion(enabled) {
+    set({ reducedMotion: enabled })
+    get().persist()
+  },
+
   zoomToFitAll() {
     const { terminals, browsers } = get()
     const allNodes = [
@@ -848,6 +930,10 @@ export const useStore = create<StoreState>((set, get) => ({
   },
   setTerminalLinkTarget(target) {
     set({ terminalLinkTarget: target })
+    get().persist()
+  },
+  setTerminalLinkProjectId(projectId) {
+    set({ terminalLinkProjectId: projectId })
     get().persist()
   },
   setLinkRules(rules) {
@@ -923,12 +1009,21 @@ export const useStore = create<StoreState>((set, get) => ({
     return browser
   },
 
-  addBrowserWithUrl(url) {
+  addBrowserWithUrl(url, projectId) {
+    const state = get()
+    if (
+      projectId &&
+      projectId !== state.activeProjectId &&
+      state.projects.some((p) => p.id === projectId)
+    ) {
+      get().switchProject(projectId)
+    }
     const browser = get().addBrowser()
     // URL will be set after the component mounts and creates the view
     set((s) => ({
       browsers: s.browsers.map((b) => (b.id === browser.id ? { ...b, url } : b)),
     }))
+    get().persist()
     return browser
   },
 

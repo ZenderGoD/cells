@@ -6,6 +6,7 @@ import { InfiniteCanvas } from './components/canvas/infinite-canvas'
 import { CommandPalette } from './components/command-palette'
 import { Onboarding } from './components/onboarding'
 import { TerminalSwitcher } from './components/terminal-switcher'
+import { ProjectSwitcher } from './components/project-switcher'
 import { buildWindowAppearanceStyle } from './lib/window-appearance'
 
 export function App() {
@@ -118,6 +119,7 @@ export function App() {
       <StatusBar />
       <CommandPalette />
       <TerminalSwitcher />
+      <ProjectSwitcher />
     </div>
   )
 }
