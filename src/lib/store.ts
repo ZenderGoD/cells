@@ -38,6 +38,8 @@ interface StoreState {
   snapPaused: boolean
   snapFast: boolean // hint for canvas to use fast spring
   snapOnFocus: boolean
+  selectionMode: boolean
+  selectionCount: number
   tabSwitchMode: 'recent' | 'chronological'
   overlayOpen: boolean // true when popover/dialog is open — hides browser native views
   searchEngine: string
@@ -80,6 +82,8 @@ interface StoreState {
   toggleSnap(): void
   setSnapPaused(paused: boolean): void
   setSnapOnFocus(enabled: boolean): void
+  setSelectionMode(enabled: boolean): void
+  setSelectionCount(count: number): void
   setTabSwitchMode(mode: 'recent' | 'chronological'): void
 
   setCanvasTransform(transform: CanvasTransform): void
@@ -216,6 +220,8 @@ export const useStore = create<StoreState>((set, get) => ({
   snapPaused: false,
   snapFast: false,
   snapOnFocus: true,
+  selectionMode: false,
+  selectionCount: 0,
   tabSwitchMode: 'chronological',
   overlayOpen: false,
   searchEngine: DEFAULT_SEARCH_ENGINE,
@@ -786,6 +792,17 @@ export const useStore = create<StoreState>((set, get) => ({
   setSnapOnFocus(enabled) {
     set({ snapOnFocus: enabled })
     get().persist()
+  },
+
+  setSelectionMode(enabled) {
+    set({
+      selectionMode: enabled,
+      selectionCount: enabled ? get().selectionCount : 0,
+    })
+  },
+
+  setSelectionCount(count) {
+    set({ selectionCount: Math.max(0, count) })
   },
 
   setTabSwitchMode(mode) {

@@ -1,9 +1,24 @@
-import { useRef, useState, useCallback, useEffect, type MouseEvent, type WheelEvent } from 'react'
+import {
+  useRef,
+  useState,
+  useCallback,
+  useEffect,
+  useMemo,
+  type MouseEvent,
+  type WheelEvent,
+} from 'react'
 import { motion, useMotionValue, useSpring } from 'motion/react'
-import { useHotkey, useKeyHold } from '@tanstack/react-hotkeys'
+import { useHotkey } from '@tanstack/react-hotkeys'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
 import { STATUS_BAR_HEIGHT, getCanvasWindows, getViewportRect } from '@/lib/canvas-navigation'
+import {
+  applySelectionDelta,
+  createSelectionOrigins,
+  getIntersectingWindowIds,
+  screenPointsToCanvasRect,
+  type CanvasSelectableWindow,
+} from '@/lib/canvas-selection'
 import { TerminalNode } from './terminal-node'
 import { BrowserNode } from './browser-node'
 
@@ -30,6 +45,9 @@ export function InfiniteCanvas() {
     snapEnabled,
     snapFast: snapFastFlag,
     setSnapPaused,
+    selectionMode,
+    setSelectionMode,
+    setSelectionCount,
     focusedTerminalId,
     focusedBrowserId,
     focusTerminal,
@@ -39,7 +57,13 @@ export function InfiniteCanvas() {
   const [isPanning, setIsPanning] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
   const [isUserDriving, setIsUserDriving] = useState(false) // true while user is actively panning/scrolling
-  const cmdHeld = useKeyHold('Meta')
+  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([])
+  const [marqueeBox, setMarqueeBox] = useState<{
+    x: number
+    y: number
+    width: number
+    height: number
+  } | null>(null)
   const panRef = useRef<{
     startX: number
     startY: number
@@ -47,14 +71,19 @@ export function InfiniteCanvas() {
     startTy: number
   } | null>(null)
   const dragRef = useRef<{
-    termId: string
-    isBrowser?: boolean
     startX: number
     startY: number
-    origX: number
-    origY: number
+    origins: ReturnType<typeof createSelectionOrigins>
   } | null>(null)
+  const marqueeRef = useRef<{ startX: number; startY: number } | null>(null)
   const snapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const selectableWindows = useMemo<CanvasSelectableWindow[]>(
+    () => [
+      ...terminals.map((terminal) => ({ ...terminal, kind: 'terminal' as const })),
+      ...browsers.map((browser) => ({ ...browser, kind: 'browser' as const })),
+    ],
+    [terminals, browsers],
+  )
 
   // Animated motion values — these drive the visual transform
   const springConfig = snapFastFlag ? SPRING_FAST : SPRING_NORMAL
@@ -159,13 +188,37 @@ export function InfiniteCanvas() {
     (e: MouseEvent) => {
       const termNode = (e.target as HTMLElement).closest('.terminal-node')
       const browserNode = (e.target as HTMLElement).closest('.browser-node')
-      if ((termNode || browserNode) && !cmdHeld) return
+      const clickedNode = termNode || browserNode
+
+      if (selectionMode) {
+        if (!clickedNode && e.button === 0 && e.metaKey) {
+          e.preventDefault()
+          e.stopPropagation()
+          cancelSnap()
+          setIsUserDriving(false)
+          marqueeRef.current = { startX: e.clientX, startY: e.clientY }
+          setMarqueeBox({ x: e.clientX, y: e.clientY, width: 0, height: 0 })
+          setSelectedNodeIds([])
+          focusTerminal(null)
+          return
+        }
+
+        if (!clickedNode && e.button === 0) {
+          e.preventDefault()
+          e.stopPropagation()
+          setSelectedNodeIds([])
+          focusTerminal(null)
+          return
+        }
+      }
+
+      if (clickedNode) return
 
       if (e.button === 0 || e.button === 1) {
         e.preventDefault()
         cancelSnap()
         setIsUserDriving(true)
-        if (!cmdHeld) focusTerminal(null)
+        focusTerminal(null)
         setIsPanning(true)
         panRef.current = {
           startX: e.clientX,
@@ -175,7 +228,7 @@ export function InfiniteCanvas() {
         }
       }
     },
-    [transform.x, transform.y, cmdHeld, focusTerminal, cancelSnap],
+    [transform.x, transform.y, focusTerminal, cancelSnap, selectionMode],
   )
 
   const handleMouseMove = useCallback(
@@ -193,25 +246,75 @@ export function InfiniteCanvas() {
       if (isDragging && dragRef.current) {
         const dx = (e.clientX - dragRef.current.startX) / transform.scale
         const dy = (e.clientY - dragRef.current.startY) / transform.scale
-        const moveFn = dragRef.current.isBrowser ? moveBrowser : moveTerminal
-        moveFn(dragRef.current.termId, dragRef.current.origX + dx, dragRef.current.origY + dy)
+        const moved = applySelectionDelta(dragRef.current.origins, dx, dy)
+        for (const [id, origin] of Object.entries(moved)) {
+          if (origin.kind === 'browser') {
+            moveBrowser(id, origin.x, origin.y)
+          } else {
+            moveTerminal(id, origin.x, origin.y)
+          }
+        }
+      }
+
+      if (marqueeRef.current) {
+        const rect = containerRef.current?.getBoundingClientRect()
+        if (!rect) return
+
+        const nextRect = screenPointsToCanvasRect(
+          { x: marqueeRef.current.startX, y: marqueeRef.current.startY },
+          { x: e.clientX, y: e.clientY },
+          transform,
+        )
+        setSelectedNodeIds(getIntersectingWindowIds(selectableWindows, nextRect))
+        setMarqueeBox({
+          x: Math.min(marqueeRef.current.startX, e.clientX) - rect.left,
+          y: Math.min(marqueeRef.current.startY, e.clientY) - rect.top,
+          width: Math.abs(e.clientX - marqueeRef.current.startX),
+          height: Math.abs(e.clientY - marqueeRef.current.startY),
+        })
       }
     },
-    [isPanning, isDragging, transform, setCanvasTransform, moveTerminal, moveBrowser],
+    [
+      isPanning,
+      isDragging,
+      transform,
+      setCanvasTransform,
+      moveTerminal,
+      moveBrowser,
+      selectableWindows,
+    ],
   )
 
   const handleMouseUp = useCallback(() => {
     const wasPanning = isPanning
     setIsPanning(false)
     setIsDragging(false)
+    setMarqueeBox(null)
     panRef.current = null
     dragRef.current = null
+    marqueeRef.current = null
     if (wasPanning && (terminals.length > 0 || browsers.length > 0) && snapEnabled) {
       scheduleSnap()
     } else {
       setIsUserDriving(false)
     }
   }, [isPanning, terminals.length, browsers.length, scheduleSnap, snapEnabled])
+
+  useEffect(() => {
+    setSelectionCount(selectedNodeIds.length)
+  }, [selectedNodeIds.length, setSelectionCount])
+
+  useEffect(() => {
+    return useStore.subscribe((state, previousState) => {
+      if (state.selectionMode || state.selectionMode === previousState.selectionMode) return
+      setSelectedNodeIds([])
+      setMarqueeBox(null)
+      setIsDragging(false)
+      dragRef.current = null
+      marqueeRef.current = null
+      setSelectionCount(0)
+    })
+  }, [setSelectionCount])
 
   // Wheel handler: trackpad pan + pinch zoom, with snap-after-idle
   // Reads canvas state directly from the store on each event so rapid trackpad
@@ -259,39 +362,46 @@ export function InfiniteCanvas() {
   )
 
   // Terminal drag handler
-  const handleTerminalDragStart = useCallback(
-    (termId: string, startX: number, startY: number) => {
-      const terminal = terminals.find((t) => t.id === termId)
-      if (!terminal) return
+  const beginSelectionDrag = useCallback(
+    (dragIds: string[], startX: number, startY: number) => {
+      if (dragIds.length === 0) return
       setIsDragging(true)
       dragRef.current = {
-        termId,
         startX,
         startY,
-        origX: terminal.x,
-        origY: terminal.y,
+        origins: createSelectionOrigins(selectableWindows, dragIds),
       }
     },
-    [terminals],
+    [selectableWindows],
   )
 
-  // Browser drag handler
-  const handleBrowserDragStart = useCallback(
-    (browserId: string, startX: number, startY: number) => {
-      const browser = browsers.find((b) => b.id === browserId)
-      if (!browser) return
-      setIsDragging(true)
-      dragRef.current = {
-        termId: browserId,
-        isBrowser: true,
-        startX,
-        startY,
-        origX: browser.x,
-        origY: browser.y,
+  const handleNodeDragStart = useCallback(
+    (nodeId: string, kind: 'terminal' | 'browser', startX: number, startY: number) => {
+      if (!selectionMode) {
+        return
       }
+
+      const dragIds = selectedNodeIds.includes(nodeId) ? selectedNodeIds : [nodeId]
+      setSelectedNodeIds(dragIds)
+      beginSelectionDrag(dragIds, startX, startY)
     },
-    [browsers],
+    [selectionMode, selectedNodeIds, beginSelectionDrag],
   )
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() !== 's' || !event.ctrlKey || event.metaKey || event.altKey) {
+        return
+      }
+
+      event.preventDefault()
+      event.stopPropagation()
+      setSelectionMode(!useStore.getState().selectionMode)
+    }
+
+    window.addEventListener('keydown', handleKeyDown, true)
+    return () => window.removeEventListener('keydown', handleKeyDown, true)
+  }, [setSelectionMode])
 
   // Keyboard shortcuts
   useHotkey('Mod+Enter', () => {
@@ -326,7 +436,7 @@ export function InfiniteCanvas() {
 
   // Global mouse listeners for drag/pan
   useEffect(() => {
-    if (isPanning || isDragging) {
+    if (isPanning || isDragging || marqueeBox) {
       window.addEventListener('mousemove', handleMouseMove)
       window.addEventListener('mouseup', handleMouseUp)
       return () => {
@@ -334,15 +444,15 @@ export function InfiniteCanvas() {
         window.removeEventListener('mouseup', handleMouseUp)
       }
     }
-  }, [isPanning, isDragging, handleMouseMove, handleMouseUp])
+  }, [isPanning, isDragging, marqueeBox, handleMouseMove, handleMouseUp])
 
   return (
     <div
       ref={containerRef}
       className={cn(
         'canvas-stage flex-1 min-h-0 overflow-hidden relative',
-        (isPanning || (cmdHeld && isDragging)) && 'cursor-grabbing',
-        cmdHeld && !isPanning && !isDragging && 'cursor-grab',
+        (isPanning || isDragging) && 'cursor-grabbing',
+        selectionMode && !isPanning && !isDragging && 'cursor-default',
       )}
       onMouseDown={handleCanvasMouseDown}
       onWheel={handleWheel}
@@ -362,10 +472,11 @@ export function InfiniteCanvas() {
             key={terminal.id}
             terminal={terminal}
             scale={transform.scale}
-            cmdHeld={cmdHeld}
+            selectionMode={selectionMode}
+            isSelected={selectedNodeIds.includes(terminal.id)}
             isFocused={focusedTerminalId === terminal.id}
             showFocusRing={focusedTerminalId === terminal.id && showFocusedTerminalRing}
-            onDragStart={handleTerminalDragStart}
+            onDragStart={handleNodeDragStart}
           />
         ))}
         {browsers.map((browser) => (
@@ -373,12 +484,25 @@ export function InfiniteCanvas() {
             key={browser.id}
             browser={browser}
             scale={transform.scale}
-            cmdHeld={cmdHeld}
+            selectionMode={selectionMode}
+            isSelected={selectedNodeIds.includes(browser.id)}
             isFocused={focusedBrowserId === browser.id}
-            onDragStart={handleBrowserDragStart}
+            onDragStart={handleNodeDragStart}
           />
         ))}
       </motion.div>
+
+      {marqueeBox && (
+        <div
+          className="pointer-events-none absolute z-30 rounded-lg border border-primary/70 bg-primary/10 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)]"
+          style={{
+            left: marqueeBox.x,
+            top: marqueeBox.y,
+            width: marqueeBox.width,
+            height: marqueeBox.height,
+          }}
+        />
+      )}
 
       {/* Empty state */}
       {terminals.length === 0 && browsers.length === 0 && (

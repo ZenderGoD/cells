@@ -14,33 +14,39 @@ const HANDLE = 6 // px width of edge handles
 interface TerminalNodeProps {
   terminal: TerminalNodeType
   scale: number
-  cmdHeld: boolean
+  selectionMode: boolean
+  isSelected: boolean
   isFocused: boolean
   showFocusRing: boolean
-  onDragStart: (id: string, startX: number, startY: number) => void
+  onDragStart: (
+    id: string,
+    kind: 'terminal' | 'browser',
+    startX: number,
+    startY: number,
+  ) => void
 }
 
 export function TerminalNode({
   terminal,
   scale,
-  cmdHeld,
+  selectionMode,
+  isSelected,
   isFocused,
   showFocusRing,
   onDragStart,
 }: TerminalNodeProps) {
-  const { removeTerminal, resizeTerminal, moveTerminal, updateTerminalTitle, focusTerminal } =
-    useStore()
+  const { removeTerminal, resizeTerminal, moveTerminal, updateTerminalTitle } = useStore()
   const [isResizing, setIsResizing] = useState(false)
 
   const handleDragMouseDown = useCallback(
     (e: MouseEvent) => {
       if ((e.target as HTMLElement).closest('button')) return
+      if (!selectionMode) return
       e.preventDefault()
       e.stopPropagation()
-      focusTerminal(terminal.id)
-      onDragStart(terminal.id, e.clientX, e.clientY)
+      onDragStart(terminal.id, 'terminal', e.clientX, e.clientY)
     },
-    [terminal.id, onDragStart, focusTerminal],
+    [terminal.id, onDragStart, selectionMode],
   )
 
   const handleEdgeMouseDown = useCallback(
@@ -108,14 +114,12 @@ export function TerminalNode({
 
   const handleNodeMouseDown = useCallback(
     (e: MouseEvent) => {
-      focusTerminal(terminal.id)
-
-      if (!cmdHeld) return
+      if (!selectionMode) return
       e.preventDefault()
       e.stopPropagation()
-      onDragStart(terminal.id, e.clientX, e.clientY)
+      onDragStart(terminal.id, 'terminal', e.clientX, e.clientY)
     },
-    [cmdHeld, terminal.id, onDragStart, focusTerminal],
+    [selectionMode, terminal.id, onDragStart],
   )
 
   const zBase = terminal.pinned ? 10000 : 0
@@ -127,7 +131,7 @@ export function TerminalNode({
       className={cn(
         'terminal-node absolute',
         isResizing && 'pointer-events-none',
-        cmdHeld && 'cursor-grab',
+        selectionMode && 'cursor-grab',
       )}
       style={{
         left: terminal.x,
@@ -138,13 +142,18 @@ export function TerminalNode({
       }}
       onMouseDown={handleNodeMouseDown}
     >
-      {cmdHeld && <div className="absolute inset-0 z-10 cursor-grab" />}
+      {selectionMode && <div className="absolute inset-0 z-10 cursor-grab" />}
 
       {/* Terminal container with focus ring */}
       <div
         className={cn(
           'w-full h-full rounded-lg overflow-hidden transition-shadow duration-150',
-          isFocused ? (showFocusRing ? 'terminal-focused' : 'opacity-100') : 'terminal-unfocused',
+          isFocused
+            ? showFocusRing
+              ? 'terminal-focused'
+              : 'opacity-100'
+            : 'terminal-unfocused',
+          isSelected && 'ring-2 ring-primary/70 ring-offset-1 ring-offset-background',
         )}
       >
         <CellTerminal

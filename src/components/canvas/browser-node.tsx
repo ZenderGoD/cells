@@ -15,23 +15,36 @@ type Edge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
 interface BrowserNodeProps {
   browser: BrowserNodeType
   scale: number
-  cmdHeld: boolean
+  selectionMode: boolean
+  isSelected: boolean
   isFocused: boolean
-  onDragStart: (id: string, startX: number, startY: number) => void
+  onDragStart: (
+    id: string,
+    kind: 'terminal' | 'browser',
+    startX: number,
+    startY: number,
+  ) => void
 }
 
-export function BrowserNode({ browser, scale, cmdHeld, isFocused, onDragStart }: BrowserNodeProps) {
+export function BrowserNode({
+  browser,
+  scale,
+  selectionMode,
+  isSelected,
+  isFocused,
+  onDragStart,
+}: BrowserNodeProps) {
   const {
     resizeBrowser,
     moveBrowser,
     updateBrowserUrl,
     updateBrowserTitle,
-    focusBrowser,
     addBrowserWithUrl,
   } = useStore()
   const activeProjectId = useStore((s) => s.activeProjectId)
   const overlayOpen = useStore((s) => s.overlayOpen)
   const canvas = useStore((s) => s.canvas)
+  const dragModeActive = selectionMode
 
   const [isResizing, setIsResizing] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
@@ -218,7 +231,7 @@ export function BrowserNode({ browser, scale, cmdHeld, isFocused, onDragStart }:
     const shouldBeVisible =
       !overlayOpen &&
       !offline &&
-      !cmdHeld &&
+      !dragModeActive &&
       !transitionHidden &&
       bounds.width >= 20 &&
       bounds.height >= 20
@@ -235,7 +248,7 @@ export function BrowserNode({ browser, scale, cmdHeld, isFocused, onDragStart }:
     canvas.x,
     canvas.y,
     canvas.scale,
-    cmdHeld,
+    dragModeActive,
     isFocused,
     offline,
     overlayOpen,
@@ -306,13 +319,12 @@ export function BrowserNode({ browser, scale, cmdHeld, isFocused, onDragStart }:
 
   const handleNodeMouseDown = useCallback(
     (e: MouseEvent) => {
-      focusBrowser(browser.id)
-      if (!cmdHeld) return
+      if (!selectionMode) return
       e.preventDefault()
       e.stopPropagation()
-      onDragStart(browser.id, e.clientX, e.clientY)
+      onDragStart(browser.id, 'browser', e.clientX, e.clientY)
     },
-    [cmdHeld, browser.id, onDragStart, focusBrowser],
+    [selectionMode, browser.id, onDragStart],
   )
 
   const zBase = browser.pinned ? 10000 : 0
@@ -324,7 +336,7 @@ export function BrowserNode({ browser, scale, cmdHeld, isFocused, onDragStart }:
       className={cn(
         'browser-node absolute',
         isResizing && 'pointer-events-none',
-        cmdHeld && 'cursor-grab',
+        dragModeActive && 'cursor-grab',
       )}
       style={{
         left: browser.x,
@@ -335,7 +347,7 @@ export function BrowserNode({ browser, scale, cmdHeld, isFocused, onDragStart }:
       }}
       onMouseDown={handleNodeMouseDown}
     >
-      {cmdHeld && <div className="absolute inset-0 z-10 cursor-grab" />}
+      {dragModeActive && <div className="absolute inset-0 z-10 cursor-grab" />}
 
       {/* Content area — WebContentsView covers this when focused.
           Always dark bg so hiding the native view (popover/overlay) doesn't flash white. */}
@@ -344,6 +356,7 @@ export function BrowserNode({ browser, scale, cmdHeld, isFocused, onDragStart }:
         className={cn(
           'w-full h-full rounded-lg overflow-hidden bg-background relative',
           isFocused ? 'ring-1 ring-white/10' : 'ring-1 ring-border/20',
+          isSelected && 'ring-2 ring-primary/70 ring-offset-1 ring-offset-background',
         )}
       >
         {/* Loading indicator — traces entire border starting from bottom-left */}
@@ -373,11 +386,11 @@ export function BrowserNode({ browser, scale, cmdHeld, isFocused, onDragStart }:
           </svg>
         )}
         {/* Placeholder shown when native view is hidden */}
-        {(!isFocused || !viewReady || overlayOpen || offline || cmdHeld || transitionHidden) && (
+        {(!isFocused || !viewReady || overlayOpen || offline || dragModeActive || transitionHidden) && (
           <div className="w-full h-full flex flex-col items-center justify-center gap-2">
             {offline ? (
               <WifiOff className="w-8 h-8 text-muted-foreground/30" />
-            ) : cmdHeld && isFocused ? (
+            ) : dragModeActive && isFocused ? (
               <EyeOff className="w-6 h-6 text-muted-foreground/25" />
             ) : isFocused && !viewReady ? (
               <div className="w-5 h-5 border-2 border-muted-foreground/20 border-t-muted-foreground/60 rounded-full animate-spin" />
@@ -387,15 +400,17 @@ export function BrowserNode({ browser, scale, cmdHeld, isFocused, onDragStart }:
             <span className="text-[11px] text-muted-foreground/30 truncate max-w-[80%] text-center">
               {offline
                 ? 'No internet connection — will reload automatically'
-                : cmdHeld && isFocused
-                  ? 'View hidden while Cmd is held — drag to move'
+                : selectionMode && isFocused
+                ? 'Selection mode active — drag to move this panel'
                   : isFocused && !viewReady
                     ? 'Loading...'
                     : browser.title || browser.url || 'New Tab'}
             </span>
-            {cmdHeld && isFocused && (
+            {dragModeActive && isFocused && (
               <span className="text-[10px] text-muted-foreground/20 mt-1">
-                Swipe left or right at the edge to navigate back/forward
+                {selectionMode
+                  ? 'Hold Cmd and drag on the canvas to marquee select multiple panels'
+                  : 'Swipe left or right at the edge to navigate back/forward'}
               </span>
             )}
           </div>
