@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { nanoid } from 'nanoid'
 import type { BrowserNode, CanvasTransform, Project, ProjectsState, TerminalNode } from '../types'
 import { DEFAULT_THEME } from './terminal-themes'
+import { DEFAULT_WINDOW_APPEARANCE, normalizeWindowAppearance } from './window-appearance'
 import {
   STATUS_BAR_HEIGHT,
   getCanvasWindows,
@@ -28,6 +29,7 @@ interface StoreState {
   terminalTheme: string
   fontSize: number
   fontFamily: string
+  windowOpacity: number
   focusedTerminalId: string | null
   focusedBrowserId: string | null
   focusHistory: string[] // stack of recently focused IDs (most recent last)
@@ -55,6 +57,7 @@ interface StoreState {
   setTerminalTheme(name: string): void
   setFontSize(size: number): void
   setFontFamily(family: string): void
+  setWindowOpacity(opacity: number): void
 
   addTerminal(): TerminalNode
   addTerminalWithCommand(command: string, title?: string): TerminalNode
@@ -216,6 +219,7 @@ export const useStore = create<StoreState>((set, get) => ({
   terminalTheme: DEFAULT_THEME,
   fontSize: 13,
   fontFamily: DEFAULT_FONT_FAMILY,
+  windowOpacity: DEFAULT_WINDOW_APPEARANCE.windowOpacity,
 
   setTerminalTheme(name) {
     set({ terminalTheme: name })
@@ -230,6 +234,12 @@ export const useStore = create<StoreState>((set, get) => ({
     set({ fontFamily: family })
     get().persist()
   },
+  setWindowOpacity(opacity) {
+    set({
+      windowOpacity: normalizeWindowAppearance({ windowOpacity: opacity }).windowOpacity,
+    })
+    get().persist()
+  },
 
   async init() {
     const saved = await window.cells.state.load()
@@ -242,6 +252,9 @@ export const useStore = create<StoreState>((set, get) => ({
         terminalTheme: ps.terminalTheme || DEFAULT_THEME,
         fontSize: ps.fontSize || 13,
         fontFamily: ps.fontFamily || DEFAULT_FONT_FAMILY,
+        ...normalizeWindowAppearance({
+          windowOpacity: ps.windowOpacity,
+        }),
         snapOnFocus: ps.snapOnFocus ?? true,
         tabSwitchMode: ps.tabSwitchMode || 'chronological',
         searchEngine: ps.searchEngine || DEFAULT_SEARCH_ENGINE,
@@ -308,6 +321,9 @@ export const useStore = create<StoreState>((set, get) => ({
         terminalTheme: (saved as any).terminalTheme || DEFAULT_THEME,
         fontSize: (saved as any).fontSize || 13,
         fontFamily: (saved as any).fontFamily || DEFAULT_FONT_FAMILY,
+        ...normalizeWindowAppearance({
+          windowOpacity: (saved as any).windowOpacity,
+        }),
         initialized: true,
       })
       get().persist()
@@ -351,6 +367,7 @@ export const useStore = create<StoreState>((set, get) => ({
           terminalTheme: freshState.terminalTheme,
           fontSize: freshState.fontSize,
           fontFamily: freshState.fontFamily,
+          windowOpacity: freshState.windowOpacity,
           snapOnFocus: freshState.snapOnFocus,
           tabSwitchMode: freshState.tabSwitchMode,
           searchEngine: freshState.searchEngine,
@@ -368,6 +385,7 @@ export const useStore = create<StoreState>((set, get) => ({
           terminalTheme: state.terminalTheme,
           fontSize: state.fontSize,
           fontFamily: state.fontFamily,
+          windowOpacity: state.windowOpacity,
           snapOnFocus: state.snapOnFocus,
           tabSwitchMode: state.tabSwitchMode,
           searchEngine: state.searchEngine,

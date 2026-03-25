@@ -6,9 +6,11 @@ import { InfiniteCanvas } from './components/canvas/infinite-canvas'
 import { CommandPalette } from './components/command-palette'
 import { Onboarding } from './components/onboarding'
 import { TerminalSwitcher } from './components/terminal-switcher'
+import { buildWindowAppearanceStyle } from './lib/window-appearance'
 
 export function App() {
-  const { initialized, init, persist, projects } = useStore()
+  const { initialized, init, persist, projects, windowOpacity } = useStore()
+  const shellStyle = buildWindowAppearanceStyle({ windowOpacity })
 
   const closeWindow = useCallback(() => {
     const { focusedBrowserId, removeBrowser, terminals, focusedTerminalId, removeTerminal } =
@@ -90,7 +92,7 @@ export function App() {
 
   if (!initialized) {
     return (
-      <div className="h-full flex items-center justify-center">
+      <div className="app-shell h-full flex items-center justify-center" style={shellStyle}>
         <p className="text-xs text-muted-foreground/40">Loading...</p>
       </div>
     )
@@ -98,14 +100,20 @@ export function App() {
 
   if (projects.length === 0) {
     return (
-      <div className="h-full ring-1 ring-terminal-active/30 rounded-lg overflow-hidden">
+      <div
+        className="app-shell h-full ring-1 ring-terminal-active/30 rounded-lg overflow-hidden"
+        style={shellStyle}
+      >
         <Onboarding />
       </div>
     )
   }
 
   return (
-    <div className="h-full flex flex-col ring-1 ring-terminal-active/30 rounded-lg overflow-hidden">
+    <div
+      className="app-shell h-full flex flex-col ring-1 ring-terminal-active/30 rounded-lg overflow-hidden"
+      style={shellStyle}
+    >
       <InfiniteCanvas />
       <StatusBar />
       <CommandPalette />

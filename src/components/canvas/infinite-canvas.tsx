@@ -344,7 +344,7 @@ export function InfiniteCanvas() {
     <div
       ref={containerRef}
       className={cn(
-        'flex-1 min-h-0 overflow-hidden relative bg-canvas canvas-grid',
+        'canvas-stage flex-1 min-h-0 overflow-hidden relative',
         (isPanning || (cmdHeld && isDragging)) && 'cursor-grabbing',
         cmdHeld && !isPanning && !isDragging && 'cursor-grab',
       )}

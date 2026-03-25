@@ -78,6 +78,9 @@
   --font-geist-mono: "Geist Mono", "SFMono-Regular", "JetBrains Mono", "Menlo",
     "Monaco", "Consolas", monospace;
   --radius: 0.45rem;
+  --window-surface-opacity: 0.82;
+  --canvas-surface-opacity: 0.33;
+  --canvas-grid-opacity: 0.25;
   --background: oklch(0.12 0.004 285.9);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.21 0.006 285.885);
@@ -132,6 +135,60 @@ body {
   color: var(--color-foreground);
 }
 
+.app-shell {
+  background: oklch(0.12 0.004 285.9 / var(--window-surface-opacity));
+}
+
+.canvas-stage {
+  background: oklch(0.09 0.003 285.9 / var(--canvas-surface-opacity));
+  background-image: radial-gradient(
+    circle,
+    oklch(0.15 0.004 285.9 / var(--canvas-grid-opacity)) 1px,
+    transparent 1px
+  );
+  background-size: 24px 24px;
+}
+
+.cells-slider {
+  appearance: none;
+  width: 100%;
+  height: 1.25rem;
+  background: transparent;
+}
+
+.cells-slider::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--color-foreground) 28%, transparent);
+}
+
+.cells-slider::-webkit-slider-thumb {
+  appearance: none;
+  margin-top: -6px;
+  height: 16px;
+  width: 16px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--color-foreground);
+  box-shadow: 0 0 0 4px color-mix(in oklch, var(--color-background) 72%, transparent);
+}
+
+.cells-slider::-moz-range-track {
+  height: 4px;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--color-foreground) 28%, transparent);
+}
+
+.cells-slider::-moz-range-thumb {
+  height: 16px;
+  width: 16px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--color-foreground);
+  box-shadow: 0 0 0 4px color-mix(in oklch, var(--color-background) 72%, transparent);
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 6px;
@@ -146,16 +203,6 @@ body {
 }
 ::-webkit-scrollbar-thumb:hover {
   background: oklch(0.4 0.005 286);
-}
-
-/* Canvas dot grid pattern */
-.canvas-grid {
-  background-image: radial-gradient(
-    circle,
-    var(--color-canvas-grid) 1px,
-    transparent 1px
-  );
-  background-size: 24px 24px;
 }
 
 /* Terminal focus/unfocus states */

@@ -193,7 +193,7 @@ export function TerminalSwitcher() {
           transition={{ duration: 0.12 }}
           className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none"
         >
-          <div className="bg-card/80 backdrop-blur-xl rounded-xl ring-1 ring-border/40 shadow-2xl p-3 pointer-events-auto max-w-[min(98vw,1280px)]">
+          <div className="bg-card/92 rounded-xl ring-1 ring-border/40 shadow-2xl p-3 pointer-events-auto max-w-[min(98vw,1280px)]">
             <div className="px-1 pb-2">
               <WindowOverviewMap
                 windows={canvasWindows}

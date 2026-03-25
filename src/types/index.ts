@@ -57,6 +57,7 @@ export interface ProjectsState {
   terminalTheme?: string
   fontSize?: number
   fontFamily?: string
+  windowOpacity?: number
   snapOnFocus?: boolean
   tabSwitchMode?: 'recent' | 'chronological'
   searchEngine?: string
