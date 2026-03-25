@@ -10,7 +10,7 @@ Thanks for contributing. Cells is still early, so small, focused changes are muc
 
 ## Development Environment
 
-- Node.js 22 or newer
+- Node.js 24 or newer
 - pnpm 10 or newer
 - macOS for the supported desktop workflow
 

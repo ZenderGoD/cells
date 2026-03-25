@@ -18,7 +18,7 @@ The app currently ships macOS release artifacts. Development on other platforms 
 
 ## Requirements
 
-- Node.js 22 or newer
+- Node.js 24 or newer
 - pnpm 10 or newer
 - macOS for the supported desktop experience
 
