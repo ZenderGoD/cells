@@ -9,6 +9,7 @@ import { cn } from '@/lib/utils'
 
 import { SETTINGS_SHEET_CLASSNAMES } from './settings-layout'
 import { Dialog, DialogOverlay, DialogPortal } from '../ui/dialog'
+import { ScrollArea } from '../ui/scroll-area'
 
 interface AppSettingsProps {
   open: boolean
@@ -117,7 +118,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
               </div>
             </header>
 
-            <div className={SETTINGS_SHEET_CLASSNAMES.contentScroll}>
+            <ScrollArea className={SETTINGS_SHEET_CLASSNAMES.contentScroll} viewportClassName="px-5 py-4">
               {activeSection === 'appearance' ? (
                 <div className="space-y-5">
                   <SettingsGroup title="Theme">
@@ -418,7 +419,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
               {activeSection === 'help' ? <HelpSection /> : null}
 
               {activeSection === 'about' ? <UpdateSection /> : null}
-            </div>
+            </ScrollArea>
           </div>
         </DialogPrimitive.Popup>
       </DialogPortal>
