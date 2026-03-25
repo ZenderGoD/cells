@@ -30,18 +30,22 @@ export function TerminalNode({
   showFocusRing,
   onDragStart,
 }: TerminalNodeProps) {
-  const { removeTerminal, resizeTerminal, moveTerminal, updateTerminalTitle } = useStore()
+  const { removeTerminal, resizeTerminal, moveTerminal, updateTerminalTitle, focusTerminal } =
+    useStore()
   const [isResizing, setIsResizing] = useState(false)
 
   const handleDragMouseDown = useCallback(
     (e: MouseEvent) => {
       if ((e.target as HTMLElement).closest('button')) return
-      if (!selectionMode) return
+      if (!selectionMode) {
+        focusTerminal(terminal.id)
+        return
+      }
       e.preventDefault()
       e.stopPropagation()
       onDragStart(terminal.id, 'terminal', e.clientX, e.clientY)
     },
-    [terminal.id, onDragStart, selectionMode],
+    [focusTerminal, terminal.id, onDragStart, selectionMode],
   )
 
   const handleEdgeMouseDown = useCallback(
@@ -109,12 +113,15 @@ export function TerminalNode({
 
   const handleNodeMouseDown = useCallback(
     (e: MouseEvent) => {
-      if (!selectionMode) return
+      if (!selectionMode) {
+        focusTerminal(terminal.id)
+        return
+      }
       e.preventDefault()
       e.stopPropagation()
       onDragStart(terminal.id, 'terminal', e.clientX, e.clientY)
     },
-    [selectionMode, terminal.id, onDragStart],
+    [focusTerminal, selectionMode, terminal.id, onDragStart],
   )
 
   const zBase = terminal.pinned ? 10000 : 0
