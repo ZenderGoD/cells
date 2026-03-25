@@ -2,6 +2,7 @@ import { app, BrowserWindow, WebContentsView, ipcMain, dialog, Menu, nativeImage
 import path from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'fs'
+import os from 'os'
 import { execFileSync, spawnSync } from 'child_process'
 import { autoUpdater } from 'electron-updater'
 import { PtyManager } from './pty'
@@ -116,6 +117,98 @@ const AUTO_UPDATE_CHECK_INTERVAL = 6 * 60 * 60 * 1000
 let updateCheckInterval: ReturnType<typeof setInterval> | null = null
 const PRELOAD_FILE = 'preload.mjs'
 const BROWSER_PRELOAD_FILE = 'browser-preload.cjs'
+const CODEX_HOME_DIR = path.join(os.homedir(), '.codex')
+const CODEX_LOGS_DB = path.join(CODEX_HOME_DIR, 'logs_1.sqlite')
+const CODEX_STATE_DB = path.join(CODEX_HOME_DIR, 'state_5.sqlite')
+
+function readSqliteValue(dbPath: string, query: string) {
+  if (!fs.existsSync(dbPath)) return null
+  try {
+    const value = execFileSync('sqlite3', [dbPath, query], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 1500,
+    }).trim()
+    return value || null
+  } catch {
+    return null
+  }
+}
+
+function readProcessTable() {
+  try {
+    return execFileSync('ps', ['-axo', 'pid=,ppid=,comm='], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 1500,
+    })
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const match = line.match(/^(\d+)\s+(\d+)\s+(.+)$/)
+        if (!match) return null
+        return {
+          pid: Number.parseInt(match[1], 10),
+          ppid: Number.parseInt(match[2], 10),
+          command: match[3],
+        }
+      })
+      .filter((entry): entry is { pid: number; ppid: number; command: string } => !!entry)
+  } catch {
+    return []
+  }
+}
+
+function isCodexCommand(command: string) {
+  const normalized = command.toLowerCase().split('/').pop() ?? command.toLowerCase()
+  return normalized === 'codex' || normalized === 'codex-cli' || normalized.startsWith('codex-')
+}
+
+function resolveCodexProcessPid(shellPid: number) {
+  if (!Number.isInteger(shellPid) || shellPid <= 0) return null
+
+  const processTable = readProcessTable()
+  if (processTable.length === 0) return null
+
+  const childrenByParent = new Map<number, Array<{ pid: number; ppid: number; command: string }>>()
+  for (const process of processTable) {
+    const siblings = childrenByParent.get(process.ppid) ?? []
+    siblings.push(process)
+    childrenByParent.set(process.ppid, siblings)
+  }
+
+  const queue = [...(childrenByParent.get(shellPid) ?? [])]
+  let bestMatch: { pid: number; ppid: number; command: string } | null = null
+
+  while (queue.length > 0) {
+    const current = queue.shift()!
+    if (isCodexCommand(current.command)) {
+      bestMatch = current
+    }
+    const children = childrenByParent.get(current.pid)
+    if (children) queue.push(...children)
+  }
+
+  return bestMatch?.pid ?? null
+}
+
+function resolveCodexThreadId(pid: number) {
+  if (!Number.isInteger(pid) || pid <= 0) return null
+  return readSqliteValue(
+    CODEX_LOGS_DB,
+    `select thread_id from logs where process_uuid like 'pid:${pid}:%' and thread_id is not null order by ts desc, ts_nanos desc, id desc limit 1;`,
+  )
+}
+
+function resolveCodexThreadTitle(pid: number) {
+  const threadId = resolveCodexThreadId(pid)
+  if (!threadId || !/^[A-Za-z0-9-]+$/.test(threadId)) return null
+  return readSqliteValue(
+    CODEX_STATE_DB,
+    `select title from threads where id = '${threadId}' limit 1;`,
+  )
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -270,6 +363,16 @@ ipcMain.handle('terminal:get-process', (_event, termId: string) => {
   }
 })
 
+ipcMain.handle('terminal:get-codex-title', (_event, termId: string) => {
+  try {
+    const shellPid = ptys.get(termId)?.pid ?? null
+    const codexPid = shellPid ? resolveCodexProcessPid(shellPid) : null
+    return codexPid ? resolveCodexThreadTitle(codexPid) : null
+  } catch {
+    return null
+  }
+})
+
 ipcMain.handle('agent:check-available', () => {
   // Use a login shell so the user's full PATH is available.
   // Packaged macOS apps inherit a minimal PATH (/usr/bin:/bin) that
@@ -392,11 +495,7 @@ function setupBrowserView(browserId: string, view: WebContentsView) {
       _e.preventDefault()
       if (input.type === 'keyDown' && !mainWindow?.isDestroyed()) {
         mainWindow?.webContents.focus()
-        if (input.shift) {
-          mainWindow?.webContents.send('browser:project-cycle')
-        } else {
-          mainWindow?.webContents.send('browser:window-cycle', 1)
-        }
+        mainWindow?.webContents.send('browser:window-cycle', input.shift ? -1 : 1)
       }
       return
     }

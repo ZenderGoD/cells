@@ -76,6 +76,181 @@ interface CellTerminalProps {
   onTitleChange?: (title: string) => void
 }
 
+type AgentName = 'claude' | 'codex'
+
+const COMMON_SHELL_COMMANDS = new Set([
+  'awk',
+  'bash',
+  'brew',
+  'bun',
+  'cargo',
+  'cat',
+  'cd',
+  'chmod',
+  'claude',
+  'clear',
+  'codex',
+  'cp',
+  'curl',
+  'docker',
+  'find',
+  'git',
+  'go',
+  'grep',
+  'just',
+  'kubectl',
+  'less',
+  'ls',
+  'make',
+  'mkdir',
+  'mv',
+  'node',
+  'npm',
+  'npx',
+  'open',
+  'pnpm',
+  'python',
+  'python3',
+  'rg',
+  'rm',
+  'sed',
+  'touch',
+  'vim',
+  'yarn',
+  'zsh',
+])
+
+const CODEX_SUBCOMMANDS = new Set([
+  'app',
+  'app-server',
+  'apply',
+  'cloud',
+  'completion',
+  'debug',
+  'exec',
+  'features',
+  'fork',
+  'help',
+  'login',
+  'logout',
+  'mcp',
+  'mcp-server',
+  'resume',
+  'review',
+  'sandbox',
+])
+
+const CLAUDE_SUBCOMMANDS = new Set([
+  'agents',
+  'auth',
+  'auto-mode',
+  'doctor',
+  'help',
+  'install',
+  'mcp',
+  'plugin',
+  'plugins',
+  'setup-token',
+  'update',
+  'upgrade',
+])
+
+function getAgentLabel(agent: AgentName) {
+  return agent === 'claude' ? 'Claude' : 'Codex'
+}
+
+const ESCAPE_CHAR = String.fromCharCode(27)
+const NULL_CHAR = String.fromCharCode(0)
+const ANSI_CSI_SEQUENCE_RE = new RegExp(`${ESCAPE_CHAR}\\[[0-9;?]*[ -/]*[@-~]`, 'g')
+const ANSI_ESCAPE_RE = new RegExp(`${ESCAPE_CHAR}[@-_]`, 'g')
+const NULL_CHAR_RE = new RegExp(NULL_CHAR, 'g')
+
+function summarizeTitle(input: string, maxLength = 60) {
+  const collapsed = input
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^['"`]+|['"`]+$/g, '')
+  if (!collapsed) return ''
+  if (collapsed.length <= maxLength) return collapsed
+  return `${collapsed.slice(0, maxLength - 1).trimEnd()}…`
+}
+
+function formatAgentWindowTitle(agent: AgentName, title: string, maxLength = 60) {
+  const summary = summarizeTitle(title, maxLength)
+  return summary ? `${getAgentLabel(agent)}: ${summary}` : getAgentLabel(agent)
+}
+
+function normalizeAgentProcess(proc: string | null): AgentName | null {
+  if (!proc) return null
+  const normalized = proc.toLowerCase().split('/').pop() ?? proc.toLowerCase()
+  if (normalized === 'claude' || normalized.startsWith('claude-')) return 'claude'
+  if (normalized === 'codex' || normalized === 'codex-cli' || normalized.startsWith('codex-')) {
+    return 'codex'
+  }
+  return null
+}
+
+function inferAgentLaunch(line: string): { agent: AgentName; title: string } | null {
+  const trimmed = line.trim()
+  const match = trimmed.match(
+    /^(?:(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S+))\s+)*(?<cmd>(?:\S*\/)?(?:claude|codex))(?=\s|$)\s*(?<rest>.*)$/i,
+  )
+  if (!match?.groups) return null
+
+  const agent = normalizeAgentProcess(match.groups.cmd) ?? null
+  if (!agent) return null
+
+  const rest = (match.groups.rest ?? '').trim()
+  const firstToken = rest.split(/\s+/, 1)[0]?.toLowerCase()
+  const knownSubcommands = agent === 'claude' ? CLAUDE_SUBCOMMANDS : CODEX_SUBCOMMANDS
+  const prompt =
+    rest && !rest.startsWith('-') && firstToken && !knownSubcommands.has(firstToken)
+      ? summarizeTitle(rest)
+      : ''
+
+  return {
+    agent,
+    title: prompt ? `${getAgentLabel(agent)}: ${prompt}` : getAgentLabel(agent),
+  }
+}
+
+function inferAgentPromptTitle(agent: AgentName, line: string): string | null {
+  const trimmed = line.trim()
+  if (!trimmed) return null
+  if (['exit', 'quit', 'logout'].includes(trimmed.toLowerCase())) return null
+  if (trimmed.startsWith('/')) return null
+  if (
+    trimmed.includes('&&') ||
+    trimmed.includes('||') ||
+    trimmed.includes('|') ||
+    trimmed.includes('>') ||
+    trimmed.includes('<') ||
+    trimmed.includes('$(') ||
+    trimmed.includes('`')
+  ) {
+    return null
+  }
+
+  const firstToken = trimmed.split(/\s+/, 1)[0]?.toLowerCase() ?? ''
+  if (
+    COMMON_SHELL_COMMANDS.has(firstToken) ||
+    /^[A-Za-z_][A-Za-z0-9_]*=.*/.test(firstToken) ||
+    (!trimmed.includes(' ') && trimmed.length < 20)
+  ) {
+    return null
+  }
+
+  const summary = summarizeTitle(trimmed)
+  return summary ? `${getAgentLabel(agent)}: ${summary}` : null
+}
+
+function stripInputControlSequences(chunk: string) {
+  return chunk
+    .replace(ANSI_CSI_SEQUENCE_RE, '')
+    .replace(ANSI_ESCAPE_RE, '')
+    .replace(NULL_CHAR_RE, '')
+}
+
 function isEditableTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return false
   if (target.isContentEditable) return true
@@ -138,6 +313,10 @@ export function CellTerminal({
   const themeNameRef = useRef(themeName)
   const fontSizeRef = useRef(fontSize)
   const fontFamilyRef = useRef(fontFamily)
+  const inferredAgentRef = useRef<AgentName | null>(null)
+  const detectedAgentRef = useRef<AgentName | null>(null)
+  const inputBufferRef = useRef('')
+  const lastInferredTitleRef = useRef<string | null>(null)
   const dragDepthRef = useRef(0)
   const [dropActive, setDropActive] = useState(false)
 
@@ -158,6 +337,67 @@ export function CellTerminal({
     fontSizeRef.current = fontSize
     fontFamilyRef.current = fontFamily
   }, [onTitleChange, themeName, fontSize, fontFamily])
+
+  const setInferredTitle = useCallback((title: string) => {
+    if (!title || title === lastInferredTitleRef.current) return
+    lastInferredTitleRef.current = title
+    onTitleChangeRef.current?.(title)
+  }, [])
+
+  const handleSubmittedInput = useCallback(
+    (line: string) => {
+      const launch = inferAgentLaunch(line)
+      if (launch) {
+        inferredAgentRef.current = launch.agent
+        const current = useStore.getState().terminals.find((terminal) => terminal.id === termId)
+        if (current && current.agent !== launch.agent) {
+          useStore.getState().updateTerminalAgent(termId, launch.agent)
+        }
+        setInferredTitle(launch.title)
+        return
+      }
+
+      const trimmed = line.trim()
+      if (['exit', 'quit', 'logout'].includes(trimmed.toLowerCase())) {
+        inferredAgentRef.current = null
+        return
+      }
+
+      const activeAgent = detectedAgentRef.current ?? inferredAgentRef.current
+      if (!activeAgent) return
+
+      const inferredTitle = inferAgentPromptTitle(activeAgent, line)
+      if (inferredTitle) {
+        setInferredTitle(inferredTitle)
+      }
+    },
+    [setInferredTitle, termId],
+  )
+
+  const trackInputForTitle = useCallback(
+    (chunk: string) => {
+      for (const char of stripInputControlSequences(chunk)) {
+        if (char === '\r' || char === '\n') {
+          const line = inputBufferRef.current
+          inputBufferRef.current = ''
+          handleSubmittedInput(line)
+          continue
+        }
+        if (char === '\u007f' || char === '\b') {
+          inputBufferRef.current = inputBufferRef.current.slice(0, -1)
+          continue
+        }
+        if (char === '\u0015' || char === '\u0003') {
+          inputBufferRef.current = ''
+          continue
+        }
+        if (char >= ' ') {
+          inputBufferRef.current += char
+        }
+      }
+    },
+    [handleSubmittedInput],
+  )
 
   useEffect(() => {
     if (!isFocused) return
@@ -368,9 +608,11 @@ export function CellTerminal({
       // These listeners live in the cache — they persist across mount/unmount
       cleanups.push(
         term.onTitleChange((title) => {
+          lastInferredTitleRef.current = title || 'Terminal'
           onTitleChangeRef.current?.(title || 'Terminal')
         }).dispose,
         term.onData((data) => {
+          trackInputForTitle(data)
           window.cells.terminal.write(termId, data)
         }).dispose,
         window.cells.terminal.onData((id, data) => {
@@ -395,11 +637,18 @@ export function CellTerminal({
       // Agent detection poll
       const agentPoll = setInterval(async () => {
         const proc = await window.cells.terminal.getProcess(termId)
-        const agent =
-          proc === 'claude' ? ('claude' as const) : proc === 'codex' ? ('codex' as const) : null
+        const agent = normalizeAgentProcess(proc)
+        detectedAgentRef.current = agent
+        if (agent) inferredAgentRef.current = agent
         const current = useStore.getState().terminals.find((t) => t.id === termId)
         if (current && current.agent !== agent) {
           useStore.getState().updateTerminalAgent(termId, agent)
+        }
+        if (agent === 'codex') {
+          const codexTitle = await window.cells.terminal.getCodexTitle(termId)
+          if (codexTitle) {
+            setInferredTitle(formatAgentWindowTitle('codex', codexTitle))
+          }
         }
       }, 3000)
       cleanups.push(() => clearInterval(agentPoll))
@@ -439,10 +688,11 @@ export function CellTerminal({
       }
       terminalRef.current = null
       fitAddonRef.current = null
+      inputBufferRef.current = ''
       // Tell main process to buffer instead of sending live IPC
       window.cells.terminal.unsubscribe(termId)
     }
-  }, [termId])
+  }, [setInferredTitle, termId, trackInputForTitle])
 
   // Theme/font updates
   useEffect(() => {

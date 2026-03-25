@@ -86,6 +86,7 @@ export interface CellsAPI {
     write(termId: string, data: string): void
     resize(termId: string, cols: number, rows: number): void
     getProcess(termId: string): Promise<string | null>
+    getCodexTitle(termId: string): Promise<string | null>
     onData(callback: (termId: string, data: string) => void): () => void
     onExit(callback: (termId: string) => void): () => void
   }
@@ -143,7 +144,6 @@ export interface CellsAPI {
       callback: (browserId: string, progress: number, direction: string | null) => void,
     ): () => void
     onWindowCycle(callback: (direction: 1 | -1) => void): () => void
-    onProjectCycle(callback: () => void): () => void
   }
   app: {
     onBeforeQuit(callback: () => void): () => void

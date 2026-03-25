@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, type MouseEvent } from 'react'
-import { Globe, WifiOff } from 'lucide-react'
+import { EyeOff, Globe, WifiOff } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
 import type { BrowserNode as BrowserNodeType } from '@/types'
@@ -37,6 +37,12 @@ export function BrowserNode({ browser, scale, cmdHeld, isFocused, onDragStart }:
   const [isLoading, setIsLoading] = useState(false)
   const [viewReady, setViewReady] = useState(false)
   const [offline, setOffline] = useState(!navigator.onLine)
+  const [overscroll, setOverscroll] = useState<{
+    progress: number
+    direction: 'back' | 'forward' | null
+  }>({ progress: 0, direction: null })
+  const [canGoBack, setCanGoBack] = useState(false)
+  const [canGoForward, setCanGoForward] = useState(false)
   const contentRef = useRef<HTMLDivElement>(null)
   const createdRef = useRef(false)
   const lastBoundsRef = useRef({ x: 0, y: 0, width: 0, height: 0 })
@@ -105,13 +111,33 @@ export function BrowserNode({ browser, scale, cmdHeld, isFocused, onDragStart }:
     const unsubLoading = window.cells.browser.onLoading((id, loading) => {
       if (id === browser.id) setIsLoading(loading)
     })
+    const unsubNav = window.cells.browser.onNavState((id, back, forward) => {
+      if (id === browser.id) {
+        setCanGoBack(back)
+        setCanGoForward(forward)
+      }
+    })
     return () => {
       unsubTitle()
       unsubUrl()
       unsubNewWindow()
       unsubLoading()
+      unsubNav()
     }
   }, [browser.id, updateBrowserTitle, updateBrowserUrl, addBrowserWithUrl])
+
+  // Listen for overscroll gesture progress
+  useEffect(() => {
+    const unsub = window.cells.browser.onOverscroll((id, progress, direction) => {
+      if (id !== browser.id) return
+      if (progress <= 0 || !direction) {
+        setOverscroll({ progress: 0, direction: null })
+      } else {
+        setOverscroll({ progress, direction: direction as 'back' | 'forward' })
+      }
+    })
+    return unsub
+  }, [browser.id])
 
   // Track window size so browser bounds update on resize
   const [windowHeight, setWindowHeight] = useState(window.innerHeight)
@@ -322,11 +348,13 @@ export function BrowserNode({ browser, scale, cmdHeld, isFocused, onDragStart }:
             />
           </svg>
         )}
-        {/* Placeholder shown when native view is hidden (not focused, not ready, overlay, or offline) */}
-        {(!isFocused || !viewReady || overlayOpen || offline) && (
+        {/* Placeholder shown when native view is hidden */}
+        {(!isFocused || !viewReady || overlayOpen || offline || cmdHeld) && (
           <div className="w-full h-full flex flex-col items-center justify-center gap-2">
             {offline ? (
               <WifiOff className="w-8 h-8 text-muted-foreground/30" />
+            ) : cmdHeld && isFocused ? (
+              <EyeOff className="w-6 h-6 text-muted-foreground/25" />
             ) : isFocused && !viewReady ? (
               <div className="w-5 h-5 border-2 border-muted-foreground/20 border-t-muted-foreground/60 rounded-full animate-spin" />
             ) : (
@@ -335,11 +363,42 @@ export function BrowserNode({ browser, scale, cmdHeld, isFocused, onDragStart }:
             <span className="text-[11px] text-muted-foreground/30 truncate max-w-[80%] text-center">
               {offline
                 ? 'No internet connection — will reload automatically'
-                : isFocused && !viewReady
-                  ? 'Loading...'
-                  : browser.title || browser.url || 'New Tab'}
+                : cmdHeld && isFocused
+                  ? 'View hidden while Cmd is held — drag to move'
+                  : isFocused && !viewReady
+                    ? 'Loading...'
+                    : browser.title || browser.url || 'New Tab'}
             </span>
+            {cmdHeld && isFocused && (
+              <span className="text-[10px] text-muted-foreground/20 mt-1">
+                Swipe left or right at the edge to navigate back/forward
+              </span>
+            )}
           </div>
+        )}
+
+        {/* Overscroll gesture indicators — bottom edge corner glows */}
+        {overscroll.direction === 'back' && overscroll.progress > 0 && canGoBack && (
+          <div
+            className="absolute inset-x-0 bottom-0 z-20 pointer-events-none rounded-b-lg"
+            style={{
+              height: 80,
+              opacity: 0.2 + Math.min(overscroll.progress, 1.1) * 0.6,
+              background:
+                'radial-gradient(ellipse 55% 130% at 0% 100%, oklch(0.72 0.16 220) 0%, transparent 100%)',
+            }}
+          />
+        )}
+        {overscroll.direction === 'forward' && overscroll.progress > 0 && canGoForward && (
+          <div
+            className="absolute inset-x-0 bottom-0 z-20 pointer-events-none rounded-b-lg"
+            style={{
+              height: 80,
+              opacity: 0.2 + Math.min(overscroll.progress, 1.1) * 0.6,
+              background:
+                'radial-gradient(ellipse 55% 130% at 100% 100%, oklch(0.78 0.15 85) 0%, transparent 100%)',
+            }}
+          />
         )}
       </div>
 

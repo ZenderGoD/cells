@@ -3,7 +3,7 @@ import { motion, useMotionValue, useSpring } from 'motion/react'
 import { useHotkey, useKeyHold } from '@tanstack/react-hotkeys'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
-import { STATUS_BAR_HEIGHT, getCanvasWindows } from '@/lib/canvas-navigation'
+import { STATUS_BAR_HEIGHT, getCanvasWindows, getViewportRect } from '@/lib/canvas-navigation'
 import { TerminalNode } from './terminal-node'
 import { BrowserNode } from './browser-node'
 
@@ -65,6 +65,26 @@ export function InfiniteCanvas() {
   const springX = useSpring(motionX, springConfig)
   const springY = useSpring(motionY, springConfig)
   const springScale = useSpring(motionScale, springConfig)
+  const viewportRect = getViewportRect(transform)
+  const viewportArea = viewportRect.width * viewportRect.height
+  const visibleWindowCount =
+    viewportArea > 0
+      ? getCanvasWindows(terminals, browsers).reduce((count, window) => {
+          const overlapW = Math.max(
+            0,
+            Math.min(window.x + window.width, viewportRect.x + viewportRect.width) -
+              Math.max(window.x, viewportRect.x),
+          )
+          const overlapH = Math.max(
+            0,
+            Math.min(window.y + window.height, viewportRect.y + viewportRect.height) -
+              Math.max(window.y, viewportRect.y),
+          )
+          const coverage = (overlapW * overlapH) / viewportArea
+          return coverage >= 0.08 ? count + 1 : count
+        }, 0)
+      : 0
+  const showFocusedTerminalRing = visibleWindowCount >= 2
 
   // When user is actively driving (panning/scrolling), bypass springs and set directly
   // When animating (snap), let springs interpolate
@@ -348,6 +368,7 @@ export function InfiniteCanvas() {
             scale={transform.scale}
             cmdHeld={cmdHeld}
             isFocused={focusedTerminalId === terminal.id}
+            showFocusRing={focusedTerminalId === terminal.id && showFocusedTerminalRing}
             onDragStart={handleTerminalDragStart}
           />
         ))}

@@ -685,7 +685,14 @@ export const useStore = create<StoreState>((set, get) => ({
     const terminal = terminals.find((t) => t.id === id)
     if (!terminal) return
     if (id !== get().focusedTerminalId) get().bringToFront(id)
-    set({ focusedTerminalId: id, focusedBrowserId: null, snapPaused: false, snapFast: true })
+    const focusHistory = pushFocusHistory(get().focusHistory, id)
+    set({
+      focusedTerminalId: id,
+      focusedBrowserId: null,
+      snapPaused: false,
+      snapFast: true,
+      focusHistory,
+    })
     const viewW = window.innerWidth
     const viewH = window.innerHeight - STATUS_BAR_HEIGHT
     const fitScale = Math.min(
@@ -696,8 +703,8 @@ export const useStore = create<StoreState>((set, get) => ({
     // Zoomed out → zoom in to fit. Already zoomed in → keep current scale.
     const scale = canvas.scale < fitScale ? fitScale : canvas.scale
     get().setCanvasTransform({
-      x: TERMINAL_PAD - terminal.x * scale,
-      y: TERMINAL_PAD - terminal.y * scale,
+      x: viewW / 2 - (terminal.x + terminal.width / 2) * scale,
+      y: viewH / 2 - (terminal.y + terminal.height / 2) * scale,
       scale,
     })
   },
@@ -991,7 +998,14 @@ export const useStore = create<StoreState>((set, get) => ({
     const browser = browsers.find((b) => b.id === id)
     if (!browser) return
     if (id !== get().focusedBrowserId) get().bringBrowserToFront(id)
-    set({ focusedTerminalId: null, focusedBrowserId: id, snapPaused: false, snapFast: true })
+    const focusHistory = pushFocusHistory(get().focusHistory, id)
+    set({
+      focusedTerminalId: null,
+      focusedBrowserId: id,
+      snapPaused: false,
+      snapFast: true,
+      focusHistory,
+    })
     const viewW = window.innerWidth
     const viewH = window.innerHeight - STATUS_BAR_HEIGHT
     const fitScale = Math.min(
@@ -1001,8 +1015,8 @@ export const useStore = create<StoreState>((set, get) => ({
     )
     const scale = canvas.scale < fitScale ? fitScale : canvas.scale
     get().setCanvasTransform({
-      x: TERMINAL_PAD - browser.x * scale,
-      y: TERMINAL_PAD - browser.y * scale,
+      x: viewW / 2 - (browser.x + browser.width / 2) * scale,
+      y: viewH / 2 - (browser.y + browser.height / 2) * scale,
       scale,
     })
   },

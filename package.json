@@ -1,6 +1,6 @@
 {
   "name": "cells",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "private": true,
   "type": "module",
   "author": "Raj Sharma <r@raj.how>",
@@ -23,7 +23,7 @@
     "react"
   ],
   "engines": {
-    "node": ">=22",
+    "node": ">=24",
     "pnpm": ">=10"
   },
   "packageManager": "pnpm@10.6.3",
