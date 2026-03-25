@@ -20,6 +20,7 @@ export function TerminalSwitcher() {
   const snapToTerminal = useStore((s) => s.snapToTerminal)
   const snapToBrowser = useStore((s) => s.snapToBrowser)
   const setOverlayOpen = useStore((s) => s.setOverlayOpen)
+  const tabSwitchMode = useStore((s) => s.tabSwitchMode)
 
   const [open, setOpenRaw] = useState(false)
   const setOpen = useCallback(
@@ -33,7 +34,8 @@ export function TerminalSwitcher() {
   const ctrlHeld = useRef(false)
 
   // Build combined list of all switchable items
-  const items: SwitcherItem[] = [
+  const focusHistory = useStore((s) => s.focusHistory)
+  const chronologicalItems: SwitcherItem[] = [
     ...terminals.map((t) => ({
       id: t.id,
       title: t.title,
@@ -49,22 +51,79 @@ export function TerminalSwitcher() {
     })),
   ]
 
+  let items: SwitcherItem[]
+  if (tabSwitchMode === 'recent' && focusHistory.length > 0) {
+    const currentId = focusedTerminalId || focusedBrowserId
+    const itemMap = new Map(chronologicalItems.map((item) => [item.id, item]))
+    const ordered: SwitcherItem[] = []
+    if (currentId && itemMap.has(currentId)) {
+      ordered.push(itemMap.get(currentId)!)
+      itemMap.delete(currentId)
+    }
+    for (let i = focusHistory.length - 1; i >= 0; i--) {
+      const id = focusHistory[i]
+      if (itemMap.has(id)) {
+        ordered.push(itemMap.get(id)!)
+        itemMap.delete(id)
+      }
+    }
+    for (const item of chronologicalItems) {
+      if (itemMap.has(item.id)) ordered.push(item)
+    }
+    items = ordered
+  } else {
+    items = chronologicalItems
+  }
+
   useEffect(() => {
     const cycle = (direction: 1 | -1) => {
       const state = useStore.getState()
-      const allItems = [
+      const chronologicalItems = [
         ...state.terminals.map((t) => ({ id: t.id, type: 'terminal' as const })),
         ...state.browsers.map((b) => ({ id: b.id, type: 'browser' as const })),
       ]
-      if (allItems.length < 2) return
+      if (chronologicalItems.length < 2) return
+
+      // In 'recent' mode, order by focus history (most recent first)
+      // In 'chronological' mode, keep creation order
+      let allItems: typeof chronologicalItems
+      if (state.tabSwitchMode === 'recent' && state.focusHistory.length > 0) {
+        const currentId = state.focusedTerminalId || state.focusedBrowserId
+        const itemMap = new Map(chronologicalItems.map((item) => [item.id, item]))
+        // Start with currently focused, then most-recently-focused, then the rest
+        const ordered: typeof chronologicalItems = []
+        if (currentId && itemMap.has(currentId)) {
+          ordered.push(itemMap.get(currentId)!)
+          itemMap.delete(currentId)
+        }
+        for (let i = state.focusHistory.length - 1; i >= 0; i--) {
+          const id = state.focusHistory[i]
+          if (itemMap.has(id)) {
+            ordered.push(itemMap.get(id)!)
+            itemMap.delete(id)
+          }
+        }
+        // Append any remaining items not in focus history
+        for (const item of chronologicalItems) {
+          if (itemMap.has(item.id)) ordered.push(item)
+        }
+        allItems = ordered
+      } else {
+        allItems = chronologicalItems
+      }
 
       if (!open) {
-        const currentId = state.focusedTerminalId || state.focusedBrowserId
-        const currentIdx = allItems.findIndex((item) => item.id === currentId)
-        const startIdx = currentIdx === -1 ? 0 : currentIdx
-        const nextIdx =
-          (((startIdx + direction) % allItems.length) + allItems.length) % allItems.length
-        setSelectedIndex(nextIdx)
+        if (state.tabSwitchMode === 'recent') {
+          // In recent mode, first Ctrl+Tab always goes to index 1 (previous window)
+          setSelectedIndex(direction === 1 ? 1 : allItems.length - 1)
+        } else {
+          const currentId = state.focusedTerminalId || state.focusedBrowserId
+          const currentIdx = allItems.findIndex((item) => item.id === currentId)
+          const startIdx = currentIdx === -1 ? 0 : currentIdx
+          const nextIdx =
+            (((startIdx + direction) % allItems.length) + allItems.length) % allItems.length
+          setSelectedIndex(nextIdx)
+        }
         setOpen(true)
       } else {
         setSelectedIndex((prev) => {
@@ -76,10 +135,35 @@ export function TerminalSwitcher() {
 
     const commit = () => {
       const state = useStore.getState()
-      const allItems = [
+      const chronologicalItems = [
         ...state.terminals.map((t) => ({ id: t.id, type: 'terminal' as const })),
         ...state.browsers.map((b) => ({ id: b.id, type: 'browser' as const })),
       ]
+
+      let allItems: typeof chronologicalItems
+      if (state.tabSwitchMode === 'recent' && state.focusHistory.length > 0) {
+        const currentId = state.focusedTerminalId || state.focusedBrowserId
+        const itemMap = new Map(chronologicalItems.map((item) => [item.id, item]))
+        const ordered: typeof chronologicalItems = []
+        if (currentId && itemMap.has(currentId)) {
+          ordered.push(itemMap.get(currentId)!)
+          itemMap.delete(currentId)
+        }
+        for (let i = state.focusHistory.length - 1; i >= 0; i--) {
+          const id = state.focusHistory[i]
+          if (itemMap.has(id)) {
+            ordered.push(itemMap.get(id)!)
+            itemMap.delete(id)
+          }
+        }
+        for (const item of chronologicalItems) {
+          if (itemMap.has(item.id)) ordered.push(item)
+        }
+        allItems = ordered
+      } else {
+        allItems = chronologicalItems
+      }
+
       if (allItems.length > 0 && open) {
         const target = allItems[selectedIndex]
         if (target) {
@@ -128,7 +212,7 @@ export function TerminalSwitcher() {
       window.removeEventListener('keyup', handleKeyUp, true)
       window.removeEventListener('blur', handleBlur)
     }
-  }, [open, selectedIndex, snapToTerminal, snapToBrowser, setOpen])
+  }, [open, selectedIndex, snapToTerminal, snapToBrowser, setOpen, tabSwitchMode])
 
   if (items.length < 2) return null
 

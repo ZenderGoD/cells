@@ -105,15 +105,16 @@ export function CommandPalette() {
             }}
           />
           <CommandList>
-            <CommandEmpty>
-              <button
-                onClick={searchInBrowser}
-                className="flex items-center gap-2 w-full px-2 py-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-              >
-                <Search className="w-4 h-4" />
-                Search for "{search}"
-              </button>
-            </CommandEmpty>
+            <CommandEmpty>No results found.</CommandEmpty>
+
+            {search.trim() && (
+              <CommandGroup heading="Search" forceMount>
+                <CommandItem forceMount onSelect={searchInBrowser} value={`search-${search}`}>
+                  <Search className="text-muted-foreground" />
+                  Search for &ldquo;{search.trim()}&rdquo;
+                </CommandItem>
+              </CommandGroup>
+            )}
 
             <CommandGroup heading="Actions">
               <CommandItem onSelect={() => runAction(() => useStore.getState().addTerminal())}>
@@ -214,9 +215,11 @@ export function CommandPalette() {
             {search.trim() && (agents.claude || agents.codex) && (
               <>
                 <CommandSeparator />
-                <CommandGroup heading="AI Agents">
+                <CommandGroup heading="AI Agents" forceMount>
                   {agents.claude && (
                     <CommandItem
+                      forceMount
+                      value={`ask-claude-${search}`}
                       onSelect={() =>
                         runAction(() => {
                           const escaped = search.trim().replace(/'/g, "'\\''")
@@ -235,6 +238,8 @@ export function CommandPalette() {
                   )}
                   {agents.codex && (
                     <CommandItem
+                      forceMount
+                      value={`ask-codex-${search}`}
                       onSelect={() =>
                         runAction(() => {
                           const escaped = search.trim().replace(/'/g, "'\\''")

@@ -58,6 +58,7 @@ export interface ProjectsState {
   fontSize?: number
   fontFamily?: string
   snapOnFocus?: boolean
+  tabSwitchMode?: 'recent' | 'chronological'
   searchEngine?: string
   homePage?: string
 }
@@ -147,6 +148,7 @@ export interface CellsAPI {
     onCloseTerminal(callback: () => void): () => void
     toggleMaximize(): Promise<void>
     pickFolder(): Promise<string | null>
+    getPathForFile(file: File): string
   }
 }
 

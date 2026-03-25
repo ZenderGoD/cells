@@ -31,6 +31,8 @@ pnpm install
 pnpm dev
 ```
 
+`pnpm dev` sets `CELLS_DEV_ROOT` to `~/.cells-dev/` by default, so local app state and Chromium data stay isolated from the installed app. Set `CELLS_DEV_ROOT` yourself if you want that dev-only root somewhere else.
+
 Useful commands:
 
 - `pnpm lint`

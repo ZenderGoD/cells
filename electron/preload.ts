@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { CellsAPI, ProjectsState } from '../src/types'
 
 const api: CellsAPI = {
@@ -127,6 +127,7 @@ const api: CellsAPI = {
     },
     toggleMaximize: () => ipcRenderer.invoke('app:toggle-maximize'),
     pickFolder: () => ipcRenderer.invoke('app:pick-folder'),
+    getPathForFile: (file: File) => webUtils.getPathForFile(file),
   },
   agent: {
     checkAvailable: () => ipcRenderer.invoke('agent:check-available'),

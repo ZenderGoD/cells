@@ -24,12 +24,14 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const fontSize = useStore((s) => s.fontSize)
   const fontFamily = useStore((s) => s.fontFamily)
   const snapOnFocus = useStore((s) => s.snapOnFocus)
+  const tabSwitchMode = useStore((s) => s.tabSwitchMode)
   const searchEngine = useStore((s) => s.searchEngine)
   const homePage = useStore((s) => s.homePage)
   const setTerminalTheme = useStore((s) => s.setTerminalTheme)
   const setFontSize = useStore((s) => s.setFontSize)
   const setFontFamily = useStore((s) => s.setFontFamily)
   const setSnapOnFocus = useStore((s) => s.setSnapOnFocus)
+  const setTabSwitchMode = useStore((s) => s.setTabSwitchMode)
   const setSearchEngine = useStore((s) => s.setSearchEngine)
   const setHomePage = useStore((s) => s.setHomePage)
 
@@ -142,6 +144,36 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
             <p className="text-[10px] text-muted-foreground/50 px-2.5 mt-1">
               Animate to a terminal when you click on it
             </p>
+            <div className="mt-2">
+              <label className="text-[10px] text-muted-foreground/50 px-2.5 block mb-1">
+                Ctrl+Tab order
+              </label>
+              <div className="space-y-0.5">
+                {[
+                  { value: 'recent' as const, label: 'Recent', desc: 'Switch by last focused' },
+                  {
+                    value: 'chronological' as const,
+                    label: 'Static',
+                    desc: 'Switch by creation order',
+                  },
+                ].map((mode) => (
+                  <button
+                    key={mode.value}
+                    onClick={() => setTabSwitchMode(mode.value)}
+                    className={cn(
+                      'flex items-center gap-2 w-full px-2.5 py-1.5 rounded-md text-xs transition-colors text-left',
+                      tabSwitchMode === mode.value
+                        ? 'bg-accent text-foreground'
+                        : 'hover:bg-muted text-muted-foreground',
+                    )}
+                  >
+                    <span className="flex-1">{mode.label}</span>
+                    <span className="text-[10px] text-muted-foreground/50">{mode.desc}</span>
+                    {tabSwitchMode === mode.value && <Check className="w-3 h-3 shrink-0" />}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
 
           {/* Browser */}

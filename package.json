@@ -1,6 +1,6 @@
 {
   "name": "cells",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "type": "module",
   "author": "Raj Sharma <r@raj.how>",
@@ -29,7 +29,7 @@
   "packageManager": "pnpm@10.6.3",
   "main": "dist-electron/main.js",
   "scripts": {
-    "dev": "vite",
+    "dev": "CELLS_DEV_ROOT=\"${CELLS_DEV_ROOT:-$HOME/.cells-dev}\" vite",
     "build": "pnpm typecheck && vite build",
     "typecheck": "pnpm typecheck:app && pnpm typecheck:electron",
     "typecheck:app": "tsc --noEmit --project tsconfig.json",

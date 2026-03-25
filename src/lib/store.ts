@@ -2,7 +2,10 @@ import { create } from 'zustand'
 import { nanoid } from 'nanoid'
 import type { BrowserNode, CanvasTransform, Project, ProjectsState, TerminalNode } from '../types'
 import { DEFAULT_THEME } from './terminal-themes'
-import { destroyCachedTerminal } from '@/components/terminal/cell-terminal'
+import {
+  destroyCachedTerminal,
+  applyThemeToAllTerminals,
+} from '@/components/terminal/cell-terminal'
 
 interface StoreState {
   // Project management
@@ -25,6 +28,7 @@ interface StoreState {
   snapPaused: boolean
   snapFast: boolean // hint for canvas to use fast spring
   snapOnFocus: boolean
+  tabSwitchMode: 'recent' | 'chronological'
   overlayOpen: boolean // true when popover/dialog is open — hides browser native views
   searchEngine: string
   homePage: string
@@ -62,6 +66,7 @@ interface StoreState {
   toggleSnap(): void
   setSnapPaused(paused: boolean): void
   setSnapOnFocus(enabled: boolean): void
+  setTabSwitchMode(mode: 'recent' | 'chronological'): void
 
   setCanvasTransform(transform: CanvasTransform): void
   zoomToFitAll(): void
@@ -166,6 +171,7 @@ export const useStore = create<StoreState>((set, get) => ({
   snapPaused: false,
   snapFast: false,
   snapOnFocus: true,
+  tabSwitchMode: 'recent',
   overlayOpen: false,
   searchEngine: DEFAULT_SEARCH_ENGINE,
   homePage: DEFAULT_HOME_PAGE,
@@ -175,6 +181,7 @@ export const useStore = create<StoreState>((set, get) => ({
 
   setTerminalTheme(name) {
     set({ terminalTheme: name })
+    applyThemeToAllTerminals(name)
     get().persist()
   },
   setFontSize(size) {
@@ -198,6 +205,7 @@ export const useStore = create<StoreState>((set, get) => ({
         fontSize: ps.fontSize || 13,
         fontFamily: ps.fontFamily || DEFAULT_FONT_FAMILY,
         snapOnFocus: ps.snapOnFocus ?? true,
+        tabSwitchMode: ps.tabSwitchMode || 'recent',
         searchEngine: ps.searchEngine || DEFAULT_SEARCH_ENGINE,
         homePage: ps.homePage || DEFAULT_HOME_PAGE,
       }
@@ -296,6 +304,7 @@ export const useStore = create<StoreState>((set, get) => ({
           fontSize: freshState.fontSize,
           fontFamily: freshState.fontFamily,
           snapOnFocus: freshState.snapOnFocus,
+          tabSwitchMode: freshState.tabSwitchMode,
           searchEngine: freshState.searchEngine,
           homePage: freshState.homePage,
         })
@@ -312,6 +321,7 @@ export const useStore = create<StoreState>((set, get) => ({
           fontSize: state.fontSize,
           fontFamily: state.fontFamily,
           snapOnFocus: state.snapOnFocus,
+          tabSwitchMode: state.tabSwitchMode,
           searchEngine: state.searchEngine,
           homePage: state.homePage,
         })
@@ -686,6 +696,11 @@ export const useStore = create<StoreState>((set, get) => ({
 
   setSnapOnFocus(enabled) {
     set({ snapOnFocus: enabled })
+    get().persist()
+  },
+
+  setTabSwitchMode(mode) {
+    set({ tabSwitchMode: mode })
     get().persist()
   },
 

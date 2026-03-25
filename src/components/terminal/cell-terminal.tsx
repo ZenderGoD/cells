@@ -1,7 +1,8 @@
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { init, Terminal, FitAddon } from 'ghostty-web'
 import { useStore, consumePendingCommand } from '@/lib/store'
 import { getTerminalTheme } from '@/lib/terminal-themes'
+import { cn } from '@/lib/utils'
 
 // Initialize WASM lazily on first terminal mount
 let ghosttyReady: Promise<void> | null = null
@@ -48,6 +49,14 @@ interface CachedTerminal {
 }
 const terminalCache = new Map<string, CachedTerminal>()
 
+/** Apply a theme to every cached terminal instance (mounted or not). */
+export function applyThemeToAllTerminals(themeName: string) {
+  const theme = buildTheme(themeName)
+  for (const [, cached] of terminalCache) {
+    cached.term.options.theme = theme
+  }
+}
+
 /** Call when a terminal is permanently removed (not just hidden). */
 export function destroyCachedTerminal(termId: string) {
   const cached = terminalCache.get(termId)
@@ -67,6 +76,49 @@ interface CellTerminalProps {
   onTitleChange?: (title: string) => void
 }
 
+function isEditableTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false
+  if (target.isContentEditable) return true
+  return Boolean(target.closest('input, textarea, [contenteditable="true"], [role="textbox"]'))
+}
+
+function shellEscapePath(filePath: string) {
+  if (/^[A-Za-z0-9_./-]+$/.test(filePath)) return filePath
+  return `'${filePath.replace(/'/g, `'\\''`)}'`
+}
+
+function parseUriList(uriList: string) {
+  return uriList
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#'))
+    .map((line) => {
+      try {
+        if (!line.startsWith('file://')) return ''
+        return decodeURIComponent(new URL(line).pathname)
+      } catch {
+        return ''
+      }
+    })
+    .filter(Boolean)
+}
+
+function getFilePaths(dataTransfer: DataTransfer) {
+  const filePaths = Array.from(dataTransfer.files)
+    .map((file) => {
+      try {
+        return window.cells.app.getPathForFile(file)
+      } catch {
+        return ''
+      }
+    })
+    .filter(Boolean)
+
+  if (filePaths.length > 0) return filePaths
+
+  return parseUriList(dataTransfer.getData('text/uri-list'))
+}
+
 export function CellTerminal({
   termId,
   width,
@@ -81,9 +133,24 @@ export function CellTerminal({
   const themeName = useStore((s) => s.terminalTheme)
   const fontSize = useStore((s) => s.fontSize)
   const fontFamily = useStore((s) => s.fontFamily)
+  const overlayOpen = useStore((s) => s.overlayOpen)
+  const focusTerminal = useStore((s) => s.focusTerminal)
   const themeNameRef = useRef(themeName)
   const fontSizeRef = useRef(fontSize)
   const fontFamilyRef = useRef(fontFamily)
+  const dragDepthRef = useRef(0)
+  const [dropActive, setDropActive] = useState(false)
+
+  const pasteToTerminal = useCallback(
+    (text: string) => {
+      const term = terminalRef.current
+      if (!term || !text) return
+      focusTerminal(termId)
+      term.focus()
+      term.paste(text)
+    },
+    [focusTerminal, termId],
+  )
 
   useEffect(() => {
     onTitleChangeRef.current = onTitleChange
@@ -92,6 +159,26 @@ export function CellTerminal({
     fontFamilyRef.current = fontFamily
   }, [onTitleChange, themeName, fontSize, fontFamily])
 
+  useEffect(() => {
+    if (!isFocused) return
+
+    const handlePaste = (event: ClipboardEvent) => {
+      const container = containerRef.current
+      const inThisTerminal = Boolean(
+        container && event.target instanceof Node && container.contains(event.target),
+      )
+      if (overlayOpen || (!inThisTerminal && isEditableTarget(event.target))) return
+      const text = event.clipboardData?.getData('text')
+      if (!text) return
+      event.preventDefault()
+      event.stopPropagation()
+      pasteToTerminal(text)
+    }
+
+    document.addEventListener('paste', handlePaste, true)
+    return () => document.removeEventListener('paste', handlePaste, true)
+  }, [isFocused, overlayOpen, pasteToTerminal])
+
   // Main lifecycle — create or reattach cached terminal
   useEffect(() => {
     let cancelled = false
@@ -99,6 +186,7 @@ export function CellTerminal({
 
     async function setup() {
       if (!container) return
+      const cleanups: Array<() => void> = []
 
       // Check cache first — reattach if exists
       const cached = terminalCache.get(termId)
@@ -146,7 +234,7 @@ export function CellTerminal({
       container.appendChild(wrapper)
 
       const term = new Terminal({
-        cursorBlink: true,
+        cursorBlink: false,
         cursorStyle: 'bar',
         fontSize: fontSizeRef.current,
         fontFamily: fontFamilyRef.current,
@@ -169,6 +257,10 @@ export function CellTerminal({
 
       if (term.textarea) {
         term.textarea.style.opacity = '0'
+        term.textarea.style.caretColor = 'transparent'
+        term.textarea.style.position = 'fixed'
+        term.textarea.style.left = '-9999px'
+        term.textarea.style.top = '-9999px'
       }
 
       term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
@@ -192,6 +284,15 @@ export function CellTerminal({
           if (metaShortcuts.includes(e.key)) return true
         }
         if (e.ctrlKey && e.key === 'Tab') return true
+        // Handle Cmd+V paste natively via clipboard API
+        if (e.metaKey && (e.key === 'v' || e.key === 'V')) {
+          e.preventDefault()
+          navigator.clipboard.readText().then((text) => {
+            if (text) window.cells.terminal.write(termId, text)
+          })
+          return true
+        }
+        // Handle Cmd+C copy — let ghostty-web handle selection copy
         return false
       })
 
@@ -209,7 +310,6 @@ export function CellTerminal({
       }
 
       // These listeners live in the cache — they persist across mount/unmount
-      const cleanups: Array<() => void> = []
       cleanups.push(
         term.onTitleChange((title) => {
           onTitleChangeRef.current?.(title || 'Terminal')
@@ -222,10 +322,19 @@ export function CellTerminal({
         }),
         window.cells.terminal.onExit((id) => {
           if (id === termId) {
-            term.write('\r\n\x1b[90m[session ended]\x1b[0m\r\n')
+            useStore.getState().removeTerminal(termId)
           }
         }),
       )
+
+      // Handle paste events from any source (Raycast, right-click, etc.)
+      const handlePaste = (e: ClipboardEvent) => {
+        e.preventDefault()
+        const text = e.clipboardData?.getData('text')
+        if (text) window.cells.terminal.write(termId, text)
+      }
+      wrapper.addEventListener('paste', handlePaste)
+      cleanups.push(() => wrapper.removeEventListener('paste', handlePaste))
 
       // Agent detection poll
       const agentPoll = setInterval(async () => {
@@ -284,7 +393,7 @@ export function CellTerminal({
     const term = terminalRef.current
     if (!term) return
 
-    term.renderer?.setTheme(buildTheme(themeName))
+    term.options.theme = buildTheme(themeName)
 
     const fontChanged = term.options.fontSize !== fontSize || term.options.fontFamily !== fontFamily
 
@@ -322,5 +431,67 @@ export function CellTerminal({
     return () => clearTimeout(timer)
   }, [width, height, termId])
 
-  return <div ref={containerRef} className="w-full h-full" />
+  return (
+    <div
+      ref={containerRef}
+      className="cell-terminal relative w-full h-full"
+      onPasteCapture={(event) => {
+        if (overlayOpen) return
+        const text = event.clipboardData.getData('text')
+        if (!text) return
+        event.preventDefault()
+        event.stopPropagation()
+        pasteToTerminal(text)
+      }}
+      onDragEnterCapture={(event) => {
+        if (!event.dataTransfer?.files?.length) return
+        event.preventDefault()
+        event.stopPropagation()
+        dragDepthRef.current += 1
+        setDropActive(true)
+      }}
+      onDragOverCapture={(event) => {
+        if (!event.dataTransfer) return
+        const filePaths = getFilePaths(event.dataTransfer)
+        if (filePaths.length === 0) return
+        event.preventDefault()
+        event.stopPropagation()
+        event.dataTransfer.dropEffect = 'copy'
+        if (!dropActive) setDropActive(true)
+      }}
+      onDragLeaveCapture={(event) => {
+        if (!event.dataTransfer?.files?.length) return
+        event.preventDefault()
+        event.stopPropagation()
+        dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
+        if (dragDepthRef.current === 0) {
+          setDropActive(false)
+        }
+      }}
+      onDropCapture={(event) => {
+        const dataTransfer = event.dataTransfer
+        dragDepthRef.current = 0
+        setDropActive(false)
+        if (!dataTransfer) return
+
+        const filePaths = getFilePaths(dataTransfer)
+        if (filePaths.length === 0) return
+
+        event.preventDefault()
+        event.stopPropagation()
+
+        const payload = `${filePaths.map(shellEscapePath).join(' ')} `
+        pasteToTerminal(payload)
+      }}
+    >
+      {dropActive && (
+        <div
+          className={cn(
+            'pointer-events-none absolute inset-0 z-20 rounded-lg border border-dashed',
+            'border-terminal-active/80 bg-terminal-active/10 shadow-[inset_0_0_0_1px_color-mix(in_oklch,var(--color-terminal-active)_45%,transparent)]',
+          )}
+        />
+      )}
+    </div>
+  )
 }

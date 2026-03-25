@@ -20,6 +20,51 @@ if (process.platform === 'darwin') {
   app.name = 'Cells'
 }
 
+const DEV_ROOT = process.env.CELLS_DEV_ROOT
+  ? path.resolve(process.env.CELLS_DEV_ROOT)
+  : path.join(app.getPath('home'), '.cells-dev')
+
+function ensureDir(dir: string) {
+  fs.mkdirSync(dir, { recursive: true })
+}
+
+function configureDevPaths() {
+  if (app.isPackaged) return
+
+  const devHomeDir = path.join(DEV_ROOT, 'home')
+  const devDataDir = path.join(DEV_ROOT, 'data')
+  const devConfigDir = path.join(DEV_ROOT, 'config')
+  const devUserDataDir = path.join(devDataDir, app.name)
+  const devSessionDataDir = path.join(devDataDir, `${app.name}-session`)
+  const devLogsDir = path.join(devDataDir, 'logs')
+
+  for (const dir of [
+    DEV_ROOT,
+    devHomeDir,
+    devDataDir,
+    devConfigDir,
+    devUserDataDir,
+    devSessionDataDir,
+    devLogsDir,
+  ]) {
+    ensureDir(dir)
+  }
+
+  process.env.CELLS_HOME_DIR = devHomeDir
+  process.env.CELLS_DATA_DIR = devDataDir
+  process.env.HOME = devHomeDir
+  process.env.XDG_CONFIG_HOME = devConfigDir
+  process.env.XDG_DATA_HOME = devDataDir
+
+  app.setPath('home', devHomeDir)
+  app.setPath('appData', devDataDir)
+  app.setPath('userData', devUserDataDir)
+  app.setPath('sessionData', devSessionDataDir)
+  app.setPath('logs', devLogsDir)
+}
+
+configureDevPaths()
+
 // Enable elastic overscroll (rubber-band bounce) like native Chrome on macOS
 app.commandLine.appendSwitch('enable-features', 'ElasticOverscroll')
 
@@ -76,7 +121,7 @@ function createWindow() {
 
 function ensureStateDir() {
   if (!fs.existsSync(STATE_DIR)) {
-    fs.mkdirSync(STATE_DIR, { recursive: true })
+    ensureDir(STATE_DIR)
   }
 }
 
