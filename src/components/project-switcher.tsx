@@ -238,7 +238,7 @@ export function ProjectSwitcher() {
           transition={{ duration: reducedMotion ? 0 : 0.12 }}
           className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none"
         >
-          <div className="bg-card/92 rounded-xl ring-1 ring-border/40 shadow-2xl p-3 pointer-events-auto max-w-[min(98vw,1360px)]">
+          <div className="bg-card/92 rounded-xl ring-1 ring-border/40 p-3 pointer-events-auto max-w-[min(98vw,1360px)]">
             <div className="px-1 pb-2 flex items-center justify-between">
               <span className="text-[10px] text-muted-foreground/35">Projects</span>
               <span className="text-[10px] text-muted-foreground/35">
@@ -260,7 +260,7 @@ export function ProjectSwitcher() {
                       className={cn(
                         'relative flex h-[132px] w-[188px] shrink-0 flex-col overflow-hidden rounded-lg bg-card text-left transition-all',
                         isSelected
-                          ? 'ring-2 ring-primary shadow-lg shadow-primary/10'
+                          ? 'ring-2 ring-primary'
                           : 'border border-border/30 hover:border-border/50',
                       )}
                     >

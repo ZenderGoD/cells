@@ -206,7 +206,7 @@ export function TerminalSwitcher() {
           transition={{ duration: reducedMotion ? 0 : 0.12 }}
           className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none"
         >
-          <div className="bg-card/92 rounded-xl ring-1 ring-border/40 shadow-2xl p-3 pointer-events-auto max-w-[min(98vw,1280px)]">
+          <div className="bg-card/92 rounded-xl ring-1 ring-border/40 p-3 pointer-events-auto max-w-[min(98vw,1280px)]">
             <div className="px-1 pb-2">
               <WindowOverviewMap
                 windows={canvasWindows}
@@ -231,7 +231,7 @@ export function TerminalSwitcher() {
                     className={cn(
                       'relative flex flex-col rounded-lg overflow-hidden transition-all shrink-0 bg-card',
                       i === selectedIndex
-                        ? 'ring-2 ring-primary shadow-lg shadow-primary/10'
+                        ? 'ring-2 ring-primary'
                         : 'border border-border/30',
                     )}
                     style={{ width: 160, height: 110 }}
