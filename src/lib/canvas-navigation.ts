@@ -13,6 +13,13 @@ export interface CanvasWindow {
   zIndex: number
 }
 
+export interface CanvasRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
 export const STATUS_BAR_HEIGHT = 40
 
 export function getCanvasWindows(
@@ -50,12 +57,42 @@ export function getWindowCenter(window: Pick<CanvasWindow, 'x' | 'y' | 'width' |
   }
 }
 
-export function getViewportCenter(transform: { x: number; y: number; scale: number }) {
-  const viewWidth = window.innerWidth
-  const viewHeight = window.innerHeight - STATUS_BAR_HEIGHT
+export function getViewportRect(
+  transform: { x: number; y: number; scale: number },
+  viewWidth = window.innerWidth,
+  viewHeight = window.innerHeight - STATUS_BAR_HEIGHT,
+): CanvasRect {
   return {
-    x: (-transform.x + viewWidth / 2) / transform.scale,
-    y: (-transform.y + viewHeight / 2) / transform.scale,
+    x: -transform.x / transform.scale,
+    y: -transform.y / transform.scale,
+    width: viewWidth / transform.scale,
+    height: viewHeight / transform.scale,
+  }
+}
+
+export function getViewportCenter(transform: { x: number; y: number; scale: number }) {
+  const viewport = getViewportRect(transform)
+  return {
+    x: viewport.x + viewport.width / 2,
+    y: viewport.y + viewport.height / 2,
+  }
+}
+
+export function getCanvasBounds(
+  rects: Array<Pick<CanvasRect, 'x' | 'y' | 'width' | 'height'>>,
+): CanvasRect | null {
+  if (rects.length === 0) return null
+
+  const minX = Math.min(...rects.map((rect) => rect.x))
+  const minY = Math.min(...rects.map((rect) => rect.y))
+  const maxX = Math.max(...rects.map((rect) => rect.x + rect.width))
+  const maxY = Math.max(...rects.map((rect) => rect.y + rect.height))
+
+  return {
+    x: minX,
+    y: minY,
+    width: maxX - minX,
+    height: maxY - minY,
   }
 }
 

@@ -5,7 +5,7 @@ import { ipcRenderer } from 'electron'
 
 let accDelta = 0
 let direction: 'back' | 'forward' | null = null
-let gesturePhase: 'idle' | 'scrolling' | 'overscrolling' = 'idle'
+let gesturePhase: 'idle' | 'scrolling' | 'overscrolling' | 'committed' = 'idle'
 let resetTimer: ReturnType<typeof setTimeout> | null = null
 
 function isAtLeftEdge(): boolean {
@@ -19,7 +19,7 @@ function isAtRightEdge(): boolean {
 }
 
 function resetGesture() {
-  if (gesturePhase === 'overscrolling') {
+  if (gesturePhase === 'overscrolling' || gesturePhase === 'committed') {
     ipcRenderer.send('browser:overscroll-update', 0, null)
   }
   accDelta = 0
@@ -27,11 +27,18 @@ function resetGesture() {
   gesturePhase = 'idle'
 }
 
-const THRESHOLD = 150 // px of accumulated delta to trigger navigation
+const THRESHOLD = 220 // px of accumulated delta to trigger navigation
 
 window.addEventListener(
   'wheel',
   (e) => {
+    // Already committed — absorb remaining momentum and reset shortly
+    if (gesturePhase === 'committed') {
+      if (resetTimer) clearTimeout(resetTimer)
+      resetTimer = setTimeout(resetGesture, 60)
+      return
+    }
+
     // Only care about horizontal-dominant gestures
     if (Math.abs(e.deltaX) < Math.abs(e.deltaY) * 1.5 && gesturePhase !== 'overscrolling') {
       return
@@ -71,17 +78,20 @@ window.addEventListener(
       return
     }
 
-    const progress = Math.min(accDelta / THRESHOLD, 1)
+    const progress = accDelta / THRESHOLD
     ipcRenderer.send('browser:overscroll-update', progress, direction)
 
-    // After momentum stops, either commit navigation or cancel
+    // When swipe ends (no more wheel events), commit or cancel
     resetTimer = setTimeout(() => {
       if (gesturePhase !== 'overscrolling') return
       if (progress >= 1 && direction) {
         ipcRenderer.send('browser:overscroll-navigate', direction)
+        gesturePhase = 'committed'
+        resetTimer = setTimeout(resetGesture, 80)
+      } else {
+        resetGesture()
       }
-      resetGesture()
-    }, 180)
+    }, 80)
   },
   { passive: true },
 )

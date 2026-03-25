@@ -16,6 +16,7 @@ interface TerminalNodeProps {
   scale: number
   cmdHeld: boolean
   isFocused: boolean
+  showFocusRing: boolean
   onDragStart: (id: string, startX: number, startY: number) => void
 }
 
@@ -24,6 +25,7 @@ export function TerminalNode({
   scale,
   cmdHeld,
   isFocused,
+  showFocusRing,
   onDragStart,
 }: TerminalNodeProps) {
   const { removeTerminal, resizeTerminal, moveTerminal, updateTerminalTitle, focusTerminal } =
@@ -142,7 +144,7 @@ export function TerminalNode({
       <div
         className={cn(
           'w-full h-full rounded-lg overflow-hidden transition-shadow duration-150',
-          isFocused ? 'terminal-focused' : 'terminal-unfocused',
+          isFocused ? (showFocusRing ? 'terminal-focused' : 'opacity-100') : 'terminal-unfocused',
         )}
       >
         <CellTerminal

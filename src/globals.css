@@ -160,7 +160,7 @@ body {
 
 /* Terminal focus/unfocus states */
 .terminal-focused {
-  box-shadow: 0 0 0 4px color-mix(in oklch, var(--color-terminal-active) 40%, transparent);
+  box-shadow: 0 0 0 4px var(--color-primary);
   opacity: 1;
 }
 

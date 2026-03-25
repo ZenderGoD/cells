@@ -11,6 +11,7 @@ const api: CellsAPI = {
     resize: (termId: string, cols: number, rows: number) =>
       ipcRenderer.send('terminal:resize', termId, cols, rows),
     getProcess: (termId: string) => ipcRenderer.invoke('terminal:get-process', termId),
+    getCodexTitle: (termId: string) => ipcRenderer.invoke('terminal:get-codex-title', termId),
     onData: (callback: (termId: string, data: string) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, termId: string, data: string) =>
         callback(termId, data)
@@ -108,11 +109,6 @@ const api: CellsAPI = {
       const handler = (_event: Electron.IpcRendererEvent, direction: 1 | -1) => callback(direction)
       ipcRenderer.on('browser:window-cycle', handler)
       return () => ipcRenderer.removeListener('browser:window-cycle', handler)
-    },
-    onProjectCycle: (callback: () => void) => {
-      const handler = () => callback()
-      ipcRenderer.on('browser:project-cycle', handler)
-      return () => ipcRenderer.removeListener('browser:project-cycle', handler)
     },
   },
   state: {
