@@ -1,12 +1,4 @@
-import {
-  app,
-  BrowserWindow,
-  WebContentsView,
-  ipcMain,
-  dialog,
-  Menu,
-  nativeImage,
-} from 'electron'
+import { app, BrowserWindow, WebContentsView, ipcMain, dialog, Menu, nativeImage } from 'electron'
 import path from 'path'
 import fs from 'fs'
 import { execFileSync } from 'child_process'
