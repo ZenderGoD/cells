@@ -1,9 +1,12 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v0.1.17)'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -15,6 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.tag }}
           fetch-depth: 0 # Full history for changelog generation
 
       - uses: pnpm/action-setup@v4
@@ -36,6 +40,7 @@ jobs:
         id: notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
           PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
 
@@ -61,7 +66,7 @@ jobs:
 
           const prevTag = process.env.PREV_TAG?.trim();
           const repo = process.env.GITHUB_REPOSITORY;
-          const refName = process.env.GITHUB_REF_NAME;
+          const refName = process.env.RELEASE_TAG;
           const sha = process.env.GITHUB_SHA;
           const changelog = readFileSync("changelog.md", "utf8").trim() || "- Maintenance and bug fixes";
           const fullChangelogUrl = prevTag
@@ -131,10 +136,11 @@ ${contributorSection}
       - name: Update GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
-          gh release edit "$GITHUB_REF_NAME" \
+          gh release edit "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --draft=false \
             --latest \
-            --title "${GITHUB_REF_NAME#v}" \
+            --title "${RELEASE_TAG#v}" \
             --notes-file release-notes.md

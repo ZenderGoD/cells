@@ -1,6 +1,6 @@
 ---
 name: release
-description: Create a new release version. Bumps package.json, commits, tags, and pushes to trigger the GitHub Actions release workflow. Ensures CI passes before tagging.
+description: Create a new release version. Bumps package.json, commits, tags, pushes, and triggers the GitHub Actions release workflow via workflow_dispatch. Ensures CI passes before releasing.
 ---
 
 # Release
@@ -19,7 +19,9 @@ Use this skill when the user asks to make a release, cut a version, or ship a ne
 
 5. **Commit and tag** — commit as `release: vX.Y.Z` and create tag `vX.Y.Z`.
 
-6. **Push commit and tag** — `git push && git push origin vX.Y.Z`. The GitHub Actions release workflow (`.github/workflows/release.yml`) triggers on `v*` tag push and handles building, signing, and publishing the release.
+6. **Push commit and tag** — `git push && git push origin vX.Y.Z`.
+
+7. **Trigger the release workflow** — run `gh workflow run release.yml -f tag=vX.Y.Z`. The release workflow is `workflow_dispatch` only — it does NOT run automatically on tag push. It builds, signs, and publishes the release via electron-builder.
 
 ## Critical Rules
 
@@ -27,4 +29,5 @@ Use this skill when the user asks to make a release, cut a version, or ship a ne
 - **NEVER** build locally with `electron-builder` — node-pty requires native rebuild that only CI has configured.
 - **ALWAYS** use `pnpm`, never `npm`.
 - **ALWAYS** wait for CI to be green before tagging. If CI fails, fix the issue first.
+- **ALWAYS** trigger the release workflow manually via `gh workflow run` after pushing the tag.
 - Feature commits should use descriptive messages (`feat:`, `fix:`, etc.) — the changelog filters out `release:` and `Merge` prefixes.
