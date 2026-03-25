@@ -1,6 +1,9 @@
 name: release
 
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       tag:
@@ -15,10 +18,13 @@ jobs:
   release:
     runs-on: macos-latest
 
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ inputs.tag || github.ref_name }}
           fetch-depth: 0 # Full history for changelog generation
 
       - uses: pnpm/action-setup@v4
@@ -40,7 +46,7 @@ jobs:
         id: notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
 
@@ -136,7 +142,7 @@ ${contributorSection}
       - name: Update GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           gh release edit "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
