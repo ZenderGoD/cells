@@ -44,17 +44,29 @@ export function BrowserNode({ browser, scale, cmdHeld, isFocused, onDragStart }:
   const createdRef = useRef(false)
   const lastBoundsRef = useRef({ x: 0, y: 0, width: 0, height: 0 })
 
+  // Snapshot url/history into refs so the create effect doesn't re-fire on navigation
+  const initialUrlRef = useRef(browser.url)
+  const initialHistoryRef = useRef(browser.history)
+  useEffect(() => {
+    initialUrlRef.current = browser.url
+  }, [browser.url])
+  useEffect(() => {
+    initialHistoryRef.current = browser.history
+  }, [browser.history])
+
   // Create or unpark WebContentsView on mount, park on unmount
   useEffect(() => {
     if (!activeProjectId || createdRef.current) return
     createdRef.current = true
+    const url = initialUrlRef.current
+    const history = initialHistoryRef.current
     window.cells.browser
-      .create(browser.id, activeProjectId, browser.history ?? undefined)
+      .create(browser.id, activeProjectId, history ?? undefined)
       .then((result: any) => {
         setViewReady(true)
         // Only navigate on fresh creation, not when unparking (live page is preserved)
-        if (!result?.unparked && browser.url) {
-          window.cells.browser.navigate(browser.id, browser.url, useStore.getState().searchEngine)
+        if (!result?.unparked && url) {
+          window.cells.browser.navigate(browser.id, url, useStore.getState().searchEngine)
         }
       })
     return () => {
@@ -63,7 +75,7 @@ export function BrowserNode({ browser, scale, cmdHeld, isFocused, onDragStart }:
       // Park instead of destroy — keeps the view alive for project switching
       window.cells.browser.park(browser.id)
     }
-  }, [browser.id, browser.url, browser.history, activeProjectId])
+  }, [browser.id, activeProjectId])
 
   // Listen for overscroll gestures (swipe back/forward)
   useEffect(() => {

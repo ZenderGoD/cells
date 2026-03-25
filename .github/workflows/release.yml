@@ -62,5 +62,7 @@ jobs:
 
           gh release edit "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
+            --draft=false \
+            --latest \
             --title "${GITHUB_REF_NAME#v}" \
             --notes-file release-notes.md
