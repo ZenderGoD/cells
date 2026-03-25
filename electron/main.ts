@@ -2,7 +2,7 @@ import { app, BrowserWindow, WebContentsView, ipcMain, dialog, Menu, nativeImage
 import path from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'fs'
-import { execFileSync } from 'child_process'
+import { execFileSync, spawnSync } from 'child_process'
 import { autoUpdater } from 'electron-updater'
 import { PtyManager } from './pty'
 
@@ -19,6 +19,79 @@ process.on('uncaughtException', (err: NodeJS.ErrnoException) => {
 if (process.platform === 'darwin') {
   app.name = 'Cells'
 }
+
+const shouldIgnoreGpuBlocklist = process.env.CELLS_IGNORE_GPU_BLOCKLIST === '1'
+if (shouldIgnoreGpuBlocklist) {
+  app.commandLine.appendSwitch('ignore-gpu-blocklist')
+}
+
+const DEV_ROOT = process.env.CELLS_DEV_ROOT
+  ? path.resolve(process.env.CELLS_DEV_ROOT)
+  : path.join(app.getPath('home'), '.cells-dev')
+
+function ensureDir(dir: string) {
+  fs.mkdirSync(dir, { recursive: true })
+}
+
+function decodePlistString(value: string) {
+  return value.replace(/&(#x?[0-9a-f]+|amp|lt|gt|quot|apos);/gi, (match, entity) => {
+    switch (entity.toLowerCase()) {
+      case 'amp':
+        return '&'
+      case 'lt':
+        return '<'
+      case 'gt':
+        return '>'
+      case 'quot':
+        return '"'
+      case 'apos':
+        return "'"
+      default: {
+        const isHex = entity[0] === '#' && (entity[1] === 'x' || entity[1] === 'X')
+        const numeric = isHex ? entity.slice(2) : entity.slice(1)
+        const codePoint = Number.parseInt(numeric, isHex ? 16 : 10)
+        return Number.isNaN(codePoint) ? match : String.fromCodePoint(codePoint)
+      }
+    }
+  })
+}
+
+function configureDevPaths() {
+  if (app.isPackaged) return
+
+  const devHomeDir = path.join(DEV_ROOT, 'home')
+  const devDataDir = path.join(DEV_ROOT, 'data')
+  const devConfigDir = path.join(DEV_ROOT, 'config')
+  const devUserDataDir = path.join(devDataDir, app.name)
+  const devSessionDataDir = path.join(devDataDir, `${app.name}-session`)
+  const devLogsDir = path.join(devDataDir, 'logs')
+
+  for (const dir of [
+    DEV_ROOT,
+    devHomeDir,
+    devDataDir,
+    devConfigDir,
+    devUserDataDir,
+    devSessionDataDir,
+    devLogsDir,
+  ]) {
+    ensureDir(dir)
+  }
+
+  process.env.CELLS_HOME_DIR = devHomeDir
+  process.env.CELLS_DATA_DIR = devDataDir
+  process.env.HOME = devHomeDir
+  process.env.XDG_CONFIG_HOME = devConfigDir
+  process.env.XDG_DATA_HOME = devDataDir
+
+  app.setPath('home', devHomeDir)
+  app.setPath('appData', devDataDir)
+  app.setPath('userData', devUserDataDir)
+  app.setPath('sessionData', devSessionDataDir)
+  app.setPath('logs', devLogsDir)
+}
+
+configureDevPaths()
 
 // Enable elastic overscroll (rubber-band bounce) like native Chrome on macOS
 app.commandLine.appendSwitch('enable-features', 'ElasticOverscroll')
@@ -50,6 +123,7 @@ function createWindow() {
     height: 900,
     minWidth: 800,
     minHeight: 600,
+    show: false, // Don't show until ready — avoids GPU race on launch
     transparent: true,
     vibrancy: 'under-window',
     visualEffectState: 'active',
@@ -65,6 +139,10 @@ function createWindow() {
     },
   })
 
+  mainWindow.once('ready-to-show', () => {
+    mainWindow?.show()
+  })
+
   if (process.env.VITE_DEV_SERVER_URL) {
     mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL)
   } else {
@@ -76,7 +154,7 @@ function createWindow() {
 
 function ensureStateDir() {
   if (!fs.existsSync(STATE_DIR)) {
-    fs.mkdirSync(STATE_DIR, { recursive: true })
+    ensureDir(STATE_DIR)
   }
 }
 
@@ -193,10 +271,14 @@ ipcMain.handle('terminal:get-process', (_event, termId: string) => {
 })
 
 ipcMain.handle('agent:check-available', () => {
+  // Use a login shell so the user's full PATH is available.
+  // Packaged macOS apps inherit a minimal PATH (/usr/bin:/bin) that
+  // won't include Homebrew, ~/.local/bin, nvm, etc.
+  const shell = process.env.SHELL || '/bin/zsh'
   const results: Record<string, boolean> = {}
   for (const name of ['claude', 'codex']) {
     try {
-      execFileSync('which', [name], { stdio: 'pipe' })
+      execFileSync(shell, ['-lc', `which ${name}`], { stdio: 'pipe', timeout: 3000 })
       results[name] = true
     } catch {
       results[name] = false
@@ -219,6 +301,54 @@ ipcMain.handle('app:pick-folder', async () => {
     properties: ['openDirectory'],
   })
   return result.canceled ? null : result.filePaths[0]
+})
+
+ipcMain.handle('app:save-temp-file', async (_event, data: Uint8Array, filename: string) => {
+  try {
+    const tmpDir = path.join(app.getPath('temp'), 'cells-clipboard')
+    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true })
+    const filePath = path.join(tmpDir, filename)
+    fs.writeFileSync(filePath, Buffer.from(data))
+    return filePath
+  } catch {
+    return null
+  }
+})
+
+// Read clipboard — returns file paths (copied files, images) or null (caller falls back to text)
+ipcMain.handle('app:paste-clipboard-files', async () => {
+  try {
+    const { clipboard } = await import('electron')
+
+    // 1. Check for file paths (copied files in Finder, etc.)
+    if (process.platform === 'darwin') {
+      const raw = clipboard.readBuffer('NSFilenamesPboardType')
+      if (raw.length > 0) {
+        const text = raw.toString('utf8')
+        const matches = text.match(/<string>(.*?)<\/string>/g)
+        if (matches && matches.length > 0) {
+          const filePaths = matches
+            .map((m) => decodePlistString(m.replace(/<\/?string>/g, '')))
+            .filter((p) => p && fs.existsSync(p))
+          if (filePaths.length > 0) return filePaths
+        }
+      }
+    }
+
+    // 2. Check for image in clipboard
+    const image = clipboard.readImage()
+    if (!image.isEmpty()) {
+      const tmpDir = path.join(app.getPath('temp'), 'cells-clipboard')
+      if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true })
+      const filePath = path.join(tmpDir, `clipboard-${Date.now()}.png`)
+      fs.writeFileSync(filePath, image.toPNG())
+      return [filePath]
+    }
+
+    return null
+  } catch {
+    return null
+  }
 })
 
 ipcMain.on('terminal:write', (_event, termId: string, data: string) => {
@@ -256,24 +386,47 @@ function setupBrowserView(browserId: string, view: WebContentsView) {
 
   // Intercept app shortcuts before the WebContentsView consumes them
   view.webContents.on('before-input-event', (_e, input) => {
-    // Forward Ctrl+Tab / Ctrl+Shift+Tab to main renderer for terminal switching
+    // Forward Ctrl+Tab / Ctrl+Shift+Tab explicitly because the first Tab press can
+    // be lost if we rely on synthetic key events during the browser→renderer focus hop.
     if (input.control && input.key === 'Tab') {
       _e.preventDefault()
-      if (!mainWindow?.isDestroyed()) {
+      if (input.type === 'keyDown' && !mainWindow?.isDestroyed()) {
         mainWindow?.webContents.focus()
-        mainWindow?.webContents.sendInputEvent({
-          type: input.type as 'keyDown' | 'keyUp',
-          keyCode: input.key,
-          modifiers: ['control' as const, ...(input.shift ? ['shift' as const] : [])],
-        })
+        if (input.shift) {
+          mainWindow?.webContents.send('browser:project-cycle')
+        } else {
+          mainWindow?.webContents.send('browser:window-cycle', 1)
+        }
       }
       return
     }
 
     if (input.meta || input.control) {
       const key = input.key.toLowerCase()
-      // Cmd+L → focus URL bar, Cmd+W → close, Cmd+T → command palette
-      if (['l', 'w', 't', 'q', ','].includes(key)) {
+      const shouldForwardShortcut =
+        [
+          'l',
+          'w',
+          't',
+          'q',
+          ',',
+          '[',
+          ']',
+          'h',
+          'j',
+          'k',
+          'arrowleft',
+          'arrowright',
+          'arrowup',
+          'arrowdown',
+        ].includes(key) ||
+        (key === 'o' && input.shift) ||
+        (key === 'c' && input.shift)
+      // Forward browser-level app shortcuts back to the renderer so they still work
+      // while the embedded page owns keyboard focus.
+      // Cmd+Shift+C is included so the renderer can copy the current URL and show
+      // inline feedback in the address bar instead of letting the page consume it.
+      if (shouldForwardShortcut) {
         _e.preventDefault()
         if (!mainWindow?.isDestroyed()) {
           mainWindow?.webContents.focus()
@@ -424,7 +577,10 @@ ipcMain.handle(
       savedHistories.set(browserId, {
         entries: history.entries,
         activeIndex: history.activeIndex,
-        navigatingFromSaved: false,
+        // The renderer will immediately reload the current entry after create().
+        // Treat that first navigation as a restore step so we don't clear the
+        // persisted history before the toolbar has a chance to use it.
+        navigatingFromSaved: true,
       })
     }
 
@@ -621,8 +777,59 @@ function cleanupBrowserViews() {
 autoUpdater.autoDownload = true
 autoUpdater.autoInstallOnAppQuit = true
 
+type UpdaterSupport = {
+  enabled: boolean
+  reason?: string
+  message?: string
+}
+
+let cachedUpdaterSupport: UpdaterSupport | null = null
+
+function resolveUpdaterSupport(): UpdaterSupport {
+  if (!app.isPackaged) {
+    return {
+      enabled: false,
+      reason: 'development-build',
+      message: 'Auto-update is only available in packaged releases.',
+    }
+  }
+
+  if (!fs.existsSync(path.join(process.resourcesPath, 'app-update.yml'))) {
+    return {
+      enabled: false,
+      reason: 'missing-feed-config',
+      message: 'Auto-update metadata is missing from this build.',
+    }
+  }
+
+  if (process.platform === 'darwin') {
+    const result = spawnSync('codesign', ['-dv', process.execPath], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`
+    if (/Signature=adhoc/i.test(output) || /TeamIdentifier=not set/i.test(output)) {
+      return {
+        enabled: false,
+        reason: 'unsigned-macos-build',
+        message:
+          'Auto-update requires a signed and notarized macOS build. Download new releases manually for now.',
+      }
+    }
+  }
+
+  return { enabled: true }
+}
+
+function getUpdaterSupport() {
+  if (!cachedUpdaterSupport) {
+    cachedUpdaterSupport = resolveUpdaterSupport()
+  }
+  return cachedUpdaterSupport
+}
+
 function shouldEnableAutoUpdates() {
-  return app.isPackaged && fs.existsSync(path.join(process.resourcesPath, 'app-update.yml'))
+  return getUpdaterSupport().enabled
 }
 
 function sendUpdateStatus(status: string, info?: any) {
@@ -679,19 +886,29 @@ function scheduleAutomaticUpdateChecks() {
 }
 
 ipcMain.handle('updater:check', () => {
+  if (!shouldEnableAutoUpdates()) {
+    sendUpdateStatus('unsupported', getUpdaterSupport())
+    return
+  }
   checkForAppUpdates()
 })
 
 ipcMain.handle('updater:download', () => {
+  if (!shouldEnableAutoUpdates()) return
   autoUpdater.downloadUpdate().catch(() => {})
 })
 
 ipcMain.handle('updater:install', () => {
+  if (!shouldEnableAutoUpdates()) return
   autoUpdater.quitAndInstall()
 })
 
 ipcMain.handle('updater:get-version', () => {
   return app.getVersion()
+})
+
+ipcMain.handle('updater:get-support', () => {
+  return getUpdaterSupport()
 })
 
 // ---------- App lifecycle ----------

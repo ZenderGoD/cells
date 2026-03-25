@@ -2,6 +2,7 @@ import { useEffect, useState, useRef, useCallback } from 'react'
 import { Globe, TerminalSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
+import { orderByRecent } from '@/lib/canvas-navigation'
 import { motion, AnimatePresence } from 'motion/react'
 
 interface SwitcherItem {
@@ -20,6 +21,7 @@ export function TerminalSwitcher() {
   const snapToTerminal = useStore((s) => s.snapToTerminal)
   const snapToBrowser = useStore((s) => s.snapToBrowser)
   const setOverlayOpen = useStore((s) => s.setOverlayOpen)
+  const tabSwitchMode = useStore((s) => s.tabSwitchMode)
 
   const [open, setOpenRaw] = useState(false)
   const setOpen = useCallback(
@@ -30,10 +32,17 @@ export function TerminalSwitcher() {
     [setOverlayOpen],
   )
   const [selectedIndex, setSelectedIndex] = useState(0)
+  const selectedIndexRef = useRef(0)
   const ctrlHeld = useRef(false)
 
+  const updateSelectedIndex = useCallback((next: number) => {
+    selectedIndexRef.current = next
+    setSelectedIndex(next)
+  }, [])
+
   // Build combined list of all switchable items
-  const items: SwitcherItem[] = [
+  const focusHistory = useStore((s) => s.focusHistory)
+  const chronologicalItems: SwitcherItem[] = [
     ...terminals.map((t) => ({
       id: t.id,
       title: t.title,
@@ -49,56 +58,83 @@ export function TerminalSwitcher() {
     })),
   ]
 
-  useEffect(() => {
-    const cycle = (direction: 1 | -1) => {
+  const currentId = focusedTerminalId || focusedBrowserId
+  const items =
+    tabSwitchMode === 'recent' && focusHistory.length > 0
+      ? orderByRecent(chronologicalItems, currentId, focusHistory)
+      : chronologicalItems
+
+  const cycle = useCallback(
+    (direction: 1 | -1) => {
       const state = useStore.getState()
-      const allItems = [
+      const chronologicalItems = [
         ...state.terminals.map((t) => ({ id: t.id, type: 'terminal' as const })),
         ...state.browsers.map((b) => ({ id: b.id, type: 'browser' as const })),
       ]
-      if (allItems.length < 2) return
+      if (chronologicalItems.length < 2) return
+
+      const currentId = state.focusedTerminalId || state.focusedBrowserId
+      const allItems =
+        state.tabSwitchMode === 'recent' && state.focusHistory.length > 0
+          ? orderByRecent(chronologicalItems, currentId, state.focusHistory)
+          : chronologicalItems
 
       if (!open) {
-        const currentId = state.focusedTerminalId || state.focusedBrowserId
-        const currentIdx = allItems.findIndex((item) => item.id === currentId)
-        const startIdx = currentIdx === -1 ? 0 : currentIdx
-        const nextIdx =
-          (((startIdx + direction) % allItems.length) + allItems.length) % allItems.length
-        setSelectedIndex(nextIdx)
+        if (state.tabSwitchMode === 'recent') {
+          // In recent mode, first Ctrl+Tab always goes to index 1 (previous window)
+          updateSelectedIndex(direction === 1 ? 1 : allItems.length - 1)
+        } else {
+          const currentIdx = allItems.findIndex((item) => item.id === currentId)
+          const startIdx = currentIdx === -1 ? 0 : currentIdx
+          const nextIdx =
+            (((startIdx + direction) % allItems.length) + allItems.length) % allItems.length
+          updateSelectedIndex(nextIdx)
+        }
         setOpen(true)
       } else {
-        setSelectedIndex((prev) => {
-          const next = (((prev + direction) % allItems.length) + allItems.length) % allItems.length
-          return next
-        })
+        updateSelectedIndex(
+          (((selectedIndexRef.current + direction) % allItems.length) + allItems.length) %
+            allItems.length,
+        )
       }
-    }
+    },
+    [open, setOpen, updateSelectedIndex],
+  )
 
-    const commit = () => {
-      const state = useStore.getState()
-      const allItems = [
-        ...state.terminals.map((t) => ({ id: t.id, type: 'terminal' as const })),
-        ...state.browsers.map((b) => ({ id: b.id, type: 'browser' as const })),
-      ]
-      if (allItems.length > 0 && open) {
-        const target = allItems[selectedIndex]
-        if (target) {
-          if (target.type === 'terminal') {
-            snapToTerminal(target.id)
-          } else {
-            snapToBrowser(target.id)
-          }
+  const commit = useCallback(() => {
+    const state = useStore.getState()
+    const chronologicalItems = [
+      ...state.terminals.map((t) => ({ id: t.id, type: 'terminal' as const })),
+      ...state.browsers.map((b) => ({ id: b.id, type: 'browser' as const })),
+    ]
+
+    const currentId = state.focusedTerminalId || state.focusedBrowserId
+    const allItems =
+      state.tabSwitchMode === 'recent' && state.focusHistory.length > 0
+        ? orderByRecent(chronologicalItems, currentId, state.focusHistory)
+        : chronologicalItems
+
+    if (allItems.length > 0 && open) {
+      const target = allItems[selectedIndexRef.current]
+      if (target) {
+        if (target.type === 'terminal') {
+          snapToTerminal(target.id)
+        } else {
+          snapToBrowser(target.id)
         }
       }
-      setOpen(false)
     }
+    setOpen(false)
+    updateSelectedIndex(0)
+  }, [open, setOpen, snapToBrowser, snapToTerminal, updateSelectedIndex])
 
+  useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Tab' && e.ctrlKey && !e.metaKey) {
+      if (e.key === 'Tab' && e.ctrlKey && !e.metaKey && !e.shiftKey) {
         e.preventDefault()
         e.stopPropagation()
         ctrlHeld.current = true
-        cycle(e.shiftKey ? -1 : 1)
+        cycle(1)
       }
 
       if (e.key === 'Control') {
@@ -128,7 +164,15 @@ export function TerminalSwitcher() {
       window.removeEventListener('keyup', handleKeyUp, true)
       window.removeEventListener('blur', handleBlur)
     }
-  }, [open, selectedIndex, snapToTerminal, snapToBrowser, setOpen])
+  }, [commit, cycle])
+
+  useEffect(() => {
+    const unsub = window.cells.browser.onWindowCycle((direction) => {
+      ctrlHeld.current = true
+      cycle(direction)
+    })
+    return unsub
+  }, [cycle])
 
   if (items.length < 2) return null
 

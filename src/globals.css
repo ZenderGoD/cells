@@ -229,15 +229,16 @@ body {
   height: 100% !important;
 }
 
-/* Hide ghostty-web's input textarea (prevents phantom caret) */
+/* Hide ghostty-web's input textarea visually but keep it interactive for paste */
 .terminal-node textarea,
-textarea[data-ghostty],
-.terminal-node [style*="position: absolute"] textarea {
+.cell-terminal textarea,
+textarea[data-ghostty] {
   caret-color: transparent !important;
   color: transparent !important;
   opacity: 0 !important;
-  position: fixed !important;
-  left: -9999px !important;
+  width: 1px !important;
+  height: 1px !important;
+  overflow: hidden !important;
   top: -9999px !important;
   width: 1px !important;
   height: 1px !important;

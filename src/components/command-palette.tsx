@@ -10,6 +10,7 @@ import {
   FolderOpen,
   Search,
   Sparkles,
+  LogOut,
 } from 'lucide-react'
 import {
   CommandDialog,
@@ -105,16 +106,37 @@ export function CommandPalette() {
             }}
           />
           <CommandList>
-            <CommandEmpty>
-              <button
-                onClick={searchInBrowser}
-                className="flex items-center gap-2 w-full px-2 py-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-              >
-                <Search className="w-4 h-4" />
-                Search for "{search}"
-              </button>
-            </CommandEmpty>
+            <CommandEmpty className="hidden" />
 
+            {search.trim() && (
+              <CommandGroup heading="Search" forceMount>
+                <CommandItem forceMount onSelect={searchInBrowser} value={`search-${search}`}>
+                  <Search className="text-muted-foreground" />
+                  Search for &ldquo;{search.trim()}&rdquo;
+                </CommandItem>
+              </CommandGroup>
+            )}
+
+            {projects.length > 1 && (
+              <>
+                <CommandGroup heading="Projects">
+                  {projects.map((p) => (
+                    <CommandItem
+                      key={p.id}
+                      onSelect={() => runAction(() => useStore.getState().switchProject(p.id))}
+                      data-checked={p.id === activeProjectId ? 'true' : undefined}
+                    >
+                      <FolderOpen className="text-muted-foreground" />
+                      {p.name}
+                      <span className="ml-auto text-[10px] text-muted-foreground/40 truncate max-w-40">
+                        {p.path}
+                      </span>
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+                <CommandSeparator />
+              </>
+            )}
             <CommandGroup heading="Actions">
               <CommandItem onSelect={() => runAction(() => useStore.getState().addTerminal())}>
                 <Plus className="text-muted-foreground" />
@@ -154,28 +176,12 @@ export function CommandPalette() {
                 <FolderOpen className="text-muted-foreground" />
                 New Project
               </CommandItem>
+              <CommandItem onSelect={() => window.close()}>
+                <LogOut className="text-muted-foreground" />
+                Quit Cells
+                <CommandShortcut>⌘Q</CommandShortcut>
+              </CommandItem>
             </CommandGroup>
-
-            {projects.length > 1 && (
-              <>
-                <CommandSeparator />
-                <CommandGroup heading="Projects">
-                  {projects.map((p) => (
-                    <CommandItem
-                      key={p.id}
-                      onSelect={() => runAction(() => useStore.getState().switchProject(p.id))}
-                      data-checked={p.id === activeProjectId ? 'true' : undefined}
-                    >
-                      <FolderOpen className="text-muted-foreground" />
-                      {p.name}
-                      <span className="ml-auto text-[10px] text-muted-foreground/40 truncate max-w-40">
-                        {p.path}
-                      </span>
-                    </CommandItem>
-                  ))}
-                </CommandGroup>
-              </>
-            )}
 
             {terminals.length > 0 && (
               <>
@@ -214,9 +220,11 @@ export function CommandPalette() {
             {search.trim() && (agents.claude || agents.codex) && (
               <>
                 <CommandSeparator />
-                <CommandGroup heading="AI Agents">
+                <CommandGroup heading="AI Agents" forceMount>
                   {agents.claude && (
                     <CommandItem
+                      forceMount
+                      value={`ask-claude-${search}`}
                       onSelect={() =>
                         runAction(() => {
                           const escaped = search.trim().replace(/'/g, "'\\''")
@@ -235,6 +243,8 @@ export function CommandPalette() {
                   )}
                   {agents.codex && (
                     <CommandItem
+                      forceMount
+                      value={`ask-codex-${search}`}
                       onSelect={() =>
                         runAction(() => {
                           const escaped = search.trim().replace(/'/g, "'\\''")

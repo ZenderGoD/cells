@@ -6,9 +6,16 @@ import { Button } from '@/components/ui/button'
 import { useStore } from '@/lib/store'
 import { terminalThemes } from '@/lib/terminal-themes'
 import { cn } from '@/lib/utils'
-import { SETTINGS_SHEET_CLASSNAMES } from './settings-layout'
 
-import { Dialog, DialogDescription, DialogHeader, DialogOverlay, DialogPortal, DialogTitle } from '../ui/dialog'
+import { SETTINGS_SHEET_CLASSNAMES } from './settings-layout'
+import {
+  Dialog,
+  DialogDescription,
+  DialogHeader,
+  DialogOverlay,
+  DialogPortal,
+  DialogTitle,
+} from '../ui/dialog'
 
 interface AppSettingsProps {
   open: boolean
@@ -41,6 +48,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const fontFamily = useStore((s) => s.fontFamily)
   const windowOpacity = useStore((s) => s.windowOpacity)
   const snapOnFocus = useStore((s) => s.snapOnFocus)
+  const tabSwitchMode = useStore((s) => s.tabSwitchMode)
   const searchEngine = useStore((s) => s.searchEngine)
   const homePage = useStore((s) => s.homePage)
   const setTerminalTheme = useStore((s) => s.setTerminalTheme)
@@ -48,6 +56,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const setFontFamily = useStore((s) => s.setFontFamily)
   const setWindowOpacity = useStore((s) => s.setWindowOpacity)
   const setSnapOnFocus = useStore((s) => s.setSnapOnFocus)
+  const setTabSwitchMode = useStore((s) => s.setTabSwitchMode)
   const setSearchEngine = useStore((s) => s.setSearchEngine)
   const setHomePage = useStore((s) => s.setHomePage)
 
@@ -88,7 +97,9 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                 )}
               >
                 <div className="text-sm font-medium">{section.label}</div>
-                <div className="mt-1 text-[11px] leading-4 text-muted-foreground/75">{section.description}</div>
+                <div className="mt-1 text-[11px] leading-4 text-muted-foreground/75">
+                  {section.description}
+                </div>
               </button>
             ))}
           </nav>
@@ -143,7 +154,9 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                   <SettingsGroup title="Typography" description="Tune the terminal reading surface.">
                     <div className="space-y-4">
                       <div>
-                        <label className="mb-2 block text-xs font-medium text-muted-foreground">Font Size</label>
+                        <label className="mb-2 block text-xs font-medium text-muted-foreground">
+                          Font Size
+                        </label>
                         <div className="flex gap-1">
                           {FONT_SIZES.map((size) => (
                             <button
@@ -163,7 +176,9 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                       </div>
 
                       <div>
-                        <label className="mb-2 block text-xs font-medium text-muted-foreground">Font</label>
+                        <label className="mb-2 block text-xs font-medium text-muted-foreground">
+                          Font
+                        </label>
                         <div className="space-y-1">
                           {FONT_FAMILIES.map((font) => (
                             <button
@@ -227,6 +242,45 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                     <p className="mt-1 px-2.5 text-[10px] text-muted-foreground/60">
                       Animate to a terminal when you click on it.
                     </p>
+
+                    <div className="pt-3">
+                      <label className="mb-2 block px-2.5 text-[10px] text-muted-foreground/60">
+                        Ctrl+Tab order
+                      </label>
+                      <div className="space-y-1">
+                        {[
+                          {
+                            value: 'chronological' as const,
+                            label: 'Static',
+                            description: 'Switch by creation order',
+                          },
+                          {
+                            value: 'recent' as const,
+                            label: 'Recent',
+                            description: 'Switch by last focused',
+                          },
+                        ].map((mode) => (
+                          <button
+                            key={mode.value}
+                            onClick={() => setTabSwitchMode(mode.value)}
+                            className={cn(
+                              'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors',
+                              tabSwitchMode === mode.value
+                                ? 'bg-accent text-foreground'
+                                : 'text-muted-foreground hover:bg-muted',
+                            )}
+                          >
+                            <span className="flex-1">{mode.label}</span>
+                            <span className="text-[10px] text-muted-foreground/50">
+                              {mode.description}
+                            </span>
+                            {tabSwitchMode === mode.value ? (
+                              <Check className="h-3 w-3 shrink-0" />
+                            ) : null}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                   </SettingsGroup>
                 </div>
               ) : null}
@@ -252,7 +306,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                           )}
                         >
                           <span className="flex-1">{engine.label}</span>
-                          {searchEngine === engine.value && <Check className="h-3 w-3 shrink-0" />}
+                          {searchEngine === engine.value ? <Check className="h-3 w-3 shrink-0" /> : null}
                         </button>
                       ))}
                     </div>
@@ -329,11 +383,17 @@ function UpdateSection() {
   const [version, setVersion] = useState('')
   const [status, setStatus] = useState<string>('idle')
   const [updateInfo, setUpdateInfo] = useState<any>(null)
+  const [support, setSupport] = useState<{
+    enabled: boolean
+    reason?: string
+    message?: string
+  } | null>(null)
 
   useEffect(() => {
     window.cells.updater.getVersion().then(setVersion)
-    const unsub = window.cells.updater.onStatus((s, info) => {
-      setStatus(s)
+    window.cells.updater.getSupport().then(setSupport)
+    const unsub = window.cells.updater.onStatus((nextStatus, info) => {
+      setStatus(nextStatus)
       if (info) setUpdateInfo(info)
     })
     return unsub
@@ -350,7 +410,9 @@ function UpdateSection() {
         <div className="rounded-md bg-muted/30 px-2.5 py-2">
           <div className="flex items-center justify-between">
             <span className="text-xs text-foreground">Cells v{version}</span>
-            {status === 'idle' || status === 'up-to-date' || status === 'error' ? (
+            {support && !support.enabled ? (
+              <span className="text-[10px] text-muted-foreground">Manual updates only</span>
+            ) : status === 'idle' || status === 'up-to-date' || status === 'error' ? (
               <button
                 onClick={handleCheck}
                 className="flex items-center gap-1.5 text-[10px] text-muted-foreground transition-colors hover:text-foreground"
@@ -388,6 +450,9 @@ function UpdateSection() {
           </div>
           {status === 'up-to-date' ? (
             <p className="mt-2 text-[10px] text-muted-foreground/50">You're on the latest version.</p>
+          ) : null}
+          {support && !support.enabled ? (
+            <p className="mt-2 text-[10px] text-muted-foreground/60">{support.message}</p>
           ) : null}
           {status === 'error' ? (
             <p className="mt-2 text-[10px] text-red-400/70">Failed to check: {updateInfo?.message}</p>

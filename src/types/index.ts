@@ -59,6 +59,7 @@ export interface ProjectsState {
   fontFamily?: string
   windowOpacity?: number
   snapOnFocus?: boolean
+  tabSwitchMode?: 'recent' | 'chronological'
   searchEngine?: string
   homePage?: string
 }
@@ -92,6 +93,11 @@ export interface CellsAPI {
     checkAvailable(): Promise<Record<string, boolean>>
   }
   updater: {
+    getSupport(): Promise<{
+      enabled: boolean
+      reason?: string
+      message?: string
+    }>
     check(): Promise<void>
     download(): Promise<void>
     install(): Promise<void>
@@ -136,6 +142,8 @@ export interface CellsAPI {
     onOverscroll(
       callback: (browserId: string, progress: number, direction: string | null) => void,
     ): () => void
+    onWindowCycle(callback: (direction: 1 | -1) => void): () => void
+    onProjectCycle(callback: () => void): () => void
   }
   app: {
     onBeforeQuit(callback: () => void): () => void
@@ -143,6 +151,9 @@ export interface CellsAPI {
     onCloseTerminal(callback: () => void): () => void
     toggleMaximize(): Promise<void>
     pickFolder(): Promise<string | null>
+    getPathForFile(file: File): string
+    saveTempFile(data: Uint8Array, filename: string): Promise<string | null>
+    pasteClipboardFiles(): Promise<string[] | null>
   }
 }
 

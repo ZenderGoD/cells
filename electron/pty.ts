@@ -4,7 +4,8 @@ import * as pty from 'node-pty'
 const HOME_DIR = os.homedir()
 const DEFAULT_SHELL = process.env.SHELL || '/bin/zsh'
 
-/** Strip Electron/Vite/Node dev variables so they don't leak into terminals */
+/** Strip Electron/Vite/Node dev variables so they don't leak into terminals.
+ *  HOME stays as the real user home — CELLS_HOME_DIR is only for app config storage. */
 function cleanEnv(): Record<string, string> {
   const env = { ...process.env } as Record<string, string>
   for (const key of Object.keys(env)) {
@@ -12,12 +13,21 @@ function cleanEnv(): Record<string, string> {
       key.startsWith('ELECTRON') ||
       key.startsWith('VITE') ||
       key.startsWith('CHROME_') ||
-      key.startsWith('ORIGINAL_XDG_')
+      key.startsWith('ORIGINAL_XDG_') ||
+      key.startsWith('CELLS_')
     ) {
       delete env[key]
     }
   }
   delete env['NODE_OPTIONS']
+  // Restore real user paths — don't leak dev sandbox into terminal sessions
+  env.HOME = HOME_DIR
+  delete env['XDG_CONFIG_HOME']
+  delete env['XDG_DATA_HOME']
+  // Ensure full color support
+  env.COLORTERM = 'truecolor'
+  // Don't claim to be native ghostty — ghostty-web (WASM) has different capabilities
+  delete env['TERM_PROGRAM']
   return env
 }
 

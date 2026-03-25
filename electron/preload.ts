@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { CellsAPI, ProjectsState } from '../src/types'
 
 const api: CellsAPI = {
@@ -104,6 +104,16 @@ const api: CellsAPI = {
       ipcRenderer.on('browser:overscroll', handler)
       return () => ipcRenderer.removeListener('browser:overscroll', handler)
     },
+    onWindowCycle: (callback: (direction: 1 | -1) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, direction: 1 | -1) => callback(direction)
+      ipcRenderer.on('browser:window-cycle', handler)
+      return () => ipcRenderer.removeListener('browser:window-cycle', handler)
+    },
+    onProjectCycle: (callback: () => void) => {
+      const handler = () => callback()
+      ipcRenderer.on('browser:project-cycle', handler)
+      return () => ipcRenderer.removeListener('browser:project-cycle', handler)
+    },
   },
   state: {
     load: () => ipcRenderer.invoke('state:load'),
@@ -127,6 +137,11 @@ const api: CellsAPI = {
     },
     toggleMaximize: () => ipcRenderer.invoke('app:toggle-maximize'),
     pickFolder: () => ipcRenderer.invoke('app:pick-folder'),
+    getPathForFile: (file: File) => webUtils.getPathForFile(file),
+    saveTempFile: (data: Uint8Array, filename: string) =>
+      ipcRenderer.invoke('app:save-temp-file', data, filename) as Promise<string | null>,
+    pasteClipboardFiles: () =>
+      ipcRenderer.invoke('app:paste-clipboard-files') as Promise<string[] | null>,
   },
   agent: {
     checkAvailable: () => ipcRenderer.invoke('agent:check-available'),
@@ -136,6 +151,12 @@ const api: CellsAPI = {
     download: () => ipcRenderer.invoke('updater:download'),
     install: () => ipcRenderer.invoke('updater:install'),
     getVersion: () => ipcRenderer.invoke('updater:get-version') as Promise<string>,
+    getSupport: () =>
+      ipcRenderer.invoke('updater:get-support') as Promise<{
+        enabled: boolean
+        reason?: string
+        message?: string
+      }>,
     onStatus: (callback: (status: string, info?: any) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, status: string, info?: any) =>
         callback(status, info)

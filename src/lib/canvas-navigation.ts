@@ -1,0 +1,145 @@
+import type { BrowserNode, TerminalNode } from '../types'
+
+export type CanvasDirection = 'left' | 'right' | 'up' | 'down'
+
+export interface CanvasWindow {
+  id: string
+  type: 'terminal' | 'browser'
+  title: string
+  x: number
+  y: number
+  width: number
+  height: number
+  zIndex: number
+}
+
+export const STATUS_BAR_HEIGHT = 40
+
+export function getCanvasWindows(
+  terminals: TerminalNode[],
+  browsers: BrowserNode[],
+): CanvasWindow[] {
+  return [
+    ...terminals.map((terminal, index) => ({
+      id: terminal.id,
+      type: 'terminal' as const,
+      title: terminal.title,
+      x: terminal.x,
+      y: terminal.y,
+      width: terminal.width,
+      height: terminal.height,
+      zIndex: terminal.zIndex ?? index + 1,
+    })),
+    ...browsers.map((browser, index) => ({
+      id: browser.id,
+      type: 'browser' as const,
+      title: browser.title || browser.url || 'New Tab',
+      x: browser.x,
+      y: browser.y,
+      width: browser.width,
+      height: browser.height,
+      zIndex: browser.zIndex ?? index + 1,
+    })),
+  ]
+}
+
+export function getWindowCenter(window: Pick<CanvasWindow, 'x' | 'y' | 'width' | 'height'>) {
+  return {
+    x: window.x + window.width / 2,
+    y: window.y + window.height / 2,
+  }
+}
+
+export function getViewportCenter(transform: { x: number; y: number; scale: number }) {
+  const viewWidth = window.innerWidth
+  const viewHeight = window.innerHeight - STATUS_BAR_HEIGHT
+  return {
+    x: (-transform.x + viewWidth / 2) / transform.scale,
+    y: (-transform.y + viewHeight / 2) / transform.scale,
+  }
+}
+
+export function getClosestWindow(
+  windows: CanvasWindow[],
+  origin: { x: number; y: number },
+  excludeId?: string | null,
+) {
+  let best: CanvasWindow | null = null
+  let bestDistance = Infinity
+
+  for (const window of windows) {
+    if (window.id === excludeId) continue
+    const center = getWindowCenter(window)
+    const dx = center.x - origin.x
+    const dy = center.y - origin.y
+    const distance = dx * dx + dy * dy
+    if (distance < bestDistance) {
+      bestDistance = distance
+      best = window
+    }
+  }
+
+  return best
+}
+
+export function getDirectionalWindow(
+  windows: CanvasWindow[],
+  direction: CanvasDirection,
+  origin: { x: number; y: number },
+  excludeId?: string | null,
+) {
+  let best: CanvasWindow | null = null
+  let bestScore = Infinity
+
+  for (const window of windows) {
+    if (window.id === excludeId) continue
+
+    const center = getWindowCenter(window)
+    const dx = center.x - origin.x
+    const dy = center.y - origin.y
+
+    const primary =
+      direction === 'left' ? -dx : direction === 'right' ? dx : direction === 'up' ? -dy : dy
+    if (primary <= 24) continue
+
+    const cross = direction === 'left' || direction === 'right' ? Math.abs(dy) : Math.abs(dx)
+    const score = Math.hypot(primary, cross) + cross * 0.75
+
+    if (score < bestScore) {
+      bestScore = score
+      best = window
+    }
+  }
+
+  return best
+}
+
+export function orderByRecent<T extends { id: string }>(
+  items: T[],
+  currentId: string | null,
+  focusHistory: string[],
+) {
+  if (items.length === 0) return items
+
+  const itemMap = new Map(items.map((item) => [item.id, item]))
+  const ordered: T[] = []
+
+  if (currentId && itemMap.has(currentId)) {
+    ordered.push(itemMap.get(currentId)!)
+    itemMap.delete(currentId)
+  }
+
+  for (let index = focusHistory.length - 1; index >= 0; index -= 1) {
+    const id = focusHistory[index]
+    if (!itemMap.has(id)) continue
+    ordered.push(itemMap.get(id)!)
+    itemMap.delete(id)
+  }
+
+  for (const item of items) {
+    if (!itemMap.has(item.id)) continue
+    ordered.push(item)
+  }
+
+  return ordered
+}
