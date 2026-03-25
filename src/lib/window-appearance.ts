@@ -30,7 +30,10 @@ export function normalizeWindowAppearance(
 export function buildWindowAppearanceStyle(
   value: WindowAppearanceSettings,
 ): CSSProperties &
-  Record<'--window-surface-opacity' | '--canvas-surface-opacity' | '--canvas-grid-opacity', string> {
+  Record<
+    '--window-surface-opacity' | '--canvas-surface-opacity' | '--canvas-grid-opacity',
+    string
+  > {
   const normalized = normalizeWindowAppearance(value)
   const opacityFactor = normalized.windowOpacity / 100
 

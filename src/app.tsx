@@ -122,14 +122,20 @@ export function App() {
 
   if (projects.length === 0) {
     return (
-      <div className="app-shell h-full ring-1 ring-terminal-active/30 rounded-lg overflow-hidden" style={shellStyle}>
+      <div
+        className="app-shell h-full ring-1 ring-terminal-active/30 rounded-lg overflow-hidden"
+        style={shellStyle}
+      >
         <Onboarding />
       </div>
     )
   }
 
   return (
-    <div className="app-shell h-full flex flex-col ring-1 ring-terminal-active/30 rounded-lg overflow-hidden" style={shellStyle}>
+    <div
+      className="app-shell h-full flex flex-col ring-1 ring-terminal-active/30 rounded-lg overflow-hidden"
+      style={shellStyle}
+    >
       <InfiniteCanvas />
       <StatusBar />
       <CommandPalette />

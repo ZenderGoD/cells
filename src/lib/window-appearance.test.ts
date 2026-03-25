@@ -1,11 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-const {
-  DEFAULT_WINDOW_APPEARANCE,
-  buildWindowAppearanceStyle,
-  normalizeWindowAppearance,
-} = await import(new URL('./window-appearance.ts', import.meta.url).href)
+const { DEFAULT_WINDOW_APPEARANCE, buildWindowAppearanceStyle, normalizeWindowAppearance } =
+  await import(new URL('./window-appearance.ts', import.meta.url).href)
 
 test('normalizeWindowAppearance clamps stored values into the supported slider range', () => {
   const normalized = normalizeWindowAppearance({

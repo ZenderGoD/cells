@@ -141,9 +141,18 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                           )}
                         >
                           <div className="flex shrink-0 gap-0.5">
-                            <div className="h-2 w-2 rounded-full" style={{ background: theme.background }} />
-                            <div className="h-2 w-2 rounded-full" style={{ background: theme.green }} />
-                            <div className="h-2 w-2 rounded-full" style={{ background: theme.blue }} />
+                            <div
+                              className="h-2 w-2 rounded-full"
+                              style={{ background: theme.background }}
+                            />
+                            <div
+                              className="h-2 w-2 rounded-full"
+                              style={{ background: theme.green }}
+                            />
+                            <div
+                              className="h-2 w-2 rounded-full"
+                              style={{ background: theme.blue }}
+                            />
                           </div>
                           <span className="truncate">{theme.name}</span>
                         </button>
@@ -151,7 +160,10 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                     </div>
                   </SettingsGroup>
 
-                  <SettingsGroup title="Typography" description="Tune the terminal reading surface.">
+                  <SettingsGroup
+                    title="Typography"
+                    description="Tune the terminal reading surface."
+                  >
                     <div className="space-y-4">
                       <div>
                         <label className="mb-2 block text-xs font-medium text-muted-foreground">
@@ -219,7 +231,10 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
 
               {activeSection === 'canvas' ? (
                 <div className="space-y-6">
-                  <SettingsGroup title="Canvas Motion" description="Control how focus snaps around the workspace.">
+                  <SettingsGroup
+                    title="Canvas Motion"
+                    description="Control how focus snaps around the workspace."
+                  >
                     <button
                       onClick={() => setSnapOnFocus(!snapOnFocus)}
                       className="flex w-full items-center justify-between rounded-md px-2.5 py-2 text-xs transition-colors hover:bg-muted"
@@ -287,7 +302,10 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
 
               {activeSection === 'browser' ? (
                 <div className="space-y-6">
-                  <SettingsGroup title="Search" description="Choose the default search engine for browser nodes.">
+                  <SettingsGroup
+                    title="Search"
+                    description="Choose the default search engine for browser nodes."
+                  >
                     <div className="space-y-1">
                       {[
                         { label: 'Google', value: 'https://www.google.com/search?q=%s' },
@@ -306,13 +324,18 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                           )}
                         >
                           <span className="flex-1">{engine.label}</span>
-                          {searchEngine === engine.value ? <Check className="h-3 w-3 shrink-0" /> : null}
+                          {searchEngine === engine.value ? (
+                            <Check className="h-3 w-3 shrink-0" />
+                          ) : null}
                         </button>
                       ))}
                     </div>
                   </SettingsGroup>
 
-                  <SettingsGroup title="New Tab" description="Set an optional home page for new browser nodes.">
+                  <SettingsGroup
+                    title="New Tab"
+                    description="Set an optional home page for new browser nodes."
+                  >
                     <input
                       type="text"
                       value={homePage}
@@ -344,7 +367,9 @@ function SettingsGroup({ title, description, children }: SettingsGroupProps) {
     <section className="rounded-2xl border border-border/60 bg-muted/12 p-5">
       <div className="mb-4">
         <h3 className="text-base font-medium text-foreground">{title}</h3>
-        {description ? <p className="mt-1 text-sm leading-6 text-muted-foreground">{description}</p> : null}
+        {description ? (
+          <p className="mt-1 text-sm leading-6 text-muted-foreground">{description}</p>
+        ) : null}
       </div>
       {children}
     </section>
@@ -449,13 +474,17 @@ function UpdateSection() {
             ) : null}
           </div>
           {status === 'up-to-date' ? (
-            <p className="mt-2 text-[10px] text-muted-foreground/50">You're on the latest version.</p>
+            <p className="mt-2 text-[10px] text-muted-foreground/50">
+              You're on the latest version.
+            </p>
           ) : null}
           {support && !support.enabled ? (
             <p className="mt-2 text-[10px] text-muted-foreground/60">{support.message}</p>
           ) : null}
           {status === 'error' ? (
-            <p className="mt-2 text-[10px] text-red-400/70">Failed to check: {updateInfo?.message}</p>
+            <p className="mt-2 text-[10px] text-red-400/70">
+              Failed to check: {updateInfo?.message}
+            </p>
           ) : null}
         </div>
       </SettingsGroup>
