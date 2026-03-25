@@ -29,8 +29,14 @@ export function BrowserNode({
   isFocused,
   onDragStart,
 }: BrowserNodeProps) {
-  const { resizeBrowser, moveBrowser, updateBrowserUrl, updateBrowserTitle, addBrowserWithUrl } =
-    useStore()
+  const {
+    resizeBrowser,
+    moveBrowser,
+    updateBrowserUrl,
+    updateBrowserTitle,
+    addBrowserWithUrl,
+    focusBrowser,
+  } = useStore()
   const activeProjectId = useStore((s) => s.activeProjectId)
   const overlayOpen = useStore((s) => s.overlayOpen)
   const canvas = useStore((s) => s.canvas)
@@ -309,12 +315,15 @@ export function BrowserNode({
 
   const handleNodeMouseDown = useCallback(
     (e: MouseEvent) => {
-      if (!selectionMode) return
+      if (!selectionMode) {
+        focusBrowser(browser.id)
+        return
+      }
       e.preventDefault()
       e.stopPropagation()
       onDragStart(browser.id, 'browser', e.clientX, e.clientY)
     },
-    [selectionMode, browser.id, onDragStart],
+    [focusBrowser, selectionMode, browser.id, onDragStart],
   )
 
   const zBase = browser.pinned ? 10000 : 0
