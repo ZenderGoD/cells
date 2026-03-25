@@ -4,6 +4,7 @@ import { Check, Download, Loader2, RefreshCw } from 'lucide-react'
 import { useStore } from '@/lib/store'
 import { terminalThemes } from '@/lib/terminal-themes'
 import { cn } from '@/lib/utils'
+import { SETTINGS_SHEET_CLASSNAMES } from './settings-layout'
 
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../ui/dialog'
 
@@ -53,41 +54,54 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
     [activeSection],
   )
 
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (nextOpen) {
+      setActiveSection('appearance')
+    }
+    onOpenChange(nextOpen)
+  }
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent showCloseButton={false} className="w-[min(960px,calc(100%-2rem))] max-w-[960px] p-0">
-        <div className="grid min-h-[620px] grid-cols-[220px_minmax(0,1fr)] overflow-hidden rounded-xl bg-popover">
-          <aside className="border-r border-border/60 bg-muted/18 px-4 py-4">
-            <DialogHeader className="px-2 pb-3">
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogContent showCloseButton={false} className={SETTINGS_SHEET_CLASSNAMES.panel}>
+        <div className={SETTINGS_SHEET_CLASSNAMES.frame}>
+          <aside className={SETTINGS_SHEET_CLASSNAMES.sidebar}>
+            <DialogHeader className="px-1 pb-5">
               <DialogTitle>Settings</DialogTitle>
-              <DialogDescription>Configure Cells without digging through one long page.</DialogDescription>
+              <DialogDescription>Configure Cells from a dedicated control rail.</DialogDescription>
             </DialogHeader>
 
-            <nav className="space-y-1">
+            <nav className="space-y-1.5">
               {SETTINGS_SECTIONS.map((section) => (
                 <button
                   key={section.id}
                   type="button"
                   onClick={() => setActiveSection(section.id)}
                   className={cn(
-                    'w-full rounded-lg px-3 py-2 text-left transition-colors',
-                    activeSection === section.id ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
+                    'w-full rounded-xl border px-3.5 py-3 text-left transition-colors',
+                    activeSection === section.id
+                      ? 'border-border/70 bg-accent text-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]'
+                      : 'border-transparent text-muted-foreground hover:border-border/40 hover:bg-muted/40 hover:text-foreground',
                   )}
                 >
                   <div className="text-sm font-medium">{section.label}</div>
-                  <div className="mt-0.5 text-[11px] text-muted-foreground/75">{section.description}</div>
+                  <div className="mt-1 text-[11px] leading-4 text-muted-foreground/75">{section.description}</div>
                 </button>
               ))}
             </nav>
           </aside>
 
-          <section className="min-w-0 px-6 py-5">
-            <header className="border-b border-border/60 pb-4">
-              <h2 className="text-xl font-semibold text-foreground">{activeSectionMeta.label}</h2>
-              <p className="mt-1 text-sm text-muted-foreground">{activeSectionMeta.description}</p>
+          <section className={SETTINGS_SHEET_CLASSNAMES.contentShell}>
+            <header className="border-b border-border/60 px-8 py-6">
+              <h2 className="text-[1.9rem] font-semibold tracking-[-0.04em] text-foreground">
+                {activeSectionMeta.label}
+              </h2>
+              <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
+                {activeSectionMeta.description}
+              </p>
             </header>
 
-            <div className="mt-5 max-h-[520px] overflow-y-auto pr-1">
+            <div className={SETTINGS_SHEET_CLASSNAMES.contentScroll}>
               {activeSection === 'appearance' ? (
                 <div className="space-y-6">
                   <SettingsGroup title="Theme" description="Choose the terminal color palette.">
@@ -261,10 +275,10 @@ interface SettingsGroupProps {
 
 function SettingsGroup({ title, description, children }: SettingsGroupProps) {
   return (
-    <section className="rounded-xl border border-border/60 bg-muted/18 p-4">
-      <div className="mb-3">
-        <h3 className="text-sm font-medium text-foreground">{title}</h3>
-        {description ? <p className="mt-1 text-xs text-muted-foreground">{description}</p> : null}
+    <section className="rounded-2xl border border-border/60 bg-muted/12 p-5">
+      <div className="mb-4">
+        <h3 className="text-base font-medium text-foreground">{title}</h3>
+        {description ? <p className="mt-1 text-sm leading-6 text-muted-foreground">{description}</p> : null}
       </div>
       {children}
     </section>
@@ -282,9 +296,9 @@ interface SliderRowProps {
 
 function SliderRow({ label, value, min, max, step, onChange }: SliderRowProps) {
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-2">
       <div className="flex items-center justify-between gap-3">
-        <span className="text-xs text-foreground">{label}</span>
+        <span className="text-sm text-foreground">{label}</span>
       </div>
       <input
         type="range"
