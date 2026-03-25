@@ -124,19 +124,18 @@ jobs:
             ? contributors.join("\n")
             : "- No external contributors recorded";
 
-          writeFileSync(
-            "release-notes.md",
-            `## What's Changed
-
-${changelog}
-
-## Contributors
-
-${contributorSection}
-
-**Full Changelog**: ${fullChangelogUrl}
-`,
-          );
+          const body = [
+            "## What's Changed",
+            "",
+            changelog,
+            "",
+            "## Contributors",
+            "",
+            contributorSection,
+            "",
+            `**Full Changelog**: ${fullChangelogUrl}`,
+          ].join("\n") + "\n";
+          writeFileSync("release-notes.md", body);
           NODE
 
       - name: Update GitHub Release
