@@ -14,6 +14,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Full history for changelog generation
 
       - uses: pnpm/action-setup@v4
 
@@ -30,36 +32,58 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: pnpm release
 
-      - name: Generate changelog
-        id: changelog
+      - name: Generate release notes
+        id: notes
         run: |
-          # Extract changelog from git log since last tag
           PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+
+          # Changelog — feature/fix commits only (skip release/merge commits)
           if [ -n "$PREV_TAG" ]; then
-            echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
-            git log --pretty=format:"- %s" "$PREV_TAG"..HEAD >> $GITHUB_OUTPUT
-            echo "" >> $GITHUB_OUTPUT
-            echo "EOF" >> $GITHUB_OUTPUT
+            CHANGELOG=$(git log --pretty=format:"- %s" "$PREV_TAG"..HEAD \
+              | grep -v '^- release:' \
+              | grep -v '^- Merge' \
+              || echo "- Maintenance and bug fixes")
           else
-            echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
-            git log --pretty=format:"- %s" >> $GITHUB_OUTPUT
-            echo "" >> $GITHUB_OUTPUT
-            echo "EOF" >> $GITHUB_OUTPUT
+            CHANGELOG=$(git log --pretty=format:"- %s" \
+              | grep -v '^- release:' \
+              | grep -v '^- Merge' \
+              || echo "- Initial release")
           fi
 
-      - name: Update GitHub Release notes
+          # Contributors — unique authors in this range
+          if [ -n "$PREV_TAG" ]; then
+            CONTRIBUTORS=$(git log --pretty=format:"%an" "$PREV_TAG"..HEAD | sort -u)
+          else
+            CONTRIBUTORS=$(git log --pretty=format:"%an" | sort -u)
+          fi
+          # Format as markdown list with @mention for known GitHub users
+          CONTRIB_LIST=""
+          while IFS= read -r name; do
+            [ -z "$name" ] && continue
+            CONTRIB_LIST="${CONTRIB_LIST}
+          - ${name}"
+          done <<< "$CONTRIBUTORS"
+
+          # Write to file to avoid heredoc/multiline escaping issues
+          cat > release-notes.md << NOTES_EOF
+          ## Installation
+
+          - Download the **DMG** or **ZIP** asset for macOS.
+          - Cells checks GitHub releases for app updates after launch.
+
+          ## Changelog
+
+          ${CHANGELOG}
+
+          ## Contributors
+
+          ${CONTRIB_LIST}
+          NOTES_EOF
+
+      - name: Update GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cat > release-notes.md <<EOF
-          ## Installation
-          - Download the DMG or ZIP asset for macOS.
-          - Cells checks GitHub releases for app updates after launch.
-
-          ## Changes
-          ${{ steps.changelog.outputs.CHANGELOG }}
-          EOF
-
           gh release edit "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --draft=false \
