@@ -19,7 +19,6 @@ interface StoreState {
   fontSize: number
   fontFamily: string
   windowOpacity: number
-  windowBlurRadius: number
   focusedTerminalId: string | null
   focusedBrowserId: string | null
   focusHistory: string[] // stack of recently focused IDs (most recent last)
@@ -47,7 +46,6 @@ interface StoreState {
   setFontSize(size: number): void
   setFontFamily(family: string): void
   setWindowOpacity(opacity: number): void
-  setWindowBlurRadius(radius: number): void
 
   addTerminal(): TerminalNode
   addTerminalWithCommand(command: string, title?: string): TerminalNode
@@ -178,7 +176,6 @@ export const useStore = create<StoreState>((set, get) => ({
   fontSize: 13,
   fontFamily: DEFAULT_FONT_FAMILY,
   windowOpacity: DEFAULT_WINDOW_APPEARANCE.windowOpacity,
-  windowBlurRadius: DEFAULT_WINDOW_APPEARANCE.windowBlurRadius,
 
   setTerminalTheme(name) {
     set({ terminalTheme: name })
@@ -198,12 +195,6 @@ export const useStore = create<StoreState>((set, get) => ({
     })
     get().persist()
   },
-  setWindowBlurRadius(radius) {
-    set({
-      windowBlurRadius: normalizeWindowAppearance({ windowBlurRadius: radius }).windowBlurRadius,
-    })
-    get().persist()
-  },
 
   async init() {
     const saved = await window.cells.state.load()
@@ -218,7 +209,6 @@ export const useStore = create<StoreState>((set, get) => ({
         fontFamily: ps.fontFamily || DEFAULT_FONT_FAMILY,
         ...normalizeWindowAppearance({
           windowOpacity: ps.windowOpacity,
-          windowBlurRadius: ps.windowBlurRadius,
         }),
         snapOnFocus: ps.snapOnFocus ?? true,
         searchEngine: ps.searchEngine || DEFAULT_SEARCH_ENGINE,
@@ -287,7 +277,6 @@ export const useStore = create<StoreState>((set, get) => ({
         fontFamily: (saved as any).fontFamily || DEFAULT_FONT_FAMILY,
         ...normalizeWindowAppearance({
           windowOpacity: (saved as any).windowOpacity,
-          windowBlurRadius: (saved as any).windowBlurRadius,
         }),
         initialized: true,
       })
@@ -323,7 +312,6 @@ export const useStore = create<StoreState>((set, get) => ({
           fontSize: freshState.fontSize,
           fontFamily: freshState.fontFamily,
           windowOpacity: freshState.windowOpacity,
-          windowBlurRadius: freshState.windowBlurRadius,
           snapOnFocus: freshState.snapOnFocus,
           searchEngine: freshState.searchEngine,
           homePage: freshState.homePage,
@@ -341,7 +329,6 @@ export const useStore = create<StoreState>((set, get) => ({
           fontSize: state.fontSize,
           fontFamily: state.fontFamily,
           windowOpacity: state.windowOpacity,
-          windowBlurRadius: state.windowBlurRadius,
           snapOnFocus: state.snapOnFocus,
           searchEngine: state.searchEngine,
           homePage: state.homePage,

@@ -79,7 +79,6 @@
     "Monaco", "Consolas", monospace;
   --radius: 0.45rem;
   --window-surface-opacity: 0.82;
-  --window-backdrop-blur: 24px;
   --canvas-surface-opacity: 0.33;
   --canvas-grid-opacity: 0.25;
   --background: oklch(0.12 0.004 285.9);
@@ -138,8 +137,6 @@ body {
 
 .app-shell {
   background: oklch(0.12 0.004 285.9 / var(--window-surface-opacity));
-  backdrop-filter: blur(var(--window-backdrop-blur)) saturate(1.15);
-  -webkit-backdrop-filter: blur(var(--window-backdrop-blur)) saturate(1.15);
 }
 
 .canvas-stage {

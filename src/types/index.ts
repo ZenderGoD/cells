@@ -58,7 +58,6 @@ export interface ProjectsState {
   fontSize?: number
   fontFamily?: string
   windowOpacity?: number
-  windowBlurRadius?: number
   snapOnFocus?: boolean
   searchEngine?: string
   homePage?: string
@@ -144,7 +143,6 @@ export interface CellsAPI {
     onCloseTerminal(callback: () => void): () => void
     toggleMaximize(): Promise<void>
     pickFolder(): Promise<string | null>
-    setWindowAppearance(opacity: number, blurRadius: number): Promise<void>
   }
 }
 

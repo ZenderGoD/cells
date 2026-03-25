@@ -142,7 +142,7 @@ export function TerminalSwitcher() {
           transition={{ duration: 0.12 }}
           className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none"
         >
-          <div className="bg-card/80 backdrop-blur-xl rounded-xl ring-1 ring-border/40 shadow-2xl p-3 pointer-events-auto max-w-lg">
+          <div className="bg-card/92 rounded-xl ring-1 ring-border/40 shadow-2xl p-3 pointer-events-auto max-w-lg">
             {/* Grid of preview tiles */}
             <div className={cn('grid gap-2', items.length <= 4 ? 'grid-cols-2' : 'grid-cols-3')}>
               {items.map((item, i) => (

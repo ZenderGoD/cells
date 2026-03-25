@@ -9,8 +9,8 @@ import { TerminalSwitcher } from './components/terminal-switcher'
 import { buildWindowAppearanceStyle } from './lib/window-appearance'
 
 export function App() {
-  const { initialized, init, persist, projects, windowOpacity, windowBlurRadius } = useStore()
-  const shellStyle = buildWindowAppearanceStyle({ windowOpacity, windowBlurRadius })
+  const { initialized, init, persist, projects, windowOpacity } = useStore()
+  const shellStyle = buildWindowAppearanceStyle({ windowOpacity })
 
   const closeWindow = () => {
     const { focusedBrowserId, removeBrowser, terminals, focusedTerminalId, removeTerminal } =
@@ -54,11 +54,6 @@ export function App() {
     const interval = setInterval(() => persist(), 10000)
     return () => clearInterval(interval)
   }, [initialized, persist])
-
-  useEffect(() => {
-    if (!initialized) return
-    void window.cells.app.setWindowAppearance(windowOpacity, windowBlurRadius)
-  }, [initialized, windowOpacity, windowBlurRadius])
 
   if (!initialized) {
     return (

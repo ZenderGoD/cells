@@ -162,8 +162,8 @@ export function TerminalNode({
             className={cn(
               'flex items-center gap-2 px-3 py-2 rounded-bl-lg rounded-tr-[7px] transition-all',
               isFocused
-                ? 'bg-card/70 backdrop-blur-md opacity-100'
-                : 'bg-card/40 backdrop-blur-md opacity-0 hover:opacity-100',
+                ? 'bg-card/70 opacity-100'
+                : 'bg-card/40 opacity-0 hover:opacity-100',
             )}
           >
             {terminal.agent && <Sparkles className="w-3 h-3 text-primary/60 shrink-0" />}

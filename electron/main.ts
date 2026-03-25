@@ -72,16 +72,6 @@ function createWindow() {
   }
 }
 
-function applyWindowAppearance(opacity: number, _blurRadius: number) {
-  if (!mainWindow || mainWindow.isDestroyed()) return
-
-  const clampedOpacity = Math.min(100, Math.max(0, Math.round(opacity)))
-  const hasVisibleSurface = clampedOpacity > 0
-
-  mainWindow.setVibrancy(hasVisibleSurface ? 'under-window' : null)
-  mainWindow.setHasShadow(hasVisibleSurface)
-}
-
 // ---------- State persistence ----------
 
 function ensureStateDir() {
@@ -229,10 +219,6 @@ ipcMain.handle('app:pick-folder', async () => {
     properties: ['openDirectory'],
   })
   return result.canceled ? null : result.filePaths[0]
-})
-
-ipcMain.handle('app:set-window-appearance', (_event, opacity: number, blurRadius: number) => {
-  applyWindowAppearance(opacity, blurRadius)
 })
 
 ipcMain.on('terminal:write', (_event, termId: string, data: string) => {
