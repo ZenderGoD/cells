@@ -34,6 +34,8 @@ jobs:
 
       - name: Generate release notes
         id: notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
 
@@ -50,35 +52,81 @@ jobs:
               || echo "- Initial release")
           fi
 
-          # Contributors — unique authors in this range
-          if [ -n "$PREV_TAG" ]; then
-            CONTRIBUTORS=$(git log --pretty=format:"%an" "$PREV_TAG"..HEAD | sort -u)
-          else
-            CONTRIBUTORS=$(git log --pretty=format:"%an" | sort -u)
-          fi
-          # Format as markdown list with @mention for known GitHub users
-          CONTRIB_LIST=""
-          while IFS= read -r name; do
-            [ -z "$name" ] && continue
-            CONTRIB_LIST="${CONTRIB_LIST}
-          - ${name}"
-          done <<< "$CONTRIBUTORS"
+          printf '%s\n' "$CHANGELOG" > changelog.md
+          export PREV_TAG
 
-          # Write to file to avoid heredoc/multiline escaping issues
-          cat > release-notes.md << NOTES_EOF
-          ## Installation
+          node <<'NODE'
+          const { execFileSync } = require("node:child_process");
+          const { readFileSync, writeFileSync } = require("node:fs");
 
-          - Download the **DMG** or **ZIP** asset for macOS.
-          - Cells checks GitHub releases for app updates after launch.
+          const prevTag = process.env.PREV_TAG?.trim();
+          const repo = process.env.GITHUB_REPOSITORY;
+          const refName = process.env.GITHUB_REF_NAME;
+          const sha = process.env.GITHUB_SHA;
+          const changelog = readFileSync("changelog.md", "utf8").trim() || "- Maintenance and bug fixes";
+          const fullChangelogUrl = prevTag
+            ? `https://github.com/${repo}/compare/${prevTag}...${refName}`
+            : `https://github.com/${repo}/commits/${sha}`;
 
-          ## Changelog
+          const endpoint = prevTag
+            ? `repos/${repo}/compare/${prevTag}...${refName}`
+            : `repos/${repo}/commits?sha=${sha}&per_page=100`;
 
-          ${CHANGELOG}
+          const response = JSON.parse(
+            execFileSync("gh", ["api", endpoint], { encoding: "utf8" }),
+          );
+          const commits = Array.isArray(response) ? response : response.commits ?? [];
 
-          ## Contributors
+          const contributors = [];
+          const seen = new Set();
 
-          ${CONTRIB_LIST}
-          NOTES_EOF
+          for (const commit of commits) {
+            const login = commit.author?.login?.trim();
+            const name = commit.commit?.author?.name?.trim();
+            const key = login
+              ? `login:${login.toLowerCase()}`
+              : name
+                ? `name:${name}`
+                : null;
+
+            if (!key || seen.has(key)) {
+              continue;
+            }
+
+            seen.add(key);
+
+            if (login) {
+              const label =
+                name && name.toLowerCase() !== login.toLowerCase()
+                  ? `${name} (@${login})`
+                  : `@${login}`;
+              contributors.push(`- [${label}](https://github.com/${login})`);
+              continue;
+            }
+
+            if (name) {
+              contributors.push(`- ${name}`);
+            }
+          }
+
+          const contributorSection = contributors.length
+            ? contributors.join("\n")
+            : "- No external contributors recorded";
+
+          writeFileSync(
+            "release-notes.md",
+            `## What's Changed
+
+${changelog}
+
+## Contributors
+
+${contributorSection}
+
+**Full Changelog**: ${fullChangelogUrl}
+`,
+          );
+          NODE
 
       - name: Update GitHub Release
         env:
