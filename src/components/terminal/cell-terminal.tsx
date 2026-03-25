@@ -84,23 +84,27 @@ export function CellTerminal({
   const themeNameRef = useRef(themeName)
   const fontSizeRef = useRef(fontSize)
   const fontFamilyRef = useRef(fontFamily)
-  onTitleChangeRef.current = onTitleChange
-  themeNameRef.current = themeName
-  fontSizeRef.current = fontSize
-  fontFamilyRef.current = fontFamily
+
+  useEffect(() => {
+    onTitleChangeRef.current = onTitleChange
+    themeNameRef.current = themeName
+    fontSizeRef.current = fontSize
+    fontFamilyRef.current = fontFamily
+  }, [onTitleChange, themeName, fontSize, fontFamily])
 
   // Main lifecycle — create or reattach cached terminal
   useEffect(() => {
     let cancelled = false
+    const container = containerRef.current
 
     async function setup() {
-      if (!containerRef.current) return
+      if (!container) return
 
       // Check cache first — reattach if exists
       const cached = terminalCache.get(termId)
       if (cached) {
         // Move the existing DOM back into our container
-        containerRef.current.appendChild(cached.wrapper)
+        container.appendChild(cached.wrapper)
         terminalRef.current = cached.term
         fitAddonRef.current = cached.fitAddon
 
@@ -139,7 +143,7 @@ export function CellTerminal({
       const wrapper = document.createElement('div')
       wrapper.style.width = '100%'
       wrapper.style.height = '100%'
-      containerRef.current.appendChild(wrapper)
+      container.appendChild(wrapper)
 
       const term = new Terminal({
         cursorBlink: true,
@@ -265,8 +269,8 @@ export function CellTerminal({
       cancelled = true
       // DON'T dispose — just detach DOM. Terminal stays alive in cache.
       const cached = terminalCache.get(termId)
-      if (cached && containerRef.current?.contains(cached.wrapper)) {
-        containerRef.current.removeChild(cached.wrapper)
+      if (cached && container?.contains(cached.wrapper)) {
+        container.removeChild(cached.wrapper)
       }
       terminalRef.current = null
       fitAddonRef.current = null

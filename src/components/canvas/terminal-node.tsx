@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, type MouseEvent } from 'react'
+import { useState, useCallback, type MouseEvent } from 'react'
 import { X, Sparkles } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { CellTerminal } from '../terminal/cell-terminal'

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useRef, useCallback } from 'react'
 import { Globe, TerminalSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
@@ -22,10 +22,13 @@ export function TerminalSwitcher() {
   const setOverlayOpen = useStore((s) => s.setOverlayOpen)
 
   const [open, setOpenRaw] = useState(false)
-  const setOpen = (v: boolean) => {
-    setOpenRaw(v)
-    setOverlayOpen(v)
-  }
+  const setOpen = useCallback(
+    (v: boolean) => {
+      setOpenRaw(v)
+      setOverlayOpen(v)
+    },
+    [setOverlayOpen],
+  )
   const [selectedIndex, setSelectedIndex] = useState(0)
   const ctrlHeld = useRef(false)
 
@@ -46,8 +49,8 @@ export function TerminalSwitcher() {
     })),
   ]
 
-  const cycle = useCallback(
-    (direction: 1 | -1) => {
+  useEffect(() => {
+    const cycle = (direction: 1 | -1) => {
       const state = useStore.getState()
       const allItems = [
         ...state.terminals.map((t) => ({ id: t.id, type: 'terminal' as const })),
@@ -69,30 +72,27 @@ export function TerminalSwitcher() {
           return next
         })
       }
-    },
-    [open],
-  )
+    }
 
-  const commit = useCallback(() => {
-    const state = useStore.getState()
-    const allItems = [
-      ...state.terminals.map((t) => ({ id: t.id, type: 'terminal' as const })),
-      ...state.browsers.map((b) => ({ id: b.id, type: 'browser' as const })),
-    ]
-    if (allItems.length > 0 && open) {
-      const target = allItems[selectedIndex]
-      if (target) {
-        if (target.type === 'terminal') {
-          snapToTerminal(target.id)
-        } else {
-          snapToBrowser(target.id)
+    const commit = () => {
+      const state = useStore.getState()
+      const allItems = [
+        ...state.terminals.map((t) => ({ id: t.id, type: 'terminal' as const })),
+        ...state.browsers.map((b) => ({ id: b.id, type: 'browser' as const })),
+      ]
+      if (allItems.length > 0 && open) {
+        const target = allItems[selectedIndex]
+        if (target) {
+          if (target.type === 'terminal') {
+            snapToTerminal(target.id)
+          } else {
+            snapToBrowser(target.id)
+          }
         }
       }
+      setOpen(false)
     }
-    setOpen(false)
-  }, [open, selectedIndex, snapToTerminal, snapToBrowser])
 
-  useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Tab' && e.ctrlKey && !e.metaKey) {
         e.preventDefault()
@@ -128,7 +128,7 @@ export function TerminalSwitcher() {
       window.removeEventListener('keyup', handleKeyUp, true)
       window.removeEventListener('blur', handleBlur)
     }
-  }, [cycle, commit])
+  }, [open, selectedIndex, snapToTerminal, snapToBrowser, setOpen])
 
   if (items.length < 2) return null
 

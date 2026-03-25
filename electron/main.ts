@@ -5,7 +5,6 @@ import {
   ipcMain,
   dialog,
   Menu,
-  session,
   nativeImage,
 } from 'electron'
 import path from 'path'
@@ -605,7 +604,7 @@ ipcMain.on('browser:toggle-devtools', (_event, browserId: string) => {
 })
 
 function cleanupBrowserViews() {
-  for (const [id, view] of browserViews) {
+  for (const [, view] of browserViews) {
     try {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.contentView.removeChildView(view)

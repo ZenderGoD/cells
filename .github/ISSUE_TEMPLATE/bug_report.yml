@@ -1,0 +1,63 @@
+name: Bug report
+description: Report a reproducible bug in Cells
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please include enough detail for someone else to reproduce it locally.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-flight
+      options:
+        - label: I searched for existing issues before opening this report.
+          required: true
+        - label: I confirmed this still happens on the latest release or current `main`.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: App version, release tag, or commit SHA
+      placeholder: v0.1.0 or edd5749
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: macOS 15.4
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open Cells
+        2. Create a project
+        3. Add a terminal
+        4. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs, screenshots, or recordings
+      description: Paste any relevant logs or add links/screenshots
+      render: shell

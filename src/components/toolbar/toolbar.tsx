@@ -20,6 +20,14 @@ import { AppSettings } from '../settings/app-settings'
 import { NewProjectDialog } from '../new-project-dialog'
 import { Logo } from '../logo'
 
+const EMPTY_BROWSER_UI = {
+  browserId: null as string | null,
+  canGoBack: false,
+  canGoForward: false,
+  isLoading: false,
+  themeColor: null as string | null,
+}
+
 function shortenUrl(url?: string): string {
   if (!url) return ''
   try {
@@ -38,7 +46,6 @@ export function StatusBar() {
   const addBrowser = useStore((s) => s.addBrowser)
   const removeBrowser = useStore((s) => s.removeBrowser)
   const terminalCount = useStore((s) => s.terminals.length)
-  const browserCount = useStore((s) => s.browsers.length)
   const focusedBrowser = useStore((s) =>
     s.focusedBrowserId ? s.browsers.find((b) => b.id === s.focusedBrowserId) : undefined,
   )
@@ -64,50 +71,59 @@ export function StatusBar() {
   const [plusOpen, setPlusOpen] = useState(false)
   const tabsRef = useRef<HTMLDivElement>(null)
   const urlInputRef = useRef<HTMLInputElement>(null)
+  const [urlInput, setUrlInput] = useState('')
+  const [urlBarFocused, setUrlBarFocused] = useState(false)
+  const [browserUi, setBrowserUi] = useState(EMPTY_BROWSER_UI)
+  const activeBrowserUi = browserUi.browserId === focusedBrowserId ? browserUi : EMPTY_BROWSER_UI
+  const { canGoBack, canGoForward, isLoading, themeColor } = activeBrowserUi
+
+  const openUrlBar = () => {
+    setUrlInput(focusedBrowser?.url ?? '')
+    setUrlBarFocused(true)
+  }
 
   // Cmd+L focuses the URL bar when a browser is focused
   useHotkey('Mod+L', () => {
     if (focusedBrowserId) {
-      setUrlBarFocused(true)
+      openUrlBar()
     }
   })
-
-  // Browser controls state
-  const [urlInput, setUrlInput] = useState(focusedBrowser?.url ?? '')
-  const [urlBarFocused, setUrlBarFocused] = useState(false)
-  const [canGoBack, setCanGoBack] = useState(false)
-  const [canGoForward, setCanGoForward] = useState(false)
-  const [isLoading, setIsLoading] = useState(false)
-  const [themeColor, setThemeColor] = useState<string | null>(null)
-
-  // Sync URL input when focused browser changes
-  useEffect(() => {
-    setUrlInput(focusedBrowser?.url ?? '')
-    setCanGoBack(false)
-    setCanGoForward(false)
-    setIsLoading(false)
-    setThemeColor(null)
-  }, [focusedBrowserId])
-
-  // Sync URL when it changes externally
-  useEffect(() => {
-    if (focusedBrowser?.url) setUrlInput(focusedBrowser.url)
-  }, [focusedBrowser?.url])
 
   // Listen for nav state, loading, and theme color for focused browser
   useEffect(() => {
     if (!focusedBrowserId) return
     const unsubNav = window.cells.browser.onNavState((id, back, forward) => {
       if (id === focusedBrowserId) {
-        setCanGoBack(back)
-        setCanGoForward(forward)
+        setBrowserUi((prev) => ({
+          browserId: id,
+          canGoBack: back,
+          canGoForward: forward,
+          isLoading: prev.browserId === id ? prev.isLoading : false,
+          themeColor: prev.browserId === id ? prev.themeColor : null,
+        }))
       }
     })
     const unsubLoading = window.cells.browser.onLoading((id, loading) => {
-      if (id === focusedBrowserId) setIsLoading(loading)
+      if (id === focusedBrowserId) {
+        setBrowserUi((prev) => ({
+          browserId: id,
+          canGoBack: prev.browserId === id ? prev.canGoBack : false,
+          canGoForward: prev.browserId === id ? prev.canGoForward : false,
+          isLoading: loading,
+          themeColor: prev.browserId === id ? prev.themeColor : null,
+        }))
+      }
     })
     const unsubTheme = window.cells.browser.onThemeColor((id, color) => {
-      if (id === focusedBrowserId) setThemeColor(color)
+      if (id === focusedBrowserId) {
+        setBrowserUi((prev) => ({
+          browserId: id,
+          canGoBack: prev.browserId === id ? prev.canGoBack : false,
+          canGoForward: prev.browserId === id ? prev.canGoForward : false,
+          isLoading: prev.browserId === id ? prev.isLoading : false,
+          themeColor: color,
+        }))
+      }
     })
     return () => {
       unsubNav()
@@ -235,7 +251,7 @@ export function StatusBar() {
             {/* URL bar */}
             <div
               className="flex-1 flex items-center gap-1.5 mx-1 px-2 py-1 rounded-md bg-background/60 border border-border/30 min-w-0 cursor-text"
-              onClick={() => setUrlBarFocused(true)}
+              onClick={openUrlBar}
             >
               <Globe className="w-3 h-3 text-muted-foreground/50 shrink-0" />
               {urlBarFocused ? (
@@ -246,12 +262,12 @@ export function StatusBar() {
                   onChange={(e) => setUrlInput(e.target.value)}
                   onKeyDown={handleUrlKeyDown}
                   onFocus={(e) => {
-                    setUrlBarFocused(true)
+                    openUrlBar()
                     e.target.select()
                   }}
                   onBlur={() => {
                     setUrlBarFocused(false)
-                    setUrlInput(focusedBrowser?.url ?? '')
+                    setUrlInput('')
                   }}
                   placeholder="Enter URL or search..."
                   className="flex-1 bg-transparent text-[11px] text-foreground placeholder:text-muted-foreground/40 outline-none min-w-0"

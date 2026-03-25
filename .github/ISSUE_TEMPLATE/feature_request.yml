@@ -1,0 +1,41 @@
+name: Feature request
+description: Suggest an improvement for Cells
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the problem first, then the proposed change. Concrete workflows are more helpful than broad ideas.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-flight
+      options:
+        - label: I searched for existing issues before opening this request.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      placeholder: What workflow is currently blocked or inefficient?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      placeholder: What should Cells do instead?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      placeholder: Workarounds, rejected ideas, or related tools
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      placeholder: Mockups, examples, screenshots, or other notes

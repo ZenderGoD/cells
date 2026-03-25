@@ -4,7 +4,29 @@
   "private": true,
   "type": "module",
   "author": "Raj Sharma <r@raj.how>",
-  "description": "Agent manager workspace",
+  "description": "Infinite desktop workspace for terminals, browsers, and agent workflows.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xrehpicx/cells.git"
+  },
+  "bugs": {
+    "url": "https://github.com/xrehpicx/cells/issues"
+  },
+  "homepage": "https://github.com/xrehpicx/cells",
+  "keywords": [
+    "electron",
+    "terminal",
+    "workspace",
+    "developer-tools",
+    "agents",
+    "react"
+  ],
+  "engines": {
+    "node": ">=22",
+    "pnpm": ">=10"
+  },
+  "packageManager": "pnpm@10.6.3",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
@@ -52,6 +74,7 @@
       ],
       "icon": "resources/icon.icns",
       "category": "public.app-category.developer-tools",
+      "x64ArchFiles": "Contents/Resources/app.asar.unpacked/node_modules/node-pty/prebuilds/darwin-{arm64,x64}/{pty.node,spawn-helper}",
       "darkModeSupport": true,
       "hardenedRuntime": true,
       "gatekeeperAssess": false
@@ -74,7 +97,7 @@
     },
     "publish": {
       "provider": "github",
-      "owner": "raj",
+      "owner": "xrehpicx",
       "repo": "cells"
     }
   },

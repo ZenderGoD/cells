@@ -63,7 +63,7 @@ export function BrowserNode({ browser, scale, cmdHeld, isFocused, onDragStart }:
       // Park instead of destroy — keeps the view alive for project switching
       window.cells.browser.park(browser.id)
     }
-  }, [browser.id, activeProjectId])
+  }, [browser.id, browser.url, browser.history, activeProjectId])
 
   // Listen for overscroll gestures (swipe back/forward)
   useEffect(() => {

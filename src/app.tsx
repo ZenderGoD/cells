@@ -1,4 +1,4 @@
-import { useEffect, useEffectEvent } from 'react'
+import { useEffect } from 'react'
 import { useHotkey } from '@tanstack/react-hotkeys'
 import { useStore } from './lib/store'
 import { StatusBar } from './components/toolbar/toolbar'
@@ -10,7 +10,7 @@ import { TerminalSwitcher } from './components/terminal-switcher'
 export function App() {
   const { initialized, init, persist, projects } = useStore()
 
-  const closeWindow = useEffectEvent(() => {
+  const closeWindow = () => {
     const { focusedBrowserId, removeBrowser, terminals, focusedTerminalId, removeTerminal } =
       useStore.getState()
     if (focusedBrowserId) {
@@ -18,7 +18,7 @@ export function App() {
     } else if (terminals.length > 0) {
       removeTerminal(focusedTerminalId || terminals[terminals.length - 1].id)
     }
-  })
+  }
 
   useHotkey('Mod+W', () => closeWindow())
   useHotkey('Mod+Q', () => window.close())
