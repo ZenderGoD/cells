@@ -271,10 +271,14 @@ ipcMain.handle('terminal:get-process', (_event, termId: string) => {
 })
 
 ipcMain.handle('agent:check-available', () => {
+  // Use a login shell so the user's full PATH is available.
+  // Packaged macOS apps inherit a minimal PATH (/usr/bin:/bin) that
+  // won't include Homebrew, ~/.local/bin, nvm, etc.
+  const shell = process.env.SHELL || '/bin/zsh'
   const results: Record<string, boolean> = {}
   for (const name of ['claude', 'codex']) {
     try {
-      execFileSync('which', [name], { stdio: 'pipe' })
+      execFileSync(shell, ['-lc', `which ${name}`], { stdio: 'pipe', timeout: 3000 })
       results[name] = true
     } catch {
       results[name] = false

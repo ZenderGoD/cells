@@ -106,7 +106,7 @@ export function CommandPalette() {
             }}
           />
           <CommandList>
-            <CommandEmpty>No results found.</CommandEmpty>
+            <CommandEmpty className="hidden" />
 
             {search.trim() && (
               <CommandGroup heading="Search" forceMount>
