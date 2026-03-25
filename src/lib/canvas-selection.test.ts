@@ -10,11 +10,7 @@ const {
 
 test('screenPointsToCanvasRect converts a marquee drag into canvas coordinates', () => {
   assert.deepEqual(
-    screenPointsToCanvasRect(
-      { x: 180, y: 160 },
-      { x: 80, y: 60 },
-      { x: 20, y: 10, scale: 2 },
-    ),
+    screenPointsToCanvasRect({ x: 180, y: 160 }, { x: 80, y: 60 }, { x: 20, y: 10, scale: 2 }),
     { x: 30, y: 25, width: 50, height: 50 },
   )
 })

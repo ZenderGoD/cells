@@ -92,7 +92,9 @@ interface StoreState {
   setSearchEngine(engine: string): void
   setHomePage(url: string): void
   setTerminalLinkTarget(target: 'system' | 'browser'): void
-  setLinkRules(rules: Array<{ pattern: string; target: 'system' | 'browser'; projectId?: string }>): void
+  setLinkRules(
+    rules: Array<{ pattern: string; target: 'system' | 'browser'; projectId?: string }>,
+  ): void
   getSearchUrl(query: string): string
 
   // Browser actions

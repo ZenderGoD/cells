@@ -18,12 +18,7 @@ interface TerminalNodeProps {
   isSelected: boolean
   isFocused: boolean
   showFocusRing: boolean
-  onDragStart: (
-    id: string,
-    kind: 'terminal' | 'browser',
-    startX: number,
-    startY: number,
-  ) => void
+  onDragStart: (id: string, kind: 'terminal' | 'browser', startX: number, startY: number) => void
 }
 
 export function TerminalNode({
@@ -148,11 +143,7 @@ export function TerminalNode({
       <div
         className={cn(
           'w-full h-full rounded-lg overflow-hidden transition-shadow duration-150',
-          isFocused
-            ? showFocusRing
-              ? 'terminal-focused'
-              : 'opacity-100'
-            : 'terminal-unfocused',
+          isFocused ? (showFocusRing ? 'terminal-focused' : 'opacity-100') : 'terminal-unfocused',
           isSelected && 'ring-2 ring-primary/70 ring-offset-1 ring-offset-background',
         )}
       >

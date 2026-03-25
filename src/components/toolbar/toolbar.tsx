@@ -449,10 +449,10 @@ export function StatusBar() {
               selectionMode
                 ? 'bg-primary/15 text-primary'
                 : !snapEnabled
-                ? 'text-muted-foreground/30 hover:text-muted-foreground hover:bg-muted/50'
-                : snapPaused
-                  ? 'bg-yellow-500/10 text-yellow-500/70'
-                  : 'bg-primary/15 text-primary',
+                  ? 'text-muted-foreground/30 hover:text-muted-foreground hover:bg-muted/50'
+                  : snapPaused
+                    ? 'bg-yellow-500/10 text-yellow-500/70'
+                    : 'bg-primary/15 text-primary',
             )}
             title={selectionMode ? 'Selection mode active. Click to exit.' : undefined}
           >

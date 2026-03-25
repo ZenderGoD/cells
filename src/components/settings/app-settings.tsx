@@ -118,7 +118,10 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
               </div>
             </header>
 
-            <ScrollArea className={SETTINGS_SHEET_CLASSNAMES.contentScroll} viewportClassName="px-5 py-4">
+            <ScrollArea
+              className={SETTINGS_SHEET_CLASSNAMES.contentScroll}
+              viewportClassName="px-5 py-4"
+            >
               {activeSection === 'appearance' ? (
                 <div className="space-y-5">
                   <SettingsGroup title="Theme">
@@ -281,7 +284,11 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                     <div className="space-y-0.5">
                       {[
                         { value: 'system' as const, label: 'System Browser', hint: 'Default' },
-                        { value: 'browser' as const, label: 'Built-in Browser', hint: 'Opens a new tab' },
+                        {
+                          value: 'browser' as const,
+                          label: 'Built-in Browser',
+                          hint: 'Opens a new tab',
+                        },
                       ].map((opt) => (
                         <button
                           key={opt.value}
@@ -305,7 +312,8 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
 
                   <SettingsGroup title="Link Rules">
                     <p className="text-[10px] text-muted-foreground/40 mb-3">
-                      Route specific URLs to different targets. Uses regex patterns. Rules are matched top to bottom.
+                      Route specific URLs to different targets. Uses regex patterns. Rules are
+                      matched top to bottom.
                     </p>
                     <div className="space-y-2">
                       {linkRules.map((rule, i) => (
@@ -325,7 +333,11 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                             value={rule.target}
                             onChange={(e) => {
                               const next = [...linkRules]
-                              next[i] = { ...rule, target: e.target.value as 'system' | 'browser', projectId: e.target.value === 'system' ? undefined : rule.projectId }
+                              next[i] = {
+                                ...rule,
+                                target: e.target.value as 'system' | 'browser',
+                                projectId: e.target.value === 'system' ? undefined : rule.projectId,
+                              }
                               setLinkRules(next)
                             }}
                             className="rounded-md border border-border/20 bg-background/40 px-1.5 py-1 text-[10px] text-foreground outline-none"

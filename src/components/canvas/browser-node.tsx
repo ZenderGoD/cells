@@ -18,12 +18,7 @@ interface BrowserNodeProps {
   selectionMode: boolean
   isSelected: boolean
   isFocused: boolean
-  onDragStart: (
-    id: string,
-    kind: 'terminal' | 'browser',
-    startX: number,
-    startY: number,
-  ) => void
+  onDragStart: (id: string, kind: 'terminal' | 'browser', startX: number, startY: number) => void
 }
 
 export function BrowserNode({
@@ -34,13 +29,8 @@ export function BrowserNode({
   isFocused,
   onDragStart,
 }: BrowserNodeProps) {
-  const {
-    resizeBrowser,
-    moveBrowser,
-    updateBrowserUrl,
-    updateBrowserTitle,
-    addBrowserWithUrl,
-  } = useStore()
+  const { resizeBrowser, moveBrowser, updateBrowserUrl, updateBrowserTitle, addBrowserWithUrl } =
+    useStore()
   const activeProjectId = useStore((s) => s.activeProjectId)
   const overlayOpen = useStore((s) => s.overlayOpen)
   const canvas = useStore((s) => s.canvas)
@@ -386,7 +376,12 @@ export function BrowserNode({
           </svg>
         )}
         {/* Placeholder shown when native view is hidden */}
-        {(!isFocused || !viewReady || overlayOpen || offline || dragModeActive || transitionHidden) && (
+        {(!isFocused ||
+          !viewReady ||
+          overlayOpen ||
+          offline ||
+          dragModeActive ||
+          transitionHidden) && (
           <div className="w-full h-full flex flex-col items-center justify-center gap-2">
             {offline ? (
               <WifiOff className="w-8 h-8 text-muted-foreground/30" />
@@ -401,7 +396,7 @@ export function BrowserNode({
               {offline
                 ? 'No internet connection — will reload automatically'
                 : selectionMode && isFocused
-                ? 'Selection mode active — drag to move this panel'
+                  ? 'Selection mode active — drag to move this panel'
                   : isFocused && !viewReady
                     ? 'Loading...'
                     : browser.title || browser.url || 'New Tab'}
