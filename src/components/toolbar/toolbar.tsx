@@ -16,6 +16,15 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
+import {
+  getCanvasWindows,
+  getClosestWindow,
+  getDirectionalWindow,
+  getViewportCenter,
+  getWindowCenter,
+  type CanvasDirection,
+  type CanvasWindow,
+} from '@/lib/canvas-navigation'
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover'
 import { AppSettings } from '../settings/app-settings'
 import { NewProjectDialog } from '../new-project-dialog'
@@ -48,11 +57,82 @@ function shortenUrl(url?: string): string {
   }
 }
 
+function TitleBarDirectionCell({
+  direction,
+  target,
+  current,
+  onSelect,
+}: {
+  direction: CanvasDirection
+  target: CanvasWindow | null
+  current: CanvasWindow | null
+  onSelect: (direction: CanvasDirection) => void
+}) {
+  const hint =
+    direction === 'left'
+      ? 'Ctrl+H'
+      : direction === 'right'
+        ? 'Ctrl+L'
+        : direction === 'up'
+          ? 'Ctrl+K'
+          : 'Ctrl+J'
+
+  if (direction === 'up' || direction === 'down') {
+    return (
+      <div className="col-start-2 flex justify-center">
+        <button
+          className={cn(
+            'h-3 w-4 transition-all',
+            target
+              ? target.type === 'browser'
+                ? 'rounded-[3px] bg-foreground/75 hover:bg-foreground'
+                : 'rounded-[2px] bg-foreground/65 hover:bg-foreground'
+              : 'rounded-[2px] bg-muted-foreground/15',
+          )}
+          disabled={!target}
+          onClick={() => onSelect(direction)}
+          title={
+            target
+              ? `${hint} • ${target.type === 'browser' ? 'Browser' : 'Terminal'}: ${target.title}`
+              : `No window ${direction} of ${current?.title || 'the current view'}`
+          }
+        />
+      </div>
+    )
+  }
+
+  return (
+    <div className={cn('flex', direction === 'left' ? 'justify-end' : 'justify-start')}>
+      <button
+        className={cn(
+          'h-4 w-3 transition-all',
+          target
+            ? target.type === 'browser'
+              ? 'rounded-[3px] bg-foreground/75 hover:bg-foreground'
+              : 'rounded-[2px] bg-foreground/65 hover:bg-foreground'
+            : 'rounded-[2px] bg-muted-foreground/15',
+        )}
+        disabled={!target}
+        onClick={() => onSelect(direction)}
+        title={
+          target
+            ? `${hint} • ${target.type === 'browser' ? 'Browser' : 'Terminal'}: ${target.title}`
+            : `No window ${direction} of ${current?.title || 'the current view'}`
+        }
+      />
+    </div>
+  )
+}
+
 export function StatusBar() {
   const addTerminal = useStore((s) => s.addTerminal)
   const addBrowser = useStore((s) => s.addBrowser)
   const removeBrowser = useStore((s) => s.removeBrowser)
-  const terminalCount = useStore((s) => s.terminals.length)
+  const windowCount = useStore((s) => s.terminals.length + s.browsers.length)
+  const terminals = useStore((s) => s.terminals)
+  const browsers = useStore((s) => s.browsers)
+  const canvas = useStore((s) => s.canvas)
+  const focusedTerminalId = useStore((s) => s.focusedTerminalId)
   const focusedBrowser = useStore((s) =>
     s.focusedBrowserId ? s.browsers.find((b) => b.id === s.focusedBrowserId) : undefined,
   )
@@ -63,6 +143,7 @@ export function StatusBar() {
   const snapPaused = useStore((s) => s.snapPaused)
   const toggleSnap = useStore((s) => s.toggleSnap)
   const zoomToFitAll = useStore((s) => s.zoomToFitAll)
+  const snapToNearest = useStore((s) => s.snapToNearest)
   const focusedBrowserId = useStore((s) => s.focusedBrowserId)
   const setOverlayOpen = useStore((s) => s.setOverlayOpen)
   const [showSettings, setShowSettingsRaw] = useState(false)
@@ -98,6 +179,23 @@ export function StatusBar() {
   const overscrollProgress = Math.max(0, Math.min(activeOverscroll.progress, 1.1))
   const overscrollWidth = `${28 + overscrollProgress * 150}px`
   const overscrollStrength = 0.16 + overscrollProgress * 0.44
+  const allWindows = getCanvasWindows(terminals, browsers)
+  const viewportCenter = getViewportCenter(canvas)
+  const focusedWindow =
+    (focusedTerminalId
+      ? allWindows.find((window) => window.id === focusedTerminalId)
+      : allWindows.find((window) => window.id === focusedBrowserId)) ?? null
+  const overviewAnchor = focusedWindow ?? getClosestWindow(allWindows, viewportCenter) ?? null
+  const navOrigin = overviewAnchor ? getWindowCenter(overviewAnchor) : viewportCenter
+  const leftWindow = getDirectionalWindow(allWindows, 'left', navOrigin, overviewAnchor?.id ?? null)
+  const rightWindow = getDirectionalWindow(
+    allWindows,
+    'right',
+    navOrigin,
+    overviewAnchor?.id ?? null,
+  )
+  const upWindow = getDirectionalWindow(allWindows, 'up', navOrigin, overviewAnchor?.id ?? null)
+  const downWindow = getDirectionalWindow(allWindows, 'down', navOrigin, overviewAnchor?.id ?? null)
 
   const openUrlBar = () => {
     setUrlInput(focusedBrowser?.url ?? '')
@@ -249,10 +347,65 @@ export function StatusBar() {
         <button
           className="flex items-center px-3 shrink-0 no-drag hover:bg-muted/30 transition-colors"
           onClick={zoomToFitAll}
-          title="Overview — see all windows"
+          title="Overview (Ctrl+Shift+O)"
         >
           <Logo className="w-3.5 h-3.5 text-foreground/80" />
         </button>
+
+        {allWindows.length > 0 && (
+          <div
+            className="flex items-center px-1.5 shrink-0 no-drag"
+            title={
+              overviewAnchor
+                ? `${overviewAnchor.title} • Ctrl+H/J/K/L to move`
+                : 'Ctrl+H/J/K/L to move around the canvas'
+            }
+          >
+            <div className="grid grid-cols-3 gap-0.5 rounded-md border border-border/35 bg-background/40 p-1">
+              <div />
+              <TitleBarDirectionCell
+                direction="up"
+                target={upWindow}
+                current={overviewAnchor}
+                onSelect={snapToNearest}
+              />
+              <div />
+              <TitleBarDirectionCell
+                direction="left"
+                target={leftWindow}
+                current={overviewAnchor}
+                onSelect={snapToNearest}
+              />
+              <div
+                className={cn(
+                  'h-4 w-4 rounded-[3px] border transition-colors',
+                  overviewAnchor
+                    ? overviewAnchor.type === 'browser'
+                      ? 'border-foreground/70 bg-background/70'
+                      : 'border-foreground/60 bg-foreground/20'
+                    : 'border-muted-foreground/20 bg-muted-foreground/10',
+                )}
+                title={
+                  overviewAnchor ? `Current anchor: ${overviewAnchor.title}` : 'Overview anchor'
+                }
+              />
+              <TitleBarDirectionCell
+                direction="right"
+                target={rightWindow}
+                current={overviewAnchor}
+                onSelect={snapToNearest}
+              />
+              <div />
+              <TitleBarDirectionCell
+                direction="down"
+                target={downWindow}
+                current={overviewAnchor}
+                onSelect={snapToNearest}
+              />
+              <div />
+            </div>
+          </div>
+        )}
 
         {/* Project tabs — left side */}
         <div
@@ -261,7 +414,9 @@ export function StatusBar() {
         >
           {projects.map((project) => {
             const isActive = project.id === activeProjectId
-            const termCount = isActive ? terminalCount : (project.terminals?.length ?? 0)
+            const projectWindowCount = isActive
+              ? windowCount
+              : (project.terminals?.length ?? 0) + (project.browsers?.length ?? 0)
 
             return (
               <button
@@ -278,14 +433,14 @@ export function StatusBar() {
                   <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-primary/60" />
                 )}
                 <span className="text-[11px] font-medium truncate max-w-28">{project.name}</span>
-                {termCount > 0 && (
+                {projectWindowCount > 0 && (
                   <span
                     className={cn(
                       'text-[9px] tabular-nums',
                       isActive ? 'text-muted-foreground/60' : 'text-muted-foreground/30',
                     )}
                   >
-                    {termCount}
+                    {projectWindowCount}
                   </span>
                 )}
               </button>

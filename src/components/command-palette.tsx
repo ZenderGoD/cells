@@ -117,6 +117,26 @@ export function CommandPalette() {
               </CommandGroup>
             )}
 
+            {projects.length > 1 && (
+              <>
+                <CommandGroup heading="Projects">
+                  {projects.map((p) => (
+                    <CommandItem
+                      key={p.id}
+                      onSelect={() => runAction(() => useStore.getState().switchProject(p.id))}
+                      data-checked={p.id === activeProjectId ? 'true' : undefined}
+                    >
+                      <FolderOpen className="text-muted-foreground" />
+                      {p.name}
+                      <span className="ml-auto text-[10px] text-muted-foreground/40 truncate max-w-40">
+                        {p.path}
+                      </span>
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+                <CommandSeparator />
+              </>
+            )}
             <CommandGroup heading="Actions">
               <CommandItem onSelect={() => runAction(() => useStore.getState().addTerminal())}>
                 <Plus className="text-muted-foreground" />
@@ -162,27 +182,6 @@ export function CommandPalette() {
                 <CommandShortcut>⌘Q</CommandShortcut>
               </CommandItem>
             </CommandGroup>
-
-            {projects.length > 1 && (
-              <>
-                <CommandSeparator />
-                <CommandGroup heading="Projects">
-                  {projects.map((p) => (
-                    <CommandItem
-                      key={p.id}
-                      onSelect={() => runAction(() => useStore.getState().switchProject(p.id))}
-                      data-checked={p.id === activeProjectId ? 'true' : undefined}
-                    >
-                      <FolderOpen className="text-muted-foreground" />
-                      {p.name}
-                      <span className="ml-auto text-[10px] text-muted-foreground/40 truncate max-w-40">
-                        {p.path}
-                      </span>
-                    </CommandItem>
-                  ))}
-                </CommandGroup>
-              </>
-            )}
 
             {terminals.length > 0 && (
               <>

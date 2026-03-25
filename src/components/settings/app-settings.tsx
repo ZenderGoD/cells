@@ -150,12 +150,12 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
               </label>
               <div className="space-y-0.5">
                 {[
-                  { value: 'recent' as const, label: 'Recent', desc: 'Switch by last focused' },
                   {
                     value: 'chronological' as const,
                     label: 'Static',
                     desc: 'Switch by creation order',
                   },
+                  { value: 'recent' as const, label: 'Recent', desc: 'Switch by last focused' },
                 ].map((mode) => (
                   <button
                     key={mode.value}

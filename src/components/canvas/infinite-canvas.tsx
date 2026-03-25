@@ -3,6 +3,7 @@ import { motion, useMotionValue, useSpring } from 'motion/react'
 import { useHotkey, useKeyHold } from '@tanstack/react-hotkeys'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
+import { STATUS_BAR_HEIGHT, getCanvasWindows } from '@/lib/canvas-navigation'
 import { TerminalNode } from './terminal-node'
 import { BrowserNode } from './browser-node'
 
@@ -82,17 +83,18 @@ export function InfiniteCanvas() {
   // Schedule a snap — delay scales with how much the closest terminal fills the viewport
   const scheduleSnap = useCallback(() => {
     if (!snapEnabled) return
-    const { canvas, terminals: terms } = useStore.getState()
+    const { canvas, terminals: terms, browsers } = useStore.getState()
     if (canvas.scale < SNAP_DISABLE_ZOOM) {
       setSnapPaused(true)
       return
     }
     setSnapPaused(false)
-    if (terms.length === 0) return
+    const windows = getCanvasWindows(terms, browsers)
+    if (windows.length === 0) return
 
-    // Find the terminal with the most overlap with the viewport
+    // Find the window with the most overlap with the viewport
     const viewW = window.innerWidth
-    const viewH = window.innerHeight - 50
+    const viewH = window.innerHeight - STATUS_BAR_HEIGHT
     const viewL = -canvas.x / canvas.scale
     const viewT = -canvas.y / canvas.scale
     const viewR = viewL + viewW / canvas.scale
@@ -100,9 +102,15 @@ export function InfiniteCanvas() {
     const viewArea = (viewR - viewL) * (viewB - viewT)
 
     let maxCoverage = 0
-    for (const t of terms) {
-      const overlapW = Math.max(0, Math.min(t.x + t.width, viewR) - Math.max(t.x, viewL))
-      const overlapH = Math.max(0, Math.min(t.y + t.height, viewB) - Math.max(t.y, viewT))
+    for (const window of windows) {
+      const overlapW = Math.max(
+        0,
+        Math.min(window.x + window.width, viewR) - Math.max(window.x, viewL),
+      )
+      const overlapH = Math.max(
+        0,
+        Math.min(window.y + window.height, viewB) - Math.max(window.y, viewT),
+      )
       const coverage = (overlapW * overlapH) / viewArea
       if (coverage > maxCoverage) maxCoverage = coverage
     }
@@ -219,11 +227,19 @@ export function InfiniteCanvas() {
         })
       }
 
-      if (terminals.length > 0 && snapEnabled) {
+      if ((terminals.length > 0 || browsers.length > 0) && snapEnabled) {
         scheduleSnap()
       }
     },
-    [transform, setCanvasTransform, cancelSnap, scheduleSnap, terminals.length, snapEnabled],
+    [
+      transform,
+      setCanvasTransform,
+      cancelSnap,
+      scheduleSnap,
+      terminals.length,
+      browsers.length,
+      snapEnabled,
+    ],
   )
 
   // Terminal drag handler

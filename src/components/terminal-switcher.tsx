@@ -2,6 +2,7 @@ import { useEffect, useState, useRef, useCallback } from 'react'
 import { Globe, TerminalSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
+import { orderByRecent } from '@/lib/canvas-navigation'
 import { motion, AnimatePresence } from 'motion/react'
 
 interface SwitcherItem {
@@ -31,7 +32,13 @@ export function TerminalSwitcher() {
     [setOverlayOpen],
   )
   const [selectedIndex, setSelectedIndex] = useState(0)
+  const selectedIndexRef = useRef(0)
   const ctrlHeld = useRef(false)
+
+  const updateSelectedIndex = useCallback((next: number) => {
+    selectedIndexRef.current = next
+    setSelectedIndex(next)
+  }, [])
 
   // Build combined list of all switchable items
   const focusHistory = useStore((s) => s.focusHistory)
@@ -51,29 +58,11 @@ export function TerminalSwitcher() {
     })),
   ]
 
-  let items: SwitcherItem[]
-  if (tabSwitchMode === 'recent' && focusHistory.length > 0) {
-    const currentId = focusedTerminalId || focusedBrowserId
-    const itemMap = new Map(chronologicalItems.map((item) => [item.id, item]))
-    const ordered: SwitcherItem[] = []
-    if (currentId && itemMap.has(currentId)) {
-      ordered.push(itemMap.get(currentId)!)
-      itemMap.delete(currentId)
-    }
-    for (let i = focusHistory.length - 1; i >= 0; i--) {
-      const id = focusHistory[i]
-      if (itemMap.has(id)) {
-        ordered.push(itemMap.get(id)!)
-        itemMap.delete(id)
-      }
-    }
-    for (const item of chronologicalItems) {
-      if (itemMap.has(item.id)) ordered.push(item)
-    }
-    items = ordered
-  } else {
-    items = chronologicalItems
-  }
+  const currentId = focusedTerminalId || focusedBrowserId
+  const items =
+    tabSwitchMode === 'recent' && focusHistory.length > 0
+      ? orderByRecent(chronologicalItems, currentId, focusHistory)
+      : chronologicalItems
 
   const cycle = useCallback(
     (direction: 1 | -1) => {
@@ -84,51 +73,32 @@ export function TerminalSwitcher() {
       ]
       if (chronologicalItems.length < 2) return
 
-      let allItems: typeof chronologicalItems
-      if (state.tabSwitchMode === 'recent' && state.focusHistory.length > 0) {
-        const currentId = state.focusedTerminalId || state.focusedBrowserId
-        const itemMap = new Map(chronologicalItems.map((item) => [item.id, item]))
-        const ordered: typeof chronologicalItems = []
-        if (currentId && itemMap.has(currentId)) {
-          ordered.push(itemMap.get(currentId)!)
-          itemMap.delete(currentId)
-        }
-        for (let i = state.focusHistory.length - 1; i >= 0; i--) {
-          const id = state.focusHistory[i]
-          if (itemMap.has(id)) {
-            ordered.push(itemMap.get(id)!)
-            itemMap.delete(id)
-          }
-        }
-        for (const item of chronologicalItems) {
-          if (itemMap.has(item.id)) ordered.push(item)
-        }
-        allItems = ordered
-      } else {
-        allItems = chronologicalItems
-      }
+      const currentId = state.focusedTerminalId || state.focusedBrowserId
+      const allItems =
+        state.tabSwitchMode === 'recent' && state.focusHistory.length > 0
+          ? orderByRecent(chronologicalItems, currentId, state.focusHistory)
+          : chronologicalItems
 
       if (!open) {
         if (state.tabSwitchMode === 'recent') {
           // In recent mode, first Ctrl+Tab always goes to index 1 (previous window)
-          setSelectedIndex(direction === 1 ? 1 : allItems.length - 1)
+          updateSelectedIndex(direction === 1 ? 1 : allItems.length - 1)
         } else {
-          const currentId = state.focusedTerminalId || state.focusedBrowserId
           const currentIdx = allItems.findIndex((item) => item.id === currentId)
           const startIdx = currentIdx === -1 ? 0 : currentIdx
           const nextIdx =
             (((startIdx + direction) % allItems.length) + allItems.length) % allItems.length
-          setSelectedIndex(nextIdx)
+          updateSelectedIndex(nextIdx)
         }
         setOpen(true)
       } else {
-        setSelectedIndex((prev) => {
-          const next = (((prev + direction) % allItems.length) + allItems.length) % allItems.length
-          return next
-        })
+        updateSelectedIndex(
+          (((selectedIndexRef.current + direction) % allItems.length) + allItems.length) %
+            allItems.length,
+        )
       }
     },
-    [open, setOpen],
+    [open, setOpen, updateSelectedIndex],
   )
 
   const commit = useCallback(() => {
@@ -138,32 +108,14 @@ export function TerminalSwitcher() {
       ...state.browsers.map((b) => ({ id: b.id, type: 'browser' as const })),
     ]
 
-    let allItems: typeof chronologicalItems
-    if (state.tabSwitchMode === 'recent' && state.focusHistory.length > 0) {
-      const currentId = state.focusedTerminalId || state.focusedBrowserId
-      const itemMap = new Map(chronologicalItems.map((item) => [item.id, item]))
-      const ordered: typeof chronologicalItems = []
-      if (currentId && itemMap.has(currentId)) {
-        ordered.push(itemMap.get(currentId)!)
-        itemMap.delete(currentId)
-      }
-      for (let i = state.focusHistory.length - 1; i >= 0; i--) {
-        const id = state.focusHistory[i]
-        if (itemMap.has(id)) {
-          ordered.push(itemMap.get(id)!)
-          itemMap.delete(id)
-        }
-      }
-      for (const item of chronologicalItems) {
-        if (itemMap.has(item.id)) ordered.push(item)
-      }
-      allItems = ordered
-    } else {
-      allItems = chronologicalItems
-    }
+    const currentId = state.focusedTerminalId || state.focusedBrowserId
+    const allItems =
+      state.tabSwitchMode === 'recent' && state.focusHistory.length > 0
+        ? orderByRecent(chronologicalItems, currentId, state.focusHistory)
+        : chronologicalItems
 
     if (allItems.length > 0 && open) {
-      const target = allItems[selectedIndex]
+      const target = allItems[selectedIndexRef.current]
       if (target) {
         if (target.type === 'terminal') {
           snapToTerminal(target.id)
@@ -173,15 +125,16 @@ export function TerminalSwitcher() {
       }
     }
     setOpen(false)
-  }, [open, selectedIndex, setOpen, snapToBrowser, snapToTerminal])
+    updateSelectedIndex(0)
+  }, [open, setOpen, snapToBrowser, snapToTerminal, updateSelectedIndex])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Tab' && e.ctrlKey && !e.metaKey) {
+      if (e.key === 'Tab' && e.ctrlKey && !e.metaKey && !e.shiftKey) {
         e.preventDefault()
         e.stopPropagation()
         ctrlHeld.current = true
-        cycle(e.shiftKey ? -1 : 1)
+        cycle(1)
       }
 
       if (e.key === 'Control') {

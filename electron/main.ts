@@ -392,7 +392,11 @@ function setupBrowserView(browserId: string, view: WebContentsView) {
       _e.preventDefault()
       if (input.type === 'keyDown' && !mainWindow?.isDestroyed()) {
         mainWindow?.webContents.focus()
-        mainWindow?.webContents.send('browser:window-cycle', input.shift ? -1 : 1)
+        if (input.shift) {
+          mainWindow?.webContents.send('browser:project-cycle')
+        } else {
+          mainWindow?.webContents.send('browser:window-cycle', 1)
+        }
       }
       return
     }
@@ -400,7 +404,24 @@ function setupBrowserView(browserId: string, view: WebContentsView) {
     if (input.meta || input.control) {
       const key = input.key.toLowerCase()
       const shouldForwardShortcut =
-        ['l', 'w', 't', 'q', ',', '[', ']'].includes(key) || (key === 'c' && input.shift)
+        [
+          'l',
+          'w',
+          't',
+          'q',
+          ',',
+          '[',
+          ']',
+          'h',
+          'j',
+          'k',
+          'arrowleft',
+          'arrowright',
+          'arrowup',
+          'arrowdown',
+        ].includes(key) ||
+        (key === 'o' && input.shift) ||
+        (key === 'c' && input.shift)
       // Forward browser-level app shortcuts back to the renderer so they still work
       // while the embedded page owns keyboard focus.
       // Cmd+Shift+C is included so the renderer can copy the current URL and show
