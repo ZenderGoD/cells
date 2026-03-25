@@ -191,21 +191,13 @@ export function InfiniteCanvas() {
       const clickedNode = termNode || browserNode
 
       if (selectionMode) {
-        if (!clickedNode && e.button === 0 && e.metaKey) {
+        if (!clickedNode && e.button === 0) {
           e.preventDefault()
           e.stopPropagation()
           cancelSnap()
           setIsUserDriving(false)
           marqueeRef.current = { startX: e.clientX, startY: e.clientY }
           setMarqueeBox({ x: e.clientX, y: e.clientY, width: 0, height: 0 })
-          setSelectedNodeIds([])
-          focusTerminal(null)
-          return
-        }
-
-        if (!clickedNode && e.button === 0) {
-          e.preventDefault()
-          e.stopPropagation()
           setSelectedNodeIds([])
           focusTerminal(null)
           return

@@ -404,7 +404,7 @@ export function BrowserNode({
             {dragModeActive && isFocused && (
               <span className="text-[10px] text-muted-foreground/20 mt-1">
                 {selectionMode
-                  ? 'Hold Cmd and drag on the canvas to marquee select multiple panels'
+                  ? 'Click and drag on the canvas to marquee select multiple panels'
                   : 'Swipe left or right at the edge to navigate back/forward'}
               </span>
             )}
