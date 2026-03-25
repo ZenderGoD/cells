@@ -48,11 +48,19 @@ jobs:
           fi
 
       - name: Update GitHub Release notes
-        uses: softprops/action-gh-release@v2
-        with:
-          body: |
-            ## Changes
-            ${{ steps.changelog.outputs.CHANGELOG }}
-          files: |
-            release/*.dmg
-            release/*.zip
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cat > release-notes.md <<EOF
+          ## Installation
+          - Download the DMG or ZIP asset for macOS.
+          - Cells checks GitHub releases for app updates after launch.
+
+          ## Changes
+          ${{ steps.changelog.outputs.CHANGELOG }}
+          EOF
+
+          gh release edit "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "${GITHUB_REF_NAME#v}" \
+            --notes-file release-notes.md

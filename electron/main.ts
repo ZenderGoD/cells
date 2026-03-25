@@ -41,6 +41,8 @@ const LEGACY_STATE_FILE = path.join(LEGACY_STATE_DIR, 'state.json')
 const AUTO_UPDATE_CHECK_DELAY = 15_000
 const AUTO_UPDATE_CHECK_INTERVAL = 6 * 60 * 60 * 1000
 let updateCheckInterval: ReturnType<typeof setInterval> | null = null
+const PRELOAD_FILE = 'preload.mjs'
+const BROWSER_PRELOAD_FILE = 'browser-preload.cjs'
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -56,7 +58,7 @@ function createWindow() {
     roundedCorners: true,
     icon: path.join(__dirname, '../resources/icon.png'),
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(__dirname, PRELOAD_FILE),
       nodeIntegration: false,
       contextIsolation: true,
       webgl: true,
@@ -234,7 +236,7 @@ ipcMain.on('terminal:resize', (_event, termId: string, cols: number, rows: numbe
 // ---------- Browser IPC ----------
 
 const browserViews = new Map<string, WebContentsView>()
-const browserPreloadPath = path.join(__dirname, 'browser-preload.js')
+const browserPreloadPath = path.join(__dirname, BROWSER_PRELOAD_FILE)
 
 // Saved history for browsers restored after app restart.
 // Used for software back/forward when native history is empty.
@@ -620,7 +622,7 @@ autoUpdater.autoDownload = true
 autoUpdater.autoInstallOnAppQuit = true
 
 function shouldEnableAutoUpdates() {
-  return app.isPackaged
+  return app.isPackaged && fs.existsSync(path.join(process.resourcesPath, 'app-update.yml'))
 }
 
 function sendUpdateStatus(status: string, info?: any) {
