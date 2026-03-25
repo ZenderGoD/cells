@@ -10,6 +10,10 @@ export const DEFAULT_WINDOW_APPEARANCE: WindowAppearanceSettings = {
   windowBlurRadius: 24,
 }
 
+const SHELL_SURFACE_OPACITY = 0.82
+const CANVAS_SURFACE_OPACITY = 0.33
+const CANVAS_GRID_OPACITY = 0.25
+
 const MIN_WINDOW_OPACITY = 0
 const MAX_WINDOW_OPACITY = 100
 const MIN_WINDOW_BLUR_RADIUS = 0
@@ -40,16 +44,20 @@ export function buildWindowAppearanceStyle(
     string
   > {
   const normalized = normalizeWindowAppearance(value)
-  const isVisible = normalized.windowOpacity > 0
+  const opacityFactor = normalized.windowOpacity / 100
 
   return {
-    '--window-surface-opacity': isVisible ? '0.82' : '0',
-    '--window-backdrop-blur': `${isVisible ? normalized.windowBlurRadius : 0}px`,
-    '--canvas-surface-opacity': isVisible ? '0.33' : '0',
-    '--canvas-grid-opacity': isVisible ? '0.25' : '0',
+    '--window-surface-opacity': roundAlpha(SHELL_SURFACE_OPACITY * opacityFactor),
+    '--window-backdrop-blur': `${normalized.windowOpacity > 0 ? normalized.windowBlurRadius : 0}px`,
+    '--canvas-surface-opacity': roundAlpha(CANVAS_SURFACE_OPACITY * opacityFactor),
+    '--canvas-grid-opacity': roundAlpha(CANVAS_GRID_OPACITY * opacityFactor),
   }
 }
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, Math.round(value)))
+}
+
+function roundAlpha(value: number) {
+  return String(Math.round(value * 100) / 100)
 }

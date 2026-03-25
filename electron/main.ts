@@ -72,20 +72,14 @@ function createWindow() {
   }
 }
 
-function applyWindowAppearance(opacity: number, blurRadius: number) {
+function applyWindowAppearance(opacity: number, _blurRadius: number) {
   if (!mainWindow || mainWindow.isDestroyed()) return
 
   const clampedOpacity = Math.min(100, Math.max(0, Math.round(opacity)))
-  const alpha = clampedOpacity / 100
   const hasVisibleSurface = clampedOpacity > 0
 
-  mainWindow.setOpacity(alpha)
   mainWindow.setVibrancy(hasVisibleSurface ? 'under-window' : null)
   mainWindow.setHasShadow(hasVisibleSurface)
-  mainWindow.webContents.send('app:window-appearance', {
-    opacity: clampedOpacity,
-    blurRadius: Math.max(0, Math.round(blurRadius)),
-  })
 }
 
 // ---------- State persistence ----------

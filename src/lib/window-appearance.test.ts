@@ -37,10 +37,10 @@ test('normalizeWindowAppearance falls back to defaults when settings are missing
 
 test('buildWindowAppearanceStyle exposes CSS variables for the app shell', () => {
   assert.deepEqual(buildWindowAppearanceStyle({ windowOpacity: 70, windowBlurRadius: 31 }), {
-    '--window-surface-opacity': '0.82',
+    '--window-surface-opacity': '0.57',
     '--window-backdrop-blur': '31px',
-    '--canvas-surface-opacity': '0.33',
-    '--canvas-grid-opacity': '0.25',
+    '--canvas-surface-opacity': '0.23',
+    '--canvas-grid-opacity': '0.18',
   })
 })
 
