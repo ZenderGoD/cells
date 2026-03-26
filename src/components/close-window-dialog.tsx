@@ -37,38 +37,35 @@ export function CloseWindowDialog({
 
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => !nextOpen && onCancel()}>
-      <DialogContent className="max-w-md gap-3 p-0" showCloseButton={false}>
-        <DialogHeader className="border-b border-border/30 px-4 py-3">
-          <div className="flex items-start gap-2">
+      <DialogContent className="max-w-md" showCloseButton={false}>
+        <DialogHeader>
+          <div className="flex items-start gap-2.5">
             <div className="mt-0.5 rounded-md bg-amber-500/12 p-1.5 text-amber-600 dark:text-amber-400">
-              <AlertTriangle className="h-3.5 w-3.5" />
+              <AlertTriangle className="h-4 w-4" />
             </div>
-            <div className="min-w-0 space-y-1">
-              <DialogTitle className="text-sm">Close running window?</DialogTitle>
-              <DialogDescription className="text-[11px] leading-5 text-muted-foreground/70">
+            <div className="min-w-0 space-y-1.5">
+              <DialogTitle>Close running window?</DialogTitle>
+              <DialogDescription className="text-xs leading-relaxed">
                 <span className="font-medium text-foreground">{processLabel}</span>
                 {' is still running in '}
-                <span className="font-medium text-foreground">
-                  {windowTitle || 'this window'}
-                </span>. {formatUndoTimeout(undoTimeoutMs)}
+                <span className="font-medium text-foreground">{windowTitle || 'this window'}</span>.{' '}
+                {formatUndoTimeout(undoTimeoutMs)}
               </DialogDescription>
             </div>
           </div>
         </DialogHeader>
 
-        <div className="px-4 pb-1">
-          <label className="flex items-center gap-2 rounded-md px-2 py-1.5 text-[11px] text-muted-foreground/70 transition-colors hover:bg-muted/40 hover:text-foreground">
-            <input
-              ref={skipFuturePromptsRef}
-              type="checkbox"
-              defaultChecked={false}
-              className="h-3.5 w-3.5 rounded border-border/50 bg-background/70"
-            />
-            <span>Don&apos;t ask again for {processLabel}</span>
-          </label>
-        </div>
+        <label className="flex items-center gap-2 rounded-md px-1 py-1 text-xs text-muted-foreground transition-colors hover:text-foreground cursor-pointer">
+          <input
+            ref={skipFuturePromptsRef}
+            type="checkbox"
+            defaultChecked={false}
+            className="h-3.5 w-3.5 rounded border-border/50 bg-background/70 accent-primary"
+          />
+          <span>Don&apos;t ask again for {processLabel}</span>
+        </label>
 
-        <DialogFooter className="bg-muted/35 px-4 py-3">
+        <DialogFooter>
           <Button variant="outline" size="sm" onClick={onCancel}>
             Cancel
           </Button>
