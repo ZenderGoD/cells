@@ -100,6 +100,12 @@ function MainApp() {
         state.zoomToFitAll()
       }
 
+      if (key === 'enter' && event.shiftKey && event.metaKey && !event.ctrlKey) {
+        event.preventDefault()
+        event.stopPropagation()
+        state.resizeFocusedToFitViewport()
+      }
+
       if (key === '0' && event.shiftKey && event.metaKey && !event.ctrlKey) {
         event.preventDefault()
         event.stopPropagation()

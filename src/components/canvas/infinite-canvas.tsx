@@ -218,7 +218,12 @@ export function InfiniteCanvas() {
         }
       }
 
-      if (clickedNode && !e.metaKey) return
+      // Let terminal/browser handle their own clicks (including Cmd+click for links).
+      // Only intercept Cmd+click on the non-interactive shell of the node (title bar, resize edges).
+      const isInsideContent =
+        (e.target as HTMLElement).closest('.xterm') ||
+        (e.target as HTMLElement).closest('.browser-node > div')
+      if (clickedNode && (!e.metaKey || isInsideContent)) return
 
       if (e.button === 0 || e.button === 1) {
         e.preventDefault()

@@ -110,6 +110,7 @@ interface StoreState {
 
   setCanvasTransform(transform: CanvasTransform): void
   resizeWindowToFitFocused(): void
+  resizeFocusedToFitViewport(): void
   zoomToFitAll(): void
   setOverlayOpen(open: boolean): void
   setSearchEngine(engine: string): void
@@ -1131,6 +1132,23 @@ export const useStore = create<StoreState>((set, get) => ({
       if (focusedTerminalId) get().snapToTerminal(focusedTerminalId)
       else if (focusedBrowserId) get().snapToBrowser(focusedBrowserId)
     })
+  },
+
+  resizeFocusedToFitViewport() {
+    const { terminals, browsers, focusedTerminalId, focusedBrowserId } = get()
+    const viewW = window.innerWidth - TERMINAL_PAD * 2
+    const viewH = window.innerHeight - STATUS_BAR_HEIGHT - TERMINAL_PAD * 2
+    if (focusedTerminalId) {
+      const t = terminals.find((t) => t.id === focusedTerminalId)
+      if (!t) return
+      get().resizeTerminal(focusedTerminalId, viewW, viewH)
+      get().snapToTerminal(focusedTerminalId)
+    } else if (focusedBrowserId) {
+      const b = browsers.find((b) => b.id === focusedBrowserId)
+      if (!b) return
+      get().resizeBrowser(focusedBrowserId, viewW, viewH)
+      get().snapToBrowser(focusedBrowserId)
+    }
   },
 
   zoomToFitAll() {
