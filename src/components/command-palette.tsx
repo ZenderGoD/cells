@@ -1,6 +1,16 @@
 import { useState, useEffect } from 'react'
 import { useHotkey } from '@tanstack/react-hotkeys'
-import { Globe, Plus, RotateCcw, Palette, Settings, FolderOpen, Search, LogOut } from 'lucide-react'
+import {
+  Globe,
+  Plus,
+  RotateCcw,
+  Palette,
+  Settings,
+  FolderOpen,
+  Search,
+  LogOut,
+  GitBranch,
+} from 'lucide-react'
 import {
   CommandDialog,
   Command,
@@ -14,6 +24,7 @@ import {
 } from '@/components/ui/command'
 import { useStore } from '@/lib/store'
 import { inferAgentFromTitle } from '@/lib/agent-command'
+import { GIT_GRAPH_LABEL } from '@/lib/lazygit'
 import { terminalThemes } from '@/lib/terminal-themes'
 import { AppSettings } from './settings/app-settings'
 import { NewProjectDialog } from './new-project-dialog'
@@ -31,6 +42,9 @@ export function CommandPalette() {
   const terminalTheme = useStore((s) => s.terminalTheme)
   const projects = useStore((s) => s.projects)
   const activeProjectId = useStore((s) => s.activeProjectId)
+  const activeProject = useStore(
+    (s) => s.projects.find((project) => project.id === s.activeProjectId) ?? null,
+  )
   const setOverlayOpen = useStore((s) => s.setOverlayOpen)
 
   const setShowSettings = (v: boolean) => {
@@ -51,6 +65,10 @@ export function CommandPalette() {
     })
   })
   useHotkey('Mod+,', () => setShowSettings(true))
+  useHotkey('Mod+Shift+G', () => {
+    if (!activeProject?.path) return
+    useStore.getState().openLazygit()
+  })
 
   useEffect(() => {
     if (open) {
@@ -158,6 +176,14 @@ export function CommandPalette() {
               >
                 <FolderOpen className="text-muted-foreground" />
                 New Project
+              </CommandItem>
+              <CommandItem
+                onSelect={() => runAction(() => void useStore.getState().openLazygit())}
+                disabled={!activeProject?.path}
+              >
+                <GitBranch className="text-muted-foreground" />
+                {GIT_GRAPH_LABEL}
+                <CommandShortcut>⌘⇧G</CommandShortcut>
               </CommandItem>
               <CommandItem onSelect={() => window.close()}>
                 <LogOut className="text-muted-foreground" />

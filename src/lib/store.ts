@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { nanoid } from 'nanoid'
 import type { BrowserNode, CanvasTransform, Project, ProjectsState, TerminalNode } from '../types'
 import { inferAgentFromCommand } from './agent-command'
+import { buildLazygitCommand, GIT_GRAPH_LABEL } from './lazygit'
 import { DEFAULT_THEME } from './terminal-themes'
 import { DEFAULT_WINDOW_APPEARANCE, normalizeWindowAppearance } from './window-appearance'
 import {
@@ -70,6 +71,7 @@ interface StoreState {
 
   addTerminal(): TerminalNode
   addTerminalWithCommand(command: string, title?: string): TerminalNode
+  openLazygit(): TerminalNode | null
   updateTerminalAgent(id: string, agent: 'claude' | 'codex' | null): void
   removeTerminal(id: string): void
   moveTerminal(id: string, x: number, y: number): void
@@ -656,6 +658,12 @@ export const useStore = create<StoreState>((set, get) => ({
     }
     pendingCommands.set(terminal.id, command)
     return terminal
+  },
+
+  openLazygit() {
+    const projectPath = get().getActiveProjectPath()
+    if (!projectPath) return null
+    return get().addTerminalWithCommand(buildLazygitCommand(), GIT_GRAPH_LABEL)
   },
 
   updateTerminalAgent(id, agent) {
