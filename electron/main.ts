@@ -1376,7 +1376,10 @@ ipcMain.handle('updater:set-auto-update', (_event, enabled: boolean) => {
 app.whenReady().then(async () => {
   // Start PTY daemon before creating windows
   try {
-    useDaemon = await ensureDaemon(STATE_DIR, app.getVersion(), process.execPath)
+    console.log('Starting PTY daemon...')
+    const daemonScript = path.join(__dirname, 'pty-daemon.js')
+    useDaemon = await ensureDaemon(STATE_DIR, app.getVersion(), process.execPath, daemonScript)
+    console.log('PTY daemon result:', useDaemon)
     if (useDaemon) {
       daemonClient = new PtyDaemonClient()
       await daemonClient.connect(path.join(STATE_DIR, 'pty-daemon.sock'))
@@ -1413,7 +1416,8 @@ app.whenReady().then(async () => {
     } else {
       fallbackPtys = new PtyManager()
     }
-  } catch {
+  } catch (err) {
+    console.error('PTY daemon setup failed:', err)
     useDaemon = false
     fallbackPtys = new PtyManager()
   }
@@ -1489,13 +1493,18 @@ app.on('before-quit', () => {
     }
   } catch {}
   cleanupBrowserViews()
+  console.log(
+    `before-quit: useDaemon=${useDaemon}, connected=${daemonClient?.isConnected()}, subscribed=[${[...subscribedTerminals].join(',')}]`,
+  )
   if (useDaemon && daemonClient?.isConnected()) {
     // Unsubscribe all — daemon keeps PTYs alive and buffers output
     for (const termId of subscribedTerminals) {
       daemonClient.unsubscribe(termId)
     }
     daemonClient.disconnect()
+    console.log('before-quit: disconnected from daemon, PTYs kept alive')
   } else {
+    console.log('before-quit: killing fallback PTYs')
     fallbackPtys?.cleanup()
   }
 })

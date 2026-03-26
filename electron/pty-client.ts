@@ -64,6 +64,9 @@ export class PtyDaemonClient {
 
   disconnect(): void {
     this._connected = false
+    // Clear callback before destroying socket to prevent crash-recovery
+    // from triggering during intentional disconnect
+    this.disconnectCallback = null
     this.rejectAllPending('Client disconnecting')
     if (this.socket) {
       this.socket.destroy()

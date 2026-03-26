@@ -20,11 +20,11 @@ export async function ensureDaemon(
   stateDir: string,
   appVersion: string,
   execPath: string,
+  daemonScript: string,
 ): Promise<boolean> {
   const socketPath = path.join(stateDir, 'pty-daemon.sock')
   const pidFile = path.join(stateDir, 'pty-daemon.pid')
   const versionFile = path.join(stateDir, 'pty-daemon.version')
-  const daemonScript = path.join(__dirname, 'pty-daemon.js')
 
   // 1. Try connecting to existing daemon
   const existing = await tryConnect(socketPath)
@@ -55,9 +55,15 @@ export async function ensureDaemon(
       fs.mkdirSync(stateDir, { recursive: true })
     }
 
+    if (!fs.existsSync(daemonScript)) {
+      console.warn(`PTY daemon script not found at ${daemonScript}`)
+      return false
+    }
+
     const logFile = path.join(stateDir, 'pty-daemon.log')
     const logFd = fs.openSync(logFile, 'a')
 
+    console.log(`Spawning PTY daemon: ${execPath} ${daemonScript}`)
     const child = spawnProcess(execPath, [daemonScript], {
       detached: true,
       stdio: ['ignore', logFd, logFd],
@@ -69,7 +75,10 @@ export async function ensureDaemon(
       },
     })
     child.unref()
+    // Detach from parent's process group so it survives Electron exit
+    child.on('error', (err) => console.warn('Daemon child error:', err))
     fs.closeSync(logFd)
+    console.log(`PTY daemon spawned with PID ${child.pid}`)
   } catch (err) {
     console.warn('Failed to spawn PTY daemon:', err)
     return false
@@ -81,6 +90,7 @@ export async function ensureDaemon(
     const conn = await tryConnect(socketPath)
     if (conn) {
       conn.destroy()
+      console.log('PTY daemon is ready')
       return true
     }
     await sleep(POLL_INTERVAL)
