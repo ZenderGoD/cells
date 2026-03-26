@@ -72,19 +72,16 @@ export function WindowOverviewMap({
     dragging: boolean
   } | null>(null)
 
-  const scaleRef = useRef(1)
-
-  if (!bounds) return null
+  const resolvedBounds = bounds ?? { x: 0, y: 0, width: 1, height: 1 }
 
   const availableWidth = width - 4
   const availableHeight = height - 4
   const scale = Math.min(
-    availableWidth / Math.max(bounds.width, 1),
-    availableHeight / Math.max(bounds.height, 1),
+    availableWidth / Math.max(resolvedBounds.width, 1),
+    availableHeight / Math.max(resolvedBounds.height, 1),
   )
-  scaleRef.current = scale
-  const contentWidth = bounds.width * scale
-  const contentHeight = bounds.height * scale
+  const contentWidth = resolvedBounds.width * scale
+  const contentHeight = resolvedBounds.height * scale
   const offsetX = (width - contentWidth) / 2
   const offsetY = (height - contentHeight) / 2
 
@@ -106,14 +103,14 @@ export function WindowOverviewMap({
         0,
         Math.min(
           width - renderedWidth,
-          offsetX + (rect.x - bounds.x) * scale - (renderedWidth - scaledWidth) / 2,
+          offsetX + (rect.x - resolvedBounds.x) * scale - (renderedWidth - scaledWidth) / 2,
         ),
       ),
       top: Math.max(
         0,
         Math.min(
           height - renderedHeight,
-          offsetY + (rect.y - bounds.y) * scale - (renderedHeight - scaledHeight) / 2,
+          offsetY + (rect.y - resolvedBounds.y) * scale - (renderedHeight - scaledHeight) / 2,
         ),
       ),
       width: renderedWidth,
@@ -151,11 +148,11 @@ export function WindowOverviewMap({
         drag.dragging = true
       }
 
-      const canvasDx = dx / scaleRef.current
-      const canvasDy = dy / scaleRef.current
+      const canvasDx = dx / scale
+      const canvasDy = dy / scale
       onMove(win, drag.originX + canvasDx, drag.originY + canvasDy)
     },
-    [onMove],
+    [onMove, scale],
   )
 
   const handlePointerUp = useCallback(
@@ -171,6 +168,8 @@ export function WindowOverviewMap({
     },
     [onSelect],
   )
+
+  if (!bounds) return null
 
   return (
     <div
