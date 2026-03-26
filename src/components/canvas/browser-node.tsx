@@ -34,6 +34,7 @@ export function BrowserNode({
     moveBrowser,
     updateBrowserUrl,
     updateBrowserTitle,
+    updateBrowserFavicon,
     addBrowserWithUrl,
     focusBrowser,
   } = useStore()
@@ -128,14 +129,18 @@ export function BrowserNode({
         setCanGoForward(forward)
       }
     })
+    const unsubFavicon = window.cells.browser.onFaviconUpdated((id, faviconUrl) => {
+      if (id === browser.id) updateBrowserFavicon(id, faviconUrl)
+    })
     return () => {
       unsubTitle()
       unsubUrl()
       unsubNewWindow()
       unsubLoading()
       unsubNav()
+      unsubFavicon()
     }
-  }, [browser.id, updateBrowserTitle, updateBrowserUrl, addBrowserWithUrl])
+  }, [browser.id, updateBrowserTitle, updateBrowserUrl, updateBrowserFavicon, addBrowserWithUrl])
 
   // Listen for overscroll gesture progress
   useEffect(() => {

@@ -168,9 +168,34 @@ export const terminalThemes: Record<string, TerminalTheme> = {
     brightCyan: '#5eaab5',
     brightWhite: '#dbd7ca',
   },
+  daylight: {
+    name: 'Daylight',
+    background: '#fafafa',
+    foreground: '#3c3836',
+    cursor: '#3c3836',
+    selectionBackground: '#d5c4a1',
+    selectionForeground: '#3c3836',
+    black: '#3c3836',
+    red: '#cc241d',
+    green: '#798623',
+    yellow: '#b57614',
+    blue: '#458588',
+    magenta: '#8f3f71',
+    cyan: '#689d6a',
+    white: '#d5c4a1',
+    brightBlack: '#928374',
+    brightRed: '#9d0006',
+    brightGreen: '#79740e',
+    brightYellow: '#b57614',
+    brightBlue: '#076678',
+    brightMagenta: '#8f3f71',
+    brightCyan: '#427b58',
+    brightWhite: '#f9f5d7',
+  },
 }
 
 export const DEFAULT_THEME = 'ghost'
+export const DEFAULT_LIGHT_THEME = 'daylight'
 
 export function getTerminalTheme(name: string): TerminalTheme {
   return terminalThemes[name] ?? terminalThemes[DEFAULT_THEME]

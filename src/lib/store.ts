@@ -1,8 +1,15 @@
 import { create } from 'zustand'
 import { nanoid } from 'nanoid'
-import type { BrowserNode, CanvasTransform, Project, ProjectsState, TerminalNode } from '../types'
+import type {
+  BrowserNode,
+  CanvasTransform,
+  Project,
+  ProjectsState,
+  TerminalNode,
+  TerminalProcessInfo,
+} from '../types'
 import { inferAgentFromCommand } from './agent-command'
-import { DEFAULT_THEME } from './terminal-themes'
+import { DEFAULT_THEME, DEFAULT_LIGHT_THEME } from './terminal-themes'
 import { DEFAULT_WINDOW_APPEARANCE, normalizeWindowAppearance } from './window-appearance'
 import {
   STATUS_BAR_HEIGHT,
@@ -51,6 +58,12 @@ interface StoreState {
   terminalLinkTarget: 'system' | 'browser'
   terminalLinkProjectId: string | null
   linkRules: Array<{ pattern: string; target: 'system' | 'browser'; projectId?: string }>
+  agentAliases: Record<string, string>
+  colorScheme: 'light' | 'dark' | 'system'
+  closeUndoTimeoutMs: number
+  closeProcessSuppressions: string[]
+  pendingClosedWindows: PendingClosedWindow[]
+  pendingCloseDialog: PendingCloseDialog | null
 
   init(): Promise<void>
   persist(): void
@@ -104,6 +117,15 @@ interface StoreState {
   setLinkRules(
     rules: Array<{ pattern: string; target: 'system' | 'browser'; projectId?: string }>,
   ): void
+  setAgentAliases(aliases: Record<string, string>): void
+  setColorScheme(scheme: 'light' | 'dark' | 'system'): void
+  setCloseUndoTimeoutMs(timeoutMs: number): void
+  setCloseProcessSuppressions(processes: string[]): void
+  requestCloseWindow(target?: CloseWindowTarget): Promise<void>
+  cancelPendingClose(): void
+  confirmPendingClose(skipFuturePrompts?: boolean): void
+  restoreLastClosedWindow(): void
+  getAgentCommand(agent: string): string
   getSearchUrl(query: string): string
 
   // Browser actions
@@ -115,6 +137,7 @@ interface StoreState {
   resizeBrowser(id: string, width: number, height: number): void
   updateBrowserUrl(id: string, url: string): void
   updateBrowserTitle(id: string, title: string): void
+  updateBrowserFavicon(id: string, faviconUrl: string): void
   focusBrowser(id: string): void
   bringBrowserToFront(id: string): void
 }
@@ -128,6 +151,77 @@ const DEFAULT_CANVAS: CanvasTransform = { x: 0, y: 0, scale: 1 }
 const DEFAULT_FONT_FAMILY = '"GeistMono NF", "Geist Mono", monospace'
 const DEFAULT_SEARCH_ENGINE = 'https://www.google.com/search?q=%s'
 const DEFAULT_HOME_PAGE = ''
+const DEFAULT_CLOSE_UNDO_TIMEOUT_MS = 15000
+
+/** Apply color scheme to the document and sync with system preferences. */
+let systemThemeCleanup: (() => void) | null = null
+function applyColorScheme(scheme: 'light' | 'dark' | 'system') {
+  // Clean up previous system listener
+  if (systemThemeCleanup) {
+    systemThemeCleanup()
+    systemThemeCleanup = null
+  }
+
+  const apply = () => {
+    const prefersDark =
+      scheme === 'system'
+        ? window.matchMedia('(prefers-color-scheme: dark)').matches
+        : scheme === 'dark'
+    document.documentElement.classList.toggle('dark', prefersDark)
+    document.documentElement.classList.toggle('light', !prefersDark)
+    document.documentElement.style.colorScheme = prefersDark ? 'dark' : 'light'
+  }
+
+  apply()
+
+  // Listen for system theme changes when in 'system' mode
+  if (scheme === 'system') {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    const handler = () => apply()
+    mq.addEventListener('change', handler)
+    systemThemeCleanup = () => mq.removeEventListener('change', handler)
+  }
+}
+
+type CloseWindowTarget = { id: string; type: 'terminal' | 'browser' }
+
+interface PendingCloseDialog {
+  target: CloseWindowTarget
+  process: TerminalProcessInfo
+  title: string
+}
+
+interface PendingClosedWindow {
+  id: string
+  target: CloseWindowTarget
+  projectId: string
+  terminal?: TerminalNode
+  browser?: BrowserNode
+  title: string
+  closedAt: number
+  expiresAt: number
+  processLabel?: string | null
+  processKey?: string | null
+}
+
+const pendingCloseTimers = new Map<string, number>()
+
+function clearPendingCloseTimer(id: string) {
+  const timer = pendingCloseTimers.get(id)
+  if (timer) {
+    window.clearTimeout(timer)
+    pendingCloseTimers.delete(id)
+  }
+}
+
+function destroyTerminalResources(id: string) {
+  destroyCachedTerminal(id)
+  window.cells.terminal.detach(id).catch(() => {})
+}
+
+function destroyBrowserResources(id: string) {
+  window.cells.browser.destroy(id).catch(() => {})
+}
 
 function sanitizeProjectLinkSettings(
   projects: Project[],
@@ -191,6 +285,15 @@ function getTopZIndex(terminals: TerminalNode[], browsers: BrowserNode[] = []) {
   const termMax = terminals.reduce((max, t) => Math.max(max, t.zIndex ?? 0), 1)
   const browMax = browsers.reduce((max, b) => Math.max(max, b.zIndex ?? 0), 0)
   return Math.max(termMax, browMax)
+}
+
+function upsertPendingClosedWindow(
+  pending: PendingClosedWindow[],
+  entry: PendingClosedWindow,
+): PendingClosedWindow[] {
+  return [...pending.filter((candidate) => candidate.id !== entry.id), entry].sort(
+    (a, b) => b.closedAt - a.closedAt,
+  )
 }
 
 let persistTimer: ReturnType<typeof setTimeout> | null = null
@@ -263,6 +366,12 @@ export const useStore = create<StoreState>((set, get) => ({
   terminalLinkTarget: 'system',
   terminalLinkProjectId: null,
   linkRules: [],
+  agentAliases: {},
+  colorScheme: 'dark' as const,
+  closeUndoTimeoutMs: DEFAULT_CLOSE_UNDO_TIMEOUT_MS,
+  closeProcessSuppressions: [],
+  pendingClosedWindows: [],
+  pendingCloseDialog: null,
   terminalTheme: DEFAULT_THEME,
   fontSize: 13,
   fontFamily: DEFAULT_FONT_FAMILY,
@@ -316,10 +425,15 @@ export const useStore = create<StoreState>((set, get) => ({
         terminalLinkTarget: ps.terminalLinkTarget || 'system',
         terminalLinkProjectId: projectLinkSettings.terminalLinkProjectId,
         linkRules: projectLinkSettings.linkRules,
+        agentAliases: ps.agentAliases ?? {},
+        colorScheme: ps.colorScheme || 'dark',
+        closeUndoTimeoutMs: Math.max(0, ps.closeUndoTimeoutMs ?? DEFAULT_CLOSE_UNDO_TIMEOUT_MS),
+        closeProcessSuppressions: ps.closeProcessSuppressions ?? [],
       }
 
       if (projects.length === 0) {
         set({ projects: [], activeProjectId: null, ...globalSettings, initialized: true })
+        applyColorScheme(globalSettings.colorScheme)
         return
       }
 
@@ -336,6 +450,7 @@ export const useStore = create<StoreState>((set, get) => ({
         ...globalSettings,
         initialized: true,
       })
+      applyColorScheme(globalSettings.colorScheme)
       return
     }
 
@@ -389,6 +504,7 @@ export const useStore = create<StoreState>((set, get) => ({
 
     // First run — no state at all
     set({ initialized: true })
+    applyColorScheme(get().colorScheme)
   },
 
   persist() {
@@ -434,6 +550,10 @@ export const useStore = create<StoreState>((set, get) => ({
           terminalLinkTarget: freshState.terminalLinkTarget,
           terminalLinkProjectId: freshState.terminalLinkProjectId,
           linkRules: freshState.linkRules,
+          agentAliases: freshState.agentAliases,
+          colorScheme: freshState.colorScheme,
+          closeUndoTimeoutMs: freshState.closeUndoTimeoutMs,
+          closeProcessSuppressions: freshState.closeProcessSuppressions,
         })
       })
       .catch(() => {
@@ -457,6 +577,10 @@ export const useStore = create<StoreState>((set, get) => ({
           terminalLinkTarget: state.terminalLinkTarget,
           terminalLinkProjectId: state.terminalLinkProjectId,
           linkRules: state.linkRules,
+          agentAliases: state.agentAliases,
+          colorScheme: state.colorScheme,
+          closeUndoTimeoutMs: state.closeUndoTimeoutMs,
+          closeProcessSuppressions: state.closeProcessSuppressions,
         })
       })
   },
@@ -537,13 +661,30 @@ export const useStore = create<StoreState>((set, get) => ({
         : state.projects.find((p) => p.id === id)
     if (removedProject) {
       for (const t of removedProject.terminals) {
-        destroyCachedTerminal(t.id)
-        window.cells.terminal.detach(t.id).catch(() => {})
+        clearPendingCloseTimer(t.id)
+        destroyTerminalResources(t.id)
       }
       for (const b of removedProject.browsers ?? []) {
-        window.cells.browser.destroy(b.id).catch(() => {})
+        clearPendingCloseTimer(b.id)
+        destroyBrowserResources(b.id)
       }
     }
+
+    const pendingClosedWindows = state.pendingClosedWindows.filter((entry) => {
+      if (entry.projectId !== id) return true
+      clearPendingCloseTimer(entry.id)
+      if (entry.target.type === 'terminal') {
+        destroyTerminalResources(entry.id)
+      } else {
+        destroyBrowserResources(entry.id)
+      }
+      return false
+    })
+    const pendingCloseDialog =
+      state.pendingCloseDialog &&
+      pendingClosedWindows.some((entry) => entry.id === state.pendingCloseDialog?.target.id)
+        ? state.pendingCloseDialog
+        : null
 
     if (id === state.activeProjectId) {
       if (remaining.length > 0) {
@@ -554,6 +695,8 @@ export const useStore = create<StoreState>((set, get) => ({
           activeProjectId: next.id,
           terminalLinkProjectId: projectLinkSettings.terminalLinkProjectId,
           linkRules: projectLinkSettings.linkRules,
+          pendingClosedWindows,
+          pendingCloseDialog,
           ...projectToWorkingState(next),
         })
       } else {
@@ -568,6 +711,8 @@ export const useStore = create<StoreState>((set, get) => ({
           topZIndex: 1,
           terminalLinkProjectId: projectLinkSettings.terminalLinkProjectId,
           linkRules: projectLinkSettings.linkRules,
+          pendingClosedWindows,
+          pendingCloseDialog,
         })
       }
     } else {
@@ -575,6 +720,8 @@ export const useStore = create<StoreState>((set, get) => ({
         projects: remaining,
         terminalLinkProjectId: projectLinkSettings.terminalLinkProjectId,
         linkRules: projectLinkSettings.linkRules,
+        pendingClosedWindows,
+        pendingCloseDialog,
       })
     }
     get().persist()
@@ -666,8 +813,8 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   removeTerminal(id) {
-    destroyCachedTerminal(id)
-    window.cells.terminal.detach(id).catch(() => {})
+    clearPendingCloseTimer(id)
+    destroyTerminalResources(id)
     const state = get()
     const remaining = state.terminals.filter((t) => t.id !== id)
     const history = state.focusHistory.filter((h) => h !== id)
@@ -676,6 +823,9 @@ export const useStore = create<StoreState>((set, get) => ({
       terminals: remaining,
       focusHistory: history,
       focusedTerminalId: wasFocused ? null : state.focusedTerminalId,
+      pendingClosedWindows: state.pendingClosedWindows.filter((entry) => entry.id !== id),
+      pendingCloseDialog:
+        state.pendingCloseDialog?.target.id === id ? null : state.pendingCloseDialog,
     })
     if (wasFocused) {
       const previousId = getPreviousWindowId(history, remaining, state.browsers)
@@ -954,6 +1104,295 @@ export const useStore = create<StoreState>((set, get) => ({
     set({ linkRules: rules })
     get().persist()
   },
+  setAgentAliases(aliases) {
+    set({ agentAliases: aliases })
+    get().persist()
+  },
+  setColorScheme(scheme) {
+    const isDark =
+      scheme === 'system'
+        ? window.matchMedia('(prefers-color-scheme: dark)').matches
+        : scheme === 'dark'
+    // Auto-switch terminal theme to match
+    const currentTheme = get().terminalTheme
+    if (isDark && currentTheme === DEFAULT_LIGHT_THEME) {
+      set({ colorScheme: scheme, terminalTheme: DEFAULT_THEME })
+      applyThemeToAllTerminals(DEFAULT_THEME)
+    } else if (!isDark && currentTheme === DEFAULT_THEME) {
+      set({ colorScheme: scheme, terminalTheme: DEFAULT_LIGHT_THEME })
+      applyThemeToAllTerminals(DEFAULT_LIGHT_THEME)
+    } else {
+      set({ colorScheme: scheme })
+    }
+    applyColorScheme(scheme)
+    get().persist()
+  },
+  setCloseUndoTimeoutMs(timeoutMs) {
+    set({ closeUndoTimeoutMs: Math.max(0, timeoutMs) })
+    get().persist()
+  },
+  setCloseProcessSuppressions(processes) {
+    set({
+      closeProcessSuppressions: [
+        ...new Set(processes.map((process) => process.trim().toLowerCase())),
+      ]
+        .filter(Boolean)
+        .sort(),
+    })
+    get().persist()
+  },
+  async requestCloseWindow(target) {
+    const state = get()
+    const resolvedTarget =
+      target ??
+      (state.focusedBrowserId
+        ? { id: state.focusedBrowserId, type: 'browser' as const }
+        : state.focusedTerminalId
+          ? { id: state.focusedTerminalId, type: 'terminal' as const }
+          : state.terminals.length > 0
+            ? { id: state.terminals[state.terminals.length - 1].id, type: 'terminal' as const }
+            : null)
+
+    if (!resolvedTarget) return
+
+    const commitClose = (processInfo?: TerminalProcessInfo | null) => {
+      const current = get()
+      if (!current.activeProjectId) return
+
+      const now = Date.now()
+      const timeoutMs = current.closeUndoTimeoutMs
+      const expiresAt = now + timeoutMs
+
+      if (resolvedTarget.type === 'terminal') {
+        const terminal = current.terminals.find((item) => item.id === resolvedTarget.id)
+        if (!terminal) return
+
+        if (timeoutMs <= 0) {
+          current.removeTerminal(terminal.id)
+          return
+        }
+
+        const remaining = current.terminals.filter((item) => item.id !== terminal.id)
+        const history = current.focusHistory.filter((entry) => entry !== terminal.id)
+        const wasFocused = current.focusedTerminalId === terminal.id
+
+        set({
+          terminals: remaining,
+          focusHistory: history,
+          focusedTerminalId: wasFocused ? null : current.focusedTerminalId,
+          pendingClosedWindows: upsertPendingClosedWindow(current.pendingClosedWindows, {
+            id: terminal.id,
+            target: resolvedTarget,
+            projectId: current.activeProjectId,
+            terminal,
+            title: terminal.title,
+            closedAt: now,
+            expiresAt,
+            processLabel: processInfo?.label ?? null,
+            processKey: processInfo?.key ?? null,
+          }),
+        })
+
+        clearPendingCloseTimer(terminal.id)
+        pendingCloseTimers.set(
+          terminal.id,
+          window.setTimeout(() => {
+            useStore.getState().removeTerminal(terminal.id)
+          }, timeoutMs),
+        )
+
+        if (wasFocused) {
+          const previousId = getPreviousWindowId(history, remaining, current.browsers)
+          if (previousId) {
+            if (remaining.some((item) => item.id === previousId)) {
+              const nextHistory = pushFocusHistory(history, previousId)
+              get().bringToFront(previousId)
+              set({
+                focusedTerminalId: previousId,
+                focusedBrowserId: null,
+                focusHistory: nextHistory,
+              })
+              get().panToTerminal(previousId)
+            } else {
+              const nextHistory = pushFocusHistory(history, previousId)
+              get().bringBrowserToFront(previousId)
+              set({
+                focusedTerminalId: null,
+                focusedBrowserId: previousId,
+                focusHistory: nextHistory,
+              })
+              get().panToBrowser(previousId)
+            }
+          } else {
+            set({ focusedBrowserId: null })
+          }
+        }
+      } else {
+        const browser = current.browsers.find((item) => item.id === resolvedTarget.id)
+        if (!browser) return
+
+        if (timeoutMs <= 0) {
+          current.removeBrowser(browser.id)
+          return
+        }
+
+        const remaining = current.browsers.filter((item) => item.id !== browser.id)
+        const history = current.focusHistory.filter((entry) => entry !== browser.id)
+        const wasFocused = current.focusedBrowserId === browser.id
+
+        set({
+          browsers: remaining,
+          focusHistory: history,
+          focusedBrowserId: wasFocused ? null : current.focusedBrowserId,
+          pendingClosedWindows: upsertPendingClosedWindow(current.pendingClosedWindows, {
+            id: browser.id,
+            target: resolvedTarget,
+            projectId: current.activeProjectId,
+            browser,
+            title: browser.title || browser.url || 'New Tab',
+            closedAt: now,
+            expiresAt,
+          }),
+        })
+
+        clearPendingCloseTimer(browser.id)
+        pendingCloseTimers.set(
+          browser.id,
+          window.setTimeout(() => {
+            useStore.getState().removeBrowser(browser.id)
+          }, timeoutMs),
+        )
+
+        if (wasFocused) {
+          const previousId = getPreviousWindowId(history, current.terminals, remaining)
+          if (previousId) {
+            if (current.terminals.some((item) => item.id === previousId)) {
+              const nextHistory = pushFocusHistory(history, previousId)
+              get().bringToFront(previousId)
+              set({
+                focusedTerminalId: previousId,
+                focusedBrowserId: null,
+                focusHistory: nextHistory,
+              })
+              get().panToTerminal(previousId)
+            } else {
+              const nextHistory = pushFocusHistory(history, previousId)
+              get().bringBrowserToFront(previousId)
+              set({
+                focusedTerminalId: null,
+                focusedBrowserId: previousId,
+                focusHistory: nextHistory,
+              })
+              get().panToBrowser(previousId)
+            }
+          } else {
+            set({ focusedTerminalId: null })
+          }
+        }
+      }
+
+      set({ pendingCloseDialog: null })
+      get().persist()
+    }
+
+    if (resolvedTarget.type === 'terminal') {
+      const processInfo = await window.cells.terminal
+        .getProcessInfo(resolvedTarget.id)
+        .catch(() => null)
+      const latestState = get()
+      const promptAlreadyAccepted =
+        latestState.pendingCloseDialog?.target.id === resolvedTarget.id &&
+        latestState.pendingCloseDialog?.target.type === resolvedTarget.type
+      if (
+        processInfo &&
+        !processInfo.isShell &&
+        !latestState.closeProcessSuppressions.includes(processInfo.key) &&
+        !promptAlreadyAccepted
+      ) {
+        const terminal = latestState.terminals.find((item) => item.id === resolvedTarget.id)
+        if (!terminal) return
+        set({
+          pendingCloseDialog: {
+            target: resolvedTarget,
+            process: processInfo,
+            title: terminal.title,
+          },
+        })
+        return
+      }
+      commitClose(processInfo)
+      return
+    }
+
+    commitClose(null)
+  },
+  cancelPendingClose() {
+    set({ pendingCloseDialog: null })
+  },
+  confirmPendingClose(skipFuturePrompts = false) {
+    const dialog = get().pendingCloseDialog
+    if (!dialog) return
+    if (skipFuturePrompts) {
+      const next = [...get().closeProcessSuppressions, dialog.process.key]
+      get().setCloseProcessSuppressions(next)
+    }
+    get().requestCloseWindow(dialog.target)
+  },
+  restoreLastClosedWindow() {
+    const state = get()
+    const entry =
+      state.pendingClosedWindows.find(
+        (candidate) => candidate.projectId === state.activeProjectId,
+      ) ?? state.pendingClosedWindows[0]
+    if (!entry) return
+
+    clearPendingCloseTimer(entry.id)
+    set({
+      pendingClosedWindows: state.pendingClosedWindows.filter(
+        (candidate) => candidate.id !== entry.id,
+      ),
+    })
+
+    if (entry.projectId !== get().activeProjectId) {
+      get().switchProject(entry.projectId)
+    }
+
+    const current = get()
+    const newZ = current.topZIndex + 1
+
+    if (entry.terminal) {
+      const restoredTerminal = { ...entry.terminal, zIndex: newZ }
+      const nextHistory = pushFocusHistory(current.focusHistory, restoredTerminal.id)
+      set({
+        terminals: [...current.terminals, restoredTerminal],
+        topZIndex: newZ,
+        focusedTerminalId: restoredTerminal.id,
+        focusedBrowserId: null,
+        focusHistory: nextHistory,
+      })
+      get().snapToTerminal(restoredTerminal.id)
+      get().persist()
+      return
+    }
+
+    if (entry.browser) {
+      const restoredBrowser = { ...entry.browser, zIndex: newZ }
+      const nextHistory = pushFocusHistory(current.focusHistory, restoredBrowser.id)
+      set({
+        browsers: [...current.browsers, restoredBrowser],
+        topZIndex: newZ,
+        focusedTerminalId: null,
+        focusedBrowserId: restoredBrowser.id,
+        focusHistory: nextHistory,
+      })
+      get().snapToBrowser(restoredBrowser.id)
+      get().persist()
+    }
+  },
+  getAgentCommand(agent) {
+    const alias = get().agentAliases[agent]
+    return alias && alias.trim() ? alias.trim() : agent
+  },
 
   getSearchUrl(query) {
     const engine = get().searchEngine || DEFAULT_SEARCH_ENGINE
@@ -1042,7 +1481,8 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   removeBrowser(id) {
-    window.cells.browser.destroy(id).catch(() => {})
+    clearPendingCloseTimer(id)
+    destroyBrowserResources(id)
     const state = get()
     const remaining = state.browsers.filter((b) => b.id !== id)
     const history = state.focusHistory.filter((h) => h !== id)
@@ -1051,6 +1491,9 @@ export const useStore = create<StoreState>((set, get) => ({
       browsers: remaining,
       focusHistory: history,
       focusedBrowserId: wasFocused ? null : state.focusedBrowserId,
+      pendingClosedWindows: state.pendingClosedWindows.filter((entry) => entry.id !== id),
+      pendingCloseDialog:
+        state.pendingCloseDialog?.target.id === id ? null : state.pendingCloseDialog,
     })
     if (wasFocused) {
       const previousId = getPreviousWindowId(history, state.terminals, remaining)
@@ -1105,6 +1548,12 @@ export const useStore = create<StoreState>((set, get) => ({
   updateBrowserTitle(id, title) {
     set((s) => ({
       browsers: s.browsers.map((b) => (b.id === id ? { ...b, title } : b)),
+    }))
+  },
+
+  updateBrowserFavicon(id, faviconUrl) {
+    set((s) => ({
+      browsers: s.browsers.map((b) => (b.id === id ? { ...b, faviconUrl } : b)),
     }))
   },
 

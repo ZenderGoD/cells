@@ -207,6 +207,18 @@ const NULL_CHAR = String.fromCharCode(0)
 const ANSI_CSI_SEQUENCE_RE = new RegExp(`${ESCAPE_CHAR}\\[[0-9;?]*[ -/]*[@-~]`, 'g')
 const ANSI_ESCAPE_RE = new RegExp(`${ESCAPE_CHAR}[@-_]`, 'g')
 const NULL_CHAR_RE = new RegExp(NULL_CHAR, 'g')
+const COMMAND_EDITING_SEQUENCES: Record<string, string> = {
+  a: '\x01',
+  b: '\x02',
+  d: '\x04',
+  e: '\x05',
+  f: '\x06',
+  n: '\x0e',
+  p: '\x10',
+  u: '\x15',
+  y: '\x19',
+  z: '\x1f',
+}
 
 function summarizeTitle(input: string, maxLength = 60) {
   const collapsed = input
@@ -230,14 +242,31 @@ function normalizeAgentProcess(proc: string | null): AgentName | null {
   if (normalized === 'codex' || normalized === 'codex-cli' || normalized.startsWith('codex-')) {
     return 'codex'
   }
+  // Check user-configured aliases
+  const aliases = useStore.getState().agentAliases
+  for (const [agent, alias] of Object.entries(aliases)) {
+    if (alias && normalized === alias.toLowerCase().split('/').pop()) {
+      return agent as AgentName
+    }
+  }
   return null
 }
 
 function inferAgentLaunch(line: string): { agent: AgentName; title: string } | null {
   const trimmed = line.trim()
-  const match = trimmed.match(
-    /^(?:(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S+))\s+)*(?<cmd>(?:\S*\/)?(?:claude|codex))(?=\s|$)\s*(?<rest>.*)$/i,
+
+  // Build regex that matches canonical names + any user-configured aliases
+  const aliases = useStore.getState().agentAliases
+  const names = new Set(['claude', 'codex'])
+  for (const alias of Object.values(aliases)) {
+    if (alias?.trim()) names.add(alias.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  }
+  const namesPattern = [...names].join('|')
+  const re = new RegExp(
+    `^(?:(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\\S+))\\s+)*(?<cmd>(?:\\S*\\/)?(?:${namesPattern}))(?=\\s|$)\\s*(?<rest>.*)$`,
+    'i',
   )
+  const match = trimmed.match(re)
   if (!match?.groups) return null
 
   const agent = normalizeAgentProcess(match.groups.cmd) ?? null
@@ -373,6 +402,15 @@ export function CellTerminal({
     },
     [focusTerminal, termId],
   )
+
+  const copySelectionToClipboard = useCallback(() => {
+    const term = terminalRef.current
+    if (!term || !term.hasSelection()) return false
+    const selection = term.getSelection()
+    if (!selection) return false
+    void navigator.clipboard.writeText(selection).catch(() => {})
+    return true
+  }, [])
 
   useEffect(() => {
     onTitleChangeRef.current = onTitleChange
@@ -602,6 +640,8 @@ export function CellTerminal({
       }
 
       term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+        const normalizedKey = e.key.length === 1 ? e.key.toLowerCase() : e.key
+
         if (e.metaKey) {
           const metaShortcuts = [
             'k',
@@ -622,6 +662,27 @@ export function CellTerminal({
           if (metaShortcuts.includes(e.key)) return true
         }
         if (e.ctrlKey && e.key === 'Tab') return true
+
+        if (e.metaKey && !e.ctrlKey && !e.altKey) {
+          if (normalizedKey === 'c') {
+            if (e.type === 'keydown') {
+              e.preventDefault()
+              if (!copySelectionToClipboard()) {
+                window.cells.terminal.write(termId, '\x03')
+              }
+            }
+            return true
+          }
+
+          const sequence = COMMAND_EDITING_SEQUENCES[normalizedKey]
+          if (sequence) {
+            if (e.type === 'keydown') {
+              e.preventDefault()
+              window.cells.terminal.write(termId, sequence)
+            }
+            return true
+          }
+        }
 
         // Only handle keydown, not keyup
         if (e.type !== 'keydown') return false
@@ -785,6 +846,35 @@ export function CellTerminal({
     }
   }, [setInferredTitle, termId, trackInputForTitle])
 
+  useEffect(() => {
+    if (!isFocused) return
+
+    const handleCopy = (event: ClipboardEvent) => {
+      const container = containerRef.current
+      const inThisTerminal = Boolean(
+        container && event.target instanceof Node && container.contains(event.target),
+      )
+      const activeElement = document.activeElement
+      const fromTerminalTextarea =
+        activeElement instanceof HTMLElement && container && container.contains(activeElement)
+
+      if (!inThisTerminal && !fromTerminalTextarea) return
+
+      const term = terminalRef.current
+      if (!term?.hasSelection()) return
+      const selection = term.getSelection()
+      if (!selection) return
+
+      event.preventDefault()
+      event.stopPropagation()
+      event.clipboardData?.setData('text/plain', selection)
+      void navigator.clipboard.writeText(selection).catch(() => {})
+    }
+
+    document.addEventListener('copy', handleCopy, true)
+    return () => document.removeEventListener('copy', handleCopy, true)
+  }, [copySelectionToClipboard, isFocused])
+
   // Theme/font updates
   useEffect(() => {
     const term = terminalRef.current
@@ -814,6 +904,25 @@ export function CellTerminal({
       terminalRef.current.focus()
     }
   }, [isFocused])
+
+  // Allow scrolling the scrollback buffer even when the running program has
+  // mouse tracking enabled (e.g. Claude Code, Codex).  When mouse tracking is
+  // on, ghostty-web forwards wheel events to the program instead of scrolling.
+  // We intercept wheel events and call scrollLines() ourselves in that case.
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+    const onWheel = (e: WheelEvent) => {
+      const term = terminalRef.current
+      if (!term || !term.hasMouseTracking()) return
+      e.preventDefault()
+      e.stopPropagation()
+      const lines = Math.round(e.deltaY / 20) || (e.deltaY > 0 ? 1 : -1)
+      term.scrollLines(lines)
+    }
+    container.addEventListener('wheel', onWheel, { passive: false })
+    return () => container.removeEventListener('wheel', onWheel)
+  }, [])
 
   // Handle resize
   useEffect(() => {

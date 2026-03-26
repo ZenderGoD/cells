@@ -11,6 +11,7 @@ const api: CellsAPI = {
     resize: (termId: string, cols: number, rows: number) =>
       ipcRenderer.send('terminal:resize', termId, cols, rows),
     getProcess: (termId: string) => ipcRenderer.invoke('terminal:get-process', termId),
+    getProcessInfo: (termId: string) => ipcRenderer.invoke('terminal:get-process-info', termId),
     getCodexTitle: (termId: string) => ipcRenderer.invoke('terminal:get-codex-title', termId),
     onData: (callback: (termId: string, data: string) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, termId: string, data: string) =>
@@ -88,6 +89,12 @@ const api: CellsAPI = {
       ipcRenderer.on('browser:theme-color', handler)
       return () => ipcRenderer.removeListener('browser:theme-color', handler)
     },
+    onFaviconUpdated: (callback: (browserId: string, faviconUrl: string) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, browserId: string, faviconUrl: string) =>
+        callback(browserId, faviconUrl)
+      ipcRenderer.on('browser:favicon-updated', handler)
+      return () => ipcRenderer.removeListener('browser:favicon-updated', handler)
+    },
     getAllHistory: () =>
       ipcRenderer.invoke('browser:get-all-history') as Promise<Record<
         string,
@@ -139,9 +146,34 @@ const api: CellsAPI = {
     pasteClipboardFiles: () =>
       ipcRenderer.invoke('app:paste-clipboard-files') as Promise<string[] | null>,
     openExternal: (url: string) => ipcRenderer.invoke('app:open-external', url),
+    requestQuit: () => ipcRenderer.invoke('app:request-quit'),
   },
   agent: {
-    checkAvailable: () => ipcRenderer.invoke('agent:check-available'),
+    checkAvailable: (aliases?: Record<string, string>) =>
+      ipcRenderer.invoke('agent:check-available', aliases),
+  },
+  extensions: {
+    install: (input: string) => ipcRenderer.invoke('extensions:install', input),
+    uninstall: (extensionId: string) => ipcRenderer.invoke('extensions:uninstall', extensionId),
+    list: () => ipcRenderer.invoke('extensions:list'),
+    setEnabled: (projectId: string, extensionId: string, enabled: boolean) =>
+      ipcRenderer.invoke('extensions:set-enabled', projectId, extensionId, enabled),
+    showPopup: (
+      extensionId: string,
+      projectId: string,
+      bounds: { x: number; y: number; width: number; height: number },
+    ) => ipcRenderer.invoke('extensions:show-popup', extensionId, projectId, bounds),
+    hidePopup: () => ipcRenderer.invoke('extensions:hide-popup'),
+    onPopupClosed: (callback: () => void) => {
+      const handler = () => callback()
+      ipcRenderer.on('extensions:popup-closed', handler)
+      return () => ipcRenderer.removeListener('extensions:popup-closed', handler)
+    },
+    onInstalled: (callback: (meta: any) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, meta: any) => callback(meta)
+      ipcRenderer.on('extensions:installed', handler)
+      return () => ipcRenderer.removeListener('extensions:installed', handler)
+    },
   },
   updater: {
     check: () => ipcRenderer.invoke('updater:check'),

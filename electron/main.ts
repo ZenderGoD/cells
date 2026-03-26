@@ -6,6 +6,7 @@ import {
   dialog,
   Menu,
   nativeImage,
+  session,
   shell,
 } from 'electron'
 import path from 'path'
@@ -15,6 +16,19 @@ import os from 'os'
 import { execFileSync, spawnSync } from 'child_process'
 import { autoUpdater } from 'electron-updater'
 import { PtyManager } from './pty'
+import {
+  ensureExtensionsLoaded,
+  installExtension,
+  uninstallExtension,
+  readExtensionsMeta,
+  setExtensionEnabled,
+  loadExtensionIntoSession,
+  unloadExtensionFromSession,
+  getExtensionPopupUrl,
+  spoofChromeUA,
+  setupCWSIntegration,
+} from './extensions'
+import type { TerminalProcessInfo } from '../src/types'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -129,6 +143,8 @@ const BROWSER_PRELOAD_FILE = 'browser-preload.cjs'
 const CODEX_HOME_DIR = path.join(os.homedir(), '.codex')
 const CODEX_LOGS_DB = path.join(CODEX_HOME_DIR, 'logs_1.sqlite')
 const CODEX_STATE_DB = path.join(CODEX_HOME_DIR, 'state_5.sqlite')
+let quitConfirmed = false
+let quitDialogOpen = false
 
 function readSqliteValue(dbPath: string, query: string) {
   if (!fs.existsSync(dbPath)) return null
@@ -166,6 +182,77 @@ function readProcessTable() {
       .filter((entry): entry is { pid: number; ppid: number; command: string } => !!entry)
   } catch {
     return []
+  }
+}
+
+function basenameCommand(command: string) {
+  const trimmed = command.trim()
+  if (!trimmed) return ''
+  return trimmed.split('/').pop() ?? trimmed
+}
+
+function isShellProcess(command: string) {
+  const normalized = basenameCommand(command).toLowerCase()
+  return (
+    normalized === 'sh' ||
+    normalized === 'bash' ||
+    normalized === 'zsh' ||
+    normalized === 'fish' ||
+    normalized === 'login'
+  )
+}
+
+function resolveTerminalProcessInfo(
+  shellPid: number,
+  shellCommand?: string | null,
+): TerminalProcessInfo | null {
+  if (!Number.isInteger(shellPid) || shellPid <= 0) return null
+
+  const processTable = readProcessTable()
+  const shellEntry =
+    processTable.find((process) => process.pid === shellPid) ??
+    (shellCommand
+      ? {
+          pid: shellPid,
+          ppid: 0,
+          command: shellCommand,
+        }
+      : null)
+
+  if (!shellEntry) return null
+
+  const childrenByParent = new Map<number, Array<{ pid: number; ppid: number; command: string }>>()
+  for (const process of processTable) {
+    const siblings = childrenByParent.get(process.ppid) ?? []
+    siblings.push(process)
+    siblings.sort((a, b) => b.pid - a.pid)
+    childrenByParent.set(process.ppid, siblings)
+  }
+
+  const queue = (childrenByParent.get(shellPid) ?? []).map((process) => ({
+    ...process,
+    depth: 1,
+  }))
+  let activeProcess: { pid: number; command: string; depth: number } | null = null
+
+  while (queue.length > 0) {
+    const current = queue.shift()!
+    if (!isShellProcess(current.command)) {
+      activeProcess = current
+      break
+    }
+    const children = childrenByParent.get(current.pid) ?? []
+    queue.push(...children.map((process) => ({ ...process, depth: current.depth + 1 })))
+  }
+
+  const resolved = activeProcess ?? { pid: shellEntry.pid, command: shellEntry.command }
+  const label = basenameCommand(resolved.command)
+  return {
+    pid: resolved.pid,
+    command: resolved.command,
+    label,
+    key: label.toLowerCase(),
+    isShell: isShellProcess(resolved.command),
   }
 }
 
@@ -249,6 +336,35 @@ function createWindow() {
     mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL)
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
+  }
+}
+
+async function confirmAndQuitApp() {
+  if (quitConfirmed || quitDialogOpen) return
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    quitConfirmed = true
+    app.quit()
+    return
+  }
+
+  quitDialogOpen = true
+  try {
+    const result = await dialog.showMessageBox(mainWindow, {
+      type: 'question',
+      buttons: ['Cancel', 'Quit'],
+      defaultId: 1,
+      cancelId: 0,
+      noLink: true,
+      message: 'Quit Cells?',
+      detail: 'This will close the app and terminate any running windows and processes.',
+    })
+
+    if (result.response === 1) {
+      quitConfirmed = true
+      app.quit()
+    }
+  } finally {
+    quitDialogOpen = false
   }
 }
 
@@ -366,7 +482,18 @@ ipcMain.handle('terminal:detach', (_event, termId: string) => {
 
 ipcMain.handle('terminal:get-process', (_event, termId: string) => {
   try {
-    return ptys.get(termId)?.process ?? null
+    const pty = ptys.get(termId)
+    const info = pty ? resolveTerminalProcessInfo(pty.pid, pty.process) : null
+    return info?.command ?? pty?.process ?? null
+  } catch {
+    return null
+  }
+})
+
+ipcMain.handle('terminal:get-process-info', (_event, termId: string) => {
+  try {
+    const pty = ptys.get(termId)
+    return pty ? resolveTerminalProcessInfo(pty.pid, pty.process) : null
   } catch {
     return null
   }
@@ -386,15 +513,20 @@ ipcMain.handle('app:open-external', (_event, url: string) => {
   shell.openExternal(url)
 })
 
-ipcMain.handle('agent:check-available', () => {
+ipcMain.handle('app:request-quit', () => {
+  return confirmAndQuitApp()
+})
+
+ipcMain.handle('agent:check-available', (_event, aliases?: Record<string, string>) => {
   // Use a login shell so the user's full PATH is available.
   // Packaged macOS apps inherit a minimal PATH (/usr/bin:/bin) that
   // won't include Homebrew, ~/.local/bin, nvm, etc.
   const shell = process.env.SHELL || '/bin/zsh'
   const results: Record<string, boolean> = {}
   for (const name of ['claude', 'codex']) {
+    const cmd = aliases?.[name]?.trim() || name
     try {
-      execFileSync(shell, ['-lc', `which ${name}`], { stdio: 'pipe', timeout: 3000 })
+      execFileSync(shell, ['-lc', `which ${cmd}`], { stdio: 'pipe', timeout: 3000 })
       results[name] = true
     } catch {
       results[name] = false
@@ -495,10 +627,12 @@ const savedHistories = new Map<string, SavedHistory>()
 
 // Map browserId → the browserId so overscroll IPC from the preload can be relayed
 const webContentsIdToBrowser = new Map<number, string>()
+const browserIdToProject = new Map<string, string>()
 
-function setupBrowserView(browserId: string, view: WebContentsView) {
+function setupBrowserView(browserId: string, view: WebContentsView, projectId: string) {
   if (!mainWindow) return
   webContentsIdToBrowser.set(view.webContents.id, browserId)
+  browserIdToProject.set(browserId, projectId)
 
   // Intercept app shortcuts before the WebContentsView consumes them
   view.webContents.on('before-input-event', (_e, input) => {
@@ -606,6 +740,15 @@ function setupBrowserView(browserId: string, view: WebContentsView) {
     } catch {}
   })
 
+  // Forward favicon updates
+  view.webContents.on('page-favicon-updated', (_e, favicons) => {
+    try {
+      if (favicons.length > 0 && !mainWindow?.isDestroyed()) {
+        mainWindow?.webContents.send('browser:favicon-updated', browserId, favicons[0])
+      }
+    } catch {}
+  })
+
   // Forward URL changes, accounting for saved history
   const sendNavUpdate = (url: string) => {
     try {
@@ -633,17 +776,40 @@ function setupBrowserView(browserId: string, view: WebContentsView) {
   }
   view.webContents.on('did-navigate', (_e, url) => sendNavUpdate(url))
   view.webContents.on('did-navigate-in-page', (_e, url) => sendNavUpdate(url))
+
+  // CWS "Add to Chrome" interception — install extensions directly from the store
+  setupCWSIntegration(view.webContents, async (extensionId) => {
+    try {
+      const meta = await installExtension(extensionId)
+      // Auto-enable for the project that owns this browser view
+      setExtensionEnabled(projectId, meta.id, true)
+      await loadExtensionIntoSession(projectId, meta.id)
+      // Notify renderer so toolbar extension icons refresh
+      if (!mainWindow?.isDestroyed()) {
+        mainWindow?.webContents.send('extensions:installed', meta)
+      }
+      return true
+    } catch (err) {
+      console.error('[extensions] CWS install failed:', err)
+      return false
+    }
+  })
 }
 
 ipcMain.handle(
   'browser:create',
-  (
+  async (
     _event,
     browserId: string,
     projectId: string,
     history?: { entries: Array<{ url: string; title: string }>; activeIndex: number },
   ) => {
     if (!mainWindow) return
+
+    // Ensure Chrome extensions are loaded into this project's session
+    // Ensure Chrome extensions are loaded and UA is spoofed for CWS compat
+    spoofChromeUA(projectId)
+    await ensureExtensionsLoaded(projectId)
 
     // If the view already exists (parked from project switch), just re-add it
     const existing = browserViews.get(browserId)
@@ -696,7 +862,7 @@ ipcMain.handle(
       })
     }
 
-    setupBrowserView(browserId, view)
+    setupBrowserView(browserId, view, projectId)
   },
 )
 
@@ -870,6 +1036,109 @@ ipcMain.on('browser:toggle-devtools', (_event, browserId: string) => {
   } else {
     view.webContents.openDevTools({ mode: 'detach' })
   }
+})
+
+// ---------- Extension management ----------
+
+let extensionPopupWindow: BrowserWindow | null = null
+
+ipcMain.handle('extensions:install', async (_event, input: string) => {
+  return await installExtension(input)
+})
+
+ipcMain.handle('extensions:uninstall', (_event, extensionId: string) => {
+  uninstallExtension(extensionId)
+})
+
+ipcMain.handle('extensions:list', () => {
+  return readExtensionsMeta()
+})
+
+ipcMain.handle(
+  'extensions:set-enabled',
+  async (_event, projectId: string, extensionId: string, enabled: boolean) => {
+    setExtensionEnabled(projectId, extensionId, enabled)
+
+    // Live-update the session
+    if (enabled) {
+      await loadExtensionIntoSession(projectId, extensionId)
+    } else {
+      unloadExtensionFromSession(projectId, extensionId)
+    }
+  },
+)
+
+ipcMain.handle(
+  'extensions:show-popup',
+  async (
+    _event,
+    extensionId: string,
+    projectId: string,
+    _bounds: { x: number; y: number; width: number; height: number },
+  ) => {
+    // Ensure extensions are loaded into the session before resolving the popup URL
+    await ensureExtensionsLoaded(projectId)
+
+    const popupUrl = getExtensionPopupUrl(extensionId, projectId)
+    if (!popupUrl) return
+
+    // Close existing popup window
+    if (extensionPopupWindow && !extensionPopupWindow.isDestroyed()) {
+      extensionPopupWindow.close()
+    }
+
+    // IMPORTANT: Use the actual session object, not partition string.
+    // Using the session object ensures the BrowserWindow shares the exact
+    // session where extensions were loaded via loadExtension().
+    const partition = `persist:browser-${projectId}`
+    const ses = session.fromPartition(partition)
+
+    extensionPopupWindow = new BrowserWindow({
+      width: 400,
+      height: 550,
+      show: false,
+      titleBarStyle: 'hiddenInset',
+      parent: mainWindow ?? undefined,
+      movable: true,
+      resizable: true,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      skipTaskbar: true,
+      roundedCorners: true,
+      webPreferences: {
+        session: ses,
+        sandbox: true,
+        nodeIntegration: false,
+        contextIsolation: true,
+      },
+    })
+
+    extensionPopupWindow.on('closed', () => {
+      extensionPopupWindow = null
+      if (!mainWindow?.isDestroyed()) {
+        mainWindow?.webContents.send('extensions:popup-closed')
+      }
+    })
+
+    try {
+      await extensionPopupWindow.webContents.loadURL(popupUrl)
+      if (!extensionPopupWindow.isDestroyed()) extensionPopupWindow.show()
+    } catch (e) {
+      console.error('[extensions] Failed to load popup:', e)
+      if (extensionPopupWindow && !extensionPopupWindow.isDestroyed()) {
+        extensionPopupWindow.destroy()
+      }
+      extensionPopupWindow = null
+    }
+  },
+)
+
+ipcMain.handle('extensions:hide-popup', () => {
+  if (extensionPopupWindow && !extensionPopupWindow.isDestroyed()) {
+    extensionPopupWindow.close()
+  }
+  extensionPopupWindow = null
 })
 
 function cleanupBrowserViews() {
@@ -1049,7 +1318,13 @@ app.whenReady().then(() => {
             { role: 'hideOthers' },
             { role: 'unhide' },
             { type: 'separator' },
-            { role: 'quit', label: `Quit ${appName}` },
+            {
+              label: `Quit ${appName}`,
+              accelerator: 'CmdOrCtrl+Q',
+              click: () => {
+                void confirmAndQuitApp()
+              },
+            },
           ],
         },
         {
@@ -1084,6 +1359,7 @@ app.whenReady().then(() => {
 })
 
 app.on('before-quit', () => {
+  quitConfirmed = true
   try {
     if (!mainWindow?.isDestroyed()) {
       mainWindow?.webContents.send('app:before-quit')

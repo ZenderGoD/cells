@@ -45,6 +45,7 @@ export function InfiniteCanvas() {
     snapEnabled,
     snapFast: snapFastFlag,
     setSnapPaused,
+    reducedMotion,
     selectionMode,
     setSelectionMode,
     setSelectionCount,
@@ -94,6 +95,9 @@ export function InfiniteCanvas() {
   const springX = useSpring(motionX, springConfig)
   const springY = useSpring(motionY, springConfig)
   const springScale = useSpring(motionScale, springConfig)
+  const animatedX = reducedMotion ? motionX : springX
+  const animatedY = reducedMotion ? motionY : springY
+  const animatedScale = reducedMotion ? motionScale : springScale
   const viewportRect = getViewportRect(transform)
   const viewportArea = viewportRect.width * viewportRect.height
   const visibleWindowCount =
@@ -118,7 +122,7 @@ export function InfiniteCanvas() {
   // When user is actively driving (panning/scrolling), bypass springs and set directly
   // When animating (snap), let springs interpolate
   useEffect(() => {
-    if (isUserDriving) {
+    if (isUserDriving || reducedMotion) {
       motionX.jump(transform.x)
       motionY.jump(transform.y)
       motionScale.jump(transform.scale)
@@ -127,7 +131,16 @@ export function InfiniteCanvas() {
       motionY.set(transform.y)
       motionScale.set(transform.scale)
     }
-  }, [transform.x, transform.y, transform.scale, isUserDriving, motionX, motionY, motionScale])
+  }, [
+    transform.x,
+    transform.y,
+    transform.scale,
+    isUserDriving,
+    reducedMotion,
+    motionX,
+    motionY,
+    motionScale,
+  ])
 
   // Schedule a snap — delay scales with how much the closest terminal fills the viewport
   const scheduleSnap = useCallback(() => {
@@ -457,9 +470,9 @@ export function InfiniteCanvas() {
       <motion.div
         className="absolute origin-top-left no-select"
         style={{
-          x: springX,
-          y: springY,
-          scale: springScale,
+          x: animatedX,
+          y: animatedY,
+          scale: animatedScale,
           willChange: 'transform',
         }}
       >

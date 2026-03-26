@@ -1,6 +1,18 @@
 import { useState, useEffect } from 'react'
 import { useHotkey } from '@tanstack/react-hotkeys'
-import { Globe, Plus, RotateCcw, Palette, Settings, FolderOpen, Search, LogOut } from 'lucide-react'
+import {
+  TerminalSquare,
+  Globe,
+  Plus,
+  Puzzle,
+  RotateCcw,
+  Palette,
+  Settings,
+  FolderOpen,
+  Search,
+  Sparkles,
+  LogOut,
+} from 'lucide-react'
 import {
   CommandDialog,
   Command,
@@ -32,6 +44,7 @@ export function CommandPalette() {
   const projects = useStore((s) => s.projects)
   const activeProjectId = useStore((s) => s.activeProjectId)
   const setOverlayOpen = useStore((s) => s.setOverlayOpen)
+  const agentAliases = useStore((s) => s.agentAliases)
 
   const setShowSettings = (v: boolean) => {
     setShowSettingsRaw(v)
@@ -54,9 +67,9 @@ export function CommandPalette() {
 
   useEffect(() => {
     if (open) {
-      window.cells.agent.checkAvailable().then(setAgents)
+      window.cells.agent.checkAvailable(agentAliases).then(setAgents)
     }
-  }, [open])
+  }, [open, agentAliases])
 
   const runAction = (fn: () => void) => {
     fn()
@@ -153,13 +166,27 @@ export function CommandPalette() {
                 onSelect={() => {
                   setOpen(false)
                   setSearch('')
+                  setShowSettings(true)
+                }}
+              >
+                <Puzzle className="text-muted-foreground" />
+                Manage Extensions
+              </CommandItem>
+              <CommandItem
+                onSelect={() => {
+                  setOpen(false)
+                  setSearch('')
                   setShowNewProject(true)
                 }}
               >
                 <FolderOpen className="text-muted-foreground" />
                 New Project
               </CommandItem>
-              <CommandItem onSelect={() => window.close()}>
+              <CommandItem
+                onSelect={() => {
+                  void window.cells.app.requestQuit()
+                }}
+              >
                 <LogOut className="text-muted-foreground" />
                 Quit Cells
                 <CommandShortcut>⌘Q</CommandShortcut>
@@ -231,10 +258,11 @@ export function CommandPalette() {
                       onSelect={() =>
                         runAction(() => {
                           const escaped = search.trim().replace(/'/g, "'\\''")
+                          const cmd = useStore.getState().getAgentCommand('claude')
                           useStore
                             .getState()
                             .addTerminalWithCommand(
-                              `claude '${escaped}'`,
+                              `${cmd} '${escaped}'`,
                               `Claude: ${search.trim().slice(0, 40)}`,
                             )
                         })
@@ -251,10 +279,11 @@ export function CommandPalette() {
                       onSelect={() =>
                         runAction(() => {
                           const escaped = search.trim().replace(/'/g, "'\\''")
+                          const cmd = useStore.getState().getAgentCommand('codex')
                           useStore
                             .getState()
                             .addTerminalWithCommand(
-                              `codex '${escaped}'`,
+                              `${cmd} '${escaped}'`,
                               `Codex: ${search.trim().slice(0, 40)}`,
                             )
                         })

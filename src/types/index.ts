@@ -21,6 +21,14 @@ export interface BrowserHistoryEntry {
   title: string
 }
 
+export interface TerminalProcessInfo {
+  pid: number
+  command: string
+  label: string
+  key: string
+  isShell: boolean
+}
+
 export interface BrowserNode {
   id: string
   x: number
@@ -31,6 +39,7 @@ export interface BrowserNode {
   title: string
   zIndex?: number
   pinned?: boolean
+  faviconUrl?: string
   /** Saved navigation history for restore across app restarts */
   history?: {
     entries: BrowserHistoryEntry[]
@@ -67,6 +76,10 @@ export interface ProjectsState {
   terminalLinkTarget?: 'system' | 'browser'
   terminalLinkProjectId?: string | null
   linkRules?: Array<{ pattern: string; target: 'system' | 'browser'; projectId?: string }>
+  agentAliases?: Record<string, string>
+  colorScheme?: 'light' | 'dark' | 'system'
+  closeUndoTimeoutMs?: number
+  closeProcessSuppressions?: string[]
 }
 
 /** @deprecated Old flat state — kept for migration */
@@ -76,6 +89,22 @@ export interface AppState {
   terminalTheme?: string
   fontSize?: number
   fontFamily?: string
+}
+
+export interface ExtensionMeta {
+  id: string
+  name: string
+  version: string
+  description: string
+  sourceUrl: string
+  installedAt: number
+  hasPopup: boolean
+  icons: Record<string, string>
+}
+
+export interface ExtensionsState {
+  extensions: ExtensionMeta[]
+  projectExtensions: Record<string, string[]>
 }
 
 export interface CellsAPI {
@@ -91,12 +120,13 @@ export interface CellsAPI {
     write(termId: string, data: string): void
     resize(termId: string, cols: number, rows: number): void
     getProcess(termId: string): Promise<string | null>
+    getProcessInfo(termId: string): Promise<TerminalProcessInfo | null>
     getCodexTitle(termId: string): Promise<string | null>
     onData(callback: (termId: string, data: string) => void): () => void
     onExit(callback: (termId: string) => void): () => void
   }
   agent: {
-    checkAvailable(): Promise<Record<string, boolean>>
+    checkAvailable(aliases?: Record<string, string>): Promise<Record<string, boolean>>
   }
   updater: {
     getSupport(): Promise<{
@@ -140,6 +170,7 @@ export interface CellsAPI {
     ): () => void
     onLoading(callback: (browserId: string, loading: boolean) => void): () => void
     onNewWindow(callback: (browserId: string, url: string) => void): () => void
+    onFaviconUpdated(callback: (browserId: string, faviconUrl: string) => void): () => void
     getAllHistory(): Promise<Record<
       string,
       { entries: Array<{ url: string; title: string }>; activeIndex: number }
@@ -149,6 +180,20 @@ export interface CellsAPI {
       callback: (browserId: string, progress: number, direction: string | null) => void,
     ): () => void
     onWindowCycle(callback: (direction: 1 | -1) => void): () => void
+  }
+  extensions: {
+    install(input: string): Promise<ExtensionMeta>
+    uninstall(extensionId: string): Promise<void>
+    list(): Promise<ExtensionsState>
+    setEnabled(projectId: string, extensionId: string, enabled: boolean): Promise<void>
+    showPopup(
+      extensionId: string,
+      projectId: string,
+      bounds: { x: number; y: number; width: number; height: number },
+    ): Promise<void>
+    hidePopup(): Promise<void>
+    onPopupClosed(callback: () => void): () => void
+    onInstalled(callback: (meta: ExtensionMeta) => void): () => void
   }
   app: {
     onBeforeQuit(callback: () => void): () => void
@@ -160,6 +205,7 @@ export interface CellsAPI {
     saveTempFile(data: Uint8Array, filename: string): Promise<string | null>
     pasteClipboardFiles(): Promise<string[] | null>
     openExternal(url: string): Promise<void>
+    requestQuit(): Promise<void>
   }
 }
 

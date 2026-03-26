@@ -11,6 +11,8 @@ export interface CanvasWindow {
   width: number
   height: number
   zIndex: number
+  agent?: 'claude' | 'codex' | null
+  faviconUrl?: string
 }
 
 export interface CanvasRect {
@@ -36,6 +38,7 @@ export function getCanvasWindows(
       width: terminal.width,
       height: terminal.height,
       zIndex: terminal.zIndex ?? index + 1,
+      agent: terminal.agent,
     })),
     ...browsers.map((browser, index) => ({
       id: browser.id,
@@ -46,6 +49,7 @@ export function getCanvasWindows(
       width: browser.width,
       height: browser.height,
       zIndex: browser.zIndex ?? index + 1,
+      faviconUrl: browser.faviconUrl,
     })),
   ]
 }

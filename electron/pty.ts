@@ -1,8 +1,63 @@
+import fs from 'fs'
 import os from 'os'
+import path from 'path'
+import { createRequire } from 'module'
 import * as pty from 'node-pty'
 
 const HOME_DIR = os.homedir()
-const DEFAULT_SHELL = process.env.SHELL || '/bin/zsh'
+const require = createRequire(import.meta.url)
+
+function isExecutable(filePath: string | undefined): filePath is string {
+  if (!filePath) return false
+  try {
+    fs.accessSync(filePath, fs.constants.X_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function resolveShell(): string {
+  const candidates = [process.env.SHELL, '/bin/zsh', '/bin/bash', '/bin/sh']
+  for (const candidate of candidates) {
+    if (isExecutable(candidate)) return candidate
+  }
+  return '/bin/sh'
+}
+
+function resolveCwd(cwd?: string): string {
+  if (!cwd) return HOME_DIR
+  try {
+    if (fs.statSync(cwd).isDirectory()) return cwd
+  } catch {}
+  return HOME_DIR
+}
+
+let didRepairSpawnHelper = false
+
+function ensureSpawnHelperExecutable(): void {
+  if (didRepairSpawnHelper || process.platform !== 'darwin') return
+  didRepairSpawnHelper = true
+
+  try {
+    const unixTerminalPath = require.resolve('node-pty/lib/unixTerminal.js')
+    const helperPath = path
+      .resolve(
+        path.dirname(unixTerminalPath),
+        `../prebuilds/${process.platform}-${process.arch}/spawn-helper`,
+      )
+      .replace('app.asar', 'app.asar.unpacked')
+      .replace('node_modules.asar', 'node_modules.asar.unpacked')
+
+    const stat = fs.statSync(helperPath)
+    const expectedMode = stat.mode | 0o755
+    if ((stat.mode & 0o111) === 0) {
+      fs.chmodSync(helperPath, expectedMode)
+    }
+  } catch (error) {
+    console.warn('Failed to ensure node-pty spawn-helper is executable', error)
+  }
+}
 
 /** Strip Electron/Vite/Node dev variables so they don't leak into terminals.
  *  HOME stays as the real user home — CELLS_HOME_DIR is only for app config storage. */
@@ -36,14 +91,16 @@ export class PtyManager {
 
   /** Spawn a shell pty for a terminal */
   spawn(termId: string, cols: number, rows: number, cwd?: string): pty.IPty {
+    ensureSpawnHelperExecutable()
+
     // Kill any existing pty with this id
     this.kill(termId)
 
-    const p = pty.spawn(DEFAULT_SHELL, ['-l'], {
+    const p = pty.spawn(resolveShell(), ['-l'], {
       name: 'xterm-256color',
       cols,
       rows,
-      cwd: cwd || HOME_DIR,
+      cwd: resolveCwd(cwd),
       env: cleanEnv(),
     })
 

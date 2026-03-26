@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, useCallback, type KeyboardEvent } from 'react'
+import { useRef, useState, useEffect, useCallback, useMemo, type KeyboardEvent } from 'react'
 import { useHotkey } from '@tanstack/react-hotkeys'
 import {
   ArrowLeft,
@@ -9,11 +9,13 @@ import {
   Loader2,
   Magnet,
   Plus,
+  Puzzle,
   RotateCw,
   Settings,
   TerminalSquare,
   X,
 } from 'lucide-react'
+import type { ExtensionMeta } from '@/types'
 import { motion, AnimatePresence } from 'motion/react'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
@@ -54,7 +56,7 @@ function shortenUrl(url?: string): string {
 export function StatusBar() {
   const addTerminal = useStore((s) => s.addTerminal)
   const addBrowser = useStore((s) => s.addBrowser)
-  const removeBrowser = useStore((s) => s.removeBrowser)
+  const requestCloseWindow = useStore((s) => s.requestCloseWindow)
   const windowCount = useStore((s) => s.terminals.length + s.browsers.length)
   const terminals = useStore((s) => s.terminals)
   const browsers = useStore((s) => s.browsers)
@@ -77,6 +79,9 @@ export function StatusBar() {
   const snapToTerminal = useStore((s) => s.snapToTerminal)
   const snapToBrowser = useStore((s) => s.snapToBrowser)
   const focusedBrowserId = useStore((s) => s.focusedBrowserId)
+  const closeUndoTimeoutMs = useStore((s) => s.closeUndoTimeoutMs)
+  const restoreLastClosedWindow = useStore((s) => s.restoreLastClosedWindow)
+  const pendingClosedWindows = useStore((s) => s.pendingClosedWindows)
   const setOverlayOpen = useStore((s) => s.setOverlayOpen)
   const [showSettings, setShowSettingsRaw] = useState(false)
   const [showNewProject, setShowNewProjectRaw] = useState(false)
@@ -97,6 +102,28 @@ export function StatusBar() {
   const [browserUi, setBrowserUi] = useState(EMPTY_BROWSER_UI)
   const activeBrowserUi = browserUi.browserId === focusedBrowserId ? browserUi : EMPTY_BROWSER_UI
   const { canGoBack, canGoForward, isLoading, themeColor } = activeBrowserUi
+
+  // Extension popup icons for the focused browser's project
+  const [popupExtensions, setPopupExtensions] = useState<ExtensionMeta[]>([])
+  const refreshExtensions = useCallback(() => {
+    if (!focusedBrowserId || !activeProjectId) {
+      setPopupExtensions([])
+      return
+    }
+    window.cells.extensions.list().then((state) => {
+      const enabledIds = state.projectExtensions[activeProjectId!] ?? []
+      const withPopup = state.extensions.filter(
+        (ext) => enabledIds.includes(ext.id) && ext.hasPopup,
+      )
+      setPopupExtensions(withPopup)
+    })
+  }, [focusedBrowserId, activeProjectId])
+  useEffect(() => {
+    refreshExtensions()
+    // Also refresh when an extension is installed from CWS
+    const unsub = window.cells.extensions.onInstalled(() => refreshExtensions())
+    return unsub
+  }, [refreshExtensions])
   const copyResetRef = useRef<number | null>(null)
   const showCopied = !!focusedBrowser?.url && copiedBrowserId === focusedBrowser.id
   const allWindows = getCanvasWindows(terminals, browsers)
@@ -115,6 +142,9 @@ export function StatusBar() {
       ? allWindows.find((window) => window.id === focusedTerminalId)
       : allWindows.find((window) => window.id === focusedBrowserId)) ?? null
   const overviewAnchor = focusedWindow ?? getClosestWindow(allWindows, viewportCenter) ?? null
+  const latestClosedWindow =
+    pendingClosedWindows.find((entry) => entry.projectId === activeProjectId) ?? null
+  const [undoNow, setUndoNow] = useState(() => Date.now())
 
   // --- Project tab drag-to-reorder ---
   const [dragId, setDragId] = useState<string | null>(null)
@@ -199,6 +229,12 @@ export function StatusBar() {
     }
   }, [])
 
+  useEffect(() => {
+    if (!latestClosedWindow) return
+    const interval = window.setInterval(() => setUndoNow(Date.now()), 250)
+    return () => window.clearInterval(interval)
+  }, [latestClosedWindow])
+
   // Listen for nav state, loading, and theme color for focused browser
   useEffect(() => {
     if (!focusedBrowserId) return
@@ -255,6 +291,10 @@ export function StatusBar() {
     }
   }
 
+  const undoSecondsLeft = latestClosedWindow
+    ? Math.max(0, Math.ceil((latestClosedWindow.expiresAt - undoNow) / 1000))
+    : 0
+
   return (
     <>
       <div
@@ -275,39 +315,19 @@ export function StatusBar() {
           <Logo className="w-3.5 h-3.5 text-foreground/80" />
         </button>
 
-        <AnimatePresence>
-          {allWindows.length > 0 && (
-            <motion.div
-              initial={{ opacity: 0, width: 0 }}
-              animate={{ opacity: 1, width: titleBarOverviewWidth + 12 }}
-              exit={{ opacity: 0, width: 0 }}
-              transition={{ duration: 0.2, ease: 'easeInOut' }}
-              className="flex h-full items-center px-1.5 shrink-0 no-drag border-l border-r border-border/25 overflow-hidden"
-              title={
-                overviewAnchor
-                  ? `${overviewAnchor.title} • click a window to center it • Ctrl+H/J/K/L to move`
-                  : 'Click a window to center it • Ctrl+H/J/K/L to move around the canvas'
-              }
-            >
-              <WindowOverviewMap
-                windows={allWindows}
-                currentId={overviewAnchor?.id}
-                focusedId={focusedWindow?.id ?? null}
-                viewport={viewportRect}
-                width={titleBarOverviewWidth}
-                height={titleBarOverviewHeight}
-                className="border-0 bg-transparent rounded-none"
-                onSelect={(window) => {
-                  if (window.type === 'browser') {
-                    snapToBrowser(window.id)
-                    return
-                  }
-                  snapToTerminal(window.id)
-                }}
-              />
-            </motion.div>
-          )}
-        </AnimatePresence>
+        {latestClosedWindow && closeUndoTimeoutMs > 0 && undoSecondsLeft > 0 ? (
+          <button
+            onClick={() => restoreLastClosedWindow()}
+            className="flex items-center gap-2 border-r border-border/30 px-3 text-[10px] text-muted-foreground/65 transition-colors hover:bg-muted/30 hover:text-foreground no-drag shrink-0"
+            title="Restore closed window"
+          >
+            <span className="font-medium text-foreground/80">Undo close</span>
+            <span className="truncate max-w-28">{latestClosedWindow.title}</span>
+            <span className="rounded-full bg-muted/45 px-1.5 py-0.5 font-mono text-[9px] text-muted-foreground/70">
+              ⌘⇧T {undoSecondsLeft}s
+            </span>
+          </button>
+        ) : null}
 
         {/* Project tabs — left side */}
         <div
@@ -335,15 +355,12 @@ export function StatusBar() {
                 className={cn(
                   'relative flex items-center gap-2 px-4 transition-colors border-r border-border/30 shrink-0',
                   isActive
-                    ? 'bg-muted/60 text-foreground'
-                    : 'text-muted-foreground/50 hover:text-muted-foreground hover:bg-muted/30',
+                    ? 'text-foreground bg-white/40 dark:bg-black/35 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]'
+                    : 'text-muted-foreground/50 hover:text-muted-foreground hover:bg-white/15 dark:hover:bg-muted/30',
                   isDragging && 'opacity-40',
                   isDropTarget && 'border-l-2 border-l-primary/60',
                 )}
               >
-                {isActive && (
-                  <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-primary/60" />
-                )}
                 <span className="text-[11px] font-medium truncate max-w-28">{project.name}</span>
                 {projectWindowCount > 0 && (
                   <span
@@ -355,6 +372,42 @@ export function StatusBar() {
                     {projectWindowCount}
                   </span>
                 )}
+                <AnimatePresence>
+                  {isActive && allWindows.length > 0 && (
+                    <motion.div
+                      initial={{ opacity: 0, width: 0 }}
+                      animate={{ opacity: 1, width: titleBarOverviewWidth }}
+                      exit={{ opacity: 0, width: 0 }}
+                      transition={{ duration: 0.2, ease: 'easeInOut' }}
+                      className="flex items-center overflow-hidden ml-1"
+                      title={
+                        overviewAnchor
+                          ? `${overviewAnchor.title} • click a window to center it`
+                          : 'Click a window to center it'
+                      }
+                    >
+                      {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */}
+                      <div onClick={(e) => e.stopPropagation()}>
+                        <WindowOverviewMap
+                          windows={allWindows}
+                          currentId={overviewAnchor?.id}
+                          focusedId={focusedWindow?.id ?? null}
+                          viewport={viewportRect}
+                          width={titleBarOverviewWidth}
+                          height={titleBarOverviewHeight}
+                          className="border-0 bg-transparent rounded-none"
+                          onSelect={(window) => {
+                            if (window.type === 'browser') {
+                              snapToBrowser(window.id)
+                              return
+                            }
+                            snapToTerminal(window.id)
+                          }}
+                        />
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </button>
             )
           })}
@@ -443,6 +496,25 @@ export function StatusBar() {
               {isLoading && <Loader2 className="w-3 h-3 text-primary/60 animate-spin shrink-0" />}
             </div>
 
+            {popupExtensions.map((ext) => (
+              <button
+                key={ext.id}
+                className="p-1 rounded text-muted-foreground/50 hover:text-foreground hover:bg-muted/50 transition-colors shrink-0"
+                onClick={(e) => {
+                  if (!activeProjectId) return
+                  const rect = (e.target as HTMLElement).closest('button')!.getBoundingClientRect()
+                  window.cells.extensions.showPopup(ext.id, activeProjectId, {
+                    x: Math.round(rect.left - 150),
+                    y: Math.round(rect.bottom + 4),
+                    width: 360,
+                    height: 500,
+                  })
+                }}
+                title={ext.name}
+              >
+                <Puzzle className="w-3 h-3" />
+              </button>
+            ))}
             <button
               className="p-1 rounded text-muted-foreground/50 hover:text-foreground hover:bg-muted/50 transition-colors shrink-0"
               onClick={() => window.cells.browser.toggleDevTools(focusedBrowser.id)}
@@ -452,7 +524,7 @@ export function StatusBar() {
             </button>
             <button
               className="p-1 rounded text-muted-foreground/40 hover:text-foreground hover:bg-muted/40 transition-colors shrink-0"
-              onClick={() => removeBrowser(focusedBrowser.id)}
+              onClick={() => void requestCloseWindow({ id: focusedBrowser.id, type: 'browser' })}
               title="Close Browser"
             >
               <X className="w-3 h-3" />

@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
-import { Globe } from 'lucide-react'
+import { Globe, Sparkles, TerminalSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
 import { inferAgentFromTitle } from '@/lib/agent-command'
@@ -18,6 +18,7 @@ interface SwitcherItem {
   url?: string
   isCurrent: boolean
   previewLines?: string[]
+  faviconUrl?: string
 }
 
 export function TerminalSwitcher() {
@@ -71,6 +72,7 @@ export function TerminalSwitcher() {
       type: 'browser' as const,
       url: b.url,
       isCurrent: b.id === focusedBrowserId,
+      faviconUrl: b.faviconUrl,
     })),
   ]
 
@@ -288,12 +290,22 @@ export function TerminalSwitcher() {
                         )
                       ) : (
                         <div className="flex h-full items-center justify-center">
-                          <Globe
-                            className={cn(
-                              'w-6 h-6',
-                              i === selectedIndex ? 'text-primary/60' : 'text-muted-foreground/20',
-                            )}
-                          />
+                          {item.faviconUrl ? (
+                            <img
+                              src={item.faviconUrl}
+                              alt=""
+                              className="w-6 h-6 rounded-sm object-contain"
+                            />
+                          ) : (
+                            <Globe
+                              className={cn(
+                                'w-6 h-6',
+                                i === selectedIndex
+                                  ? 'text-primary/60'
+                                  : 'text-muted-foreground/20',
+                              )}
+                            />
+                          )}
                         </div>
                       )}
                     </div>
@@ -311,6 +323,12 @@ export function TerminalSwitcher() {
                         ) : (
                           <Logo className="h-3 w-3 shrink-0 text-muted-foreground/50" />
                         )
+                      ) : item.faviconUrl ? (
+                        <img
+                          src={item.faviconUrl}
+                          alt=""
+                          className="w-3 h-3 shrink-0 rounded-[1px] object-contain"
+                        />
                       ) : (
                         <Globe className="w-3 h-3 shrink-0 text-muted-foreground/50" />
                       )}

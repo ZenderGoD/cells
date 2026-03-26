@@ -33,7 +33,7 @@ export function TerminalNode({
   showFocusRing,
   onDragStart,
 }: TerminalNodeProps) {
-  const { removeTerminal, resizeTerminal, moveTerminal, updateTerminalTitle, focusTerminal } =
+  const { requestCloseWindow, resizeTerminal, moveTerminal, updateTerminalTitle, focusTerminal } =
     useStore()
   const [isResizing, setIsResizing] = useState(false)
   const displayAgent = terminal.agent ?? inferAgentFromTitle(terminal.title)
@@ -189,7 +189,7 @@ export function TerminalNode({
               className="p-1 rounded-md text-muted-foreground/40 hover:text-foreground hover:bg-muted/40 transition-colors"
               onClick={(e) => {
                 e.stopPropagation()
-                removeTerminal(terminal.id)
+                void requestCloseWindow({ id: terminal.id, type: 'terminal' })
               }}
             >
               <X className="w-3 h-3" />

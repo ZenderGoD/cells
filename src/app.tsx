@@ -7,24 +7,35 @@ import { CommandPalette } from './components/command-palette'
 import { Onboarding } from './components/onboarding'
 import { TerminalSwitcher } from './components/terminal-switcher'
 import { ProjectSwitcher } from './components/project-switcher'
+import { CloseWindowDialog } from './components/close-window-dialog'
 import { buildWindowAppearanceStyle } from './lib/window-appearance'
 
 export function App() {
-  const { initialized, init, persist, projects, windowOpacity } = useStore()
+  const {
+    initialized,
+    init,
+    persist,
+    projects,
+    windowOpacity,
+    requestCloseWindow,
+    restoreLastClosedWindow,
+    pendingCloseDialog,
+    closeUndoTimeoutMs,
+    confirmPendingClose,
+    cancelPendingClose,
+    setOverlayOpen,
+  } = useStore()
   const shellStyle = buildWindowAppearanceStyle({ windowOpacity })
 
   const closeWindow = useCallback(() => {
-    const { focusedBrowserId, removeBrowser, terminals, focusedTerminalId, removeTerminal } =
-      useStore.getState()
-    if (focusedBrowserId) {
-      removeBrowser(focusedBrowserId)
-    } else if (terminals.length > 0) {
-      removeTerminal(focusedTerminalId || terminals[terminals.length - 1].id)
-    }
-  }, [])
+    void requestCloseWindow()
+  }, [requestCloseWindow])
 
   useHotkey('Mod+W', () => closeWindow())
-  useHotkey('Mod+Q', () => window.close())
+  useHotkey('Mod+Shift+T', () => restoreLastClosedWindow())
+  useHotkey('Mod+Q', () => {
+    void window.cells.app.requestQuit()
+  })
   useHotkey('Mod+[', () => {
     const bid = useStore.getState().focusedBrowserId
     if (bid) window.cells.browser.goBack(bid)
@@ -37,19 +48,31 @@ export function App() {
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       const state = useStore.getState()
-      if (state.overlayOpen || !event.ctrlKey || event.metaKey || event.altKey) return
-
       const key = event.key.toLowerCase()
+      if (state.overlayOpen || event.altKey) return
+
       const direction =
-        key === 'h' || key === 'arrowleft'
-          ? 'left'
-          : key === 'l' || key === 'arrowright'
-            ? 'right'
-            : key === 'k' || key === 'arrowup'
-              ? 'up'
-              : key === 'j' || key === 'arrowdown'
-                ? 'down'
-                : null
+        event.metaKey && !event.ctrlKey
+          ? key === 'h'
+            ? 'left'
+            : key === 'l'
+              ? 'right'
+              : key === 'k'
+                ? 'up'
+                : key === 'j'
+                  ? 'down'
+                  : null
+          : event.ctrlKey && !event.metaKey
+            ? key === 'arrowleft'
+              ? 'left'
+              : key === 'arrowright'
+                ? 'right'
+                : key === 'arrowup'
+                  ? 'up'
+                  : key === 'arrowdown'
+                    ? 'down'
+                    : null
+            : null
 
       if (direction) {
         event.preventDefault()
@@ -58,7 +81,7 @@ export function App() {
         return
       }
 
-      if (key === 'o' && event.shiftKey) {
+      if (key === 'o' && event.shiftKey && event.ctrlKey && !event.metaKey) {
         event.preventDefault()
         event.stopPropagation()
         state.zoomToFitAll()
@@ -84,6 +107,12 @@ export function App() {
       cleanupClose()
     }
   }, [closeWindow])
+
+  useEffect(() => {
+    if (!pendingCloseDialog) return
+    setOverlayOpen(true)
+    return () => setOverlayOpen(false)
+  }, [pendingCloseDialog, setOverlayOpen])
 
   useEffect(() => {
     if (!initialized) return
@@ -120,6 +149,14 @@ export function App() {
       <CommandPalette />
       <TerminalSwitcher />
       <ProjectSwitcher />
+      <CloseWindowDialog
+        open={!!pendingCloseDialog}
+        windowTitle={pendingCloseDialog?.title ?? 'Window'}
+        processLabel={pendingCloseDialog?.process.label ?? 'process'}
+        undoTimeoutMs={closeUndoTimeoutMs}
+        onConfirm={confirmPendingClose}
+        onCancel={cancelPendingClose}
+      />
     </div>
   )
 }

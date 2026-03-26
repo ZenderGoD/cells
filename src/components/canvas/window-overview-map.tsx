@@ -1,4 +1,4 @@
-import { Globe, TerminalSquare } from 'lucide-react'
+import { Globe, Sparkles, TerminalSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { getCanvasBounds, type CanvasRect, type CanvasWindow } from '@/lib/canvas-navigation'
 
@@ -11,6 +11,44 @@ interface WindowOverviewMapProps {
   height: number
   className?: string
   onSelect?: (window: CanvasWindow) => void
+}
+
+function WindowIcon({ window, iconSize }: { window: CanvasWindow; iconSize: number }) {
+  if (window.type === 'browser') {
+    if (window.faviconUrl) {
+      return (
+        <img
+          src={window.faviconUrl}
+          alt=""
+          className="pointer-events-none rounded-[1px] object-contain"
+          style={{ width: iconSize, height: iconSize }}
+        />
+      )
+    }
+    return (
+      <Globe
+        className="pointer-events-none opacity-80"
+        style={{ width: iconSize, height: iconSize }}
+      />
+    )
+  }
+
+  // Terminal with agent
+  if (window.agent) {
+    return (
+      <Sparkles
+        className="pointer-events-none opacity-90 text-primary/80"
+        style={{ width: iconSize, height: iconSize }}
+      />
+    )
+  }
+
+  return (
+    <TerminalSquare
+      className="pointer-events-none opacity-80"
+      style={{ width: iconSize, height: iconSize }}
+    />
+  )
 }
 
 export function WindowOverviewMap({
@@ -40,8 +78,15 @@ export function WindowOverviewMap({
   const renderRect = (rect: Pick<CanvasRect, 'x' | 'y' | 'width' | 'height'>) => {
     const scaledWidth = rect.width * scale
     const scaledHeight = rect.height * scale
-    const renderedWidth = Math.max(6, scaledWidth)
-    const renderedHeight = Math.max(4, scaledHeight)
+    // Enforce minimum size but preserve aspect ratio
+    const minSize = 4
+    const upscale = Math.max(
+      1,
+      minSize / Math.max(scaledWidth, 1),
+      minSize / Math.max(scaledHeight, 1),
+    )
+    const renderedWidth = scaledWidth * upscale
+    const renderedHeight = scaledHeight * upscale
 
     return {
       left: Math.max(
@@ -84,14 +129,9 @@ export function WindowOverviewMap({
           const isCurrent = currentId === window.id
           const isFocused = focusedId === window.id
           const rectStyle = renderRect(window)
-          const canShowIcon = rectStyle.width >= 10 && rectStyle.height >= 10
-          const Icon = window.type === 'browser' ? Globe : TerminalSquare
-          const iconSize =
-            rectStyle.width >= 22 && rectStyle.height >= 22
-              ? 8
-              : rectStyle.width >= 14 && rectStyle.height >= 14
-                ? 7
-                : 6
+          const minDim = Math.min(rectStyle.width, rectStyle.height)
+          const canShowIcon = minDim >= 8
+          const iconSize = Math.max(6, Math.min(minDim * 0.55, 14))
           const sharedClassName = cn(
             'absolute flex items-center justify-center border transition-[transform,background-color,border-color,opacity,box-shadow] duration-150',
             onSelect && 'hover:scale-[1.04]',
@@ -112,14 +152,9 @@ export function WindowOverviewMap({
                 className={sharedClassName}
                 style={rectStyle}
                 onClick={() => onSelect(window)}
-                title={`${window.type === 'browser' ? 'Browser' : 'Terminal'}: ${window.title}`}
+                title={`${window.type === 'browser' ? 'Browser' : window.agent ? `Agent (${window.agent})` : 'Terminal'}: ${window.title}`}
               >
-                {canShowIcon && (
-                  <Icon
-                    className="pointer-events-none opacity-80"
-                    style={{ width: iconSize, height: iconSize }}
-                  />
-                )}
+                {canShowIcon && <WindowIcon window={window} iconSize={iconSize} />}
                 {isFocused && !isCurrent && (
                   <span className="pointer-events-none absolute bottom-0.5 right-0.5 size-1 rounded-full bg-white/90" />
                 )}
@@ -129,12 +164,7 @@ export function WindowOverviewMap({
 
           return (
             <div key={window.id} className={sharedClassName} style={rectStyle}>
-              {canShowIcon && (
-                <Icon
-                  className="pointer-events-none opacity-80"
-                  style={{ width: iconSize, height: iconSize }}
-                />
-              )}
+              {canShowIcon && <WindowIcon window={window} iconSize={iconSize} />}
               {isFocused && !isCurrent && (
                 <span className="pointer-events-none absolute bottom-0.5 right-0.5 size-1 rounded-full bg-white/90" />
               )}

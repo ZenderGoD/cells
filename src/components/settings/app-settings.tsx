@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Dialog as DialogPrimitive } from '@base-ui/react/dialog'
-import { Check, Download, ExternalLink, Github, Loader2, RefreshCw, X } from 'lucide-react'
+import { Check, Download, ExternalLink, Github, Loader2, Puzzle, RefreshCw, X } from 'lucide-react'
+
+import type { ExtensionMeta, ExtensionsState } from '@/types'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -24,7 +26,14 @@ interface AppSettingsProps {
   onOpenChange: (open: boolean) => void
 }
 
-type SettingsSectionId = 'appearance' | 'canvas' | 'terminal' | 'browser' | 'help' | 'about'
+type SettingsSectionId =
+  | 'appearance'
+  | 'canvas'
+  | 'terminal'
+  | 'browser'
+  | 'agents'
+  | 'help'
+  | 'about'
 type SettingsSelectOption = { value: string; label: string; hint?: string }
 
 const FONT_SIZES = [11, 12, 13, 14, 15, 16]
@@ -41,6 +50,7 @@ const SETTINGS_SECTIONS: Array<{ id: SettingsSectionId; label: string }> = [
   { id: 'canvas', label: 'Canvas' },
   { id: 'terminal', label: 'Terminal' },
   { id: 'browser', label: 'Browser' },
+  { id: 'agents', label: 'Agents' },
   { id: 'help', label: 'Help' },
   { id: 'about', label: 'About' },
 ]
@@ -70,6 +80,14 @@ const SWITCH_MODE_OPTIONS = [
   },
 ]
 
+const CLOSE_UNDO_TIMEOUT_OPTIONS: SettingsSelectOption[] = [
+  { value: '0', label: 'Immediate', hint: 'Delete on close' },
+  { value: '5000', label: '5 seconds', hint: 'Short undo window' },
+  { value: '15000', label: '15 seconds', hint: 'Default' },
+  { value: '30000', label: '30 seconds', hint: 'Safer' },
+  { value: '60000', label: '1 minute', hint: 'Longest built-in' },
+]
+
 export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const [activeSection, setActiveSection] = useState<SettingsSectionId>('appearance')
 
@@ -92,6 +110,8 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const setTabSwitchMode = useStore((s) => s.setTabSwitchMode)
   const setProjectSwitchMode = useStore((s) => s.setProjectSwitchMode)
   const setReducedMotion = useStore((s) => s.setReducedMotion)
+  const colorScheme = useStore((s) => s.colorScheme)
+  const setColorScheme = useStore((s) => s.setColorScheme)
   const setSearchEngine = useStore((s) => s.setSearchEngine)
   const setHomePage = useStore((s) => s.setHomePage)
   const terminalLinkTarget = useStore((s) => s.terminalLinkTarget)
@@ -100,6 +120,12 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const setTerminalLinkProjectId = useStore((s) => s.setTerminalLinkProjectId)
   const linkRules = useStore((s) => s.linkRules)
   const setLinkRules = useStore((s) => s.setLinkRules)
+  const agentAliases = useStore((s) => s.agentAliases)
+  const setAgentAliases = useStore((s) => s.setAgentAliases)
+  const closeUndoTimeoutMs = useStore((s) => s.closeUndoTimeoutMs)
+  const closeProcessSuppressions = useStore((s) => s.closeProcessSuppressions)
+  const setCloseUndoTimeoutMs = useStore((s) => s.setCloseUndoTimeoutMs)
+  const setCloseProcessSuppressions = useStore((s) => s.setCloseProcessSuppressions)
   const projects = useStore((s) => s.projects)
   const activeProject = useMemo(
     () => projects.find((project) => project.id === activeProjectId) ?? null,
@@ -184,6 +210,34 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
             >
               {activeSection === 'appearance' ? (
                 <div className="space-y-5">
+                  <SettingsGroup title="Theme">
+                    <div className="space-y-0.5">
+                      {(
+                        [
+                          { value: 'light', label: 'Light' },
+                          { value: 'dark', label: 'Dark' },
+                          { value: 'system', label: 'System' },
+                        ] as const
+                      ).map((opt) => (
+                        <button
+                          key={opt.value}
+                          onClick={() => setColorScheme(opt.value)}
+                          className={cn(
+                            'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
+                            colorScheme === opt.value
+                              ? 'bg-accent text-foreground'
+                              : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
+                          )}
+                        >
+                          <span className="flex-1">{opt.label}</span>
+                          {colorScheme === opt.value && (
+                            <Check className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  </SettingsGroup>
+
                   <SettingsGroup title="Window Opacity">
                     <div className="flex items-center gap-3">
                       <input
@@ -382,6 +436,60 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                     </div>
                   </SettingsGroup>
 
+                  <SettingsGroup title="Close Behavior">
+                    <div className="space-y-2.5">
+                      <SettingsField
+                        label="Undo timeout"
+                        hint={
+                          closeUndoTimeoutMs > 0
+                            ? `Cmd+Shift+T restores for ${Math.round(closeUndoTimeoutMs / 1000)}s`
+                            : 'Windows delete immediately'
+                        }
+                      >
+                        <SettingsCombobox
+                          value={String(closeUndoTimeoutMs)}
+                          options={CLOSE_UNDO_TIMEOUT_OPTIONS}
+                          onValueChange={(value) => setCloseUndoTimeoutMs(Number(value ?? '15000'))}
+                          placeholder="Choose undo timeout"
+                        />
+                      </SettingsField>
+
+                      <SettingsField
+                        label="Skip confirmation for"
+                        hint={
+                          closeProcessSuppressions.length > 0
+                            ? `${closeProcessSuppressions.length} saved`
+                            : 'Only shells close silently by default'
+                        }
+                      >
+                        {closeProcessSuppressions.length > 0 ? (
+                          <div className="flex flex-wrap gap-1">
+                            {closeProcessSuppressions.map((process) => (
+                              <button
+                                key={process}
+                                onClick={() =>
+                                  setCloseProcessSuppressions(
+                                    closeProcessSuppressions.filter(
+                                      (candidate) => candidate !== process,
+                                    ),
+                                  )
+                                }
+                                className="inline-flex items-center gap-1 rounded-md border border-border/20 bg-background/40 px-2 py-1 text-[10px] text-muted-foreground/70 transition-colors hover:bg-muted/40 hover:text-foreground"
+                              >
+                                <span>{process}</span>
+                                <X className="h-2.5 w-2.5" />
+                              </button>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="rounded-md border border-dashed border-border/25 px-2.5 py-2 text-[10px] text-muted-foreground/40">
+                            Use the close dialog checkbox to remember a running process.
+                          </div>
+                        )}
+                      </SettingsField>
+                    </div>
+                  </SettingsGroup>
+
                   <SettingsGroup title="Link Click Behavior">
                     <div className="space-y-2.5">
                       <SettingsField label="Default target">
@@ -544,6 +652,43 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                       className="w-full rounded-md border border-border/20 bg-background/40 px-2.5 py-1.5 text-[11px] text-foreground outline-none placeholder:text-muted-foreground/30 focus:border-border/40"
                     />
                   </SettingsGroup>
+
+                  <ExtensionsSection projectId={activeProjectId} />
+                </div>
+              ) : null}
+
+              {activeSection === 'agents' ? (
+                <div className="space-y-5">
+                  <SettingsGroup title="Command Aliases">
+                    <p className="text-[10px] text-muted-foreground/40 mb-3">
+                      Configure custom commands for AI agents. Aliases are used when launching
+                      agents from the command palette and for auto-detection in terminals.
+                    </p>
+                    <div className="space-y-2.5">
+                      <SettingsField label="Claude Code">
+                        <input
+                          type="text"
+                          value={agentAliases.claude ?? ''}
+                          onChange={(e) =>
+                            setAgentAliases({ ...agentAliases, claude: e.target.value })
+                          }
+                          placeholder="claude"
+                          className="w-full rounded-md border border-border/20 bg-background/40 px-2.5 py-1.5 text-[11px] text-foreground outline-none placeholder:text-muted-foreground/30 focus:border-border/40 font-mono"
+                        />
+                      </SettingsField>
+                      <SettingsField label="Codex">
+                        <input
+                          type="text"
+                          value={agentAliases.codex ?? ''}
+                          onChange={(e) =>
+                            setAgentAliases({ ...agentAliases, codex: e.target.value })
+                          }
+                          placeholder="codex"
+                          className="w-full rounded-md border border-border/20 bg-background/40 px-2.5 py-1.5 text-[11px] text-foreground outline-none placeholder:text-muted-foreground/30 focus:border-border/40 font-mono"
+                        />
+                      </SettingsField>
+                    </div>
+                  </SettingsGroup>
                 </div>
               ) : null}
 
@@ -659,6 +804,7 @@ const SHORTCUT_GROUPS = [
     shortcuts: [
       { keys: '⌘ T', action: 'Command palette / New terminal' },
       { keys: '⌘ W', action: 'Close focused window' },
+      { keys: '⌘ ⇧ T', action: 'Restore recently closed window' },
       { keys: '⌘ ,', action: 'Open settings' },
       { keys: '⌘ Q', action: 'Quit' },
     ],
@@ -669,7 +815,7 @@ const SHORTCUT_GROUPS = [
       { keys: '⌘ ←/→/↑/↓', action: 'Snap to nearest window' },
       { keys: '⌘ Enter', action: 'Snap to focused terminal' },
       { keys: '⌘ 0', action: 'Zoom to fit focused window' },
-      { keys: '⌃ H / J / K / L', action: 'Move canvas left/down/up/right' },
+      { keys: '⌘ H / J / K / L', action: 'Move canvas left/down/up/right' },
       { keys: '⌃ ⇧ O', action: 'Zoom to fit all windows' },
       { keys: '⌃ S', action: 'Toggle selection mode' },
       { keys: 'Click + Drag', action: 'Marquee select in selection mode' },
@@ -842,5 +988,137 @@ function UpdateSection() {
         </button>
       </SettingsGroup>
     </div>
+  )
+}
+
+function ExtensionsSection({ projectId }: { projectId: string | null }) {
+  const [extensions, setExtensions] = useState<ExtensionMeta[]>([])
+  const [projectExtensions, setProjectExtensions] = useState<Record<string, string[]>>({})
+  const [extensionInput, setExtensionInput] = useState('')
+  const [installing, setInstalling] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const refresh = useCallback(async () => {
+    const state = await window.cells.extensions.list()
+    setExtensions(state.extensions)
+    setProjectExtensions(state.projectExtensions)
+  }, [])
+
+  useEffect(() => {
+    refresh()
+  }, [refresh])
+
+  const isEnabled = (extId: string) => (projectExtensions[projectId ?? ''] ?? []).includes(extId)
+
+  const toggleExtension = async (extId: string) => {
+    if (!projectId) return
+    const enabled = isEnabled(extId)
+    await window.cells.extensions.setEnabled(projectId, extId, !enabled)
+    await refresh()
+  }
+
+  const handleInstall = async () => {
+    const input = extensionInput.trim()
+    if (!input) return
+    setInstalling(true)
+    setError(null)
+    try {
+      const meta = await window.cells.extensions.install(input)
+      setExtensionInput('')
+      // Auto-enable for current project
+      if (projectId) {
+        await window.cells.extensions.setEnabled(projectId, meta.id, true)
+      }
+      await refresh()
+    } catch (err: any) {
+      setError(err?.message ?? 'Install failed')
+    } finally {
+      setInstalling(false)
+    }
+  }
+
+  const handleUninstall = async (extId: string) => {
+    await window.cells.extensions.uninstall(extId)
+    await refresh()
+  }
+
+  return (
+    <SettingsGroup title="Extensions">
+      <div className="flex gap-1.5">
+        <input
+          type="text"
+          value={extensionInput}
+          onChange={(e) => {
+            setExtensionInput(e.target.value)
+            setError(null)
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') handleInstall()
+          }}
+          placeholder="Chrome Web Store URL or extension ID"
+          className="flex-1 rounded-md border border-border/20 bg-background/40 px-2.5 py-1.5 text-[11px] text-foreground outline-none placeholder:text-muted-foreground/30 focus:border-border/40"
+        />
+        <button
+          onClick={handleInstall}
+          disabled={installing || !extensionInput.trim()}
+          className="flex items-center justify-center rounded-md px-2 py-1.5 text-muted-foreground/50 transition-colors hover:text-foreground hover:bg-muted/40 disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted-foreground/50"
+        >
+          {installing ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : (
+            <Download className="h-3 w-3" />
+          )}
+        </button>
+      </div>
+      {error && <p className="mt-1 px-0.5 text-[10px] text-red-400/70">{error}</p>}
+
+      <div className="mt-2 space-y-0.5">
+        {extensions.map((ext) => (
+          <div
+            key={ext.id}
+            className="flex items-center gap-2 rounded-md px-2.5 py-1.5 text-[11px]"
+          >
+            <Puzzle className="h-3 w-3 shrink-0 text-muted-foreground/30" />
+            <span className="flex-1 truncate text-foreground">{ext.name}</span>
+            <span className="text-[10px] text-muted-foreground/40">{ext.version}</span>
+
+            {/* Per-project toggle */}
+            <button
+              onClick={() => toggleExtension(ext.id)}
+              className="shrink-0"
+              title={isEnabled(ext.id) ? 'Disable for this project' : 'Enable for this project'}
+            >
+              <div
+                className={cn(
+                  'relative h-3.5 w-6 rounded-full transition-colors',
+                  isEnabled(ext.id) ? 'bg-blue-500' : 'bg-muted-foreground/25',
+                )}
+              >
+                <div
+                  className={cn(
+                    'absolute top-0.5 h-2.5 w-2.5 rounded-full bg-white transition-transform',
+                    isEnabled(ext.id) ? 'translate-x-3' : 'translate-x-0.5',
+                  )}
+                />
+              </div>
+            </button>
+
+            {/* Uninstall */}
+            <button
+              onClick={() => handleUninstall(ext.id)}
+              className="shrink-0 text-muted-foreground/30 transition-colors hover:text-red-400/70"
+              title="Uninstall extension"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+        ))}
+        {extensions.length === 0 && (
+          <p className="px-2.5 py-1.5 text-[10px] text-muted-foreground/30">
+            No extensions installed. Paste a Chrome Web Store URL above to add one.
+          </p>
+        )}
+      </div>
+    </SettingsGroup>
   )
 }
