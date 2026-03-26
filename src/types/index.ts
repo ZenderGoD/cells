@@ -129,6 +129,19 @@ export interface CellsAPI {
   agent: {
     checkAvailable(aliases?: Record<string, string>): Promise<Record<string, boolean>>
   }
+  daemon: {
+    getStatus(): Promise<{ enabled: boolean; connected: boolean; sessionCount: number }>
+    listSessions(): Promise<
+      Array<{
+        termId: string
+        processInfo: TerminalProcessInfo | null
+        subscribed: boolean
+      }>
+    >
+    killSession(termId: string): Promise<void>
+    killAll(): Promise<void>
+    restart(): Promise<boolean>
+  }
   updater: {
     getSupport(): Promise<{
       enabled: boolean

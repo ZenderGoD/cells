@@ -198,6 +198,31 @@ const api: CellsAPI = {
       return () => ipcRenderer.removeListener('extensions:installed', handler)
     },
   },
+  daemon: {
+    getStatus: () =>
+      ipcRenderer.invoke('daemon:get-status') as Promise<{
+        enabled: boolean
+        connected: boolean
+        sessionCount: number
+      }>,
+    listSessions: () =>
+      ipcRenderer.invoke('daemon:list-sessions') as Promise<
+        Array<{
+          termId: string
+          processInfo: {
+            pid: number
+            command: string
+            label: string
+            key: string
+            isShell: boolean
+          } | null
+          subscribed: boolean
+        }>
+      >,
+    killSession: (termId: string) => ipcRenderer.invoke('daemon:kill-session', termId),
+    killAll: () => ipcRenderer.invoke('daemon:kill-all'),
+    restart: () => ipcRenderer.invoke('daemon:restart') as Promise<boolean>,
+  },
   updater: {
     check: () => ipcRenderer.invoke('updater:check'),
     download: () => ipcRenderer.invoke('updater:download'),

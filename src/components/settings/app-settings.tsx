@@ -1,6 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Dialog as DialogPrimitive } from '@base-ui/react/dialog'
-import { Check, Download, ExternalLink, Github, Loader2, Puzzle, RefreshCw, X } from 'lucide-react'
+import {
+  Check,
+  Circle,
+  Download,
+  ExternalLink,
+  Github,
+  Loader2,
+  Puzzle,
+  RefreshCw,
+  Server,
+  Skull,
+  Terminal,
+  Trash2,
+  X,
+} from 'lucide-react'
 
 import type { ExtensionMeta } from '@/types'
 
@@ -695,7 +709,12 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
 
               {activeSection === 'help' ? <HelpSection /> : null}
 
-              {activeSection === 'about' ? <UpdateSection /> : null}
+              {activeSection === 'about' ? (
+                <div className="space-y-6">
+                  <UpdateSection />
+                  <DaemonSection />
+                </div>
+              ) : null}
             </ScrollArea>
           </div>
         </DialogPrimitive.Popup>
@@ -1047,6 +1066,182 @@ function UpdateSection() {
           <ExternalLink className="h-2.5 w-2.5 shrink-0 text-muted-foreground/30" />
         </button>
       </SettingsGroup>
+    </div>
+  )
+}
+
+interface DaemonSession {
+  termId: string
+  processInfo: {
+    pid: number
+    command: string
+    label: string
+    key: string
+    isShell: boolean
+  } | null
+  subscribed: boolean
+}
+
+function DaemonSection() {
+  const [status, setStatus] = useState<{
+    enabled: boolean
+    connected: boolean
+    sessionCount: number
+  } | null>(null)
+  const [sessions, setSessions] = useState<DaemonSession[]>([])
+  const [loading, setLoading] = useState(false)
+  const [restarting, setRestarting] = useState(false)
+
+  const refresh = useCallback(() => {
+    window.cells.daemon.getStatus().then(setStatus)
+    window.cells.daemon.listSessions().then(setSessions)
+  }, [])
+
+  useEffect(() => {
+    refresh()
+  }, [refresh])
+
+  const handleRestart = async () => {
+    setRestarting(true)
+    try {
+      await window.cells.daemon.restart()
+    } finally {
+      setRestarting(false)
+      refresh()
+    }
+  }
+
+  const handleKillAll = async () => {
+    setLoading(true)
+    try {
+      await window.cells.daemon.killAll()
+    } finally {
+      setLoading(false)
+      refresh()
+    }
+  }
+
+  const handleKillSession = async (termId: string) => {
+    await window.cells.daemon.killSession(termId)
+    refresh()
+  }
+
+  return (
+    <div className="space-y-3.5">
+      <SettingsGroup title="Daemon">
+        <div className="rounded-lg bg-muted/20 px-3 py-2.5">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Server className="h-3 w-3 text-muted-foreground/60" />
+              <span className="text-[11px] text-foreground">PTY Daemon</span>
+              {status?.connected ? (
+                <span className="flex items-center gap-1 text-[10px] text-emerald-400/70">
+                  <Circle className="h-1.5 w-1.5 fill-current" />
+                  Connected
+                </span>
+              ) : status?.enabled === false ? (
+                <span className="flex items-center gap-1 text-[10px] text-muted-foreground/40">
+                  <Circle className="h-1.5 w-1.5 fill-current" />
+                  Disabled
+                </span>
+              ) : (
+                <span className="flex items-center gap-1 text-[10px] text-red-400/70">
+                  <Circle className="h-1.5 w-1.5 fill-current" />
+                  Disconnected
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              {restarting ? (
+                <span className="flex items-center gap-1 text-[10px] text-muted-foreground/50">
+                  <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                  Restarting...
+                </span>
+              ) : (
+                <button
+                  onClick={handleRestart}
+                  className="flex items-center gap-1 text-[10px] text-muted-foreground/60 transition-colors hover:text-foreground"
+                >
+                  <RefreshCw className="h-2.5 w-2.5" />
+                  Restart
+                </button>
+              )}
+            </div>
+          </div>
+          {status && (
+            <p className="mt-1.5 text-[10px] text-muted-foreground/40">
+              {status.connected
+                ? `${status.sessionCount} session${status.sessionCount !== 1 ? 's' : ''} managed by daemon`
+                : status.enabled === false
+                  ? 'Daemon is not available in this build. Using direct PTY mode.'
+                  : 'Daemon is not running. Sessions will not persist across restarts.'}
+            </p>
+          )}
+        </div>
+      </SettingsGroup>
+
+      {sessions.length > 0 ? (
+        <SettingsGroup title="Active Sessions">
+          <div className="space-y-0.5">
+            {sessions.map((session) => (
+              <div
+                key={session.termId}
+                className="flex items-center gap-2 rounded-md px-2.5 py-1.5 text-[11px] transition-colors hover:bg-muted/40"
+              >
+                <Terminal className="h-3 w-3 shrink-0 text-muted-foreground/50" />
+                <div className="flex-1 min-w-0">
+                  <span className="text-foreground truncate block">
+                    {session.processInfo?.label ?? 'shell'}
+                  </span>
+                  <span className="text-[10px] text-muted-foreground/40 truncate block font-mono">
+                    PID {session.processInfo?.pid ?? '?'}
+                    {session.processInfo?.command ? ` \u2022 ${session.processInfo.command}` : ''}
+                  </span>
+                </div>
+                {session.subscribed ? (
+                  <span className="text-[9px] text-emerald-400/50 shrink-0">active</span>
+                ) : (
+                  <span className="text-[9px] text-muted-foreground/30 shrink-0">background</span>
+                )}
+                <button
+                  onClick={() => handleKillSession(session.termId)}
+                  className="shrink-0 rounded p-0.5 text-muted-foreground/30 transition-colors hover:bg-destructive/20 hover:text-destructive"
+                  title="Kill session"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+          <div className="mt-2 flex items-center justify-between px-2.5">
+            <button
+              onClick={refresh}
+              className="flex items-center gap-1 text-[10px] text-muted-foreground/40 transition-colors hover:text-foreground"
+            >
+              <RefreshCw className="h-2 w-2" />
+              Refresh
+            </button>
+            {sessions.length > 0 ? (
+              <button
+                onClick={handleKillAll}
+                disabled={loading}
+                className="flex items-center gap-1 text-[10px] text-red-400/60 transition-colors hover:text-red-400"
+              >
+                {loading ? (
+                  <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                ) : (
+                  <Skull className="h-2.5 w-2.5" />
+                )}
+                Kill all sessions
+              </button>
+            ) : null}
+          </div>
+        </SettingsGroup>
+      ) : status?.connected ? (
+        <SettingsGroup title="Active Sessions">
+          <p className="px-2.5 py-1.5 text-[10px] text-muted-foreground/40">No active sessions.</p>
+        </SettingsGroup>
+      ) : null}
     </div>
   )
 }

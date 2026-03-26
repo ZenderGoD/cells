@@ -1371,6 +1371,84 @@ ipcMain.handle('updater:set-auto-update', (_event, enabled: boolean) => {
   }
 })
 
+// ---------- Daemon management IPC ----------
+
+ipcMain.handle('daemon:get-status', async () => {
+  return {
+    enabled: useDaemon,
+    connected: useDaemon && (daemonClient?.isConnected() ?? false),
+    sessionCount:
+      useDaemon && daemonClient?.isConnected()
+        ? (await daemonClient.list().catch(() => [])).length
+        : 0,
+  }
+})
+
+ipcMain.handle('daemon:list-sessions', async () => {
+  if (!useDaemon || !daemonClient?.isConnected()) return []
+  try {
+    const termIds = await daemonClient.list()
+    const sessions = await Promise.all(
+      termIds.map(async (termId) => {
+        const processInfo = await daemonClient!.getProcessInfo(termId).catch(() => null)
+        return {
+          termId,
+          processInfo,
+          subscribed: subscribedTerminals.has(termId),
+        }
+      }),
+    )
+    return sessions
+  } catch {
+    return []
+  }
+})
+
+ipcMain.handle('daemon:kill-session', async (_event, termId: string) => {
+  if (!useDaemon || !daemonClient?.isConnected()) return
+  await daemonClient.kill(termId).catch(() => {})
+  subscribedTerminals.delete(termId)
+  forwardTerminalExit(termId)
+})
+
+ipcMain.handle('daemon:kill-all', async () => {
+  if (!useDaemon || !daemonClient?.isConnected()) return
+  try {
+    const termIds = await daemonClient.list()
+    for (const termId of termIds) {
+      await daemonClient.kill(termId).catch(() => {})
+      subscribedTerminals.delete(termId)
+      forwardTerminalExit(termId)
+    }
+  } catch {}
+})
+
+ipcMain.handle('daemon:restart', async () => {
+  if (daemonClient?.isConnected()) {
+    try {
+      await daemonClient.shutdown()
+    } catch {}
+    daemonClient.disconnect()
+  }
+  const daemonScript = path.join(__dirname, 'pty-daemon.js')
+  useDaemon = await ensureDaemon(STATE_DIR, app.getVersion(), process.execPath, daemonScript)
+  if (useDaemon) {
+    daemonClient = new PtyDaemonClient()
+    await daemonClient.connect(path.join(STATE_DIR, 'pty-daemon.sock'))
+    daemonClient.onData(forwardTerminalData)
+    daemonClient.onExit(forwardTerminalExit)
+    daemonClient.onDisconnect(() => {
+      console.warn('PTY daemon disconnected, falling back to direct PTY mode')
+      useDaemon = false
+      if (!fallbackPtys) fallbackPtys = new PtyManager()
+      for (const termId of subscribedTerminals) {
+        forwardTerminalExit(termId)
+      }
+    })
+  }
+  return useDaemon
+})
+
 // ---------- App lifecycle ----------
 
 app.whenReady().then(async () => {
