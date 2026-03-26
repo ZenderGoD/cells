@@ -400,6 +400,23 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   async init() {
+    // Listen for pinned windows being closed/unpinned — must register before
+    // any early return so it works regardless of which state-loading branch runs.
+    if (!window.cells.app.getPinnedId()) {
+      window.cells.app.onWindowUnpinned((id, type) => {
+        if (type === 'terminal') {
+          set((s) => ({
+            terminals: s.terminals.map((t) => (t.id === id ? { ...t, pinned: false } : t)),
+          }))
+        } else {
+          set((s) => ({
+            browsers: s.browsers.map((b) => (b.id === id ? { ...b, pinned: false } : b)),
+          }))
+        }
+        get().persist()
+      })
+    }
+
     const saved = await window.cells.state.load()
 
     if (saved && (saved as any).version === 2) {
@@ -507,20 +524,6 @@ export const useStore = create<StoreState>((set, get) => ({
     // First run — no state at all
     set({ initialized: true })
     applyColorScheme(get().colorScheme)
-
-    // Listen for pinned windows being closed externally
-    window.cells.app.onWindowUnpinned((id, type) => {
-      if (type === 'terminal') {
-        set((s) => ({
-          terminals: s.terminals.map((t) => (t.id === id ? { ...t, pinned: false } : t)),
-        }))
-      } else {
-        set((s) => ({
-          browsers: s.browsers.map((b) => (b.id === id ? { ...b, pinned: false } : b)),
-        }))
-      }
-      get().persist()
-    })
   },
 
   persist() {

@@ -576,7 +576,7 @@ ipcMain.handle(
       titleBarStyle: 'hidden',
       trafficLightPosition: { x: 12, y: 11 },
       roundedCorners: true,
-      transparent: true,
+      backgroundColor: '#00000000',
       vibrancy: 'under-window',
       visualEffectState: 'active',
       webPreferences: {

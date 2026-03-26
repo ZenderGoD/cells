@@ -39,7 +39,10 @@ export function PinnedWindow({ termId, type }: { termId: string; type: 'terminal
   }
 
   return (
-    <div className="w-screen h-screen flex flex-col" style={shellStyle}>
+    <div
+      className="w-screen h-screen flex flex-col bg-background overflow-hidden"
+      style={shellStyle}
+    >
       {/* Custom title bar */}
       <div
         className="flex items-center shrink-0 border-b border-border/20 bg-card/60"
@@ -75,7 +78,7 @@ export function PinnedWindow({ termId, type }: { termId: string; type: 'terminal
       </div>
 
       {/* Terminal content */}
-      <div className="flex-1 min-h-0">
+      <div className="flex-1 min-h-0 bg-background">
         <CellTerminal
           termId={termId}
           width={size.width}
