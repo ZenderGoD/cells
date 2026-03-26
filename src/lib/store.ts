@@ -108,6 +108,7 @@ interface StoreState {
   setReducedMotion(enabled: boolean): void
 
   setCanvasTransform(transform: CanvasTransform): void
+  resizeWindowToFitFocused(): void
   zoomToFitAll(): void
   setOverlayOpen(open: boolean): void
   setSearchEngine(engine: string): void
@@ -932,7 +933,7 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   snapToTerminal(id) {
-    const { terminals, canvas } = get()
+    const { terminals } = get()
     const terminal = terminals.find((t) => t.id === id)
     if (!terminal) return
     if (id !== get().focusedTerminalId) get().bringToFront(id)
@@ -946,13 +947,11 @@ export const useStore = create<StoreState>((set, get) => ({
     })
     const viewW = window.innerWidth
     const viewH = window.innerHeight - STATUS_BAR_HEIGHT
-    const fitScale = Math.min(
+    const scale = Math.min(
       viewW / (terminal.width + TERMINAL_PAD * 2),
       viewH / (terminal.height + TERMINAL_PAD * 2),
       1,
     )
-    // Zoomed out → zoom in to fit. Already zoomed in → keep current scale.
-    const scale = canvas.scale < fitScale ? fitScale : canvas.scale
     get().setCanvasTransform({
       x: viewW / 2 - (terminal.x + terminal.width / 2) * scale,
       y: viewH / 2 - (terminal.y + terminal.height / 2) * scale,
@@ -1056,6 +1055,24 @@ export const useStore = create<StoreState>((set, get) => ({
   setReducedMotion(enabled) {
     set({ reducedMotion: enabled })
     get().persist()
+  },
+
+  resizeWindowToFitFocused() {
+    const { terminals, browsers, focusedTerminalId, focusedBrowserId } = get()
+    const node = focusedTerminalId
+      ? terminals.find((t) => t.id === focusedTerminalId)
+      : focusedBrowserId
+        ? browsers.find((b) => b.id === focusedBrowserId)
+        : null
+    if (!node) return
+    const width = node.width + TERMINAL_PAD * 2
+    const height = node.height + TERMINAL_PAD * 2 + STATUS_BAR_HEIGHT
+    void window.cells.app.resizeToFit(width, height)
+    // Re-fit the canvas after the window resizes
+    requestAnimationFrame(() => {
+      if (focusedTerminalId) get().snapToTerminal(focusedTerminalId)
+      else if (focusedBrowserId) get().snapToBrowser(focusedBrowserId)
+    })
   },
 
   zoomToFitAll() {
@@ -1572,7 +1589,7 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   snapToBrowser(id) {
-    const { browsers, canvas } = get()
+    const { browsers } = get()
     const browser = browsers.find((b) => b.id === id)
     if (!browser) return
     if (id !== get().focusedBrowserId) get().bringBrowserToFront(id)
@@ -1586,12 +1603,11 @@ export const useStore = create<StoreState>((set, get) => ({
     })
     const viewW = window.innerWidth
     const viewH = window.innerHeight - STATUS_BAR_HEIGHT
-    const fitScale = Math.min(
+    const scale = Math.min(
       viewW / (browser.width + TERMINAL_PAD * 2),
       viewH / (browser.height + TERMINAL_PAD * 2),
       1,
     )
-    const scale = canvas.scale < fitScale ? fitScale : canvas.scale
     get().setCanvasTransform({
       x: viewW / 2 - (browser.x + browser.width / 2) * scale,
       y: viewH / 2 - (browser.y + browser.height / 2) * scale,

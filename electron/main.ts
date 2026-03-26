@@ -543,6 +543,11 @@ ipcMain.handle('app:toggle-maximize', () => {
   }
 })
 
+ipcMain.handle('app:resize-to-fit', (_event, width: number, height: number) => {
+  if (!mainWindow) return
+  mainWindow.setContentSize(Math.round(width), Math.round(height), true)
+})
+
 ipcMain.handle('app:pick-folder', async () => {
   if (!mainWindow) return null
   const result = await dialog.showOpenDialog(mainWindow, {

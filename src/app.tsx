@@ -86,6 +86,12 @@ export function App() {
         event.stopPropagation()
         state.zoomToFitAll()
       }
+
+      if (key === '0' && event.shiftKey && event.metaKey && !event.ctrlKey) {
+        event.preventDefault()
+        event.stopPropagation()
+        state.resizeWindowToFitFocused()
+      }
     }
 
     window.addEventListener('keydown', handleKeyDown, true)

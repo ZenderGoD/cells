@@ -200,6 +200,7 @@ export interface CellsAPI {
     onNewTerminal(callback: () => void): () => void
     onCloseTerminal(callback: () => void): () => void
     toggleMaximize(): Promise<void>
+    resizeToFit(width: number, height: number): Promise<void>
     pickFolder(): Promise<string | null>
     getPathForFile(file: File): string
     saveTempFile(data: Uint8Array, filename: string): Promise<string | null>

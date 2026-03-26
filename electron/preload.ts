@@ -139,6 +139,8 @@ const api: CellsAPI = {
       return () => ipcRenderer.removeListener('app:close-terminal', handler)
     },
     toggleMaximize: () => ipcRenderer.invoke('app:toggle-maximize'),
+    resizeToFit: (width: number, height: number) =>
+      ipcRenderer.invoke('app:resize-to-fit', width, height),
     pickFolder: () => ipcRenderer.invoke('app:pick-folder'),
     getPathForFile: (file: File) => webUtils.getPathForFile(file),
     saveTempFile: (data: Uint8Array, filename: string) =>
