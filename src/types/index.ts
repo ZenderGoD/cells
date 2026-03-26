@@ -13,6 +13,8 @@ export interface TerminalNode {
   title: string
   zIndex?: number
   pinned?: boolean
+  pinnedX?: number
+  pinnedY?: number
   agent?: 'claude' | 'codex' | null
 }
 
@@ -39,6 +41,8 @@ export interface BrowserNode {
   title: string
   zIndex?: number
   pinned?: boolean
+  pinnedX?: number
+  pinnedY?: number
   faviconUrl?: string
   /** Saved navigation history for restore across app restarts */
   history?: {

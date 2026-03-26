@@ -1,5 +1,5 @@
 import { useState, useCallback, type MouseEvent } from 'react'
-import { X } from 'lucide-react'
+import { Pin, PinOff, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { CellTerminal } from '../terminal/cell-terminal'
 import { useStore } from '@/lib/store'
@@ -22,6 +22,7 @@ interface TerminalNodeProps {
   isFocused: boolean
   showFocusRing: boolean
   onDragStart: (id: string, kind: 'terminal' | 'browser', startX: number, startY: number) => void
+  isPinned?: boolean
 }
 
 export function TerminalNode({
@@ -32,15 +33,47 @@ export function TerminalNode({
   isFocused,
   showFocusRing,
   onDragStart,
+  isPinned,
 }: TerminalNodeProps) {
-  const { requestCloseWindow, resizeTerminal, moveTerminal, updateTerminalTitle, focusTerminal } =
-    useStore()
+  const {
+    requestCloseWindow,
+    resizeTerminal,
+    moveTerminal,
+    movePinned,
+    updateTerminalTitle,
+    focusTerminal,
+    togglePin,
+  } = useStore()
   const [isResizing, setIsResizing] = useState(false)
   const displayAgent = terminal.agent ?? inferAgentFromTitle(terminal.title)
 
   const handleDragMouseDown = useCallback(
     (e: MouseEvent) => {
       if ((e.target as HTMLElement).closest('button')) return
+      if (isPinned) {
+        e.preventDefault()
+        e.stopPropagation()
+        focusTerminal(terminal.id)
+        const startX = e.clientX
+        const startY = e.clientY
+        const startPx = terminal.pinnedX ?? 0
+        const startPy = terminal.pinnedY ?? 0
+        const onMove = (ev: globalThis.MouseEvent) => {
+          movePinned(
+            terminal.id,
+            startPx + ev.clientX - startX,
+            startPy + ev.clientY - startY,
+            'terminal',
+          )
+        }
+        const onUp = () => {
+          document.removeEventListener('mousemove', onMove)
+          document.removeEventListener('mouseup', onUp)
+        }
+        document.addEventListener('mousemove', onMove)
+        document.addEventListener('mouseup', onUp)
+        return
+      }
       if (!selectionMode) {
         focusTerminal(terminal.id)
         return
@@ -49,7 +82,16 @@ export function TerminalNode({
       e.stopPropagation()
       onDragStart(terminal.id, 'terminal', e.clientX, e.clientY)
     },
-    [focusTerminal, terminal.id, onDragStart, selectionMode],
+    [
+      focusTerminal,
+      terminal.id,
+      onDragStart,
+      selectionMode,
+      isPinned,
+      terminal.pinnedX,
+      terminal.pinnedY,
+      movePinned,
+    ],
   )
 
   const handleEdgeMouseDown = useCallback(
@@ -140,8 +182,8 @@ export function TerminalNode({
         selectionMode && 'cursor-grab',
       )}
       style={{
-        left: terminal.x,
-        top: terminal.y,
+        left: isPinned ? 0 : terminal.x,
+        top: isPinned ? 0 : terminal.y,
         width: terminal.width,
         height: terminal.height,
         zIndex: z,
@@ -185,6 +227,21 @@ export function TerminalNode({
             <span className="text-[11px] font-medium truncate max-w-40 text-muted-foreground">
               {terminal.title}
             </span>
+            <button
+              className={cn(
+                'p-1 rounded-md transition-colors',
+                terminal.pinned
+                  ? 'text-primary/70 hover:text-primary hover:bg-primary/10'
+                  : 'text-muted-foreground/40 hover:text-foreground hover:bg-muted/40',
+              )}
+              onClick={(e) => {
+                e.stopPropagation()
+                togglePin(terminal.id, 'terminal')
+              }}
+              title={terminal.pinned ? 'Unpin from viewport' : 'Pin to viewport'}
+            >
+              {terminal.pinned ? <PinOff className="w-3 h-3" /> : <Pin className="w-3 h-3" />}
+            </button>
             <button
               className="p-1 rounded-md text-muted-foreground/40 hover:text-foreground hover:bg-muted/40 transition-colors"
               onClick={(e) => {

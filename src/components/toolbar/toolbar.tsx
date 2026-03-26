@@ -8,6 +8,8 @@ import {
   Globe,
   Loader2,
   Magnet,
+  Pin,
+  PinOff,
   Plus,
   Puzzle,
   RotateCw,
@@ -188,6 +190,15 @@ export function StatusBar() {
   const selectionMode = useStore((s) => s.selectionMode)
   const selectionCount = useStore((s) => s.selectionCount)
   const setSelectionMode = useStore((s) => s.setSelectionMode)
+  const togglePinFocused = useStore((s) => s.togglePinFocused)
+  const focusedWindowPinned = useStore((s) => {
+    if (s.focusedTerminalId)
+      return s.terminals.find((t) => t.id === s.focusedTerminalId)?.pinned ?? false
+    if (s.focusedBrowserId)
+      return s.browsers.find((b) => b.id === s.focusedBrowserId)?.pinned ?? false
+    return false
+  })
+  const hasFocusedWindow = useStore((s) => !!(s.focusedTerminalId || s.focusedBrowserId))
   const zoomToFitAll = useStore((s) => s.zoomToFitAll)
   const snapToTerminal = useStore((s) => s.snapToTerminal)
   const snapToBrowser = useStore((s) => s.snapToBrowser)
@@ -612,6 +623,22 @@ export function StatusBar() {
               </button>
             </PopoverContent>
           </Popover>
+
+          {/* Pin toggle */}
+          {hasFocusedWindow && (
+            <button
+              onClick={() => togglePinFocused()}
+              className={cn(
+                'p-1 rounded-md transition-colors',
+                focusedWindowPinned
+                  ? 'text-primary/70 hover:text-primary'
+                  : 'text-muted-foreground/40 hover:text-foreground',
+              )}
+              title={focusedWindowPinned ? 'Unpin window (⌘⇧P)' : 'Pin window to viewport (⌘⇧P)'}
+            >
+              {focusedWindowPinned ? <PinOff className="w-3 h-3" /> : <Pin className="w-3 h-3" />}
+            </button>
+          )}
 
           {/* Snap toggle */}
           <button

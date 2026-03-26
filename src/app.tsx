@@ -33,6 +33,7 @@ export function App() {
 
   useHotkey('Mod+W', () => closeWindow())
   useHotkey('Mod+Shift+T', () => restoreLastClosedWindow())
+  useHotkey('Mod+Shift+P', () => useStore.getState().togglePinFocused())
   useHotkey('Mod+Q', () => {
     void window.cells.app.requestQuit()
   })

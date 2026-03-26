@@ -485,7 +485,7 @@ export function InfiniteCanvas() {
       onMouseDown={handleCanvasMouseDown}
       onWheel={handleWheel}
     >
-      {/* Transform layer — spring-animated */}
+      {/* Transform layer — spring-animated (unpinned windows) */}
       <motion.div
         className="absolute origin-top-left no-select"
         style={{
@@ -495,30 +495,77 @@ export function InfiniteCanvas() {
           willChange: 'transform',
         }}
       >
-        {terminals.map((terminal) => (
-          <TerminalNode
-            key={terminal.id}
-            terminal={terminal}
-            scale={transform.scale}
-            selectionMode={selectionMode}
-            isSelected={selectedNodeIds.includes(terminal.id)}
-            isFocused={focusedTerminalId === terminal.id}
-            showFocusRing={focusedTerminalId === terminal.id && showFocusedTerminalRing}
-            onDragStart={handleNodeDragStart}
-          />
-        ))}
-        {browsers.map((browser) => (
-          <BrowserNode
-            key={browser.id}
-            browser={browser}
-            scale={transform.scale}
-            selectionMode={selectionMode}
-            isSelected={selectedNodeIds.includes(browser.id)}
-            isFocused={focusedBrowserId === browser.id}
-            onDragStart={handleNodeDragStart}
-          />
-        ))}
+        {terminals
+          .filter((t) => !t.pinned)
+          .map((terminal) => (
+            <TerminalNode
+              key={terminal.id}
+              terminal={terminal}
+              scale={transform.scale}
+              selectionMode={selectionMode}
+              isSelected={selectedNodeIds.includes(terminal.id)}
+              isFocused={focusedTerminalId === terminal.id}
+              showFocusRing={focusedTerminalId === terminal.id && showFocusedTerminalRing}
+              onDragStart={handleNodeDragStart}
+            />
+          ))}
+        {browsers
+          .filter((b) => !b.pinned)
+          .map((browser) => (
+            <BrowserNode
+              key={browser.id}
+              browser={browser}
+              scale={transform.scale}
+              selectionMode={selectionMode}
+              isSelected={selectedNodeIds.includes(browser.id)}
+              isFocused={focusedBrowserId === browser.id}
+              onDragStart={handleNodeDragStart}
+            />
+          ))}
       </motion.div>
+
+      {/* Pinned layer — fixed to viewport, above canvas */}
+      <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 10000 }}>
+        {terminals
+          .filter((t) => t.pinned)
+          .map((terminal) => (
+            <div
+              key={terminal.id}
+              className="pointer-events-auto absolute"
+              style={{ left: terminal.pinnedX ?? 0, top: terminal.pinnedY ?? 0 }}
+            >
+              <TerminalNode
+                terminal={terminal}
+                scale={1}
+                selectionMode={selectionMode}
+                isSelected={selectedNodeIds.includes(terminal.id)}
+                isFocused={focusedTerminalId === terminal.id}
+                showFocusRing={focusedTerminalId === terminal.id && showFocusedTerminalRing}
+                onDragStart={handleNodeDragStart}
+                isPinned
+              />
+            </div>
+          ))}
+        {browsers
+          .filter((b) => b.pinned)
+          .map((browser) => (
+            <div
+              key={browser.id}
+              className="pointer-events-auto absolute"
+              style={{ left: browser.pinnedX ?? 0, top: browser.pinnedY ?? 0 }}
+            >
+              <BrowserNode
+                browser={browser}
+                scale={1}
+                selectionMode={selectionMode}
+                isSelected={selectedNodeIds.includes(browser.id)}
+                isFocused={focusedBrowserId === browser.id}
+                onDragStart={handleNodeDragStart}
+                isPinned
+              />
+            </div>
+          ))}
+      </div>
 
       {marqueeBox && (
         <div

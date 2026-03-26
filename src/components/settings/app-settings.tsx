@@ -806,6 +806,7 @@ const SHORTCUT_GROUPS = [
       { keys: '⌘ T', action: 'Command palette / New terminal' },
       { keys: '⌘ W', action: 'Close focused window' },
       { keys: '⌘ ⇧ T', action: 'Restore recently closed window' },
+      { keys: '⌘ ⇧ P', action: 'Pin/unpin focused window' },
       { keys: '⌘ ,', action: 'Open settings' },
       { keys: '⌘ Q', action: 'Quit' },
     ],

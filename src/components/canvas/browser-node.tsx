@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, type MouseEvent } from 'react'
-import { EyeOff, Globe, WifiOff } from 'lucide-react'
+import { EyeOff, Globe, Pin, PinOff, WifiOff } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
 import type { BrowserNode as BrowserNodeType } from '@/types'
@@ -19,6 +19,7 @@ interface BrowserNodeProps {
   isSelected: boolean
   isFocused: boolean
   onDragStart: (id: string, kind: 'terminal' | 'browser', startX: number, startY: number) => void
+  isPinned?: boolean
 }
 
 export function BrowserNode({
@@ -28,15 +29,18 @@ export function BrowserNode({
   isSelected,
   isFocused,
   onDragStart,
+  isPinned,
 }: BrowserNodeProps) {
   const {
     resizeBrowser,
     moveBrowser,
+    movePinned,
     updateBrowserUrl,
     updateBrowserTitle,
     updateBrowserFavicon,
     addBrowserWithUrl,
     focusBrowser,
+    togglePin,
   } = useStore()
   const activeProjectId = useStore((s) => s.activeProjectId)
   const overlayOpen = useStore((s) => s.overlayOpen)
@@ -343,8 +347,8 @@ export function BrowserNode({
         dragModeActive && 'cursor-grab',
       )}
       style={{
-        left: browser.x,
-        top: browser.y,
+        left: isPinned ? 0 : browser.x,
+        top: isPinned ? 0 : browser.y,
         width: browser.width,
         height: browser.height,
         zIndex: z,
@@ -363,6 +367,57 @@ export function BrowserNode({
           isSelected && 'ring-2 ring-primary/70 ring-offset-1 ring-offset-background',
         )}
       >
+        {/* Pin control — top right corner */}
+        <div
+          className={cn(
+            'absolute top-1.5 right-1.5 z-20 flex items-center gap-1 transition-opacity',
+            isFocused ? 'opacity-100' : 'opacity-0 hover:opacity-100',
+          )}
+        >
+          <button
+            className={cn(
+              'p-1 rounded-md backdrop-blur-sm transition-colors cursor-pointer',
+              browser.pinned
+                ? 'text-primary/70 bg-primary/10 hover:text-primary'
+                : 'text-muted-foreground/40 bg-background/50 hover:text-foreground hover:bg-background/70',
+            )}
+            onMouseDown={(e) => {
+              e.stopPropagation()
+              // Allow pinned drag from this button area
+              if (isPinned) {
+                e.preventDefault()
+                focusBrowser(browser.id)
+                const startX = e.clientX
+                const startY = e.clientY
+                const startPx = browser.pinnedX ?? 0
+                const startPy = browser.pinnedY ?? 0
+                const onMove = (ev: globalThis.MouseEvent) => {
+                  movePinned(
+                    browser.id,
+                    startPx + ev.clientX - startX,
+                    startPy + ev.clientY - startY,
+                    'browser',
+                  )
+                }
+                const onUp = () => {
+                  document.removeEventListener('mousemove', onMove)
+                  document.removeEventListener('mouseup', onUp)
+                }
+                document.addEventListener('mousemove', onMove)
+                document.addEventListener('mouseup', onUp)
+                return
+              }
+            }}
+            onClick={(e) => {
+              e.stopPropagation()
+              togglePin(browser.id, 'browser')
+            }}
+            title={browser.pinned ? 'Unpin from viewport' : 'Pin to viewport'}
+          >
+            {browser.pinned ? <PinOff className="w-3 h-3" /> : <Pin className="w-3 h-3" />}
+          </button>
+        </div>
+
         {/* Loading indicator — traces entire border starting from bottom-left */}
         {isLoading && (
           <svg
