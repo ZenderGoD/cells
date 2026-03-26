@@ -2,8 +2,7 @@
 
 Cells is a desktop workspace for arranging terminals and browser panes on an infinite canvas. It is built with Electron, React, Vite, and `ghostty-web`, and is currently focused on local macOS workflows.
 
-![Multiple terminal and browser nodes arranged across the infinite canvas](docs/screenshots/multi-node-canvas.png)
-*Arrange terminals, browsers, and agent sessions freely on an infinite canvas.*
+![Cells project bar showing multiple projects and node icons](docs/screenshots/hero.png)
 
 ## Features
 
@@ -13,30 +12,37 @@ Cells is a desktop workspace for arranging terminals and browser panes on an inf
 - Optional local agent integration when `claude` or `codex` are available on `PATH`
 - GitHub release packaging for desktop builds
 
-### Terminal nodes
+### Agent support
 
-![A terminal node running an AI coding agent on the canvas](docs/screenshots/terminal-canvas.png)
-*Each terminal is a full Ghostty-powered PTY — here running an AI coding agent.*
+Cells works with CLI agents like Claude Code and OpenAI Codex — each runs in its own terminal node on the canvas.
+
+![Claude Code running in a Cells terminal node](docs/screenshots/claude-code.png)
+*Claude Code*
+
+![OpenAI Codex running in a Cells terminal node](docs/screenshots/codex.png)
+*OpenAI Codex*
 
 ### Browser panes
 
-![A browser pane showing documentation alongside a terminal](docs/screenshots/browser-terminal.png)
-*Embed browser panes next to terminals for docs, dashboards, or any web content.*
+Embed browser panes alongside terminals, with browsing data scoped to each project.
 
-### Command palette and project switching
+![Browser pane showing AI SDK documentation](docs/screenshots/browser.png)
 
-![Command palette showing project list and quick actions](docs/screenshots/command-palette.png)
-*Switch between saved projects and run workspace actions from the command palette.*
+### Minimap
 
-### Project overview
+Each project includes a minimap showing all its nodes at a glance.
 
-![Project overview showing workspace thumbnails and layout](docs/screenshots/project-overview.png)
-*Quickly navigate between workspaces with live project thumbnails.*
+![Minimap showing node icons within a project](docs/screenshots/minimap.png)
 
-### Agent integration with minimap
+### Ctrl+Tab navigation
 
-![Agent session with minimap showing node layout](docs/screenshots/agent-minimap.png)
-*The minimap provides a bird's-eye view of your canvas while agents work.*
+Navigate between nodes on the canvas with configurable Ctrl+Tab snapping — no need to manually manage windows.
+
+![Ctrl+Tab node switcher with live thumbnails](docs/screenshots/navigation.png)
+
+### Canvas overview
+
+![Zoomed-out view of multiple nodes on the infinite canvas](docs/screenshots/canvas-overview.png)
 
 ## Status
 
