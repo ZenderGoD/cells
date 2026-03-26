@@ -102,7 +102,7 @@ function ProjectTab({
         className={cn(
           'flex items-center gap-2 px-4 h-full transition-colors cursor-grab active:cursor-grabbing',
           isActive
-            ? 'text-foreground bg-white/40 dark:bg-black/35 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]'
+            ? 'text-foreground bg-white/40 dark:bg-black/35'
             : 'text-muted-foreground/50 hover:text-muted-foreground hover:bg-white/15 dark:hover:bg-muted/30',
         )}
       >
