@@ -13,8 +13,6 @@ export interface TerminalNode {
   title: string
   zIndex?: number
   pinned?: boolean
-  pinnedX?: number
-  pinnedY?: number
   agent?: 'claude' | 'codex' | null
 }
 
@@ -41,8 +39,6 @@ export interface BrowserNode {
   title: string
   zIndex?: number
   pinned?: boolean
-  pinnedX?: number
-  pinnedY?: number
   faviconUrl?: string
   /** Saved navigation history for restore across app restarts */
   history?: {
@@ -205,6 +201,15 @@ export interface CellsAPI {
     onCloseTerminal(callback: () => void): () => void
     toggleMaximize(): Promise<void>
     resizeToFit(width: number, height: number): Promise<void>
+    pinWindow(
+      id: string,
+      type: string,
+      bounds: { x: number; y: number; width: number; height: number },
+    ): Promise<void>
+    unpinWindow(id: string): Promise<void>
+    onWindowUnpinned(callback: (id: string, type: string) => void): () => void
+    getPinnedId(): string | null
+    getPinnedType(): 'terminal' | 'browser' | null
     pickFolder(): Promise<string | null>
     getPathForFile(file: File): string
     saveTempFile(data: Uint8Array, filename: string): Promise<string | null>

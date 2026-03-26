@@ -8,9 +8,21 @@ import { Onboarding } from './components/onboarding'
 import { TerminalSwitcher } from './components/terminal-switcher'
 import { ProjectSwitcher } from './components/project-switcher'
 import { CloseWindowDialog } from './components/close-window-dialog'
+import { PinnedWindow } from './components/pinned-window'
 import { buildWindowAppearanceStyle } from './lib/window-appearance'
 
+const pinnedId = window.cells.app.getPinnedId()
+const pinnedType = window.cells.app.getPinnedType()
+
 export function App() {
+  if (pinnedId && pinnedType) {
+    return <PinnedWindow termId={pinnedId} type={pinnedType} />
+  }
+
+  return <MainApp />
+}
+
+function MainApp() {
   const {
     initialized,
     init,

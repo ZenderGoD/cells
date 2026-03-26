@@ -19,7 +19,6 @@ interface BrowserNodeProps {
   isSelected: boolean
   isFocused: boolean
   onDragStart: (id: string, kind: 'terminal' | 'browser', startX: number, startY: number) => void
-  isPinned?: boolean
 }
 
 export function BrowserNode({
@@ -29,12 +28,10 @@ export function BrowserNode({
   isSelected,
   isFocused,
   onDragStart,
-  isPinned,
 }: BrowserNodeProps) {
   const {
     resizeBrowser,
     moveBrowser,
-    movePinned,
     updateBrowserUrl,
     updateBrowserTitle,
     updateBrowserFavicon,
@@ -347,8 +344,8 @@ export function BrowserNode({
         dragModeActive && 'cursor-grab',
       )}
       style={{
-        left: isPinned ? 0 : browser.x,
-        top: isPinned ? 0 : browser.y,
+        left: browser.x,
+        top: browser.y,
         width: browser.width,
         height: browser.height,
         zIndex: z,
@@ -381,38 +378,12 @@ export function BrowserNode({
                 ? 'text-primary/70 bg-primary/10 hover:text-primary'
                 : 'text-muted-foreground/40 bg-background/50 hover:text-foreground hover:bg-background/70',
             )}
-            onMouseDown={(e) => {
-              e.stopPropagation()
-              // Allow pinned drag from this button area
-              if (isPinned) {
-                e.preventDefault()
-                focusBrowser(browser.id)
-                const startX = e.clientX
-                const startY = e.clientY
-                const startPx = browser.pinnedX ?? 0
-                const startPy = browser.pinnedY ?? 0
-                const onMove = (ev: globalThis.MouseEvent) => {
-                  movePinned(
-                    browser.id,
-                    startPx + ev.clientX - startX,
-                    startPy + ev.clientY - startY,
-                    'browser',
-                  )
-                }
-                const onUp = () => {
-                  document.removeEventListener('mousemove', onMove)
-                  document.removeEventListener('mouseup', onUp)
-                }
-                document.addEventListener('mousemove', onMove)
-                document.addEventListener('mouseup', onUp)
-                return
-              }
-            }}
+            onMouseDown={(e) => e.stopPropagation()}
             onClick={(e) => {
               e.stopPropagation()
               togglePin(browser.id, 'browser')
             }}
-            title={browser.pinned ? 'Unpin from viewport' : 'Pin to viewport'}
+            title={browser.pinned ? 'Unpin window' : 'Pin to separate window'}
           >
             {browser.pinned ? <PinOff className="w-3 h-3" /> : <Pin className="w-3 h-3" />}
           </button>

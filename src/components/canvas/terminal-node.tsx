@@ -22,7 +22,6 @@ interface TerminalNodeProps {
   isFocused: boolean
   showFocusRing: boolean
   onDragStart: (id: string, kind: 'terminal' | 'browser', startX: number, startY: number) => void
-  isPinned?: boolean
 }
 
 export function TerminalNode({
@@ -33,13 +32,11 @@ export function TerminalNode({
   isFocused,
   showFocusRing,
   onDragStart,
-  isPinned,
 }: TerminalNodeProps) {
   const {
     requestCloseWindow,
     resizeTerminal,
     moveTerminal,
-    movePinned,
     updateTerminalTitle,
     focusTerminal,
     togglePin,
@@ -50,30 +47,6 @@ export function TerminalNode({
   const handleDragMouseDown = useCallback(
     (e: MouseEvent) => {
       if ((e.target as HTMLElement).closest('button')) return
-      if (isPinned) {
-        e.preventDefault()
-        e.stopPropagation()
-        focusTerminal(terminal.id)
-        const startX = e.clientX
-        const startY = e.clientY
-        const startPx = terminal.pinnedX ?? 0
-        const startPy = terminal.pinnedY ?? 0
-        const onMove = (ev: globalThis.MouseEvent) => {
-          movePinned(
-            terminal.id,
-            startPx + ev.clientX - startX,
-            startPy + ev.clientY - startY,
-            'terminal',
-          )
-        }
-        const onUp = () => {
-          document.removeEventListener('mousemove', onMove)
-          document.removeEventListener('mouseup', onUp)
-        }
-        document.addEventListener('mousemove', onMove)
-        document.addEventListener('mouseup', onUp)
-        return
-      }
       if (!selectionMode) {
         focusTerminal(terminal.id)
         return
@@ -82,16 +55,7 @@ export function TerminalNode({
       e.stopPropagation()
       onDragStart(terminal.id, 'terminal', e.clientX, e.clientY)
     },
-    [
-      focusTerminal,
-      terminal.id,
-      onDragStart,
-      selectionMode,
-      isPinned,
-      terminal.pinnedX,
-      terminal.pinnedY,
-      movePinned,
-    ],
+    [focusTerminal, terminal.id, onDragStart, selectionMode],
   )
 
   const handleEdgeMouseDown = useCallback(
@@ -182,8 +146,8 @@ export function TerminalNode({
         selectionMode && 'cursor-grab',
       )}
       style={{
-        left: isPinned ? 0 : terminal.x,
-        top: isPinned ? 0 : terminal.y,
+        left: terminal.x,
+        top: terminal.y,
         width: terminal.width,
         height: terminal.height,
         zIndex: z,
@@ -238,7 +202,7 @@ export function TerminalNode({
                 e.stopPropagation()
                 togglePin(terminal.id, 'terminal')
               }}
-              title={terminal.pinned ? 'Unpin from viewport' : 'Pin to viewport'}
+              title={terminal.pinned ? 'Unpin window' : 'Pin to separate window'}
             >
               {terminal.pinned ? <PinOff className="w-3 h-3" /> : <Pin className="w-3 h-3" />}
             </button>

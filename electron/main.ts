@@ -130,6 +130,7 @@ let mainWindow: BrowserWindow | null = null
 const MAX_BUFFER = 64 * 1024
 const ptyBuffers = new Map<string, string>()
 const subscribedTerminals = new Set<string>()
+const pinnedWindows = new Map<string, BrowserWindow>()
 
 const STATE_DIR = path.join(app.getPath('home'), '.cells')
 const STATE_FILE = path.join(STATE_DIR, 'state.json')
@@ -412,15 +413,20 @@ function appendBuffer(termId: string, data: string) {
   ptyBuffers.set(termId, combined.length > MAX_BUFFER ? combined.slice(-MAX_BUFFER) : combined)
 }
 
+function getWindowForTerminal(termId: string): BrowserWindow | null {
+  const pinned = pinnedWindows.get(termId)
+  if (pinned && !pinned.isDestroyed()) return pinned
+  return mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
+}
+
 function setupPtyHandlers(termId: string, p: ReturnType<typeof ptys.spawn>) {
   p.onData((data) => {
     if (ptys.get(termId) !== p) return
     if (subscribedTerminals.has(termId)) {
       // Live forwarding — terminal component is mounted
       try {
-        if (!mainWindow?.isDestroyed()) {
-          mainWindow?.webContents.send('terminal:data', termId, data)
-        }
+        const target = getWindowForTerminal(termId)
+        target?.webContents.send('terminal:data', termId, data)
       } catch {
         ptys.kill(termId)
       }
@@ -436,9 +442,8 @@ function setupPtyHandlers(termId: string, p: ReturnType<typeof ptys.spawn>) {
     ptyBuffers.delete(termId)
     subscribedTerminals.delete(termId)
     try {
-      if (!mainWindow?.isDestroyed()) {
-        mainWindow?.webContents.send('terminal:exit', termId)
-      }
+      const target = getWindowForTerminal(termId)
+      target?.webContents.send('terminal:exit', termId)
     } catch {}
   })
 }
@@ -546,6 +551,67 @@ ipcMain.handle('app:toggle-maximize', () => {
 ipcMain.handle('app:resize-to-fit', (_event, width: number, height: number) => {
   if (!mainWindow) return
   mainWindow.setContentSize(Math.round(width), Math.round(height), true)
+})
+
+ipcMain.handle(
+  'app:pin-window',
+  (
+    _event,
+    id: string,
+    type: string,
+    bounds: { x: number; y: number; width: number; height: number },
+  ) => {
+    // Close any existing pinned window for this id
+    const existing = pinnedWindows.get(id)
+    if (existing && !existing.isDestroyed()) existing.close()
+
+    const win = new BrowserWindow({
+      width: Math.round(bounds.width),
+      height: Math.round(bounds.height),
+      x: Math.round(bounds.x),
+      y: Math.round(bounds.y),
+      alwaysOnTop: true,
+      titleBarStyle: 'hiddenInset',
+      trafficLightPosition: { x: 12, y: 12 },
+      roundedCorners: true,
+      transparent: true,
+      vibrancy: 'under-window',
+      visualEffectState: 'active',
+      webPreferences: {
+        preload: path.join(__dirname, PRELOAD_FILE),
+        nodeIntegration: false,
+        contextIsolation: true,
+        webgl: true,
+      },
+    })
+
+    pinnedWindows.set(id, win)
+
+    const url = process.env.VITE_DEV_SERVER_URL
+      ? `${process.env.VITE_DEV_SERVER_URL}?pinned=${encodeURIComponent(id)}&type=${encodeURIComponent(type)}`
+      : undefined
+    if (url) {
+      win.loadURL(url)
+    } else {
+      win.loadFile(path.join(__dirname, '../dist/index.html'), {
+        query: { pinned: id, type },
+      })
+    }
+
+    win.on('closed', () => {
+      pinnedWindows.delete(id)
+      try {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('app:window-unpinned', id, type)
+        }
+      } catch {}
+    })
+  },
+)
+
+ipcMain.handle('app:unpin-window', (_event, id: string) => {
+  const win = pinnedWindows.get(id)
+  if (win && !win.isDestroyed()) win.close()
 })
 
 ipcMain.handle('app:pick-folder', async () => {

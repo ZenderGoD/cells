@@ -86,7 +86,6 @@ interface StoreState {
   addTerminalWithCommand(command: string, title?: string): TerminalNode
   updateTerminalAgent(id: string, agent: 'claude' | 'codex' | null): void
   removeTerminal(id: string): void
-  movePinned(id: string, x: number, y: number, type: 'terminal' | 'browser'): void
   moveTerminal(id: string, x: number, y: number): void
   resizeTerminal(id: string, width: number, height: number): void
   updateTerminalTitle(id: string, title: string): void
@@ -508,6 +507,20 @@ export const useStore = create<StoreState>((set, get) => ({
     // First run — no state at all
     set({ initialized: true })
     applyColorScheme(get().colorScheme)
+
+    // Listen for pinned windows being closed externally
+    window.cells.app.onWindowUnpinned((id, type) => {
+      if (type === 'terminal') {
+        set((s) => ({
+          terminals: s.terminals.map((t) => (t.id === id ? { ...t, pinned: false } : t)),
+        }))
+      } else {
+        set((s) => ({
+          browsers: s.browsers.map((b) => (b.id === id ? { ...b, pinned: false } : b)),
+        }))
+      }
+      get().persist()
+    })
   },
 
   persist() {
@@ -884,42 +897,40 @@ export const useStore = create<StoreState>((set, get) => ({
   togglePin(id, type) {
     const { canvas } = get()
     const kind = type ?? 'terminal'
-    const viewW = window.innerWidth
-    const viewH = window.innerHeight - STATUS_BAR_HEIGHT
-    const clampPin = (sx: number, sy: number, w: number) => ({
-      px: Math.max(-w + 40, Math.min(viewW - 40, sx)),
-      py: Math.max(0, Math.min(viewH - 40, sy)),
-    })
-    if (kind === 'terminal') {
-      set((s) => ({
-        terminals: s.terminals.map((t) => {
-          if (t.id !== id) return t
-          if (t.pinned) {
-            const cx = ((t.pinnedX ?? 0) - canvas.x) / canvas.scale
-            const cy = ((t.pinnedY ?? 0) - canvas.y) / canvas.scale
-            return { ...t, pinned: false, x: cx, y: cy, pinnedX: undefined, pinnedY: undefined }
-          }
-          const sx = t.x * canvas.scale + canvas.x
-          const sy = t.y * canvas.scale + canvas.y
-          const { px, py } = clampPin(sx, sy, t.width)
-          return { ...t, pinned: true, pinnedX: px, pinnedY: py }
-        }),
-      }))
+    const node =
+      kind === 'terminal'
+        ? get().terminals.find((t) => t.id === id)
+        : get().browsers.find((b) => b.id === id)
+    if (!node) return
+
+    if (node.pinned) {
+      // Unpin: close the system window, mark as unpinned
+      void window.cells.app.unpinWindow(id)
+      if (kind === 'terminal') {
+        set((s) => ({
+          terminals: s.terminals.map((t) => (t.id === id ? { ...t, pinned: false } : t)),
+        }))
+      } else {
+        set((s) => ({
+          browsers: s.browsers.map((b) => (b.id === id ? { ...b, pinned: false } : b)),
+        }))
+      }
     } else {
-      set((s) => ({
-        browsers: s.browsers.map((b) => {
-          if (b.id !== id) return b
-          if (b.pinned) {
-            const cx = ((b.pinnedX ?? 0) - canvas.x) / canvas.scale
-            const cy = ((b.pinnedY ?? 0) - canvas.y) / canvas.scale
-            return { ...b, pinned: false, x: cx, y: cy, pinnedX: undefined, pinnedY: undefined }
-          }
-          const sx = b.x * canvas.scale + canvas.x
-          const sy = b.y * canvas.scale + canvas.y
-          const { px, py } = clampPin(sx, sy, b.width)
-          return { ...b, pinned: true, pinnedX: px, pinnedY: py }
-        }),
-      }))
+      // Pin: compute screen bounds and open as system window
+      const screenX = node.x * canvas.scale + canvas.x
+      const screenY = node.y * canvas.scale + canvas.y
+      // Get the main window's screen position to compute absolute bounds
+      const bounds = { x: screenX, y: screenY, width: node.width, height: node.height }
+      if (kind === 'terminal') {
+        set((s) => ({
+          terminals: s.terminals.map((t) => (t.id === id ? { ...t, pinned: true } : t)),
+        }))
+      } else {
+        set((s) => ({
+          browsers: s.browsers.map((b) => (b.id === id ? { ...b, pinned: true } : b)),
+        }))
+      }
+      void window.cells.app.pinWindow(id, kind, bounds)
     }
     get().persist()
   },
@@ -928,32 +939,6 @@ export const useStore = create<StoreState>((set, get) => ({
     const { focusedTerminalId, focusedBrowserId } = get()
     if (focusedTerminalId) get().togglePin(focusedTerminalId, 'terminal')
     else if (focusedBrowserId) get().togglePin(focusedBrowserId, 'browser')
-  },
-
-  movePinned(id: string, x: number, y: number, type: 'terminal' | 'browser') {
-    const node =
-      type === 'terminal'
-        ? get().terminals.find((t) => t.id === id)
-        : get().browsers.find((b) => b.id === id)
-    if (!node) return
-    // Clamp to keep at least 40px visible inside the viewport
-    const minVisible = 40
-    const clampedX = Math.max(-node.width + minVisible, Math.min(window.innerWidth - minVisible, x))
-    const clampedY = Math.max(0, Math.min(window.innerHeight - STATUS_BAR_HEIGHT - minVisible, y))
-    if (type === 'terminal') {
-      set((s) => ({
-        terminals: s.terminals.map((t) =>
-          t.id === id ? { ...t, pinnedX: clampedX, pinnedY: clampedY } : t,
-        ),
-      }))
-    } else {
-      set((s) => ({
-        browsers: s.browsers.map((b) =>
-          b.id === id ? { ...b, pinnedX: clampedX, pinnedY: clampedY } : b,
-        ),
-      }))
-    }
-    debouncedPersist(() => get().persist())
   },
 
   moveTerminal(id, x, y) {

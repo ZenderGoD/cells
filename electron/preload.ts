@@ -149,6 +149,26 @@ const api: CellsAPI = {
       ipcRenderer.invoke('app:paste-clipboard-files') as Promise<string[] | null>,
     openExternal: (url: string) => ipcRenderer.invoke('app:open-external', url),
     requestQuit: () => ipcRenderer.invoke('app:request-quit'),
+    pinWindow: (
+      id: string,
+      type: string,
+      bounds: { x: number; y: number; width: number; height: number },
+    ) => ipcRenderer.invoke('app:pin-window', id, type, bounds),
+    unpinWindow: (id: string) => ipcRenderer.invoke('app:unpin-window', id),
+    onWindowUnpinned: (callback: (id: string, type: string) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, id: string, type: string) =>
+        callback(id, type)
+      ipcRenderer.on('app:window-unpinned', handler)
+      return () => ipcRenderer.removeListener('app:window-unpinned', handler)
+    },
+    getPinnedId: () => {
+      const params = new URLSearchParams(window.location.search)
+      return params.get('pinned')
+    },
+    getPinnedType: () => {
+      const params = new URLSearchParams(window.location.search)
+      return params.get('type') as 'terminal' | 'browser' | null
+    },
   },
   agent: {
     checkAvailable: (aliases?: Record<string, string>) =>
