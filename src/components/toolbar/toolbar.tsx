@@ -16,7 +16,7 @@ import {
   X,
 } from 'lucide-react'
 import type { ExtensionMeta } from '@/types'
-import { motion, AnimatePresence } from 'motion/react'
+import { motion, AnimatePresence, Reorder } from 'motion/react'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
 import {
@@ -148,50 +148,12 @@ export function StatusBar() {
   const [undoNow, setUndoNow] = useState(() => Date.now())
 
   // --- Project tab drag-to-reorder ---
-  const [dragId, setDragId] = useState<string | null>(null)
-  const [dropTargetId, setDropTargetId] = useState<string | null>(null)
-
-  const handleDragStart = useCallback(
-    (e: React.DragEvent<HTMLButtonElement>, projectId: string) => {
-      setDragId(projectId)
-      e.dataTransfer.effectAllowed = 'move'
-      e.dataTransfer.setData('text/plain', projectId)
+  const handleReorder = useCallback(
+    (reordered: typeof projects) => {
+      reorderProjects(reordered.map((p) => p.id))
     },
-    [],
+    [reorderProjects],
   )
-
-  const handleDragOver = useCallback(
-    (e: React.DragEvent<HTMLButtonElement>, projectId: string) => {
-      e.preventDefault()
-      e.dataTransfer.dropEffect = 'move'
-      if (projectId !== dragId) setDropTargetId(projectId)
-    },
-    [dragId],
-  )
-
-  const handleDrop = useCallback(
-    (e: React.DragEvent<HTMLButtonElement>, targetId: string) => {
-      e.preventDefault()
-      if (!dragId || dragId === targetId) return
-
-      const ids = projects.map((p) => p.id)
-      const fromIdx = ids.indexOf(dragId)
-      const toIdx = ids.indexOf(targetId)
-      if (fromIdx === -1 || toIdx === -1) return
-
-      ids.splice(fromIdx, 1)
-      ids.splice(toIdx, 0, dragId)
-      reorderProjects(ids)
-      setDragId(null)
-      setDropTargetId(null)
-    },
-    [dragId, projects, reorderProjects],
-  )
-
-  const handleDragEnd = useCallback(() => {
-    setDragId(null)
-    setDropTargetId(null)
-  }, [])
 
   const openUrlBar = () => {
     setUrlInput(focusedBrowser?.url ?? '')
@@ -317,7 +279,11 @@ export function StatusBar() {
         </button>
 
         {/* Project tabs — left side */}
-        <div
+        <Reorder.Group
+          as="div"
+          axis="x"
+          values={projects}
+          onReorder={handleReorder}
           ref={tabsRef}
           className="flex items-stretch overflow-x-auto scrollbar-none no-drag shrink-0"
         >
@@ -326,26 +292,18 @@ export function StatusBar() {
             const projectWindowCount = isActive
               ? windowCount
               : (project.terminals?.length ?? 0) + (project.browsers?.length ?? 0)
-            const isDragging = dragId === project.id
-            const isDropTarget = dropTargetId === project.id && dragId !== project.id
 
             return (
-              <div
+              <Reorder.Item
                 key={project.id}
-                className={cn(
-                  'relative flex items-center border-r border-border/30 shrink-0',
-                  isDragging && 'opacity-40',
-                  isDropTarget && 'border-l-2 border-l-primary/60',
-                )}
+                value={project}
+                as="div"
+                className={cn('relative flex items-center border-r border-border/30 shrink-0')}
+                whileDrag={{ opacity: 0.5, scale: 0.98 }}
+                transition={{ type: 'spring', stiffness: 300, damping: 30 }}
               >
                 <button
-                  draggable
                   onClick={() => switchProject(project.id)}
-                  onDragStart={(e) => handleDragStart(e, project.id)}
-                  onDragOver={(e) => handleDragOver(e, project.id)}
-                  onDragLeave={() => setDropTargetId(null)}
-                  onDrop={(e) => handleDrop(e, project.id)}
-                  onDragEnd={handleDragEnd}
                   className={cn(
                     'flex items-center gap-2 px-4 h-full transition-colors',
                     isActive
@@ -376,6 +334,7 @@ export function StatusBar() {
                         'flex items-center overflow-hidden',
                         isActive ? 'bg-white/40 dark:bg-black/35' : '',
                       )}
+                      onPointerDown={(e) => e.stopPropagation()}
                       title={
                         overviewAnchor
                           ? `${overviewAnchor.title} • drag to reposition, click to focus`
@@ -408,7 +367,7 @@ export function StatusBar() {
                     </motion.div>
                   )}
                 </AnimatePresence>
-              </div>
+              </Reorder.Item>
             )
           })}
           <button
@@ -417,7 +376,7 @@ export function StatusBar() {
           >
             <Plus className="w-3 h-3" />
           </button>
-        </div>
+        </Reorder.Group>
 
         {/* Center — browser controls when a browser is focused */}
         {focusedBrowser ? (
