@@ -86,6 +86,7 @@ interface StoreState {
   addTerminal(): TerminalNode
   addTerminalWithCommand(command: string, title?: string): TerminalNode
   updateTerminalAgent(id: string, agent: 'claude' | 'codex' | null): void
+  removeAllTerminals(): void
   removeTerminal(id: string): void
   moveTerminal(id: string, x: number, y: number): void
   resizeTerminal(id: string, width: number, height: number): void
@@ -836,6 +837,25 @@ export const useStore = create<StoreState>((set, get) => ({
     set((s) => ({
       terminals: s.terminals.map((t) => (t.id === id ? { ...t, agent } : t)),
     }))
+  },
+
+  removeAllTerminals() {
+    const state = get()
+    for (const t of state.terminals) {
+      clearPendingCloseTimer(t.id)
+      destroyTerminalResources(t.id)
+    }
+    set({
+      terminals: [],
+      focusedTerminalId: null,
+      focusHistory: state.focusHistory.filter((h) => !state.terminals.some((t) => t.id === h)),
+      pendingClosedWindows: state.pendingClosedWindows.filter(
+        (entry) => entry.target.type !== 'terminal',
+      ),
+      pendingCloseDialog:
+        state.pendingCloseDialog?.target.type === 'terminal' ? null : state.pendingCloseDialog,
+    })
+    get().persist()
   },
 
   removeTerminal(id) {

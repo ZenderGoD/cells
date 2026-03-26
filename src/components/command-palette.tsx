@@ -10,6 +10,7 @@ import {
   FolderOpen,
   Search,
   LogOut,
+  Skull,
 } from 'lucide-react'
 import {
   CommandDialog,
@@ -179,6 +180,12 @@ export function CommandPalette() {
               >
                 <FolderOpen className="text-muted-foreground" />
                 New Project
+              </CommandItem>
+              <CommandItem
+                onSelect={() => runAction(() => useStore.getState().removeAllTerminals())}
+              >
+                <Skull className="text-muted-foreground" />
+                Kill All Processes
               </CommandItem>
               <CommandItem
                 onSelect={() => {
