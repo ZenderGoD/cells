@@ -1017,25 +1017,17 @@ export function CellTerminal({
         term.write(result.buffer)
       }
 
-      if (result?.reattached) {
-        // Trigger SIGWINCH so the shell (and any running program) redraws.
-        if (dims) {
+      if (result?.reattached && dims) {
+        // Force a real SIGWINCH so the shell/TUI program fully redraws.
+        // The daemon's spawn() already resized to (cols, rows), so sending
+        // the same size is a no-op — the kernel won't deliver SIGWINCH.
+        // Briefly resize to cols-1, then restore the correct size.
+        const bumpCols = Math.max(1, dims.cols - 1)
+        window.cells.terminal.resize(termId, bumpCols, dims.rows)
+        setTimeout(() => {
+          if (cancelled) return
           window.cells.terminal.resize(termId, dims.cols, dims.rows)
-        }
-
-        // Force canvas repaints after the buffer and SIGWINCH output settle.
-        // The terminal emulator has the content in its internal buffer but
-        // the canvas may not have painted it yet (DOM not fully laid out,
-        // GPU backing store not allocated, etc.). Multiple deferred frames
-        // catch both the immediate buffer write and the async SIGWINCH redraw.
-        const forceRepaint = () => {
-          if (term.renderer && term.wasmTerm) {
-            term.renderer.render(term.wasmTerm, true, term.viewportY, term as any, 0)
-          }
-        }
-        requestAnimationFrame(forceRepaint)
-        setTimeout(() => requestAnimationFrame(forceRepaint), 100)
-        setTimeout(() => requestAnimationFrame(forceRepaint), 500)
+        }, 50)
       }
 
       const pendingCmd = consumePendingCommand(termId)
