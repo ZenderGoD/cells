@@ -316,20 +316,6 @@ export function StatusBar() {
           <Logo className="w-3.5 h-3.5 text-foreground/80" />
         </button>
 
-        {latestClosedWindow && closeUndoTimeoutMs > 0 && undoSecondsLeft > 0 ? (
-          <button
-            onClick={() => restoreLastClosedWindow()}
-            className="flex items-center gap-2 border-r border-border/30 px-3 text-[10px] text-muted-foreground/65 transition-colors hover:bg-muted/30 hover:text-foreground no-drag shrink-0"
-            title="Restore closed window"
-          >
-            <span className="font-medium text-foreground/80">Undo close</span>
-            <span className="truncate max-w-28">{latestClosedWindow.title}</span>
-            <span className="rounded-full bg-muted/45 px-1.5 py-0.5 font-mono text-[9px] text-muted-foreground/70">
-              ⌘⇧T {undoSecondsLeft}s
-            </span>
-          </button>
-        ) : null}
-
         {/* Project tabs — left side */}
         <div
           ref={tabsRef}
@@ -550,6 +536,28 @@ export function StatusBar() {
 
         {/* Right side controls */}
         <div className="flex items-center gap-3 px-3 shrink-0 no-drag">
+          <AnimatePresence initial={false}>
+            {latestClosedWindow && closeUndoTimeoutMs > 0 && undoSecondsLeft > 0 ? (
+              <motion.button
+                key="undo-close"
+                layout
+                initial={{ opacity: 0, x: 12, scale: 0.96 }}
+                animate={{ opacity: 1, x: 0, scale: 1 }}
+                exit={{ opacity: 0, x: 12, scale: 0.96 }}
+                transition={{ duration: 0.2, ease: 'easeOut' }}
+                onClick={() => restoreLastClosedWindow()}
+                className="flex shrink-0 items-center gap-2 rounded-md border border-border/30 bg-background/40 px-2.5 py-1 text-[10px] text-muted-foreground/65 transition-colors hover:bg-muted/45 hover:text-foreground"
+                title="Restore closed window"
+              >
+                <span className="font-medium text-foreground/80">Undo close</span>
+                <span className="max-w-24 truncate">{latestClosedWindow.title}</span>
+                <span className="rounded-full bg-muted/45 px-1.5 py-0.5 font-mono text-[9px] text-muted-foreground/70">
+                  ⌘⇧T {undoSecondsLeft}s
+                </span>
+              </motion.button>
+            ) : null}
+          </AnimatePresence>
+
           {/* Plus button with popover */}
           <Popover
             open={plusOpen}
