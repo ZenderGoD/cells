@@ -273,6 +273,12 @@ function handleMessage(socket: net.Socket, msg: any) {
       break
     }
 
+    case 'get-buffer': {
+      const buffer = buffers.get(msg.termId) ?? ''
+      sendResponse(socket, id, true, { buffer })
+      break
+    }
+
     case 'list': {
       sendResponse(socket, id, true, [...ptys.keys()])
       break

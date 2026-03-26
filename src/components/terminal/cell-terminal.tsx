@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { init, Terminal, FitAddon, UrlRegexProvider, OSC8LinkProvider } from 'ghostty-web'
 import type { ILinkProvider } from 'ghostty-web'
-import { useStore, consumePendingCommand } from '@/lib/store'
+import { useStore, consumePendingCommand, consumePendingWorktreePath } from '@/lib/store'
 import { getTerminalTheme } from '@/lib/terminal-themes'
 import { cn } from '@/lib/utils'
 
@@ -111,6 +111,13 @@ export function destroyCachedTerminal(termId: string) {
   }
 }
 
+/** Reload a terminal — kills the shell and respawns a fresh one. */
+export function reloadTerminal(termId: string) {
+  destroyCachedTerminal(termId)
+  window.cells.terminal.detach(termId).catch(() => {})
+  window.dispatchEvent(new CustomEvent('terminal-reload', { detail: { termId } }))
+}
+
 interface CellTerminalProps {
   termId: string
   width: number
@@ -205,6 +212,45 @@ function getAgentLabel(agent: AgentName) {
 const ESCAPE_CHAR = String.fromCharCode(27)
 const NULL_CHAR = String.fromCharCode(0)
 const ANSI_CSI_SEQUENCE_RE = new RegExp(`${ESCAPE_CHAR}\\[[0-9;?]*[ -/]*[@-~]`, 'g')
+
+// ---------- Agent prompt detection ----------
+
+const AGENT_OUTPUT_BUF_SIZE = 400
+// How long after a prompt is detected before we consider the agent "waiting"
+const AGENT_PROMPT_SILENCE_MS = 800
+// Bell character — agents ring the bell when they finish and need user attention
+const BEL = '\x07'
+
+/** Strip ANSI escape sequences to get readable text for prompt detection. */
+function stripAnsi(str: string): string {
+  return str
+    .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '') // CSI sequences
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '') // OSC sequences
+    .replace(/\x1b[()][AB012]/g, '') // charset sequences
+    .replace(/\x1b[^[\]]/g, '') // other 2-char escapes
+    .replace(/[\x00-\x06\x08-\x1a\x1c-\x1f]/g, '') // control chars (except \x07 BEL)
+}
+
+/**
+ * Detect whether the cleaned output buffer ends with an agent prompt.
+ * This means the agent has finished output and is waiting for user input.
+ */
+function detectAgentPrompt(cleanedBuffer: string, agent: AgentName | null): boolean {
+  const tail = cleanedBuffer.trimEnd()
+  if (!tail) return false
+  // Check the last ~30 chars for prompt patterns
+  const end = tail.slice(-30)
+
+  // Claude Code uses ❯ as its prompt character.
+  // Also match (y/n) confirmation prompts that appear during tool approval.
+  if (agent === 'claude') {
+    return /❯\s*$/.test(end) || /\([Yy](?:es)?\/[Nn](?:o)?\)\s*[:?]?\s*$/.test(end)
+  }
+  if (agent === 'codex') {
+    return /[❯>]\s*$/.test(end) || /\([Yy](?:es)?\/[Nn](?:o)?\)\s*[:?]?\s*$/.test(end)
+  }
+  return /[❯›]\s*$/.test(end)
+}
 const ANSI_ESCAPE_RE = new RegExp(`${ESCAPE_CHAR}[@-_]`, 'g')
 const NULL_CHAR_RE = new RegExp(NULL_CHAR, 'g')
 const COMMAND_EDITING_SEQUENCES: Record<string, string> = {
@@ -391,8 +437,22 @@ export function CellTerminal({
   const lastInferredTitleRef = useRef<string | null>(null)
   const lastAgentDataRef = useRef<number>(0) // timestamp of last PTY data while agent active
   const prevAgentRef = useRef<AgentName | null>(null) // track transitions for done detection
+  const agentOutputBufRef = useRef('') // rolling buffer of stripped PTY output for prompt detection
+  const agentBellRef = useRef(false) // whether a BEL was heard since last input
+  const promptCheckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const dragDepthRef = useRef(0)
   const [dropActive, setDropActive] = useState(false)
+  const [reloadKey, setReloadKey] = useState(0)
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      if ((e as CustomEvent).detail?.termId === termId) {
+        setReloadKey((k) => k + 1)
+      }
+    }
+    window.addEventListener('terminal-reload', handler)
+    return () => window.removeEventListener('terminal-reload', handler)
+  }, [termId])
 
   const pasteToTerminal = useCallback(
     (text: string) => {
@@ -552,6 +612,18 @@ export function CellTerminal({
         if (dims) {
           window.cells.terminal.resize(termId, dims.cols, dims.rows)
         }
+
+        // Force a full redraw after DOM reattachment — the canvas backing
+        // store may have been reclaimed while the wrapper was detached,
+        // leaving the terminal visually stale or blank even though the
+        // internal buffer state is correct.
+        requestAnimationFrame(() => {
+          const t = cached.term
+          if (t.renderer && t.wasmTerm) {
+            t.renderer.render(t.wasmTerm, true, t.viewportY, t as any)
+          }
+        })
+
         return
       }
 
@@ -650,6 +722,8 @@ export function CellTerminal({
           const metaShortcuts = [
             'k',
             'K',
+            'r',
+            'R',
             't',
             'T',
             'w',
@@ -780,13 +854,59 @@ export function CellTerminal({
         term.onData((data) => {
           trackInputForTitle(data)
           window.cells.terminal.write(termId, data)
+          // When user sends input (Enter key), immediately mark agent as running
+          if (data.includes('\r') || data.includes('\n')) {
+            const agent = detectedAgentRef.current ?? inferredAgentRef.current
+            if (agent) {
+              agentBellRef.current = false
+              agentOutputBufRef.current = ''
+              if (promptCheckTimerRef.current) {
+                clearTimeout(promptCheckTimerRef.current)
+                promptCheckTimerRef.current = null
+              }
+              const store = useStore.getState()
+              const current = store.terminals.find((t) => t.id === termId)
+              if (current?.agentStatus === 'waiting') {
+                store.updateTerminalAgentStatus(termId, 'running')
+              }
+            }
+          }
         }).dispose,
         window.cells.terminal.onData((id, data) => {
           if (id === termId) {
             term.write(data)
-            // Track last PTY output time for agent waiting detection
-            if (detectedAgentRef.current || inferredAgentRef.current) {
+            const agent = detectedAgentRef.current ?? inferredAgentRef.current
+            if (agent) {
               lastAgentDataRef.current = Date.now()
+
+              // Detect terminal bell — agents ring bell when they finish a turn
+              if (data.includes(BEL)) {
+                agentBellRef.current = true
+              }
+
+              // Build rolling buffer of cleaned output for prompt detection
+              const cleaned = stripAnsi(data)
+              agentOutputBufRef.current = (agentOutputBufRef.current + cleaned).slice(
+                -AGENT_OUTPUT_BUF_SIZE,
+              )
+
+              // If this chunk contains a prompt or bell, schedule a quick status
+              // check so we don't have to wait for the next 3s poll cycle
+              const hasPrompt = detectAgentPrompt(agentOutputBufRef.current, agent)
+              if (hasPrompt || agentBellRef.current) {
+                if (promptCheckTimerRef.current) clearTimeout(promptCheckTimerRef.current)
+                promptCheckTimerRef.current = setTimeout(() => {
+                  const now = Date.now()
+                  const elapsed = now - lastAgentDataRef.current
+                  if (elapsed >= AGENT_PROMPT_SILENCE_MS) {
+                    const store = useStore.getState()
+                    const current = store.terminals.find((t) => t.id === termId)
+                    if (current && current.agentStatus !== 'waiting') {
+                      store.updateTerminalAgentStatus(termId, 'waiting')
+                    }
+                  }
+                }, AGENT_PROMPT_SILENCE_MS + 50)
+              }
             }
           }
         }),
@@ -807,7 +927,6 @@ export function CellTerminal({
       cleanups.push(() => wrapper.removeEventListener('paste', handlePaste))
 
       // Agent detection poll — also tracks agent status (running/waiting/done)
-      const AGENT_WAITING_THRESHOLD_MS = 2500
       const agentPoll = setInterval(async () => {
         const proc = await window.cells.terminal.getProcess(termId)
         const agent = normalizeAgentProcess(proc)
@@ -822,21 +941,33 @@ export function CellTerminal({
           store.updateTerminalAgent(termId, agent)
         }
 
-        // Determine agent status
+        // Determine agent status using prompt detection + bell, not raw timing
         if (agent) {
-          // Agent is running — check if waiting for input
           const elapsed = Date.now() - lastAgentDataRef.current
-          const newStatus =
-            lastAgentDataRef.current > 0 && elapsed > AGENT_WAITING_THRESHOLD_MS
-              ? ('waiting' as const)
-              : ('running' as const)
+          const hasPrompt = detectAgentPrompt(agentOutputBufRef.current, agent)
+          const heardBell = agentBellRef.current
+
+          let newStatus: 'running' | 'waiting'
+          if ((hasPrompt || heardBell) && elapsed > AGENT_PROMPT_SILENCE_MS) {
+            // Agent prompt is visible and output has stopped — waiting for user input
+            newStatus = 'waiting'
+          } else {
+            newStatus = 'running'
+          }
+
           if (current && current.agentStatus !== newStatus) {
             store.updateTerminalAgentStatus(termId, newStatus)
           }
         } else if (wasAgent && !agent) {
-          // Agent just exited — mark as done
+          // Agent just exited — mark as done and reset state
           store.updateTerminalAgentStatus(termId, 'done')
           lastAgentDataRef.current = 0
+          agentOutputBufRef.current = ''
+          agentBellRef.current = false
+          if (promptCheckTimerRef.current) {
+            clearTimeout(promptCheckTimerRef.current)
+            promptCheckTimerRef.current = null
+          }
         }
 
         if (agent === 'codex') {
@@ -846,13 +977,20 @@ export function CellTerminal({
           }
         }
       }, 3000)
-      cleanups.push(() => clearInterval(agentPoll))
+      cleanups.push(() => {
+        clearInterval(agentPoll)
+        if (promptCheckTimerRef.current) {
+          clearTimeout(promptCheckTimerRef.current)
+          promptCheckTimerRef.current = null
+        }
+      })
 
       // Store in cache
       terminalCache.set(termId, { term, fitAddon, wrapper, cleanups })
 
       const dims = fitAddon.proposeDimensions()
-      const projectPath = useStore.getState().getActiveProjectPath()
+      const worktreeCwd = consumePendingWorktreePath(termId)
+      const projectPath = worktreeCwd ?? useStore.getState().getActiveProjectPath()
       const result = await window.cells.terminal.attach(
         termId,
         dims?.cols ?? 80,
@@ -887,7 +1025,7 @@ export function CellTerminal({
       // Tell main process to buffer instead of sending live IPC
       window.cells.terminal.unsubscribe(termId)
     }
-  }, [copySelectionToClipboard, setInferredTitle, termId, trackInputForTitle])
+  }, [copySelectionToClipboard, reloadKey, setInferredTitle, termId, trackInputForTitle])
 
   useEffect(() => {
     if (!isFocused) return

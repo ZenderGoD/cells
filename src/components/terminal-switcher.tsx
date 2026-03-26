@@ -307,7 +307,7 @@ export function TerminalSwitcher() {
                           </div>
                         )
                       ) : (
-                        <div className="flex h-full items-center justify-center">
+                        <div className="absolute inset-0 flex items-center justify-center">
                           {item.faviconUrl ? (
                             <img
                               src={item.faviconUrl}

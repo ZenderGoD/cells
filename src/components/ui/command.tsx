@@ -14,6 +14,14 @@ import {
 import { InputGroup, InputGroupAddon } from '@/components/ui/input-group'
 import { SearchIcon, CheckIcon } from 'lucide-react'
 
+// Track whether the last Enter-selection was performed with Cmd held
+let _lastSelectMetaKey = false
+export function wasLastSelectWithMeta(): boolean {
+  const v = _lastSelectMetaKey
+  _lastSelectMetaKey = false
+  return v
+}
+
 function Command({ className, ...props }: React.ComponentProps<typeof CommandPrimitive>) {
   return (
     <CommandPrimitive
@@ -59,22 +67,106 @@ function CommandDialog({
 
 function CommandInput({
   className,
+  multiline,
+  icon,
   ...props
-}: React.ComponentProps<typeof CommandPrimitive.Input>) {
+}: React.ComponentProps<typeof CommandPrimitive.Input> & {
+  multiline?: boolean
+  icon?: React.ReactNode
+}) {
+  const textareaRef = React.useRef<HTMLTextAreaElement>(null)
+
+  // Auto-resize textarea to fit content
+  React.useEffect(() => {
+    if (multiline && textareaRef.current) {
+      textareaRef.current.style.height = 'auto'
+      textareaRef.current.style.height = textareaRef.current.scrollHeight + 'px'
+    }
+  }, [multiline, props.value])
+
+  // Auto-focus textarea when mounted
+  React.useEffect(() => {
+    if (multiline && textareaRef.current) {
+      textareaRef.current.focus()
+    }
+  }, [multiline])
+
+  const addonIcon = icon ?? <SearchIcon className="size-4 shrink-0 opacity-50" />
+
+  if (!multiline) {
+    return (
+      <div data-slot="command-input-wrapper" className="p-1 pb-0">
+        <InputGroup className="h-8! rounded-lg! border-input/30 bg-input/30 shadow-none! *:data-[slot=input-group-addon]:pl-2!">
+          <CommandPrimitive.Input
+            data-slot="command-input"
+            className={cn(
+              'w-full text-sm outline-hidden disabled:cursor-not-allowed disabled:opacity-50',
+              className,
+            )}
+            {...props}
+          />
+          <InputGroupAddon>{addonIcon}</InputGroupAddon>
+        </InputGroup>
+      </div>
+    )
+  }
+
+  const { value, onValueChange, onKeyDown, placeholder, ...restProps } = props
+
   return (
     <div data-slot="command-input-wrapper" className="p-1 pb-0">
-      <InputGroup className="h-8! rounded-lg! border-input/30 bg-input/30 shadow-none! *:data-[slot=input-group-addon]:pl-2!">
-        <CommandPrimitive.Input
+      {/* Hidden cmdk input to drive search/filter */}
+      <CommandPrimitive.Input
+        value={value}
+        onValueChange={onValueChange}
+        className="sr-only absolute"
+        tabIndex={-1}
+        aria-hidden
+      />
+      <InputGroup className="h-auto! rounded-lg! border-input/30 bg-input/30 shadow-none! *:data-[slot=input-group-addon]:pl-2! *:data-[slot=input-group-addon]:pr-0! *:data-[slot=input-group-addon]:pt-[7px]!">
+        <textarea
+          ref={textareaRef}
           data-slot="command-input"
           className={cn(
-            'w-full text-sm outline-hidden disabled:cursor-not-allowed disabled:opacity-50',
+            'w-full text-sm outline-hidden disabled:cursor-not-allowed disabled:opacity-50 resize-none bg-transparent py-1.5 pl-1.5 min-h-[32px] max-h-[120px] overflow-y-auto',
             className,
           )}
-          {...props}
+          value={(value as string) ?? ''}
+          onChange={(e) => onValueChange?.(e.target.value)}
+          placeholder={placeholder}
+          rows={1}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault()
+              _lastSelectMetaKey = e.metaKey
+              // Find and click the selected cmdk item, or let parent handle fallback
+              const root = (e.target as HTMLElement).closest('[cmdk-root]')
+              const selected = root?.querySelector(
+                '[cmdk-item][data-selected="true"]',
+              ) as HTMLElement
+              if (selected) {
+                selected.click()
+              } else {
+                onKeyDown?.(e as any)
+              }
+            } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+              // Forward arrow keys to cmdk for item navigation
+              e.preventDefault()
+              const root = (e.target as HTMLElement).closest('[cmdk-root]')
+              const hiddenInput = root?.querySelector('input[cmdk-input]') as HTMLInputElement
+              if (hiddenInput) {
+                hiddenInput.dispatchEvent(
+                  new KeyboardEvent('keydown', {
+                    key: e.key,
+                    bubbles: true,
+                    cancelable: true,
+                  }),
+                )
+              }
+            }
+          }}
         />
-        <InputGroupAddon>
-          <SearchIcon className="size-4 shrink-0 opacity-50" />
-        </InputGroupAddon>
+        <InputGroupAddon>{addonIcon}</InputGroupAddon>
       </InputGroup>
     </div>
   )

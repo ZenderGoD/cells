@@ -1,0 +1,28 @@
+{
+  "name": "@cells/mcp-server",
+  "version": "0.1.0",
+  "description": "MCP server for Cells — lets CLI agents control terminal and browser windows",
+  "type": "module",
+  "bin": {
+    "cells-mcp": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --target node20 --clean",
+    "dev": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "fastmcp": "^3.34.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsup": "^8.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

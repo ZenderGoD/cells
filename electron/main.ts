@@ -35,6 +35,14 @@ import {
   spoofChromeUA,
   setupCWSIntegration,
 } from './extensions'
+import {
+  startMcpBridge,
+  stopMcpBridge,
+  bufferTerminalOutput,
+  captureConsoleLog,
+  clearBrowserConsoleLogs,
+  clearTerminalOutputRing,
+} from './mcp-bridge'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -144,6 +152,7 @@ const STATE_DIR = path.join(app.getPath('home'), '.cells')
 const STATE_FILE = path.join(STATE_DIR, 'state.json')
 const LEGACY_STATE_DIR = path.join(app.getPath('home'), '.vector-ghost')
 const LEGACY_STATE_FILE = path.join(LEGACY_STATE_DIR, 'state.json')
+const MCP_BRIDGE_SOCKET = path.join(STATE_DIR, 'mcp-bridge.sock')
 const AUTO_UPDATE_CHECK_DELAY = 15_000
 const PRELOAD_FILE = 'preload.mjs'
 const BROWSER_PRELOAD_FILE = 'browser-preload.cjs'
@@ -259,6 +268,7 @@ function getWindowForTerminal(termId: string): BrowserWindow | null {
 }
 
 function forwardTerminalData(termId: string, data: string) {
+  bufferTerminalOutput(termId, data)
   if (!subscribedTerminals.has(termId)) return
   try {
     const target = getWindowForTerminal(termId)
@@ -268,6 +278,7 @@ function forwardTerminalData(termId: string, data: string) {
 
 function forwardTerminalExit(termId: string) {
   subscribedTerminals.delete(termId)
+  clearTerminalOutputRing(termId)
   try {
     const target = getWindowForTerminal(termId)
     target?.webContents.send('terminal:exit', termId)
@@ -285,6 +296,7 @@ function appendBuffer(termId: string, data: string) {
 function setupFallbackPtyHandlers(termId: string, p: ReturnType<PtyManager['spawn']>) {
   p.onData((data) => {
     if (fallbackPtys?.get(termId) !== p) return
+    bufferTerminalOutput(termId, data)
     if (subscribedTerminals.has(termId)) {
       try {
         const target = getWindowForTerminal(termId)
@@ -311,9 +323,18 @@ ipcMain.handle(
     if (useDaemon && daemonClient?.isConnected()) {
       try {
         const result = await daemonClient.spawn(termId, cols, rows, cwd)
-        subscribedTerminals.add(termId)
+        // Subscribe BEFORE marking as subscribed in the main process.
+        // If we add to subscribedTerminals first, data messages from the
+        // daemon can be forwarded to the renderer before the buffer is
+        // replayed, causing stale buffer data to overwrite a fresh redraw.
         const buffer = await daemonClient.subscribe(termId)
-        return { reattached: result.reattached, buffer }
+        // Pick up any data that arrived via dataCallback during subscribe
+        // (it would have been locally buffered since subscribedTerminals
+        // didn't include this terminal yet).
+        const lateBuffer = ptyBuffers.get(termId) ?? ''
+        ptyBuffers.delete(termId)
+        subscribedTerminals.add(termId)
+        return { reattached: result.reattached, buffer: buffer + lateBuffer }
       } catch {
         // Daemon failed — fall through to fallback below
       }
@@ -406,6 +427,121 @@ ipcMain.handle('app:request-quit', () => {
   return confirmAndQuitApp()
 })
 
+// ---------- Git worktree helpers ----------
+
+function gitExec(args: string[], cwd: string): string {
+  const shell = process.env.SHELL || '/bin/zsh'
+  const escaped = args.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(' ')
+  return execFileSync(shell, ['-lc', `git ${escaped}`], {
+    cwd,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    timeout: 10_000,
+    encoding: 'utf8',
+  }).trim()
+}
+
+function parseWorktreeList(output: string): Array<{
+  path: string
+  branch: string
+  isMain: boolean
+  isBare: boolean
+}> {
+  const worktrees: Array<{
+    path: string
+    branch: string
+    isMain: boolean
+    isBare: boolean
+  }> = []
+  let current: { path?: string; branch?: string; bare?: boolean } = {}
+
+  for (const line of output.split('\n')) {
+    if (line.startsWith('worktree ')) {
+      current.path = line.slice('worktree '.length)
+    } else if (line.startsWith('HEAD ')) {
+      // skip
+    } else if (line.startsWith('branch ')) {
+      current.branch = line.slice('branch '.length).replace(/^refs\/heads\//, '')
+    } else if (line === 'bare') {
+      current.bare = true
+    } else if (line === 'detached') {
+      current.branch = current.branch ?? '(detached)'
+    } else if (line === '') {
+      if (current.path) {
+        worktrees.push({
+          path: current.path,
+          branch: current.branch ?? '(unknown)',
+          isMain: worktrees.length === 0,
+          isBare: current.bare ?? false,
+        })
+      }
+      current = {}
+    }
+  }
+  // Handle last entry if no trailing newline
+  if (current.path) {
+    worktrees.push({
+      path: current.path,
+      branch: current.branch ?? '(unknown)',
+      isMain: worktrees.length === 0,
+      isBare: current.bare ?? false,
+    })
+  }
+
+  return worktrees
+}
+
+ipcMain.handle('git:is-repo', (_event, cwd: string) => {
+  try {
+    gitExec(['rev-parse', '--is-inside-work-tree'], cwd)
+    return true
+  } catch {
+    return false
+  }
+})
+
+ipcMain.handle('git:repo-root', (_event, cwd: string) => {
+  try {
+    return gitExec(['rev-parse', '--show-toplevel'], cwd)
+  } catch {
+    return null
+  }
+})
+
+ipcMain.handle('git:list-worktrees', (_event, cwd: string) => {
+  try {
+    const output = gitExec(['worktree', 'list', '--porcelain'], cwd)
+    return parseWorktreeList(output)
+  } catch {
+    return []
+  }
+})
+
+ipcMain.handle('git:create-worktree', (_event, cwd: string, branch: string, targetDir?: string) => {
+  const repoRoot = gitExec(['rev-parse', '--show-toplevel'], cwd)
+  const dest = targetDir
+    ? path.join(targetDir, branch)
+    : path.join(path.dirname(repoRoot), `${path.basename(repoRoot)}-${branch}`)
+
+  try {
+    // Try to create from existing branch first
+    gitExec(['worktree', 'add', dest, branch], cwd)
+  } catch {
+    // Branch doesn't exist — create a new one
+    gitExec(['worktree', 'add', '-b', branch, dest], cwd)
+  }
+
+  // Return the new worktree info
+  const output = gitExec(['worktree', 'list', '--porcelain'], cwd)
+  const all = parseWorktreeList(output)
+  const created = all.find((w) => w.path === dest)
+  if (!created) throw new Error(`Worktree created but not found: ${dest}`)
+  return created
+})
+
+ipcMain.handle('git:remove-worktree', (_event, cwd: string, worktreePath: string) => {
+  gitExec(['worktree', 'remove', worktreePath], cwd)
+})
+
 ipcMain.handle('agent:check-available', (_event, aliases?: Record<string, string>) => {
   // Use a login shell so the user's full PATH is available.
   // Packaged macOS apps inherit a minimal PATH (/usr/bin:/bin) that
@@ -427,6 +563,77 @@ ipcMain.handle('agent:check-available', (_event, aliases?: Record<string, string
     }
   }
   return results
+})
+
+// ---------- MCP server install ----------
+
+function resolveMcpServerPath(): string {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, 'mcp-server', 'dist', 'index.js')
+  }
+  return path.join(__dirname, '..', 'mcp-server', 'dist', 'index.js')
+}
+
+ipcMain.handle('mcp:install', async (_event, projectPath: string) => {
+  const serverPath = resolveMcpServerPath()
+  if (!fs.existsSync(serverPath)) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      dialog.showMessageBox(mainWindow, {
+        type: 'error',
+        message: 'MCP Server Not Found',
+        detail: `Expected at:\n${serverPath}\n\nRun "pnpm build" in the mcp-server directory first.`,
+      })
+    }
+    throw new Error('MCP server not built')
+  }
+
+  const agentsDir = path.join(projectPath, '.agents')
+  if (!fs.existsSync(agentsDir)) {
+    fs.mkdirSync(agentsDir, { recursive: true })
+  }
+
+  const config = {
+    mcpServers: {
+      cells: {
+        command: 'node',
+        args: [serverPath],
+      },
+    },
+  }
+
+  const configPath = path.join(agentsDir, 'mcp.json')
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n')
+
+  const symlinks: string[] = []
+  const relTarget = path.join('..', '.agents', 'mcp.json')
+
+  for (const dir of ['.claude', '.codex']) {
+    const dirPath = path.join(projectPath, dir)
+    if (!fs.existsSync(dirPath)) continue
+
+    const linkPath = path.join(dirPath, 'mcp.json')
+    // Remove existing file/symlink at the target
+    try {
+      fs.unlinkSync(linkPath)
+    } catch {}
+    fs.symlinkSync(relTarget, linkPath)
+    symlinks.push(dir)
+  }
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    const details = [`Config: .agents/mcp.json`]
+    if (symlinks.length > 0) {
+      details.push(`Symlinked to: ${symlinks.map((d) => `${d}/mcp.json`).join(', ')}`)
+    }
+    details.push(`\nServer: ${serverPath}`)
+    dialog.showMessageBox(mainWindow, {
+      type: 'info',
+      message: 'MCP Server Installed',
+      detail: details.join('\n'),
+    })
+  }
+
+  return { configPath, symlinks, serverPath }
 })
 
 ipcMain.handle('app:toggle-maximize', () => {
@@ -629,6 +836,7 @@ function setupBrowserView(browserId: string, view: WebContentsView, projectId: s
       const shouldForwardShortcut =
         [
           'l',
+          'r',
           'w',
           't',
           'q',
@@ -724,6 +932,11 @@ function setupBrowserView(browserId: string, view: WebContentsView, projectId: s
         mainWindow?.webContents.send('browser:favicon-updated', browserId, favicons[0])
       }
     } catch {}
+  })
+
+  // Capture console messages for MCP bridge
+  view.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    captureConsoleLog(browserId, level, message, line, sourceId)
   })
 
   // Forward URL changes, accounting for saved history
@@ -996,6 +1209,7 @@ ipcMain.handle('browser:destroy', (_event, browserId: string) => {
   webContentsIdToBrowser.delete(view.webContents.id)
   browserViews.delete(browserId)
   savedHistories.delete(browserId)
+  clearBrowserConsoleLogs(browserId)
 })
 
 ipcMain.handle(
@@ -1521,6 +1735,18 @@ app.whenReady().then(async () => {
     fallbackPtys = new PtyManager()
   }
 
+  // Start MCP bridge for CLI agent integration
+  startMcpBridge(MCP_BRIDGE_SOCKET, {
+    browserViews,
+    browserIdToProject,
+    getDaemonClient: () => daemonClient,
+    getFallbackPtys: () => fallbackPtys,
+    getUseDaemon: () => useDaemon,
+    getMainWindow: () => mainWindow,
+    stateFile: STATE_FILE,
+    subscribedTerminals,
+  })
+
   // Set dock icon on macOS (for dev; production uses the bundled .icns)
   if (process.platform === 'darwin') {
     const iconPath = path.join(__dirname, '../resources/icon.png')
@@ -1586,6 +1812,7 @@ app.whenReady().then(async () => {
 
 app.on('before-quit', () => {
   quitConfirmed = true
+  stopMcpBridge(MCP_BRIDGE_SOCKET)
   try {
     if (!mainWindow?.isDestroyed()) {
       mainWindow?.webContents.send('app:before-quit')

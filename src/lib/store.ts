@@ -3,6 +3,7 @@ import { nanoid } from 'nanoid'
 import type {
   BrowserNode,
   CanvasTransform,
+  GitWorktree,
   Project,
   ProjectsState,
   TerminalNode,
@@ -23,6 +24,7 @@ import {
 import {
   destroyCachedTerminal,
   applyThemeToAllTerminals,
+  reloadTerminal,
 } from '@/components/terminal/cell-terminal'
 
 interface StoreState {
@@ -42,6 +44,7 @@ interface StoreState {
   focusedTerminalId: string | null
   focusedBrowserId: string | null
   focusHistory: string[] // stack of recently focused IDs (most recent last)
+  focusCounts: Record<string, number> // per-window focus counts for usage ranking
   topZIndex: number
   snapEnabled: boolean
   snapPaused: boolean
@@ -49,6 +52,7 @@ interface StoreState {
   snapOnFocus: boolean
   selectionMode: boolean
   selectionCount: number
+  selectedNodeIds: string[]
   tabSwitchMode: 'recent' | 'chronological'
   projectSwitchMode: 'recent' | 'chronological'
   reducedMotion: boolean
@@ -60,12 +64,21 @@ interface StoreState {
   terminalLinkProjectId: string | null
   linkRules: Array<{ pattern: string; target: 'system' | 'browser'; projectId?: string }>
   agentAliases: Record<string, string>
+  lastUsedAgent: string | null
   colorScheme: 'light' | 'dark' | 'system'
   saveStatus: 'idle' | 'saving' | 'saved' | 'error'
   closeUndoTimeoutMs: number
   closeProcessSuppressions: string[]
   pendingClosedWindows: PendingClosedWindow[]
   pendingCloseDialog: PendingCloseDialog | null
+
+  // When a link opens a browser in a different project, tracks the source so we can return
+  crossProjectReturn: { browserId: string; sourceProjectId: string } | null
+
+  // Git worktree state
+  worktrees: GitWorktree[]
+  worktreesLoading: boolean
+  isGitRepo: boolean
 
   init(): Promise<void>
   persist(): void
@@ -86,6 +99,11 @@ interface StoreState {
 
   addTerminal(): TerminalNode
   addTerminalWithCommand(command: string, title?: string): TerminalNode
+  addTerminalInWorktree(
+    command: string,
+    title: string | undefined,
+    worktreePath: string,
+  ): TerminalNode
   updateTerminalAgent(id: string, agent: 'claude' | 'codex' | null): void
   updateTerminalAgentStatus(id: string, status: import('../types').AgentStatus): void
   removeAllTerminals(): void
@@ -108,6 +126,7 @@ interface StoreState {
   setSnapOnFocus(enabled: boolean): void
   setSelectionMode(enabled: boolean): void
   setSelectionCount(count: number): void
+  setSelectedNodeIds(ids: string[]): void
   setTabSwitchMode(mode: 'recent' | 'chronological'): void
   setProjectSwitchMode(mode: 'recent' | 'chronological'): void
   setReducedMotion(enabled: boolean): void
@@ -126,6 +145,7 @@ interface StoreState {
     rules: Array<{ pattern: string; target: 'system' | 'browser'; projectId?: string }>,
   ): void
   setAgentAliases(aliases: Record<string, string>): void
+  setLastUsedAgent(agent: string): void
   setColorScheme(scheme: 'light' | 'dark' | 'system'): void
   setCloseUndoTimeoutMs(timeoutMs: number): void
   setCloseProcessSuppressions(processes: string[]): void
@@ -133,8 +153,18 @@ interface StoreState {
   cancelPendingClose(): void
   confirmPendingClose(skipFuturePrompts?: boolean): void
   restoreLastClosedWindow(): void
+  autoArrangeGrid(): void
+  reloadFocused(): void
   getAgentCommand(agent: string): string
   getSearchUrl(query: string): string
+
+  // Worktree actions
+  refreshWorktrees(): Promise<void>
+  switchTerminalWorktree(termId: string, worktreePath: string): Promise<void>
+  moveTerminalsToWorktree(termIds: string[], worktreePath: string): Promise<void>
+  createWorktree(branch: string): Promise<GitWorktree>
+  setWorktreesDir(dir: string): void
+  getWorktreesDir(): string | undefined
 
   // Browser actions
   addBrowser(): BrowserNode
@@ -154,6 +184,8 @@ const TERMINAL_PAD = 8
 
 // Pending commands to run after terminal attaches (not persisted)
 const pendingCommands = new Map<string, string>()
+// Pending worktree cwd overrides for terminal reattach
+const pendingWorktreePaths = new Map<string, string>()
 const TERMINAL_GAP = 60
 const DEFAULT_CANVAS: CanvasTransform = { x: 0, y: 0, scale: 1 }
 const DEFAULT_FONT_FAMILY = '"GeistMono NF", "Geist Mono", monospace'
@@ -333,6 +365,7 @@ function snapshotActiveProject(state: StoreState): Project[] {
           canvas: state.canvas,
           focusedTerminalId: state.focusedTerminalId,
           focusedBrowserId: state.focusedBrowserId,
+          focusCounts: state.focusCounts,
         }
       : p,
   )
@@ -350,6 +383,7 @@ function projectToWorkingState(project: Project) {
     focusedTerminalId: (project.focusedTerminalId ?? null) as string | null,
     focusedBrowserId: (project.focusedBrowserId ?? null) as string | null,
     focusHistory: [] as string[],
+    focusCounts: (project.focusCounts ?? {}) as Record<string, number>,
   }
 }
 
@@ -357,6 +391,12 @@ export function consumePendingCommand(termId: string): string | undefined {
   const cmd = pendingCommands.get(termId)
   pendingCommands.delete(termId)
   return cmd
+}
+
+export function consumePendingWorktreePath(termId: string): string | undefined {
+  const p = pendingWorktreePaths.get(termId)
+  pendingWorktreePaths.delete(termId)
+  return p
 }
 
 export const useStore = create<StoreState>((set, get) => ({
@@ -369,6 +409,7 @@ export const useStore = create<StoreState>((set, get) => ({
   focusedTerminalId: null,
   focusedBrowserId: null,
   focusHistory: [],
+  focusCounts: {},
   topZIndex: 1,
   snapEnabled: true,
   snapPaused: false,
@@ -376,6 +417,7 @@ export const useStore = create<StoreState>((set, get) => ({
   snapOnFocus: true,
   selectionMode: false,
   selectionCount: 0,
+  selectedNodeIds: [],
   tabSwitchMode: 'chronological',
   projectSwitchMode: 'recent',
   reducedMotion: false,
@@ -387,12 +429,17 @@ export const useStore = create<StoreState>((set, get) => ({
   terminalLinkProjectId: null,
   linkRules: [],
   agentAliases: {},
+  lastUsedAgent: null,
   colorScheme: 'dark' as const,
   saveStatus: 'idle',
   closeUndoTimeoutMs: DEFAULT_CLOSE_UNDO_TIMEOUT_MS,
   closeProcessSuppressions: [],
   pendingClosedWindows: [],
   pendingCloseDialog: null,
+  crossProjectReturn: null,
+  worktrees: [],
+  worktreesLoading: false,
+  isGitRepo: false,
   terminalTheme: DEFAULT_THEME,
   fontSize: 13,
   fontFamily: DEFAULT_FONT_FAMILY,
@@ -490,6 +537,7 @@ export const useStore = create<StoreState>((set, get) => ({
         initialized: true,
       })
       applyColorScheme(globalSettings.colorScheme)
+      get().refreshWorktrees()
       return
     }
 
@@ -683,6 +731,7 @@ export const useStore = create<StoreState>((set, get) => ({
       ...projectToWorkingState(project),
     })
     get().persist()
+    get().refreshWorktrees()
   },
 
   switchProject(id) {
@@ -704,8 +753,10 @@ export const useStore = create<StoreState>((set, get) => ({
       projects: updated,
       activeProjectId: id,
       ...projectToWorkingState(target),
+      crossProjectReturn: null,
     })
     get().persist()
+    get().refreshWorktrees()
   },
 
   removeProject(id) {
@@ -869,6 +920,12 @@ export const useStore = create<StoreState>((set, get) => ({
     return terminal
   },
 
+  addTerminalInWorktree(command, title, worktreePath) {
+    const terminal = get().addTerminalWithCommand(command, title)
+    pendingWorktreePaths.set(terminal.id, worktreePath)
+    return terminal
+  },
+
   updateTerminalAgent(id, agent) {
     set((s) => ({
       terminals: s.terminals.map((t) => (t.id === id ? { ...t, agent } : t)),
@@ -946,9 +1003,14 @@ export const useStore = create<StoreState>((set, get) => ({
 
   focusTerminal(id) {
     const prev = get().focusedTerminalId
+    // User engaged with a terminal in this project — clear cross-project return
+    if (id && get().crossProjectReturn) {
+      set({ crossProjectReturn: null })
+    }
     if (id && id !== prev) {
       get().bringToFront(id)
       const history = pushFocusHistory(get().focusHistory, id)
+      const counts = { ...get().focusCounts, [id]: (get().focusCounts[id] ?? 0) + 1 }
       // Clear 'done' agentStatus on focus — user has acknowledged
       const terminal = get().terminals.find((t) => t.id === id)
       if (terminal?.agentStatus === 'done') {
@@ -956,10 +1018,16 @@ export const useStore = create<StoreState>((set, get) => ({
           focusedTerminalId: id,
           focusedBrowserId: null,
           focusHistory: history,
+          focusCounts: counts,
           terminals: s.terminals.map((t) => (t.id === id ? { ...t, agentStatus: null } : t)),
         }))
       } else {
-        set({ focusedTerminalId: id, focusedBrowserId: null, focusHistory: history })
+        set({
+          focusedTerminalId: id,
+          focusedBrowserId: null,
+          focusHistory: history,
+          focusCounts: counts,
+        })
       }
     } else {
       set({ focusedTerminalId: id, focusedBrowserId: null })
@@ -1023,6 +1091,15 @@ export const useStore = create<StoreState>((set, get) => ({
     const { focusedTerminalId, focusedBrowserId } = get()
     if (focusedTerminalId) get().togglePin(focusedTerminalId, 'terminal')
     else if (focusedBrowserId) get().togglePin(focusedBrowserId, 'browser')
+  },
+
+  reloadFocused() {
+    const { focusedTerminalId, focusedBrowserId } = get()
+    if (focusedTerminalId) {
+      reloadTerminal(focusedTerminalId)
+    } else if (focusedBrowserId) {
+      window.cells.browser.reload(focusedBrowserId)
+    }
   },
 
   moveTerminal(id, x, y) {
@@ -1170,6 +1247,7 @@ export const useStore = create<StoreState>((set, get) => ({
     set({
       selectionMode: enabled,
       selectionCount: enabled ? get().selectionCount : 0,
+      selectedNodeIds: enabled ? get().selectedNodeIds : [],
     })
 
     if (enabled && !wasEnabled) {
@@ -1179,6 +1257,10 @@ export const useStore = create<StoreState>((set, get) => ({
 
   setSelectionCount(count) {
     set({ selectionCount: Math.max(0, count) })
+  },
+
+  setSelectedNodeIds(ids) {
+    set({ selectedNodeIds: ids, selectionCount: ids.length })
   },
 
   setTabSwitchMode(mode) {
@@ -1254,6 +1336,70 @@ export const useStore = create<StoreState>((set, get) => ({
     get().setCanvasTransform(nextTransform)
   },
 
+  autoArrangeGrid() {
+    const { terminals, browsers, focusCounts } = get()
+    const allWindows = [
+      ...terminals.map((t) => ({ id: t.id, type: 'terminal' as const })),
+      ...browsers.map((b) => ({ id: b.id, type: 'browser' as const })),
+    ]
+    if (allWindows.length === 0) return
+
+    // Sort by focus count descending (most used first)
+    allWindows.sort((a, b) => (focusCounts[b.id] ?? 0) - (focusCounts[a.id] ?? 0))
+
+    // Generate spiral positions from center outward
+    const spiralPositions: Array<{ col: number; row: number }> = [{ col: 0, row: 0 }]
+    let layer = 1
+    while (spiralPositions.length < allWindows.length) {
+      // Right column top-to-bottom
+      for (let r = -layer + 1; r <= layer && spiralPositions.length < allWindows.length; r++)
+        spiralPositions.push({ col: layer, row: r })
+      // Bottom row right-to-left
+      for (let c = layer - 1; c >= -layer && spiralPositions.length < allWindows.length; c--)
+        spiralPositions.push({ col: c, row: layer })
+      // Left column bottom-to-top
+      for (let r = layer - 1; r >= -layer && spiralPositions.length < allWindows.length; r--)
+        spiralPositions.push({ col: -layer, row: r })
+      // Top row left-to-right
+      for (let c = -layer + 1; c <= layer && spiralPositions.length < allWindows.length; c++)
+        spiralPositions.push({ col: c, row: -layer })
+      layer++
+    }
+
+    // Use uniform cell size based on max window dimensions
+    const allNodes = [...terminals, ...browsers]
+    const cellW = Math.max(...allNodes.map((n) => n.width))
+    const cellH = Math.max(...allNodes.map((n) => n.height))
+    const gap = TERMINAL_GAP
+
+    // Place each window at its spiral grid position, centered on (0,0)
+    const updatedTerminals = new Map<string, { x: number; y: number }>()
+    const updatedBrowsers = new Map<string, { x: number; y: number }>()
+    for (let i = 0; i < allWindows.length; i++) {
+      const { col, row } = spiralPositions[i]
+      const x = col * (cellW + gap)
+      const y = row * (cellH + gap)
+      const win = allWindows[i]
+      if (win.type === 'terminal') updatedTerminals.set(win.id, { x, y })
+      else updatedBrowsers.set(win.id, { x, y })
+    }
+
+    set((s) => ({
+      terminals: s.terminals.map((t) => {
+        const pos = updatedTerminals.get(t.id)
+        return pos ? { ...t, x: pos.x, y: pos.y } : t
+      }),
+      browsers: s.browsers.map((b) => {
+        const pos = updatedBrowsers.get(b.id)
+        return pos ? { ...b, x: pos.x, y: pos.y } : b
+      }),
+    }))
+
+    // Zoom to fit the new layout
+    get().zoomToFitAll()
+    get().persist()
+  },
+
   setCanvasTransform(transform) {
     set({ canvas: transform })
     debouncedPersist(() => get().persist())
@@ -1286,6 +1432,9 @@ export const useStore = create<StoreState>((set, get) => ({
   setAgentAliases(aliases) {
     set({ agentAliases: aliases })
     get().persist()
+  },
+  setLastUsedAgent(agent) {
+    set({ lastUsedAgent: agent })
   },
   setColorScheme(scheme) {
     const isDark =
@@ -1415,6 +1564,9 @@ export const useStore = create<StoreState>((set, get) => ({
           return
         }
 
+        const returnCtx = current.crossProjectReturn
+        const shouldReturn = returnCtx?.browserId === browser.id
+
         const remaining = current.browsers.filter((item) => item.id !== browser.id)
         const history = current.focusHistory.filter((entry) => entry !== browser.id)
         const wasFocused = current.focusedBrowserId === browser.id
@@ -1432,6 +1584,7 @@ export const useStore = create<StoreState>((set, get) => ({
             closedAt: now,
             expiresAt,
           }),
+          crossProjectReturn: shouldReturn ? null : current.crossProjectReturn,
         })
 
         clearPendingCloseTimer(browser.id)
@@ -1441,6 +1594,15 @@ export const useStore = create<StoreState>((set, get) => ({
             useStore.getState().removeBrowser(browser.id)
           }, timeoutMs),
         )
+
+        // Return to source project immediately — the undo entry stays and
+        // restoreLastClosedWindow already handles cross-project restoration
+        if (shouldReturn) {
+          set({ pendingCloseDialog: null })
+          get().persist()
+          get().switchProject(returnCtx.sourceProjectId)
+          return
+        }
 
         if (wasFocused) {
           const previousId = getPreviousWindowId(history, current.terminals, remaining)
@@ -1578,6 +1740,82 @@ export const useStore = create<StoreState>((set, get) => ({
     return engine.replace('%s', encodeURIComponent(query))
   },
 
+  // ---- Worktree actions ----
+
+  async refreshWorktrees() {
+    const projectPath = get().getActiveProjectPath()
+    if (!projectPath) {
+      set({ worktrees: [], isGitRepo: false, worktreesLoading: false })
+      return
+    }
+    set({ worktreesLoading: true })
+    try {
+      const isRepo = await window.cells.git.isRepo(projectPath)
+      if (!isRepo) {
+        set({ worktrees: [], isGitRepo: false, worktreesLoading: false })
+        return
+      }
+      const worktrees = await window.cells.git.listWorktrees(projectPath)
+      set({ worktrees, isGitRepo: true, worktreesLoading: false })
+    } catch {
+      set({ worktrees: [], isGitRepo: false, worktreesLoading: false })
+    }
+  },
+
+  async switchTerminalWorktree(termId, worktreePath) {
+    // Get the current running process before killing
+    const processInfo = await window.cells.terminal.getProcessInfo(termId)
+    const command = processInfo && !processInfo.isShell ? processInfo.command : null
+
+    // Kill the PTY and destroy cached terminal
+    destroyCachedTerminal(termId)
+    await window.cells.terminal.detach(termId).catch(() => {})
+
+    // Trigger reload — the terminal component will re-mount and re-attach
+    // with the new cwd via the pending worktree path
+    pendingWorktreePaths.set(termId, worktreePath)
+    if (command) {
+      pendingCommands.set(termId, command)
+    }
+    window.dispatchEvent(new CustomEvent('terminal-reload', { detail: { termId } }))
+  },
+
+  async moveTerminalsToWorktree(termIds, worktreePath) {
+    // Move terminals sequentially to avoid race conditions with PTY management
+    for (const termId of termIds) {
+      await get().switchTerminalWorktree(termId, worktreePath)
+    }
+    // Exit selection mode after bulk move
+    if (get().selectionMode) {
+      set({ selectionMode: false, selectedNodeIds: [], selectionCount: 0 })
+    }
+  },
+
+  async createWorktree(branch) {
+    const projectPath = get().getActiveProjectPath()
+    if (!projectPath) throw new Error('No active project')
+    const project = get().getActiveProject()
+    const worktreesDir = project?.worktreesDir || undefined
+    const created = await window.cells.git.createWorktree(projectPath, branch, worktreesDir)
+    await get().refreshWorktrees()
+    return created
+  },
+
+  setWorktreesDir(dir) {
+    const { activeProjectId } = get()
+    if (!activeProjectId) return
+    set((s) => ({
+      projects: s.projects.map((p) =>
+        p.id === activeProjectId ? { ...p, worktreesDir: dir || undefined } : p,
+      ),
+    }))
+    get().persist()
+  },
+
+  getWorktreesDir() {
+    return get().getActiveProject()?.worktreesDir
+  },
+
   // ---- Browser actions ----
 
   addBrowser() {
@@ -1643,11 +1881,13 @@ export const useStore = create<StoreState>((set, get) => ({
 
   addBrowserWithUrl(url, projectId) {
     const state = get()
-    if (
+    const isCrossProject =
       projectId &&
       projectId !== state.activeProjectId &&
       state.projects.some((p) => p.id === projectId)
-    ) {
+    const sourceProjectId = state.activeProjectId
+
+    if (isCrossProject) {
       get().switchProject(projectId)
     }
     const browser = get().addBrowser()
@@ -1655,6 +1895,12 @@ export const useStore = create<StoreState>((set, get) => ({
     set((s) => ({
       browsers: s.browsers.map((b) => (b.id === browser.id ? { ...b, url } : b)),
     }))
+
+    // Track return context so closing this browser returns to the source project
+    if (isCrossProject && sourceProjectId) {
+      set({ crossProjectReturn: { browserId: browser.id, sourceProjectId } })
+    }
+
     get().persist()
     return browser
   },
@@ -1663,6 +1909,8 @@ export const useStore = create<StoreState>((set, get) => ({
     clearPendingCloseTimer(id)
     destroyBrowserResources(id)
     const state = get()
+    const returnCtx = state.crossProjectReturn
+    const shouldReturn = returnCtx?.browserId === id
     const remaining = state.browsers.filter((b) => b.id !== id)
     const history = state.focusHistory.filter((h) => h !== id)
     const wasFocused = state.focusedBrowserId === id
@@ -1673,7 +1921,13 @@ export const useStore = create<StoreState>((set, get) => ({
       pendingClosedWindows: state.pendingClosedWindows.filter((entry) => entry.id !== id),
       pendingCloseDialog:
         state.pendingCloseDialog?.target.id === id ? null : state.pendingCloseDialog,
+      crossProjectReturn: shouldReturn ? null : state.crossProjectReturn,
     })
+    if (shouldReturn) {
+      get().persist()
+      get().switchProject(returnCtx.sourceProjectId)
+      return
+    }
     if (wasFocused) {
       const previousId = getPreviousWindowId(history, state.terminals, remaining)
       if (previousId) {
@@ -1738,10 +1992,21 @@ export const useStore = create<StoreState>((set, get) => ({
 
   focusBrowser(id) {
     const prev = get().focusedBrowserId
+    // User focused a different browser in this project — clear cross-project return
+    const ret = get().crossProjectReturn
+    if (id && ret && id !== ret.browserId) {
+      set({ crossProjectReturn: null })
+    }
     if (id && id !== prev) {
       get().bringBrowserToFront(id)
       const history = pushFocusHistory(get().focusHistory, id)
-      set({ focusedTerminalId: null, focusedBrowserId: id, focusHistory: history })
+      const counts = { ...get().focusCounts, [id]: (get().focusCounts[id] ?? 0) + 1 }
+      set({
+        focusedTerminalId: null,
+        focusedBrowserId: id,
+        focusHistory: history,
+        focusCounts: counts,
+      })
     } else {
       set({ focusedTerminalId: null, focusedBrowserId: id })
     }

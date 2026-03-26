@@ -32,6 +32,13 @@ export interface TerminalProcessInfo {
   isShell: boolean
 }
 
+export interface GitWorktree {
+  path: string
+  branch: string
+  isMain: boolean
+  isBare?: boolean
+}
+
 export interface BrowserNode {
   id: string
   x: number
@@ -60,6 +67,9 @@ export interface Project {
   focusedTerminalId?: string | null
   focusedBrowserId?: string | null
   lastOpenedAt: number
+  worktreesDir?: string
+  /** Per-window focus counts for usage-based grid arrangement */
+  focusCounts?: Record<string, number>
 }
 
 export interface ProjectsState {
@@ -128,6 +138,13 @@ export interface CellsAPI {
     getCodexTitle(termId: string): Promise<string | null>
     onData(callback: (termId: string, data: string) => void): () => void
     onExit(callback: (termId: string) => void): () => void
+  }
+  git: {
+    isRepo(cwd: string): Promise<boolean>
+    repoRoot(cwd: string): Promise<string | null>
+    listWorktrees(cwd: string): Promise<GitWorktree[]>
+    createWorktree(cwd: string, branch: string, targetDir?: string): Promise<GitWorktree>
+    removeWorktree(cwd: string, worktreePath: string): Promise<void>
   }
   agent: {
     checkAvailable(aliases?: Record<string, string>): Promise<Record<string, boolean>>
@@ -246,6 +263,13 @@ export interface CellsAPI {
     pasteClipboardFiles(): Promise<string[] | null>
     openExternal(url: string): Promise<void>
     requestQuit(): Promise<void>
+  }
+  mcp: {
+    install(projectPath: string): Promise<{
+      configPath: string
+      symlinks: string[]
+      serverPath: string
+    }>
   }
 }
 

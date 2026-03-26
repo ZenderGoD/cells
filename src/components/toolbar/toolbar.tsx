@@ -6,6 +6,7 @@ import {
   Check,
   Code,
   Globe,
+  LayoutGrid,
   Loader2,
   Magnet,
   ArrowUpRight,
@@ -213,6 +214,7 @@ export function StatusBar() {
   })
   const hasFocusedWindow = useStore((s) => !!(s.focusedTerminalId || s.focusedBrowserId))
   const zoomToFitAll = useStore((s) => s.zoomToFitAll)
+  const autoArrangeGrid = useStore((s) => s.autoArrangeGrid)
   const snapToTerminal = useStore((s) => s.snapToTerminal)
   const snapToBrowser = useStore((s) => s.snapToBrowser)
   const moveTerminal = useStore((s) => s.moveTerminal)
@@ -649,6 +651,17 @@ export function StatusBar() {
               </button>
             </PopoverContent>
           </Popover>
+
+          {/* Auto-arrange grid */}
+          {windowCount > 1 && (
+            <button
+              onClick={autoArrangeGrid}
+              className="text-muted-foreground/40 hover:text-foreground transition-colors"
+              title="Auto-arrange grid (most used at center)"
+            >
+              <LayoutGrid className="w-3.5 h-3.5" />
+            </button>
+          )}
 
           {/* Pin toggle */}
           {hasFocusedWindow && (

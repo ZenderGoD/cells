@@ -171,9 +171,21 @@ const api: CellsAPI = {
       return params.get('type') as 'terminal' | 'browser' | null
     },
   },
+  git: {
+    isRepo: (cwd: string) => ipcRenderer.invoke('git:is-repo', cwd),
+    repoRoot: (cwd: string) => ipcRenderer.invoke('git:repo-root', cwd),
+    listWorktrees: (cwd: string) => ipcRenderer.invoke('git:list-worktrees', cwd),
+    createWorktree: (cwd: string, branch: string, targetDir?: string) =>
+      ipcRenderer.invoke('git:create-worktree', cwd, branch, targetDir),
+    removeWorktree: (cwd: string, worktreePath: string) =>
+      ipcRenderer.invoke('git:remove-worktree', cwd, worktreePath),
+  },
   agent: {
     checkAvailable: (aliases?: Record<string, string>) =>
       ipcRenderer.invoke('agent:check-available', aliases),
+  },
+  mcp: {
+    install: (projectPath: string) => ipcRenderer.invoke('mcp:install', projectPath),
   },
   extensions: {
     install: (input: string) => ipcRenderer.invoke('extensions:install', input),

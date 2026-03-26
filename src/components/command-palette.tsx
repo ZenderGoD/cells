@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect, useMemo, type ReactNode } from 'react'
 import { useHotkey } from '@tanstack/react-hotkeys'
 import {
   Globe,
   Plus,
   Puzzle,
+  RefreshCw,
   RotateCcw,
   Palette,
   Settings,
@@ -11,7 +12,10 @@ import {
   Search,
   LogOut,
   Skull,
+  Cable,
+  GitBranch,
 } from 'lucide-react'
+import { useCommandState } from 'cmdk'
 import {
   CommandDialog,
   Command,
@@ -22,6 +26,7 @@ import {
   CommandItem,
   CommandSeparator,
   CommandShortcut,
+  wasLastSelectWithMeta,
 } from '@/components/ui/command'
 import { useStore } from '@/lib/store'
 import { inferAgentFromTitle } from '@/lib/agent-command'
@@ -36,6 +41,27 @@ const AGENT_OPTIONS = [
   { id: 'codex', label: 'Codex' },
 ] as const
 
+/** Reads the cmdk selected value to show a contextual icon in the input. Must be inside <Command>. */
+function DynamicCommandInput(
+  props: React.ComponentProps<typeof CommandInput> & { multiline?: boolean },
+) {
+  const selectedValue = useCommandState((state) => state.value) ?? ''
+
+  const icon: ReactNode = useMemo(() => {
+    for (const { id } of AGENT_OPTIONS) {
+      if (selectedValue.startsWith(`ask-${id}`) || selectedValue.startsWith(`new-${id}`)) {
+        return <AgentIcon agent={id} className="size-4 shrink-0 opacity-70" size={16} />
+      }
+    }
+    if (selectedValue.startsWith('search-')) {
+      return <Search className="size-4 shrink-0 opacity-50" />
+    }
+    return undefined
+  }, [selectedValue])
+
+  return <CommandInput multiline icon={icon} {...props} />
+}
+
 export function CommandPalette() {
   const [open, setOpen] = useState(false)
   const [showSettingsRaw, setShowSettingsRaw] = useState(false)
@@ -49,7 +75,22 @@ export function CommandPalette() {
   const activeProjectId = useStore((s) => s.activeProjectId)
   const setOverlayOpen = useStore((s) => s.setOverlayOpen)
   const agentAliases = useStore((s) => s.agentAliases)
+  const lastUsedAgent = useStore((s) => s.lastUsedAgent)
+  const isGitRepo = useStore((s) => s.isGitRepo)
+  const worktrees = useStore((s) => s.worktrees)
+  const focusedTerminalId = useStore((s) => s.focusedTerminalId)
+  const selectionMode = useStore((s) => s.selectionMode)
+  const selectedNodeIds = useStore((s) => s.selectedNodeIds)
   const availableAgents = AGENT_OPTIONS.filter(({ id }) => agents[id])
+  const wordCount = search.trim().split(/\s+/).filter(Boolean).length
+  const isPromptMode = wordCount > 10
+
+  // Sort agents: last used agent first
+  const sortedAgents = [...availableAgents].sort((a, b) => {
+    if (a.id === lastUsedAgent) return -1
+    if (b.id === lastUsedAgent) return 1
+    return 0
+  })
 
   const getAgentCommandLabel = (agent: (typeof AGENT_OPTIONS)[number]['id']) => {
     const alias = agentAliases[agent]?.trim()
@@ -78,6 +119,7 @@ export function CommandPalette() {
   useEffect(() => {
     if (open) {
       window.cells.agent.checkAvailable(agentAliases).then(setAgents)
+      useStore.getState().refreshWorktrees()
     }
   }, [open, agentAliases])
 
@@ -99,12 +141,94 @@ export function CommandPalette() {
     runAction(() => useStore.getState().addBrowserWithUrl(search.trim()))
   }
 
+  const launchAgent = async (id: string, label: string, inWorktree: boolean) => {
+    useStore.getState().setLastUsedAgent(id)
+    const cmd = useStore.getState().getAgentCommand(id)
+    const prompt = search.trim()
+
+    if (!inWorktree) {
+      if (!prompt) {
+        useStore.getState().addTerminalWithCommand(cmd, label)
+        return
+      }
+      const escaped = prompt.replace(/'/g, "'\\''")
+      useStore
+        .getState()
+        .addTerminalWithCommand(`${cmd} '${escaped}'`, `${label}: ${prompt.slice(0, 40)}`)
+      return
+    }
+
+    // Create a worktree with a generated temp branch, then launch the agent in it
+    try {
+      const tempBranch = `ghost-${Date.now().toString(36)}`
+      const wt = await useStore.getState().createWorktree(tempBranch)
+      const branchInstruction =
+        'First, create a descriptive git branch name for this task and switch to it with `git checkout -b <branch-name>`. Then:\n\n'
+      const fullPrompt = prompt
+        ? branchInstruction + prompt
+        : branchInstruction + 'Waiting for instructions.'
+      const escaped = fullPrompt.replace(/'/g, "'\\''")
+      useStore
+        .getState()
+        .addTerminalInWorktree(
+          `${cmd} '${escaped}'`,
+          `${label}: ${prompt ? prompt.slice(0, 40) : 'worktree'}`,
+          wt.path,
+        )
+    } catch (err) {
+      console.error('Failed to create worktree for agent:', err)
+      // Fallback: launch without worktree
+      if (!prompt) {
+        useStore.getState().addTerminalWithCommand(cmd, label)
+      } else {
+        const escaped = prompt.replace(/'/g, "'\\''")
+        useStore
+          .getState()
+          .addTerminalWithCommand(`${cmd} '${escaped}'`, `${label}: ${prompt.slice(0, 40)}`)
+      }
+    }
+  }
+
+  const renderAgentsGroup = () => (
+    <CommandGroup heading="AI Agents" forceMount>
+      {sortedAgents.map(({ id, label }) => (
+        <CommandItem
+          key={`${id}-${search.trim() || 'new'}`}
+          forceMount
+          value={
+            search.trim()
+              ? `ask-${id}-${getAgentCommandLabel(id)}-${search}`
+              : `new-${id}-${getAgentCommandLabel(id)}`
+          }
+          onSelect={() => {
+            const withWorktree = wasLastSelectWithMeta()
+            runAction(() => {
+              launchAgent(id, label, withWorktree)
+            })
+          }}
+        >
+          <AgentIcon agent={id} className="text-muted-foreground" size={16} />
+          {search.trim()
+            ? `Ask ${label}: "${search.trim().slice(0, 50)}"`
+            : `New ${label} Terminal`}
+          <span className="ml-auto max-w-40 truncate text-[10px] font-mono text-muted-foreground/40">
+            {getAgentCommandLabel(id)}
+          </span>
+          {id === lastUsedAgent && (
+            <span className="text-[10px] text-muted-foreground/40">recent</span>
+          )}
+          {isGitRepo && <CommandShortcut>⌘↵ worktree</CommandShortcut>}
+        </CommandItem>
+      ))}
+    </CommandGroup>
+  )
+
   return (
     <>
       <CommandDialog open={open} onOpenChange={handleOpenChange} showCloseButton={false}>
         <Command loop>
-          <CommandInput
-            placeholder="Search or enter URL..."
+          <DynamicCommandInput
+            placeholder="Search, enter URL, or type a prompt..."
             value={search}
             onValueChange={setSearch}
             onKeyDown={(e) => {
@@ -153,6 +277,11 @@ export function CommandPalette() {
                 <Globe className="text-muted-foreground" />
                 New Browser
               </CommandItem>
+              <CommandItem onSelect={() => runAction(() => useStore.getState().reloadFocused())}>
+                <RefreshCw className="text-muted-foreground" />
+                Reload Window
+                <CommandShortcut>⌘R</CommandShortcut>
+              </CommandItem>
               <CommandItem
                 onSelect={() =>
                   runAction(() => useStore.getState().setCanvasTransform({ x: 0, y: 0, scale: 1 }))
@@ -184,6 +313,20 @@ export function CommandPalette() {
               </CommandItem>
               <CommandItem
                 onSelect={() => {
+                  const project = useStore
+                    .getState()
+                    .projects.find((p) => p.id === useStore.getState().activeProjectId)
+                  if (!project) return
+                  runAction(() => {
+                    window.cells.mcp.install(project.path).catch(() => {})
+                  })
+                }}
+              >
+                <Cable className="text-muted-foreground" />
+                Install MCP Server
+              </CommandItem>
+              <CommandItem
+                onSelect={() => {
                   setOpen(false)
                   setSearch('')
                   setShowNewProject(true)
@@ -208,6 +351,91 @@ export function CommandPalette() {
                 <CommandShortcut>⌘Q</CommandShortcut>
               </CommandItem>
             </CommandGroup>
+
+            {isGitRepo &&
+              (() => {
+                const nonBare = worktrees.filter((w) => !w.isBare)
+                // Determine which terminal IDs will be moved
+                const selectedTermIds =
+                  selectionMode && selectedNodeIds.length > 0
+                    ? selectedNodeIds.filter((id) => terminals.some((t) => t.id === id))
+                    : focusedTerminalId
+                      ? [focusedTerminalId]
+                      : []
+                const hasMoveTargets = selectedTermIds.length > 0 && nonBare.length > 1
+                const moveLabel =
+                  selectionMode && selectedTermIds.length > 1
+                    ? `Move ${selectedTermIds.length} terminals to`
+                    : 'Move to worktree'
+
+                return (
+                  <>
+                    <CommandSeparator />
+                    {hasMoveTargets && (
+                      <CommandGroup heading={moveLabel}>
+                        {nonBare.map((wt) => (
+                          <CommandItem
+                            key={`wt-${wt.path}`}
+                            value={`move to worktree ${wt.branch} ${wt.path}`}
+                            onSelect={() =>
+                              runAction(() => {
+                                useStore
+                                  .getState()
+                                  .moveTerminalsToWorktree(selectedTermIds, wt.path)
+                              })
+                            }
+                          >
+                            <GitBranch className="text-muted-foreground" />
+                            {wt.branch}
+                            {wt.isMain && (
+                              <span className="ml-1 text-[10px] text-muted-foreground/40">
+                                main
+                              </span>
+                            )}
+                            <span className="ml-auto text-[10px] text-muted-foreground/40 truncate max-w-40">
+                              {wt.path.replace(/^\/Users\/[^/]+/, '~')}
+                            </span>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    )}
+                    <CommandGroup heading="Worktrees">
+                      {search.trim() && !nonBare.some((wt) => wt.branch === search.trim()) && (
+                        <CommandItem
+                          forceMount
+                          value={`create worktree new branch ${search}`}
+                          onSelect={() =>
+                            runAction(() => {
+                              useStore.getState().createWorktree(search.trim()).catch(console.error)
+                            })
+                          }
+                        >
+                          <Plus className="text-muted-foreground" />
+                          Create worktree &ldquo;{search.trim()}&rdquo;
+                        </CommandItem>
+                      )}
+                      {nonBare.map((wt) => (
+                        <CommandItem
+                          key={`wt-open-${wt.path}`}
+                          value={`open worktree terminal ${wt.branch} ${wt.path}`}
+                          onSelect={() =>
+                            runAction(() => {
+                              const term = useStore.getState().addTerminal()
+                              useStore.getState().switchTerminalWorktree(term.id, wt.path)
+                            })
+                          }
+                        >
+                          <GitBranch className="text-muted-foreground" />
+                          Open terminal in {wt.branch}
+                          <span className="ml-auto text-[10px] text-muted-foreground/40 truncate max-w-40">
+                            {wt.path.replace(/^\/Users\/[^/]+/, '~')}
+                          </span>
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  </>
+                )
+              })()}
 
             {terminals.length > 0 && (
               <>
@@ -251,60 +479,30 @@ export function CommandPalette() {
               </>
             )}
 
+            {/* When prompt is long (>10 words), show AI Agents first, then Search */}
+            {isPromptMode && sortedAgents.length > 0 && (
+              <>
+                <CommandSeparator />
+                {renderAgentsGroup()}
+              </>
+            )}
+
             {search.trim() && (
               <>
                 <CommandSeparator />
                 <CommandGroup heading="Search" forceMount>
                   <CommandItem forceMount onSelect={searchInBrowser} value={`search-${search}`}>
                     <Search className="text-muted-foreground" />
-                    Search for &ldquo;{search.trim()}&rdquo;
+                    Search for &ldquo;{search.trim().slice(0, 80)}&rdquo;
                   </CommandItem>
                 </CommandGroup>
               </>
             )}
 
-            {availableAgents.length > 0 && (
+            {!isPromptMode && sortedAgents.length > 0 && (
               <>
                 <CommandSeparator />
-                <CommandGroup heading="AI Agents" forceMount>
-                  {availableAgents.map(({ id, label }) => (
-                    <CommandItem
-                      key={`${id}-${search.trim() || 'new'}`}
-                      forceMount
-                      value={
-                        search.trim()
-                          ? `ask-${id}-${getAgentCommandLabel(id)}-${search}`
-                          : `new-${id}-${getAgentCommandLabel(id)}`
-                      }
-                      onSelect={() =>
-                        runAction(() => {
-                          const cmd = useStore.getState().getAgentCommand(id)
-
-                          if (!search.trim()) {
-                            useStore.getState().addTerminalWithCommand(cmd, label)
-                            return
-                          }
-
-                          const escaped = search.trim().replace(/'/g, "'\\''")
-                          useStore
-                            .getState()
-                            .addTerminalWithCommand(
-                              `${cmd} '${escaped}'`,
-                              `${label}: ${search.trim().slice(0, 40)}`,
-                            )
-                        })
-                      }
-                    >
-                      <AgentIcon agent={id} className="text-muted-foreground" size={16} />
-                      {search.trim()
-                        ? `Ask ${label}: "${search.trim().slice(0, 50)}"`
-                        : `New ${label} Terminal`}
-                      <span className="ml-auto max-w-40 truncate text-[10px] font-mono text-muted-foreground/40">
-                        {getAgentCommandLabel(id)}
-                      </span>
-                    </CommandItem>
-                  ))}
-                </CommandGroup>
+                {renderAgentsGroup()}
               </>
             )}
 

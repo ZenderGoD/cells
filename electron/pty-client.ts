@@ -124,6 +124,11 @@ export class PtyDaemonClient {
     return this.request('get-codex-title', { termId })
   }
 
+  async getBuffer(termId: string): Promise<string> {
+    const result = await this.request('get-buffer', { termId })
+    return result.buffer ?? ''
+  }
+
   async getShellPid(termId: string): Promise<number | null> {
     return this.request('get-shell-pid', { termId })
   }

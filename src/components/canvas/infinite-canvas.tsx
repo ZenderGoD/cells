@@ -48,7 +48,8 @@ export function InfiniteCanvas() {
     reducedMotion,
     selectionMode,
     setSelectionMode,
-    setSelectionCount,
+    selectedNodeIds,
+    setSelectedNodeIds,
     focusedTerminalId,
     focusedBrowserId,
     focusTerminal,
@@ -59,7 +60,6 @@ export function InfiniteCanvas() {
   const [isDragging, setIsDragging] = useState(false)
   const [isUserDriving, setIsUserDriving] = useState(false) // true while user is actively panning/scrolling
   const [metaHeld, setMetaHeld] = useState(false)
-  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([])
   const [marqueeBox, setMarqueeBox] = useState<{
     x: number
     y: number
@@ -312,10 +312,6 @@ export function InfiniteCanvas() {
   }, [isPanning, terminals.length, browsers.length, scheduleSnap, snapEnabled])
 
   useEffect(() => {
-    setSelectionCount(selectedNodeIds.length)
-  }, [selectedNodeIds.length, setSelectionCount])
-
-  useEffect(() => {
     return useStore.subscribe((state, previousState) => {
       if (state.selectionMode || state.selectionMode === previousState.selectionMode) return
       setSelectedNodeIds([])
@@ -323,9 +319,8 @@ export function InfiniteCanvas() {
       setIsDragging(false)
       dragRef.current = null
       marqueeRef.current = null
-      setSelectionCount(0)
     })
-  }, [setSelectionCount])
+  }, [setSelectedNodeIds])
 
   useEffect(() => {
     const down = (e: KeyboardEvent) => {

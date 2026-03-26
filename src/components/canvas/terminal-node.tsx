@@ -7,6 +7,7 @@ import type { TerminalNode as TerminalNodeType } from '@/types'
 import { AgentIcon } from '@/components/agent-icon'
 import { inferAgentFromTitle } from '@/lib/agent-command'
 import { Logo } from '@/components/logo'
+import { WorktreeSwitcher } from '@/components/worktree-switcher'
 
 type Edge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
 
@@ -191,6 +192,7 @@ export function TerminalNode({
             <span className="text-[11px] font-medium truncate max-w-40 text-muted-foreground">
               {terminal.title}
             </span>
+            <WorktreeSwitcher termId={terminal.id} />
             <button
               className="p-1 rounded-md transition-colors text-muted-foreground/40 hover:text-foreground hover:bg-muted/40"
               onClick={(e) => {

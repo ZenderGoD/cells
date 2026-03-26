@@ -49,6 +49,7 @@ function MainApp() {
   useHotkey('Mod+Q', () => {
     void window.cells.app.requestQuit()
   })
+  useHotkey('Mod+R', () => useStore.getState().reloadFocused())
   useHotkey('Mod+[', () => {
     const bid = useStore.getState().focusedBrowserId
     if (bid) window.cells.browser.goBack(bid)
