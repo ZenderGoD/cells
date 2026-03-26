@@ -71,6 +71,7 @@ export interface ProjectsState {
   tabSwitchMode?: 'recent' | 'chronological'
   projectSwitchMode?: 'recent' | 'chronological'
   reducedMotion?: boolean
+  autoUpdate?: boolean
   searchEngine?: string
   homePage?: string
   terminalLinkTarget?: 'system' | 'browser'
@@ -138,6 +139,7 @@ export interface CellsAPI {
     download(): Promise<void>
     install(): Promise<void>
     getVersion(): Promise<string>
+    setAutoUpdate(enabled: boolean): Promise<void>
     onStatus(callback: (status: string, info?: any) => void): () => void
   }
   state: {

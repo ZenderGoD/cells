@@ -257,6 +257,7 @@ export function ProjectSwitcher() {
                       key={item.id}
                       type="button"
                       onClick={() => selectProject(item.id)}
+                      onMouseEnter={() => updateSelected(index, item.id)}
                       className={cn(
                         'relative flex h-[132px] w-[188px] shrink-0 flex-col overflow-hidden rounded-lg bg-card text-left transition-all',
                         isSelected

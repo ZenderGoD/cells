@@ -209,6 +209,7 @@ const api: CellsAPI = {
         reason?: string
         message?: string
       }>,
+    setAutoUpdate: (enabled: boolean) => ipcRenderer.invoke('updater:set-auto-update', enabled),
     onStatus: (callback: (status: string, info?: any) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, status: string, info?: any) =>
         callback(status, info)

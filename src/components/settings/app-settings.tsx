@@ -274,7 +274,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                       >
                         <div
                           className={cn(
-                            'absolute top-0.5 h-2.5 w-2.5 rounded-full bg-white transition-transform',
+                            'absolute top-0.5 h-2.5 w-2.5 rounded-full bg-background transition-transform',
                             snapOnFocus ? 'translate-x-3' : 'translate-x-0.5',
                           )}
                         />
@@ -350,7 +350,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                       >
                         <div
                           className={cn(
-                            'absolute top-0.5 h-2.5 w-2.5 rounded-full bg-white transition-transform',
+                            'absolute top-0.5 h-2.5 w-2.5 rounded-full bg-background transition-transform',
                             reducedMotion ? 'translate-x-3' : 'translate-x-0.5',
                           )}
                         />
@@ -930,6 +930,8 @@ function UpdateSection() {
     reason?: string
     message?: string
   } | null>(null)
+  const autoUpdate = useStore((s) => s.autoUpdate)
+  const setAutoUpdate = useStore((s) => s.setAutoUpdate)
 
   useEffect(() => {
     window.cells.updater.getVersion().then(setVersion)
@@ -1005,6 +1007,30 @@ function UpdateSection() {
           ) : null}
         </div>
       </SettingsGroup>
+
+      {support?.enabled ? (
+        <SettingsGroup title="Updates">
+          <button
+            onClick={() => setAutoUpdate(!autoUpdate)}
+            className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-[11px] transition-colors hover:bg-muted/40"
+          >
+            <span className="text-foreground">Check for updates on launch</span>
+            <div
+              className={cn(
+                'relative h-3.5 w-6 rounded-full transition-colors',
+                autoUpdate ? 'bg-primary' : 'bg-muted-foreground/25',
+              )}
+            >
+              <div
+                className={cn(
+                  'absolute top-0.5 h-2.5 w-2.5 rounded-full bg-background transition-transform',
+                  autoUpdate ? 'translate-x-3' : 'translate-x-0.5',
+                )}
+              />
+            </div>
+          </button>
+        </SettingsGroup>
+      ) : null}
 
       <SettingsGroup title="Contribute">
         <button
@@ -1125,12 +1151,12 @@ function ExtensionsSection({ projectId }: { projectId: string | null }) {
               <div
                 className={cn(
                   'relative h-3.5 w-6 rounded-full transition-colors',
-                  isEnabled(ext.id) ? 'bg-blue-500' : 'bg-muted-foreground/25',
+                  isEnabled(ext.id) ? 'bg-primary' : 'bg-muted-foreground/25',
                 )}
               >
                 <div
                   className={cn(
-                    'absolute top-0.5 h-2.5 w-2.5 rounded-full bg-white transition-transform',
+                    'absolute top-0.5 h-2.5 w-2.5 rounded-full bg-background transition-transform',
                     isEnabled(ext.id) ? 'translate-x-3' : 'translate-x-0.5',
                   )}
                 />

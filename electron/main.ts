@@ -137,8 +137,6 @@ const STATE_FILE = path.join(STATE_DIR, 'state.json')
 const LEGACY_STATE_DIR = path.join(app.getPath('home'), '.vector-ghost')
 const LEGACY_STATE_FILE = path.join(LEGACY_STATE_DIR, 'state.json')
 const AUTO_UPDATE_CHECK_DELAY = 15_000
-const AUTO_UPDATE_CHECK_INTERVAL = 6 * 60 * 60 * 1000
-let updateCheckInterval: ReturnType<typeof setInterval> | null = null
 const PRELOAD_FILE = 'preload.mjs'
 const BROWSER_PRELOAD_FILE = 'browser-preload.cjs'
 const CODEX_HOME_DIR = path.join(os.homedir(), '.codex')
@@ -1242,6 +1240,16 @@ function cleanupBrowserViews() {
 autoUpdater.autoDownload = true
 autoUpdater.autoInstallOnAppQuit = true
 
+function isAutoUpdateEnabled(): boolean {
+  try {
+    if (fs.existsSync(STATE_FILE)) {
+      const state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf-8'))
+      return state.autoUpdate !== false
+    }
+  } catch {}
+  return true
+}
+
 type UpdaterSupport = {
   enabled: boolean
   reason?: string
@@ -1341,13 +1349,11 @@ function checkForAppUpdates() {
 
 function scheduleAutomaticUpdateChecks() {
   if (!shouldEnableAutoUpdates()) return
+  if (!isAutoUpdateEnabled()) return
 
   setTimeout(() => {
     checkForAppUpdates()
   }, AUTO_UPDATE_CHECK_DELAY)
-
-  if (updateCheckInterval) clearInterval(updateCheckInterval)
-  updateCheckInterval = setInterval(checkForAppUpdates, AUTO_UPDATE_CHECK_INTERVAL)
 }
 
 ipcMain.handle('updater:check', () => {
@@ -1374,6 +1380,15 @@ ipcMain.handle('updater:get-version', () => {
 
 ipcMain.handle('updater:get-support', () => {
   return getUpdaterSupport()
+})
+
+ipcMain.handle('updater:set-auto-update', (_event, enabled: boolean) => {
+  // The renderer persists this in state.json via the store.
+  // If disabling, we don't need to do anything else since auto-check only runs on launch.
+  // If enabling, trigger a check now so the user gets immediate feedback.
+  if (enabled && shouldEnableAutoUpdates()) {
+    checkForAppUpdates()
+  }
 })
 
 // ---------- App lifecycle ----------

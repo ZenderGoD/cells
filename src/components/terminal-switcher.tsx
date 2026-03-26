@@ -233,11 +233,20 @@ export function TerminalSwitcher() {
             <div className="mt-2 overflow-x-auto overflow-y-visible px-1 py-2 scrollbar-none">
               <div className="flex w-max min-w-full gap-3 items-stretch">
                 {items.map((item, i) => (
-                  <div
+                  <button
                     key={item.id}
+                    type="button"
+                    onClick={() => {
+                      updateSelected(i, item.id)
+                      selectedIdRef.current = item.id
+                      commit()
+                    }}
+                    onMouseEnter={() => updateSelected(i, item.id)}
                     className={cn(
-                      'relative flex flex-col rounded-lg overflow-hidden transition-all shrink-0 bg-card',
-                      i === selectedIndex ? 'ring-2 ring-primary' : 'border border-border/30',
+                      'relative flex flex-col rounded-lg overflow-hidden transition-all shrink-0 bg-card text-left',
+                      i === selectedIndex
+                        ? 'ring-2 ring-primary'
+                        : 'border border-border/30 hover:border-border/50',
                     )}
                     style={{ width: 160, height: 110 }}
                   >
@@ -337,7 +346,7 @@ export function TerminalSwitcher() {
                         <div className="w-1.5 h-1.5 rounded-full bg-primary/60 shrink-0" />
                       )}
                     </div>
-                  </div>
+                  </button>
                 ))}
               </div>
             </div>

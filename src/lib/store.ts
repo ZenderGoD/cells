@@ -52,6 +52,7 @@ interface StoreState {
   tabSwitchMode: 'recent' | 'chronological'
   projectSwitchMode: 'recent' | 'chronological'
   reducedMotion: boolean
+  autoUpdate: boolean
   overlayOpen: boolean // true when popover/dialog is open — hides browser native views
   searchEngine: string
   homePage: string
@@ -107,6 +108,7 @@ interface StoreState {
   setTabSwitchMode(mode: 'recent' | 'chronological'): void
   setProjectSwitchMode(mode: 'recent' | 'chronological'): void
   setReducedMotion(enabled: boolean): void
+  setAutoUpdate(enabled: boolean): void
 
   setCanvasTransform(transform: CanvasTransform): void
   resizeWindowToFitFocused(): void
@@ -363,6 +365,7 @@ export const useStore = create<StoreState>((set, get) => ({
   tabSwitchMode: 'chronological',
   projectSwitchMode: 'recent',
   reducedMotion: false,
+  autoUpdate: true,
   overlayOpen: false,
   searchEngine: DEFAULT_SEARCH_ENGINE,
   homePage: DEFAULT_HOME_PAGE,
@@ -440,6 +443,7 @@ export const useStore = create<StoreState>((set, get) => ({
         tabSwitchMode: ps.tabSwitchMode || 'chronological',
         projectSwitchMode: ps.projectSwitchMode || 'recent',
         reducedMotion: ps.reducedMotion ?? false,
+        autoUpdate: ps.autoUpdate ?? true,
         searchEngine: ps.searchEngine || DEFAULT_SEARCH_ENGINE,
         homePage: ps.homePage || DEFAULT_HOME_PAGE,
         terminalLinkTarget: ps.terminalLinkTarget || 'system',
@@ -565,6 +569,7 @@ export const useStore = create<StoreState>((set, get) => ({
           tabSwitchMode: freshState.tabSwitchMode,
           projectSwitchMode: freshState.projectSwitchMode,
           reducedMotion: freshState.reducedMotion,
+          autoUpdate: freshState.autoUpdate,
           searchEngine: freshState.searchEngine,
           homePage: freshState.homePage,
           terminalLinkTarget: freshState.terminalLinkTarget,
@@ -592,6 +597,7 @@ export const useStore = create<StoreState>((set, get) => ({
           tabSwitchMode: state.tabSwitchMode,
           projectSwitchMode: state.projectSwitchMode,
           reducedMotion: state.reducedMotion,
+          autoUpdate: state.autoUpdate,
           searchEngine: state.searchEngine,
           homePage: state.homePage,
           terminalLinkTarget: state.terminalLinkTarget,
@@ -1115,6 +1121,12 @@ export const useStore = create<StoreState>((set, get) => ({
   setReducedMotion(enabled) {
     set({ reducedMotion: enabled })
     get().persist()
+  },
+
+  setAutoUpdate(enabled) {
+    set({ autoUpdate: enabled })
+    get().persist()
+    window.cells.updater.setAutoUpdate(enabled)
   },
 
   resizeWindowToFitFocused() {
