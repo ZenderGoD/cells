@@ -856,7 +856,7 @@ export function CellTerminal({
         term.onData((data) => {
           trackInputForTitle(data)
           window.cells.terminal.write(termId, data)
-          // When user sends input (Enter key), immediately mark agent as running
+          // When user sends input (Enter key), immediately mark agent as active
           if (data.includes('\r') || data.includes('\n')) {
             const agent = detectedAgentRef.current ?? inferredAgentRef.current
             if (agent) {
@@ -868,8 +868,8 @@ export function CellTerminal({
               }
               const store = useStore.getState()
               const current = store.terminals.find((t) => t.id === termId)
-              if (current?.agentStatus === 'waiting') {
-                store.updateTerminalAgentStatus(termId, 'running')
+              if (current?.agentStatus !== 'active') {
+                store.updateTerminalAgentStatus(termId, 'active')
               }
             }
           }
@@ -903,8 +903,11 @@ export function CellTerminal({
                   if (elapsed >= AGENT_PROMPT_SILENCE_MS) {
                     const store = useStore.getState()
                     const current = store.terminals.find((t) => t.id === termId)
-                    if (current && current.agentStatus !== 'waiting') {
-                      store.updateTerminalAgentStatus(termId, 'waiting')
+                    const focused = store.focusedTerminalId === termId
+                    // If focused, clear to null (user is watching). If not, mark unread.
+                    const next = focused ? null : ('unread' as const)
+                    if (current && current.agentStatus !== next) {
+                      store.updateTerminalAgentStatus(termId, next)
                     }
                   }
                 }, AGENT_PROMPT_SILENCE_MS + 50)
@@ -943,18 +946,19 @@ export function CellTerminal({
           store.updateTerminalAgent(termId, agent)
         }
 
-        // Determine agent status using prompt detection + bell, not raw timing
+        // Determine agent status using prompt detection + bell + focus
         if (agent) {
           const elapsed = Date.now() - lastAgentDataRef.current
           const hasPrompt = detectAgentPrompt(agentOutputBufRef.current, agent)
           const heardBell = agentBellRef.current
+          const focused = store.focusedTerminalId === termId
 
-          let newStatus: 'running' | 'waiting'
+          let newStatus: import('@/types').AgentStatus
           if ((hasPrompt || heardBell) && elapsed > AGENT_PROMPT_SILENCE_MS) {
-            // Agent prompt is visible and output has stopped — waiting for user input
-            newStatus = 'waiting'
+            // Agent finished — if user is watching, no indicator; otherwise unread
+            newStatus = focused ? null : 'unread'
           } else {
-            newStatus = 'running'
+            newStatus = 'active'
           }
 
           if (current && current.agentStatus !== newStatus) {

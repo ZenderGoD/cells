@@ -4,7 +4,7 @@ export interface CanvasTransform {
   scale: number
 }
 
-export type AgentStatus = 'running' | 'waiting' | 'done' | null
+export type AgentStatus = 'active' | 'unread' | 'done' | null
 
 export interface TerminalNode {
   id: string
@@ -96,6 +96,7 @@ export interface ProjectsState {
   colorScheme?: 'light' | 'dark' | 'system'
   closeUndoTimeoutMs?: number
   closeProcessSuppressions?: string[]
+  autoArrangeOnCreate?: boolean
 }
 
 /** @deprecated Old flat state — kept for migration */

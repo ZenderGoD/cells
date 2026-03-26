@@ -57,7 +57,7 @@ function shortenUrl(url?: string): string {
   }
 }
 
-type ProjectAttention = 'waiting' | 'done' | 'running' | null
+type ProjectAttention = 'unread' | 'done' | 'active' | null
 
 function ProjectTab({
   project,
@@ -125,10 +125,16 @@ function ProjectTab({
             {projectWindowCount}
           </span>
         )}
-        {attention === 'waiting' && (
+        {attention === 'active' && (
           <span
-            className="size-1.5 shrink-0 rounded-full bg-amber-400 animate-pulse"
-            title="Agent waiting for input"
+            className="size-1.5 shrink-0 rounded-full bg-primary/90 animate-pulse"
+            title="Agent working"
+          />
+        )}
+        {attention === 'unread' && (
+          <span
+            className="size-1.5 shrink-0 rounded-full bg-amber-400"
+            title="Agent has unread output"
           />
         )}
         {attention === 'done' && (
@@ -215,6 +221,8 @@ export function StatusBar() {
   const hasFocusedWindow = useStore((s) => !!(s.focusedTerminalId || s.focusedBrowserId))
   const zoomToFitAll = useStore((s) => s.zoomToFitAll)
   const autoArrangeGrid = useStore((s) => s.autoArrangeGrid)
+  const autoArrangeOnCreate = useStore((s) => s.autoArrangeOnCreate)
+  const setAutoArrangeOnCreate = useStore((s) => s.setAutoArrangeOnCreate)
   const snapToTerminal = useStore((s) => s.snapToTerminal)
   const snapToBrowser = useStore((s) => s.snapToBrowser)
   const moveTerminal = useStore((s) => s.moveTerminal)
@@ -436,12 +444,12 @@ export function StatusBar() {
             const projectTerminals = isActive ? terminals : (project.terminals ?? [])
             let attention: ProjectAttention = null
             for (const t of projectTerminals) {
-              if (t.agentStatus === 'waiting') {
-                attention = 'waiting'
+              if (t.agentStatus === 'unread') {
+                attention = 'unread'
                 break
               }
               if (t.agentStatus === 'done') attention = 'done'
-              if (t.agent && !attention) attention = 'running'
+              if (t.agentStatus === 'active' && !attention) attention = 'active'
             }
 
             return (
@@ -654,13 +662,42 @@ export function StatusBar() {
 
           {/* Auto-arrange grid */}
           {windowCount > 1 && (
-            <button
-              onClick={autoArrangeGrid}
-              className="text-muted-foreground/40 hover:text-foreground transition-colors"
-              title="Auto-arrange grid (most used at center)"
-            >
-              <LayoutGrid className="w-3.5 h-3.5" />
-            </button>
+            <Popover>
+              <PopoverTrigger
+                className={cn(
+                  'transition-colors relative',
+                  autoArrangeOnCreate
+                    ? 'text-primary/70 hover:text-primary'
+                    : 'text-muted-foreground/40 hover:text-foreground',
+                )}
+                title="Auto-arrange grid"
+              >
+                <LayoutGrid className="w-3.5 h-3.5" />
+                {autoArrangeOnCreate && (
+                  <span className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-primary" />
+                )}
+              </PopoverTrigger>
+              <PopoverContent side="top" sideOffset={8} className="w-48 p-1">
+                <button
+                  onClick={() => autoArrangeGrid()}
+                  className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-md text-[11px] text-foreground hover:bg-muted/60 transition-colors"
+                >
+                  <LayoutGrid className="w-3.5 h-3.5 text-muted-foreground" />
+                  Arrange now
+                </button>
+                <button
+                  onClick={() => setAutoArrangeOnCreate(!autoArrangeOnCreate)}
+                  className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-md text-[11px] text-foreground hover:bg-muted/60 transition-colors"
+                >
+                  {autoArrangeOnCreate ? (
+                    <Check className="w-3.5 h-3.5 text-primary" />
+                  ) : (
+                    <span className="w-3.5 h-3.5" />
+                  )}
+                  Auto on create
+                </button>
+              </PopoverContent>
+            </Popover>
           )}
 
           {/* Pin toggle */}

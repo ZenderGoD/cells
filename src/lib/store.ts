@@ -57,6 +57,7 @@ interface StoreState {
   projectSwitchMode: 'recent' | 'chronological'
   reducedMotion: boolean
   autoUpdate: boolean
+  autoArrangeOnCreate: boolean
   overlayOpen: boolean // true when popover/dialog is open — hides browser native views
   searchEngine: string
   homePage: string
@@ -131,6 +132,7 @@ interface StoreState {
   setProjectSwitchMode(mode: 'recent' | 'chronological'): void
   setReducedMotion(enabled: boolean): void
   setAutoUpdate(enabled: boolean): void
+  setAutoArrangeOnCreate(enabled: boolean): void
 
   setCanvasTransform(transform: CanvasTransform): void
   resizeWindowToFitFocused(): void
@@ -424,6 +426,7 @@ export const useStore = create<StoreState>((set, get) => ({
   projectSwitchMode: 'recent',
   reducedMotion: false,
   autoUpdate: true,
+  autoArrangeOnCreate: false,
   overlayOpen: false,
   searchEngine: DEFAULT_SEARCH_ENGINE,
   homePage: DEFAULT_HOME_PAGE,
@@ -508,6 +511,7 @@ export const useStore = create<StoreState>((set, get) => ({
         projectSwitchMode: ps.projectSwitchMode || 'recent',
         reducedMotion: ps.reducedMotion ?? false,
         autoUpdate: ps.autoUpdate ?? true,
+        autoArrangeOnCreate: ps.autoArrangeOnCreate ?? false,
         searchEngine: ps.searchEngine || DEFAULT_SEARCH_ENGINE,
         homePage: ps.homePage || DEFAULT_HOME_PAGE,
         terminalLinkTarget: ps.terminalLinkTarget || 'system',
@@ -657,6 +661,7 @@ export const useStore = create<StoreState>((set, get) => ({
           projectSwitchMode: freshState.projectSwitchMode,
           reducedMotion: freshState.reducedMotion,
           autoUpdate: freshState.autoUpdate,
+          autoArrangeOnCreate: freshState.autoArrangeOnCreate,
           searchEngine: freshState.searchEngine,
           homePage: freshState.homePage,
           terminalLinkTarget: freshState.terminalLinkTarget,
@@ -685,6 +690,7 @@ export const useStore = create<StoreState>((set, get) => ({
           projectSwitchMode: state.projectSwitchMode,
           reducedMotion: state.reducedMotion,
           autoUpdate: state.autoUpdate,
+          autoArrangeOnCreate: state.autoArrangeOnCreate,
           searchEngine: state.searchEngine,
           homePage: state.homePage,
           terminalLinkTarget: state.terminalLinkTarget,
@@ -895,9 +901,13 @@ export const useStore = create<StoreState>((set, get) => ({
       focusedBrowserId: null,
       focusHistory: pushFocusHistory(focusHistory, id),
     }))
-    // Reset scale to 1 and snap to the new terminal
-    set({ canvas: { ...get().canvas, scale: 1 } })
-    get().snapToTerminal(id)
+    if (get().autoArrangeOnCreate) {
+      get().autoArrangeGrid()
+    } else {
+      // Reset scale to 1 and snap to the new terminal
+      set({ canvas: { ...get().canvas, scale: 1 } })
+      get().snapToTerminal(id)
+    }
     get().persist()
     return terminal
   },
@@ -1013,9 +1023,9 @@ export const useStore = create<StoreState>((set, get) => ({
       get().bringToFront(id)
       const history = pushFocusHistory(get().focusHistory, id)
       const counts = { ...get().focusCounts, [id]: (get().focusCounts[id] ?? 0) + 1 }
-      // Clear 'done' agentStatus on focus — user has acknowledged
+      // Clear 'done'/'unread' agentStatus on focus — user has acknowledged
       const terminal = get().terminals.find((t) => t.id === id)
-      if (terminal?.agentStatus === 'done') {
+      if (terminal?.agentStatus === 'done' || terminal?.agentStatus === 'unread') {
         set((s) => ({
           focusedTerminalId: id,
           focusedBrowserId: null,
@@ -1284,6 +1294,11 @@ export const useStore = create<StoreState>((set, get) => ({
     set({ autoUpdate: enabled })
     get().persist()
     window.cells.updater.setAutoUpdate(enabled)
+  },
+
+  setAutoArrangeOnCreate(enabled) {
+    set({ autoArrangeOnCreate: enabled })
+    get().persist()
   },
 
   resizeWindowToFitFocused() {
@@ -1890,14 +1905,18 @@ export const useStore = create<StoreState>((set, get) => ({
       focusedBrowserId: id,
       focusHistory: pushFocusHistory(focusHistory, id),
     }))
-    set({ canvas: { ...get().canvas, scale: 1 } })
-    // Snap to the new browser (reuse snapToTerminal-like logic)
-    const scale = get().canvas.scale
-    get().setCanvasTransform({
-      x: TERMINAL_PAD - browser.x * scale,
-      y: TERMINAL_PAD - browser.y * scale,
-      scale,
-    })
+    if (get().autoArrangeOnCreate) {
+      get().autoArrangeGrid()
+    } else {
+      set({ canvas: { ...get().canvas, scale: 1 } })
+      // Snap to the new browser (reuse snapToTerminal-like logic)
+      const scale = get().canvas.scale
+      get().setCanvasTransform({
+        x: TERMINAL_PAD - browser.x * scale,
+        y: TERMINAL_PAD - browser.y * scale,
+        scale,
+      })
+    }
     get().persist()
     return browser
   },

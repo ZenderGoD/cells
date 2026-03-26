@@ -7,7 +7,7 @@ import { motion, AnimatePresence } from 'motion/react'
 import { WindowOverviewMap } from './canvas/window-overview-map'
 import type { Project } from '@/types'
 
-type ProjectAttention = 'waiting' | 'done' | 'running' | null
+type ProjectAttention = 'unread' | 'done' | 'active' | null
 
 interface ProjectSwitcherItem {
   id: string
@@ -83,12 +83,12 @@ export function ProjectSwitcher() {
 
       let attention: ProjectAttention = null
       for (const t of projectTerminals) {
-        if (t.agentStatus === 'waiting') {
-          attention = 'waiting'
+        if (t.agentStatus === 'unread') {
+          attention = 'unread'
           break
         }
         if (t.agentStatus === 'done') attention = 'done'
-        if (t.agent && !attention) attention = 'running'
+        if (t.agentStatus === 'active' && !attention) attention = 'active'
       }
 
       return {
@@ -331,10 +331,15 @@ export function ProjectSwitcher() {
                           <span className="min-w-0 flex-1 truncate text-[11px] font-medium">
                             {item.name}
                           </span>
-                          {item.attention === 'waiting' ? (
+                          {item.attention === 'active' ? (
                             <div
-                              className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400 animate-pulse"
-                              title="Agent waiting"
+                              className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary/90 animate-pulse"
+                              title="Agent working"
+                            />
+                          ) : item.attention === 'unread' ? (
+                            <div
+                              className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400"
+                              title="Agent has unread output"
                             />
                           ) : item.attention === 'done' ? (
                             <div

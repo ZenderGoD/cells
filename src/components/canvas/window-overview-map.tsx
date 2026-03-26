@@ -5,21 +5,21 @@ import { getCanvasBounds, type CanvasRect, type CanvasWindow } from '@/lib/canva
 import { AgentIcon } from '@/components/agent-icon'
 import type { AgentStatus } from '@/types'
 
-function AgentStatusDot({ status }: { status: AgentStatus }) {
-  if (status === 'waiting') {
-    return (
-      <span className="pointer-events-none absolute top-0 right-0 size-1.5 rounded-full bg-amber-400 animate-pulse" />
-    )
+/** Returns extra classes for the minimap square based on agent status */
+function agentStatusClasses(status: AgentStatus): string {
+  if (status === 'active') {
+    // Agent is actively working — pulsing ring
+    return 'ring-1 ring-primary/80 animate-pulse'
+  }
+  if (status === 'unread') {
+    // Agent finished, user hasn't seen it — solid amber ring
+    return 'ring-1 ring-amber-400/90'
   }
   if (status === 'done') {
-    return (
-      <span className="pointer-events-none absolute top-0 right-0 size-1.5 rounded-full bg-emerald-400" />
-    )
+    // Agent process exited — solid green ring
+    return 'ring-1 ring-emerald-400/90'
   }
-  // running (default for agent present)
-  return (
-    <span className="pointer-events-none absolute top-0 right-0 size-1.5 rounded-full bg-primary/90 animate-pulse" />
-  )
+  return ''
 }
 
 interface WindowOverviewMapProps {
@@ -215,6 +215,7 @@ export function WindowOverviewMap({
           const canShowIcon = minDim >= 8
           const iconSize = Math.max(6, Math.min(minDim * 0.55, 14))
           const canDrag = !!onMove
+          const statusClass = agentStatusClasses(window.agentStatus ?? null)
           const sharedClassName = cn(
             'absolute flex items-center justify-center border transition-[transform,background-color,border-color,opacity,box-shadow] duration-150',
             (onSelect || canDrag) && 'hover:scale-[1.04]',
@@ -227,6 +228,7 @@ export function WindowOverviewMap({
               : isFocused
                 ? 'z-[9] border-white/70 bg-white/16 shadow-[0_0_0_1px_rgba(255,255,255,0.12)]'
                 : 'hover:border-foreground/45',
+            statusClass,
           )
 
           if (onSelect || canDrag) {
@@ -242,9 +244,6 @@ export function WindowOverviewMap({
                 title={`${window.type === 'browser' ? 'Browser' : window.agent ? `Agent (${window.agent})${window.agentStatus ? ` — ${window.agentStatus}` : ''}` : 'Terminal'}: ${window.title}`}
               >
                 {canShowIcon && <WindowIcon window={window} iconSize={iconSize} />}
-                {(window.agent || window.agentStatus === 'done') && (
-                  <AgentStatusDot status={window.agentStatus ?? 'running'} />
-                )}
                 {isFocused && !isCurrent && (
                   <span className="pointer-events-none absolute bottom-0.5 right-0.5 size-1 rounded-full bg-white/90" />
                 )}
@@ -255,9 +254,6 @@ export function WindowOverviewMap({
           return (
             <div key={window.id} className={sharedClassName} style={rectStyle}>
               {canShowIcon && <WindowIcon window={window} iconSize={iconSize} />}
-              {(window.agent || window.agentStatus === 'done') && (
-                <AgentStatusDot status={window.agentStatus ?? 'running'} />
-              )}
               {isFocused && !isCurrent && (
                 <span className="pointer-events-none absolute bottom-0.5 right-0.5 size-1 rounded-full bg-white/90" />
               )}
