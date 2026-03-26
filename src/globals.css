@@ -135,7 +135,6 @@
   --color-terminal-active: oklch(0.609 0.126 221.7);
 }
 
-/* Always-dark theme — using Vector's dark palette */
 :root {
   --font-sans: "Geist", "Inter", "SF Pro Text", "Segoe UI", "Helvetica Neue",
     Arial, sans-serif;

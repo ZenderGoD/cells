@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { nanoid } from 'nanoid'
 import type { BrowserNode, CanvasTransform, Project, ProjectsState, TerminalNode } from '../types'
+import { inferAgentFromCommand } from './agent-command'
 import { DEFAULT_THEME } from './terminal-themes'
 import { DEFAULT_WINDOW_APPEARANCE, normalizeWindowAppearance } from './window-appearance'
 import {
@@ -639,9 +640,18 @@ export const useStore = create<StoreState>((set, get) => ({
 
   addTerminalWithCommand(command, title) {
     const terminal = get().addTerminal()
+    const inferredAgent = inferAgentFromCommand(command)
     if (title) {
       set((s) => ({
-        terminals: s.terminals.map((t) => (t.id === terminal.id ? { ...t, title } : t)),
+        terminals: s.terminals.map((t) =>
+          t.id === terminal.id ? { ...t, title, agent: inferredAgent ?? t.agent ?? null } : t,
+        ),
+      }))
+    } else if (inferredAgent) {
+      set((s) => ({
+        terminals: s.terminals.map((t) =>
+          t.id === terminal.id ? { ...t, agent: inferredAgent } : t,
+        ),
       }))
     }
     pendingCommands.set(terminal.id, command)

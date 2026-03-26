@@ -1,16 +1,20 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
-import { Globe, TerminalSquare } from 'lucide-react'
+import { Globe } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
+import { inferAgentFromTitle } from '@/lib/agent-command'
 import { getCanvasWindows, getViewportRect, orderByRecent } from '@/lib/canvas-navigation'
 import { motion, AnimatePresence } from 'motion/react'
 import { WindowOverviewMap } from './canvas/window-overview-map'
 import { getTerminalPreviewSnapshot } from './terminal/cell-terminal'
+import { AgentIcon } from './agent-icon'
+import { Logo } from './logo'
 
 interface SwitcherItem {
   id: string
   title: string
   type: 'terminal' | 'browser'
+  agent?: 'claude' | 'codex' | null
   url?: string
   isCurrent: boolean
   previewLines?: string[]
@@ -57,6 +61,7 @@ export function TerminalSwitcher() {
       id: t.id,
       title: t.title,
       type: 'terminal' as const,
+      agent: t.agent ?? inferAgentFromTitle(t.title),
       isCurrent: t.id === focusedTerminalId,
       previewLines: getTerminalPreviewSnapshot(t.id, { lines: 6, columns: 34 }),
     })),
@@ -260,14 +265,25 @@ export function TerminalSwitcher() {
                           </>
                         ) : (
                           <div className="flex h-full items-center justify-center">
-                            <TerminalSquare
-                              className={cn(
-                                'w-6 h-6',
-                                i === selectedIndex
-                                  ? 'text-primary/60'
-                                  : 'text-muted-foreground/20',
-                              )}
-                            />
+                            {item.agent ? (
+                              <AgentIcon
+                                agent={item.agent}
+                                className={cn(
+                                  'h-6 w-6',
+                                  i === selectedIndex ? 'opacity-100' : 'opacity-35',
+                                )}
+                                size={24}
+                              />
+                            ) : (
+                              <Logo
+                                className={cn(
+                                  'h-6 w-6',
+                                  i === selectedIndex
+                                    ? 'text-primary/60'
+                                    : 'text-muted-foreground/20',
+                                )}
+                              />
+                            )}
                           </div>
                         )
                       ) : (
@@ -290,7 +306,11 @@ export function TerminalSwitcher() {
                       )}
                     >
                       {item.type === 'terminal' ? (
-                        <TerminalSquare className="w-3 h-3 shrink-0 text-muted-foreground/50" />
+                        item.agent ? (
+                          <AgentIcon agent={item.agent} className="h-3 w-3 opacity-80" size={12} />
+                        ) : (
+                          <Logo className="h-3 w-3 shrink-0 text-muted-foreground/50" />
+                        )
                       ) : (
                         <Globe className="w-3 h-3 shrink-0 text-muted-foreground/50" />
                       )}

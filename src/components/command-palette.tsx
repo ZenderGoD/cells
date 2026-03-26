@@ -1,17 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useHotkey } from '@tanstack/react-hotkeys'
-import {
-  TerminalSquare,
-  Globe,
-  Plus,
-  RotateCcw,
-  Palette,
-  Settings,
-  FolderOpen,
-  Search,
-  Sparkles,
-  LogOut,
-} from 'lucide-react'
+import { Globe, Plus, RotateCcw, Palette, Settings, FolderOpen, Search, LogOut } from 'lucide-react'
 import {
   CommandDialog,
   Command,
@@ -24,9 +13,12 @@ import {
   CommandShortcut,
 } from '@/components/ui/command'
 import { useStore } from '@/lib/store'
+import { inferAgentFromTitle } from '@/lib/agent-command'
 import { terminalThemes } from '@/lib/terminal-themes'
 import { AppSettings } from './settings/app-settings'
 import { NewProjectDialog } from './new-project-dialog'
+import { AgentIcon } from './agent-icon'
+import { Logo } from './logo'
 
 export function CommandPalette() {
   const [open, setOpen] = useState(false)
@@ -183,7 +175,15 @@ export function CommandPalette() {
                       key={t.id}
                       onSelect={() => runAction(() => useStore.getState().snapToTerminal(t.id))}
                     >
-                      <TerminalSquare className="text-muted-foreground" />
+                      {(t.agent ?? inferAgentFromTitle(t.title)) ? (
+                        <AgentIcon
+                          agent={t.agent ?? inferAgentFromTitle(t.title)}
+                          className="text-muted-foreground"
+                          size={16}
+                        />
+                      ) : (
+                        <Logo className="h-4 w-4 text-muted-foreground" />
+                      )}
                       {t.title}
                     </CommandItem>
                   ))}
@@ -240,7 +240,7 @@ export function CommandPalette() {
                         })
                       }
                     >
-                      <Sparkles className="text-muted-foreground" />
+                      <AgentIcon agent="claude" className="text-muted-foreground" size={16} />
                       Ask Claude Code: &ldquo;{search.trim().slice(0, 50)}&rdquo;
                     </CommandItem>
                   )}
@@ -260,7 +260,7 @@ export function CommandPalette() {
                         })
                       }
                     >
-                      <Sparkles className="text-muted-foreground" />
+                      <AgentIcon agent="codex" className="text-muted-foreground" size={16} />
                       Ask Codex: &ldquo;{search.trim().slice(0, 50)}&rdquo;
                     </CommandItem>
                   )}
