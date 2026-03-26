@@ -381,8 +381,15 @@ export function StatusBar() {
                       exit={{ opacity: 0, width: 0 }}
                       transition={{ duration: 0.2, ease: 'easeInOut' }}
                       className="flex items-center overflow-hidden ml-1"
-                      draggable={false}
-                      onDragStart={(e) => e.stopPropagation()}
+                      ref={(el) => {
+                        if (!el) return
+                        el.draggable = false
+                        el.ondragstart = (e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                        }
+                        el.onmousedown = (e) => e.stopPropagation()
+                      }}
                       onPointerDown={(e) => e.stopPropagation()}
                       title={
                         overviewAnchor
