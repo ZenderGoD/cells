@@ -184,81 +184,6 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
             >
               {activeSection === 'appearance' ? (
                 <div className="space-y-5">
-                  <SettingsGroup title="Theme">
-                    <div className="grid grid-cols-3 gap-1">
-                      {Object.entries(terminalThemes).map(([key, theme]) => (
-                        <button
-                          key={key}
-                          onClick={() => setTerminalTheme(key)}
-                          className={cn(
-                            'flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] transition-colors',
-                            key === terminalTheme
-                              ? 'bg-accent text-foreground'
-                              : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
-                          )}
-                        >
-                          <div className="flex shrink-0 gap-0.5">
-                            <div
-                              className="h-1.5 w-1.5 rounded-full"
-                              style={{ background: theme.background }}
-                            />
-                            <div
-                              className="h-1.5 w-1.5 rounded-full"
-                              style={{ background: theme.green }}
-                            />
-                            <div
-                              className="h-1.5 w-1.5 rounded-full"
-                              style={{ background: theme.blue }}
-                            />
-                          </div>
-                          <span className="truncate">{theme.name}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </SettingsGroup>
-
-                  <SettingsGroup title="Font Size">
-                    <div className="flex gap-0.5">
-                      {FONT_SIZES.map((size) => (
-                        <button
-                          key={size}
-                          onClick={() => setFontSize(size)}
-                          className={cn(
-                            'rounded-md px-2.5 py-1 text-[11px] tabular-nums transition-colors',
-                            size === fontSize
-                              ? 'bg-accent text-foreground'
-                              : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
-                          )}
-                        >
-                          {size}
-                        </button>
-                      ))}
-                    </div>
-                  </SettingsGroup>
-
-                  <SettingsGroup title="Font">
-                    <div className="space-y-0.5">
-                      {FONT_FAMILIES.map((font) => (
-                        <button
-                          key={font.value}
-                          onClick={() => setFontFamily(font.value)}
-                          className={cn(
-                            'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
-                            fontFamily === font.value
-                              ? 'bg-accent text-foreground'
-                              : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
-                          )}
-                          style={{ fontFamily: font.value }}
-                        >
-                          <span className="flex-1">{font.label}</span>
-                          {fontFamily === font.value && (
-                            <Check className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  </SettingsGroup>
-
                   <SettingsGroup title="Window Opacity">
                     <div className="flex items-center gap-3">
                       <input
@@ -382,6 +307,81 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
 
               {activeSection === 'terminal' ? (
                 <div className="space-y-5">
+                  <SettingsGroup title="Theme">
+                    <div className="grid grid-cols-3 gap-1">
+                      {Object.entries(terminalThemes).map(([key, theme]) => (
+                        <button
+                          key={key}
+                          onClick={() => setTerminalTheme(key)}
+                          className={cn(
+                            'flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] transition-colors',
+                            key === terminalTheme
+                              ? 'bg-accent text-foreground'
+                              : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
+                          )}
+                        >
+                          <div className="flex shrink-0 gap-0.5">
+                            <div
+                              className="h-1.5 w-1.5 rounded-full"
+                              style={{ background: theme.background }}
+                            />
+                            <div
+                              className="h-1.5 w-1.5 rounded-full"
+                              style={{ background: theme.green }}
+                            />
+                            <div
+                              className="h-1.5 w-1.5 rounded-full"
+                              style={{ background: theme.blue }}
+                            />
+                          </div>
+                          <span className="truncate">{theme.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </SettingsGroup>
+
+                  <SettingsGroup title="Font Size">
+                    <div className="flex gap-0.5">
+                      {FONT_SIZES.map((size) => (
+                        <button
+                          key={size}
+                          onClick={() => setFontSize(size)}
+                          className={cn(
+                            'rounded-md px-2.5 py-1 text-[11px] tabular-nums transition-colors',
+                            size === fontSize
+                              ? 'bg-accent text-foreground'
+                              : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
+                          )}
+                        >
+                          {size}
+                        </button>
+                      ))}
+                    </div>
+                  </SettingsGroup>
+
+                  <SettingsGroup title="Font">
+                    <div className="space-y-0.5">
+                      {FONT_FAMILIES.map((font) => (
+                        <button
+                          key={font.value}
+                          onClick={() => setFontFamily(font.value)}
+                          className={cn(
+                            'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
+                            fontFamily === font.value
+                              ? 'bg-accent text-foreground'
+                              : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
+                          )}
+                          style={{ fontFamily: font.value }}
+                        >
+                          <span className="flex-1">{font.label}</span>
+                          {fontFamily === font.value && (
+                            <Check className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  </SettingsGroup>
+
                   <SettingsGroup title="Link Click Behavior">
                     <div className="space-y-2.5">
                       <SettingsField label="Default target">
@@ -671,7 +671,8 @@ const SHORTCUT_GROUPS = [
       { keys: '⌘ 0', action: 'Zoom to fit focused window' },
       { keys: '⌃ H / J / K / L', action: 'Move canvas left/down/up/right' },
       { keys: '⌃ ⇧ O', action: 'Zoom to fit all windows' },
-      { keys: '⌘ Hold + Drag', action: 'Grab and move windows' },
+      { keys: '⌃ S', action: 'Toggle selection mode' },
+      { keys: 'Click + Drag', action: 'Marquee select in selection mode' },
     ],
   },
   {
