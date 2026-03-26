@@ -309,7 +309,7 @@ export function StatusBar() {
         <button
           className="flex items-center px-3 shrink-0 no-drag hover:bg-muted/30 transition-colors"
           onClick={zoomToFitAll}
-          title="Overview (Ctrl+Shift+O)"
+          title="Overview (Cmd+Shift+O)"
         >
           <Logo className="w-3.5 h-3.5 text-foreground/80" />
         </button>

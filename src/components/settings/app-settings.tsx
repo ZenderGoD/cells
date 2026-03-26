@@ -816,7 +816,7 @@ const SHORTCUT_GROUPS = [
       { keys: '⌘ Enter', action: 'Snap to focused terminal' },
       { keys: '⌘ 0', action: 'Zoom to fit focused window' },
       { keys: '⌘ H / J / K / L', action: 'Snap to nearest window left/down/up/right' },
-      { keys: '⌃ ⇧ O', action: 'Zoom to fit all windows' },
+      { keys: '⌘ ⇧ O', action: 'Zoom to fit all windows' },
       { keys: '⌃ S', action: 'Toggle selection mode' },
       { keys: 'Click + Drag', action: 'Marquee select in selection mode' },
     ],

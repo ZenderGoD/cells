@@ -81,7 +81,7 @@ export function App() {
         return
       }
 
-      if (key === 'o' && event.shiftKey && event.ctrlKey && !event.metaKey) {
+      if (key === 'o' && event.shiftKey && event.metaKey && !event.ctrlKey) {
         event.preventDefault()
         event.stopPropagation()
         state.zoomToFitAll()
