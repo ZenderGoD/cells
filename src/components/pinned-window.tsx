@@ -27,18 +27,9 @@ export function PinnedWindow({ termId, type }: { termId: string; type: 'terminal
 
   const theme = getTerminalTheme(themeName)
 
-  if (type === 'browser') {
-    return (
-      <div
-        className="w-screen h-screen flex items-center justify-center"
-        style={{ background: theme.background, color: theme.foreground }}
-      >
-        <p style={{ opacity: 0.5 }} className="text-sm">
-          Browser pop-out coming soon
-        </p>
-      </div>
-    )
-  }
+  // Browser pop-outs are handled by the main process (loads URL directly),
+  // so this component only renders for terminal pop-outs.
+  if (type === 'browser') return null
 
   return (
     <div

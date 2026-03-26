@@ -560,10 +560,13 @@ ipcMain.handle(
     id: string,
     type: string,
     bounds: { x: number; y: number; width: number; height: number },
+    browserUrl?: string,
   ) => {
     // Close any existing pinned window for this id
     const existing = pinnedWindows.get(id)
     if (existing && !existing.isDestroyed()) existing.close()
+
+    const isBrowser = type === 'browser' && browserUrl
 
     const win = new BrowserWindow({
       width: Math.round(bounds.width),
@@ -573,31 +576,39 @@ ipcMain.handle(
       minWidth: 320,
       minHeight: 200,
       alwaysOnTop: true,
-      titleBarStyle: 'hidden',
-      trafficLightPosition: { x: 12, y: 11 },
+      titleBarStyle: isBrowser ? 'hiddenInset' : 'hidden',
+      trafficLightPosition: isBrowser ? { x: 12, y: 16 } : { x: 12, y: 11 },
       roundedCorners: true,
-      backgroundColor: '#00000000',
-      vibrancy: 'under-window',
-      visualEffectState: 'active',
-      webPreferences: {
-        preload: path.join(__dirname, PRELOAD_FILE),
-        nodeIntegration: false,
-        contextIsolation: true,
-        webgl: true,
-      },
+      backgroundColor: isBrowser ? '#1e1e1e' : '#00000000',
+      vibrancy: isBrowser ? undefined : 'under-window',
+      visualEffectState: isBrowser ? undefined : 'active',
+      webPreferences: isBrowser
+        ? { nodeIntegration: false, contextIsolation: true, webgl: true }
+        : {
+            preload: path.join(__dirname, PRELOAD_FILE),
+            nodeIntegration: false,
+            contextIsolation: true,
+            webgl: true,
+          },
     })
 
     pinnedWindows.set(id, win)
 
-    const url = process.env.VITE_DEV_SERVER_URL
-      ? `${process.env.VITE_DEV_SERVER_URL}?pinned=${encodeURIComponent(id)}&type=${encodeURIComponent(type)}`
-      : undefined
-    if (url) {
-      win.loadURL(url)
+    if (isBrowser) {
+      // Browser pop-out: load the URL directly as a web page
+      win.loadURL(browserUrl)
     } else {
-      win.loadFile(path.join(__dirname, '../dist/index.html'), {
-        query: { pinned: id, type },
-      })
+      // Terminal pop-out: load the app renderer in pinned mode
+      const url = process.env.VITE_DEV_SERVER_URL
+        ? `${process.env.VITE_DEV_SERVER_URL}?pinned=${encodeURIComponent(id)}&type=${encodeURIComponent(type)}`
+        : undefined
+      if (url) {
+        win.loadURL(url)
+      } else {
+        win.loadFile(path.join(__dirname, '../dist/index.html'), {
+          query: { pinned: id, type },
+        })
+      }
     }
 
     win.on('closed', () => {

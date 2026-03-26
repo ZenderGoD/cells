@@ -934,7 +934,8 @@ export const useStore = create<StoreState>((set, get) => ({
           browsers: s.browsers.map((b) => (b.id === id ? { ...b, pinned: true } : b)),
         }))
       }
-      void window.cells.app.pinWindow(id, kind, bounds)
+      const browserUrl = kind === 'browser' ? (node as any).url : undefined
+      void window.cells.app.pinWindow(id, kind, bounds, browserUrl)
     }
     get().persist()
   },

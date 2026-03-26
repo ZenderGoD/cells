@@ -205,6 +205,7 @@ export interface CellsAPI {
       id: string,
       type: string,
       bounds: { x: number; y: number; width: number; height: number },
+      browserUrl?: string,
     ): Promise<void>
     unpinWindow(id: string): Promise<void>
     onWindowUnpinned(callback: (id: string, type: string) => void): () => void

@@ -153,7 +153,8 @@ const api: CellsAPI = {
       id: string,
       type: string,
       bounds: { x: number; y: number; width: number; height: number },
-    ) => ipcRenderer.invoke('app:pin-window', id, type, bounds),
+      browserUrl?: string,
+    ) => ipcRenderer.invoke('app:pin-window', id, type, bounds, browserUrl),
     unpinWindow: (id: string) => ipcRenderer.invoke('app:unpin-window', id),
     onWindowUnpinned: (callback: (id: string, type: string) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, id: string, type: string) =>
