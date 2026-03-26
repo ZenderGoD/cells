@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "cells": {
+      "command": "node",
+      "args": [
+        "/Applications/Cells.app/Contents/Resources/mcp-server/dist/index.js"
+      ]
+    }
+  }
+}
