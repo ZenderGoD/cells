@@ -351,7 +351,9 @@ export function InfiniteCanvas() {
     (e: WheelEvent) => {
       const termNode = (e.target as HTMLElement).closest('.terminal-node')
       const browserNode = (e.target as HTMLElement).closest('.browser-node')
-      if (termNode || browserNode) return
+      // Let terminals/browsers handle their own scroll, but intercept
+      // Cmd+scroll for canvas zoom regardless of what's under the cursor.
+      if ((termNode || browserNode) && !e.metaKey) return
 
       e.preventDefault()
       cancelSnap()
