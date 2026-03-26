@@ -1113,11 +1113,29 @@ interface DaemonSession {
   subscribed: boolean
 }
 
+function formatUptime(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`
+  const mins = Math.floor(seconds / 60)
+  if (mins < 60) return `${mins}m`
+  const hours = Math.floor(mins / 60)
+  const remainMins = mins % 60
+  if (hours < 24) return `${hours}h ${remainMins}m`
+  const days = Math.floor(hours / 24)
+  return `${days}d ${hours % 24}h`
+}
+
 function DaemonSection() {
   const [status, setStatus] = useState<{
     enabled: boolean
     connected: boolean
     sessionCount: number
+    appVersion: string
+    daemonVersion: {
+      protocolVersion: number
+      appVersion: string | null
+      pid: number
+      uptime: number
+    } | null
   } | null>(null)
   const [sessions, setSessions] = useState<DaemonSession[]>([])
   const [loading, setLoading] = useState(false)
@@ -1157,6 +1175,12 @@ function DaemonSection() {
     refresh()
   }
 
+  const needsUpdate =
+    status?.connected &&
+    status.daemonVersion?.appVersion &&
+    status.appVersion &&
+    status.daemonVersion.appVersion !== status.appVersion
+
   return (
     <div className="space-y-3.5">
       <SettingsGroup title="Daemon">
@@ -1186,8 +1210,16 @@ function DaemonSection() {
               {restarting ? (
                 <span className="flex items-center gap-1 text-[10px] text-muted-foreground/50">
                   <Loader2 className="h-2.5 w-2.5 animate-spin" />
-                  Restarting...
+                  {needsUpdate ? 'Updating...' : 'Restarting...'}
                 </span>
+              ) : needsUpdate ? (
+                <button
+                  onClick={handleRestart}
+                  className="flex items-center gap-1 text-[10px] text-primary transition-colors hover:text-primary/80"
+                >
+                  <RefreshCw className="h-2.5 w-2.5" />
+                  Update daemon
+                </button>
               ) : (
                 <button
                   onClick={handleRestart}
@@ -1199,15 +1231,30 @@ function DaemonSection() {
               )}
             </div>
           </div>
-          {status && (
+          {status?.connected ? (
+            <div className="mt-1.5 space-y-0.5">
+              <p className="text-[10px] text-muted-foreground/40">
+                {status.sessionCount} session{status.sessionCount !== 1 ? 's' : ''} managed
+                {status.daemonVersion
+                  ? ` \u2022 PID ${status.daemonVersion.pid} \u2022 up ${formatUptime(status.daemonVersion.uptime)}`
+                  : ''}
+              </p>
+              {status.daemonVersion?.appVersion ? (
+                <p className="text-[10px] text-muted-foreground/40">
+                  Daemon v{status.daemonVersion.appVersion}
+                  {needsUpdate ? (
+                    <span className="text-amber-400/70"> (app is v{status.appVersion})</span>
+                  ) : null}
+                </p>
+              ) : null}
+            </div>
+          ) : status ? (
             <p className="mt-1.5 text-[10px] text-muted-foreground/40">
-              {status.connected
-                ? `${status.sessionCount} session${status.sessionCount !== 1 ? 's' : ''} managed by daemon`
-                : status.enabled === false
-                  ? 'Daemon is not available in this build. Using direct PTY mode.'
-                  : 'Daemon is not running. Sessions will not persist across restarts.'}
+              {status.enabled === false
+                ? 'Daemon is not available in this build. Using direct PTY mode.'
+                : 'Daemon is not running. Sessions will not persist across restarts.'}
             </p>
-          )}
+          ) : null}
         </div>
       </SettingsGroup>
 

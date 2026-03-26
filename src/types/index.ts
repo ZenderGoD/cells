@@ -133,7 +133,18 @@ export interface CellsAPI {
     checkAvailable(aliases?: Record<string, string>): Promise<Record<string, boolean>>
   }
   daemon: {
-    getStatus(): Promise<{ enabled: boolean; connected: boolean; sessionCount: number }>
+    getStatus(): Promise<{
+      enabled: boolean
+      connected: boolean
+      sessionCount: number
+      appVersion: string
+      daemonVersion: {
+        protocolVersion: number
+        appVersion: string | null
+        pid: number
+        uptime: number
+      } | null
+    }>
     listSessions(): Promise<
       Array<{
         termId: string

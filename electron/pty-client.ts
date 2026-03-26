@@ -128,6 +128,20 @@ export class PtyDaemonClient {
     return this.request('get-shell-pid', { termId })
   }
 
+  async getDaemonVersion(): Promise<{
+    protocolVersion: number
+    appVersion: string | null
+    pid: number
+    uptime: number
+  } | null> {
+    try {
+      return await this.request('get-daemon-version', {})
+    } catch {
+      // Old daemons won't have this message — return null gracefully
+      return null
+    }
+  }
+
   async shutdown(): Promise<void> {
     try {
       await this.request('shutdown', {})

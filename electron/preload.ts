@@ -204,6 +204,13 @@ const api: CellsAPI = {
         enabled: boolean
         connected: boolean
         sessionCount: number
+        appVersion: string
+        daemonVersion: {
+          protocolVersion: number
+          appVersion: string | null
+          pid: number
+          uptime: number
+        } | null
       }>,
     listSessions: () =>
       ipcRenderer.invoke('daemon:list-sessions') as Promise<

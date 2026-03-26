@@ -1379,13 +1379,29 @@ ipcMain.handle('updater:set-auto-update', (_event, enabled: boolean) => {
 // ---------- Daemon management IPC ----------
 
 ipcMain.handle('daemon:get-status', async () => {
+  const connected = useDaemon && (daemonClient?.isConnected() ?? false)
+  let daemonVersion: {
+    protocolVersion: number
+    appVersion: string | null
+    pid: number
+    uptime: number
+  } | null = null
+  let sessionCount = 0
+  if (connected && daemonClient) {
+    ;[daemonVersion, sessionCount] = await Promise.all([
+      daemonClient.getDaemonVersion().catch(() => null),
+      daemonClient
+        .list()
+        .then((ids) => ids.length)
+        .catch(() => 0),
+    ])
+  }
   return {
     enabled: useDaemon,
-    connected: useDaemon && (daemonClient?.isConnected() ?? false),
-    sessionCount:
-      useDaemon && daemonClient?.isConnected()
-        ? (await daemonClient.list().catch(() => [])).length
-        : 0,
+    connected,
+    sessionCount,
+    appVersion: app.getVersion(),
+    daemonVersion,
   }
 })
 

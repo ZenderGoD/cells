@@ -5,6 +5,34 @@
  * Communicates with the Electron app over a Unix domain socket using
  * newline-delimited JSON.
  *
+ * BACKWARD COMPATIBILITY CONTRACT:
+ *
+ * This daemon is designed to run independently of the Electron app version.
+ * It must survive app updates without killing sessions. To maintain this:
+ *
+ * 1. The wire protocol is newline-delimited JSON — inherently extensible.
+ *    New message types can be added without breaking old clients. Old clients
+ *    simply never send the new types, and the daemon ignores unknown types.
+ *
+ * 2. Response shape: { type: "response", id, ok, data? } is fixed. New fields
+ *    may be added to `data` but existing fields must never change meaning.
+ *
+ * 3. Push events (data, exit) are stable — they only carry termId + payload.
+ *    New push event types may be added; old clients ignore unknown types.
+ *
+ * 4. The daemon should NEVER need restarting for protocol changes. If a new
+ *    feature needs daemon support, add it as a new message type that gracefully
+ *    degrades when the daemon doesn't understand it (client gets no response →
+ *    timeout → fallback).
+ *
+ * 5. The only reason to restart the daemon is to pick up node-pty native addon
+ *    changes (rare, tied to Electron major version bumps) or critical bug fixes.
+ *    Users can trigger this manually from Settings > About > Daemon > Restart.
+ *
+ * DAEMON_PROTOCOL_VERSION tracks the protocol for informational purposes only.
+ * Clients should NOT refuse to connect based on this version — it exists so
+ * the settings UI can show whether an update is available.
+ *
  * Environment variables:
  *   CELLS_HOME_DIR   — directory for socket/pid/version files (default: ~/.cells)
  *   CELLS_APP_VERSION — written to version file on startup
@@ -25,6 +53,10 @@ import {
   resolveCodexThreadTitle,
   MAX_BUFFER,
 } from './pty-shared'
+
+// Protocol version — bumped only when the daemon wire format changes in a
+// breaking way. Clients should treat this as informational, not a gate.
+const DAEMON_PROTOCOL_VERSION = 1
 
 // ---------- Paths ----------
 
@@ -251,11 +283,30 @@ function handleMessage(socket: net.Socket, msg: any) {
       break
     }
 
+    case 'get-daemon-version': {
+      sendResponse(socket, id, true, {
+        protocolVersion: DAEMON_PROTOCOL_VERSION,
+        appVersion: process.env.CELLS_APP_VERSION ?? null,
+        pid: process.pid,
+        uptime: Math.floor(process.uptime()),
+      })
+      break
+    }
+
     case 'shutdown': {
       sendResponse(socket, id, true)
       gracefulShutdown()
       break
     }
+
+    // Unknown message types are silently ignored for forward compatibility.
+    // New app versions may send messages that old daemons don't understand —
+    // the client will time out and degrade gracefully.
+    default:
+      if (id != null) {
+        sendError(socket, id, `Unknown message type: ${type}`)
+      }
+      break
   }
 }
 
