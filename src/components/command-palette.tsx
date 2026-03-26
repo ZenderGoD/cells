@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useHotkey } from '@tanstack/react-hotkeys'
 import {
-  TerminalSquare,
   Globe,
   Plus,
   Puzzle,
@@ -10,7 +9,6 @@ import {
   Settings,
   FolderOpen,
   Search,
-  Sparkles,
   LogOut,
 } from 'lucide-react'
 import {

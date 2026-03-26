@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, useCallback, useMemo, type KeyboardEvent } from 'react'
+import { useRef, useState, useEffect, useCallback, type KeyboardEvent } from 'react'
 import { useHotkey } from '@tanstack/react-hotkeys'
 import {
   ArrowLeft,
@@ -105,23 +105,22 @@ export function StatusBar() {
 
   // Extension popup icons for the focused browser's project
   const [popupExtensions, setPopupExtensions] = useState<ExtensionMeta[]>([])
-  const refreshExtensions = useCallback(() => {
+  const refreshExtensions = useCallback(async () => {
     if (!focusedBrowserId || !activeProjectId) {
       setPopupExtensions([])
       return
     }
-    window.cells.extensions.list().then((state) => {
-      const enabledIds = state.projectExtensions[activeProjectId!] ?? []
-      const withPopup = state.extensions.filter(
-        (ext) => enabledIds.includes(ext.id) && ext.hasPopup,
-      )
-      setPopupExtensions(withPopup)
-    })
+    const state = await window.cells.extensions.list()
+    const enabledIds = state.projectExtensions[activeProjectId] ?? []
+    const withPopup = state.extensions.filter((ext) => enabledIds.includes(ext.id) && ext.hasPopup)
+    setPopupExtensions(withPopup)
   }, [focusedBrowserId, activeProjectId])
   useEffect(() => {
-    refreshExtensions()
+    void Promise.resolve().then(refreshExtensions)
     // Also refresh when an extension is installed from CWS
-    const unsub = window.cells.extensions.onInstalled(() => refreshExtensions())
+    const unsub = window.cells.extensions.onInstalled(() => {
+      void refreshExtensions()
+    })
     return unsub
   }, [refreshExtensions])
   const copyResetRef = useRef<number | null>(null)
@@ -386,25 +385,22 @@ export function StatusBar() {
                           : 'Click a window to center it'
                       }
                     >
-                      {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */}
-                      <div onClick={(e) => e.stopPropagation()}>
-                        <WindowOverviewMap
-                          windows={allWindows}
-                          currentId={overviewAnchor?.id}
-                          focusedId={focusedWindow?.id ?? null}
-                          viewport={viewportRect}
-                          width={titleBarOverviewWidth}
-                          height={titleBarOverviewHeight}
-                          className="border-0 bg-transparent rounded-none"
-                          onSelect={(window) => {
-                            if (window.type === 'browser') {
-                              snapToBrowser(window.id)
-                              return
-                            }
-                            snapToTerminal(window.id)
-                          }}
-                        />
-                      </div>
+                      <WindowOverviewMap
+                        windows={allWindows}
+                        currentId={overviewAnchor?.id}
+                        focusedId={focusedWindow?.id ?? null}
+                        viewport={viewportRect}
+                        width={titleBarOverviewWidth}
+                        height={titleBarOverviewHeight}
+                        className="border-0 bg-transparent rounded-none"
+                        onSelect={(window) => {
+                          if (window.type === 'browser') {
+                            snapToBrowser(window.id)
+                            return
+                          }
+                          snapToTerminal(window.id)
+                        }}
+                      />
                     </motion.div>
                   )}
                 </AnimatePresence>

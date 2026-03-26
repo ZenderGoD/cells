@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useRef } from 'react'
 import { AlertTriangle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
@@ -33,11 +33,7 @@ export function CloseWindowDialog({
   onConfirm,
   onCancel,
 }: CloseWindowDialogProps) {
-  const [skipFuturePrompts, setSkipFuturePrompts] = useState(false)
-
-  useEffect(() => {
-    if (open) setSkipFuturePrompts(false)
-  }, [open])
+  const skipFuturePromptsRef = useRef<HTMLInputElement>(null)
 
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => !nextOpen && onCancel()}>
@@ -52,8 +48,9 @@ export function CloseWindowDialog({
               <DialogDescription className="text-[11px] leading-5 text-muted-foreground/70">
                 <span className="font-medium text-foreground">{processLabel}</span>
                 {' is still running in '}
-                <span className="font-medium text-foreground">{windowTitle || 'this window'}</span>.{' '}
-                {formatUndoTimeout(undoTimeoutMs)}
+                <span className="font-medium text-foreground">
+                  {windowTitle || 'this window'}
+                </span>. {formatUndoTimeout(undoTimeoutMs)}
               </DialogDescription>
             </div>
           </div>
@@ -62,9 +59,9 @@ export function CloseWindowDialog({
         <div className="px-4 pb-1">
           <label className="flex items-center gap-2 rounded-md px-2 py-1.5 text-[11px] text-muted-foreground/70 transition-colors hover:bg-muted/40 hover:text-foreground">
             <input
+              ref={skipFuturePromptsRef}
               type="checkbox"
-              checked={skipFuturePrompts}
-              onChange={(event) => setSkipFuturePrompts(event.target.checked)}
+              defaultChecked={false}
               className="h-3.5 w-3.5 rounded border-border/50 bg-background/70"
             />
             <span>Don&apos;t ask again for {processLabel}</span>
@@ -75,7 +72,11 @@ export function CloseWindowDialog({
           <Button variant="outline" size="sm" onClick={onCancel}>
             Cancel
           </Button>
-          <Button variant="destructive" size="sm" onClick={() => onConfirm(skipFuturePrompts)}>
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={() => onConfirm(skipFuturePromptsRef.current?.checked ?? false)}
+          >
             Close Window
           </Button>
         </DialogFooter>

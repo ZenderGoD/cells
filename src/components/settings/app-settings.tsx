@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Dialog as DialogPrimitive } from '@base-ui/react/dialog'
 import { Check, Download, ExternalLink, Github, Loader2, Puzzle, RefreshCw, X } from 'lucide-react'
 
-import type { ExtensionMeta, ExtensionsState } from '@/types'
+import type { ExtensionMeta } from '@/types'
 
 import { Button } from '@/components/ui/button'
 import {

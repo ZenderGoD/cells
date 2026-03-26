@@ -844,7 +844,7 @@ export function CellTerminal({
       // Tell main process to buffer instead of sending live IPC
       window.cells.terminal.unsubscribe(termId)
     }
-  }, [setInferredTitle, termId, trackInputForTitle])
+  }, [copySelectionToClipboard, setInferredTitle, termId, trackInputForTitle])
 
   useEffect(() => {
     if (!isFocused) return
@@ -860,15 +860,11 @@ export function CellTerminal({
 
       if (!inThisTerminal && !fromTerminalTextarea) return
 
-      const term = terminalRef.current
-      if (!term?.hasSelection()) return
-      const selection = term.getSelection()
-      if (!selection) return
-
+      if (!copySelectionToClipboard()) return
       event.preventDefault()
       event.stopPropagation()
-      event.clipboardData?.setData('text/plain', selection)
-      void navigator.clipboard.writeText(selection).catch(() => {})
+      const selection = terminalRef.current?.getSelection()
+      if (selection) event.clipboardData?.setData('text/plain', selection)
     }
 
     document.addEventListener('copy', handleCopy, true)
