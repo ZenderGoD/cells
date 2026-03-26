@@ -109,7 +109,11 @@ export function ProjectSwitcher() {
   const cycle = useCallback(
     (direction: 1 | -1) => {
       const state = useStore.getState()
-      const ordered = orderProjects(state.projects, state.activeProjectId, state.projectSwitchMode)
+      const ordered = orderProjects(
+        state.projects,
+        state.activeProjectId,
+        state.projectSwitchMode,
+      ).slice(0, 12)
       if (ordered.length < 2) return
 
       let nextIdx: number
@@ -256,7 +260,7 @@ export function ProjectSwitcher() {
           className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none"
         >
           <div
-            className="bg-card/92 rounded-xl ring-1 ring-border/40 p-3 pointer-events-auto max-w-[min(98vw,1360px)]"
+            className="bg-card/92 rounded-xl ring-1 ring-border/40 p-3 pointer-events-auto max-w-[min(98vw,800px)]"
             onMouseMove={() => {
               mouseActivated.current = true
             }}
@@ -268,9 +272,9 @@ export function ProjectSwitcher() {
               </span>
             </div>
 
-            <div className="overflow-x-auto overflow-y-visible px-1 py-2 scrollbar-none">
-              <div className="flex w-max min-w-full gap-3 items-stretch">
-                {items.map((item, index) => {
+            <div className="px-1 py-2">
+              <div className="flex flex-wrap gap-3 items-stretch">
+                {items.slice(0, 12).map((item, index) => {
                   const isSelected = index === selectedIndex
                   const number = index + 1
 

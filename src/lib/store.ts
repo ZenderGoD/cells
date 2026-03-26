@@ -69,6 +69,7 @@ interface StoreState {
   enabledAgents: Record<string, boolean | 'auto'>
   inputPrefixes: InputPrefix[]
   lastUsedAgent: string | null
+  lastCommandAction: 'search' | 'agent' | null
   colorScheme: 'light' | 'dark' | 'system'
   saveStatus: 'idle' | 'saving' | 'saved' | 'error'
   closeUndoTimeoutMs: number
@@ -154,6 +155,7 @@ interface StoreState {
   setEnabledAgents(agents: Record<string, boolean | 'auto'>): void
   setInputPrefixes(prefixes: InputPrefix[]): void
   setLastUsedAgent(agent: string): void
+  setLastCommandAction(action: 'search' | 'agent'): void
   setColorScheme(scheme: 'light' | 'dark' | 'system'): void
   setCloseUndoTimeoutMs(timeoutMs: number): void
   setCloseProcessSuppressions(processes: string[]): void
@@ -455,6 +457,7 @@ export const useStore = create<StoreState>((set, get) => ({
   enabledAgents: {},
   inputPrefixes: DEFAULT_INPUT_PREFIXES,
   lastUsedAgent: null,
+  lastCommandAction: null,
   colorScheme: 'dark' as const,
   saveStatus: 'idle',
   closeUndoTimeoutMs: DEFAULT_CLOSE_UNDO_TIMEOUT_MS,
@@ -1504,6 +1507,9 @@ export const useStore = create<StoreState>((set, get) => ({
   },
   setLastUsedAgent(agent) {
     set({ lastUsedAgent: agent })
+  },
+  setLastCommandAction(action) {
+    set({ lastCommandAction: action })
   },
   setColorScheme(scheme) {
     const isDark =

@@ -76,6 +76,12 @@ async function bridgeRequest(method: string, params: object = {}): Promise<any> 
 const server = new FastMCP({
   name: "Cells",
   version: "0.1.0",
+  instructions:
+    "Cells is an Electron-based development environment that combines terminal emulators (powered by Ghostty) " +
+    "and browser windows into a single, tiled workspace per project. " +
+    "This MCP server lets you observe and interact with the user's running terminals and browsers inside Cells. " +
+    "You can read terminal output, run commands, inspect browser pages, take screenshots, and execute JavaScript — " +
+    "all scoped to the current project. Start with list_windows to see what's open.",
 });
 
 // ==================== Window listing ====================

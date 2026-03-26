@@ -75,6 +75,7 @@ function launchAgentAction(
   attachments: Attachment[] = [],
 ) {
   useStore.getState().setLastUsedAgent(id)
+  useStore.getState().setLastCommandAction('agent')
   const cmd = useStore.getState().getAgentCommand(id)
   const prompt = buildPromptWithAttachments(searchText.trim(), attachments)
 
@@ -212,6 +213,7 @@ export function CommandPalette() {
   const agentAliases = useStore((s) => s.agentAliases)
   const enabledAgents = useStore((s) => s.enabledAgents)
   const lastUsedAgent = useStore((s) => s.lastUsedAgent)
+  const lastCommandAction = useStore((s) => s.lastCommandAction)
   const isGitRepo = useStore((s) => s.isGitRepo)
   const worktrees = useStore((s) => s.worktrees)
   const focusedTerminalId = useStore((s) => s.focusedTerminalId)
@@ -220,6 +222,10 @@ export function CommandPalette() {
   const availableAgents = AGENT_OPTIONS.filter(({ id }) => agents[id])
   const wordCount = search.trim().split(/\s+/).filter(Boolean).length
   const isPromptMode = wordCount > 10
+  // Show agents before search if user recently used an agent, or fall back to prompt-mode heuristic
+  const agentsFirst =
+    lastCommandAction === 'agent' ||
+    (lastCommandAction !== 'search' && (isPromptMode || attachments.length > 0))
 
   const addAttachments = useCallback(async (paths: string[]) => {
     const newAttachments = paths.map((p) => ({
@@ -364,6 +370,7 @@ export function CommandPalette() {
 
   const searchInBrowser = () => {
     if (!search.trim()) return
+    useStore.getState().setLastCommandAction('search')
     runAction(() => useStore.getState().addBrowserWithUrl(search.trim()))
   }
 
@@ -413,14 +420,16 @@ export function CommandPalette() {
           }}
         >
           <AgentIcon agent={id} className="text-muted-foreground" size={16} />
-          {search.trim() && attachments.length > 0
-            ? `Ask ${label} with ${attachments.length} file${attachments.length > 1 ? 's' : ''}: "${search.trim().slice(0, 40)}"`
-            : search.trim()
-              ? `Ask ${label}: "${search.trim().slice(0, 50)}"`
-              : attachments.length > 0
-                ? `Send ${attachments.length} file${attachments.length > 1 ? 's' : ''} to ${label}`
-                : `New ${label} Terminal`}
-          <span className="ml-auto max-w-40 truncate text-[10px] font-mono text-muted-foreground/40">
+          <span className="truncate">
+            {search.trim() && attachments.length > 0
+              ? `Ask ${label} with ${attachments.length} file${attachments.length > 1 ? 's' : ''}: "${search.trim().slice(0, 40)}"`
+              : search.trim()
+                ? `Ask ${label}: "${search.trim().slice(0, 50)}"`
+                : attachments.length > 0
+                  ? `Send ${attachments.length} file${attachments.length > 1 ? 's' : ''} to ${label}`
+                  : `New ${label} Terminal`}
+          </span>
+          <span className="ml-auto max-w-40 shrink-0 truncate text-[10px] font-mono text-muted-foreground/40">
             {getAgentCommandLabel(id)}
           </span>
           {id === lastUsedAgent && (
@@ -437,6 +446,28 @@ export function CommandPalette() {
       <CommandDialog open={open} onOpenChange={handleOpenChange} showCloseButton={false}>
         <Command
           loop
+          filter={(value, search) => {
+            // Give forceMount items a non-zero score so cmdk includes them in
+            // auto-selection when no other items match the search text.
+            if (
+              value.startsWith('agent-') ||
+              value === 'search-web' ||
+              value.startsWith('run-terminal-') ||
+              value === 'create-worktree-new-branch'
+            ) {
+              return 1
+            }
+            if (!search) return 1
+            const v = value.toLowerCase()
+            const s = search.toLowerCase()
+            if (v.includes(s)) return 1
+            // Basic fuzzy: all search chars appear in order
+            let j = 0
+            for (let i = 0; i < v.length && j < s.length; i++) {
+              if (v[i] === s[j]) j++
+            }
+            return j === s.length ? 1 : 0
+          }}
           onDragOver={(e) => {
             if (e.dataTransfer?.types.some((t) => t === 'Files' || t === 'text/uri-list')) {
               e.preventDefault()
@@ -477,6 +508,11 @@ export function CommandPalette() {
             searchText={search}
             onValueChange={setSearch}
             onKeyDown={(e) => {
+              if (e.key === 'Backspace' && !search && attachments.length > 0) {
+                e.preventDefault()
+                setAttachments((prev) => prev.slice(0, -1))
+                return
+              }
               if (e.key === 'Enter' && search.trim()) {
                 // Prefix match → execute prefix action directly
                 if (matchInputPrefix(search)) {
@@ -800,30 +836,50 @@ export function CommandPalette() {
               </>
             )}
 
-            {/* When prompt is long (>10 words) or files are attached, show AI Agents first, then Search */}
-            {(isPromptMode || attachments.length > 0) && sortedAgents.length > 0 && (
+            {/* Dynamic ordering: show recently-used action type (agent/search) first */}
+            {agentsFirst ? (
               <>
-                <CommandSeparator />
-                {renderAgentsGroup()}
+                {sortedAgents.length > 0 && (
+                  <>
+                    <CommandSeparator />
+                    {renderAgentsGroup()}
+                  </>
+                )}
+                {search.trim() && (
+                  <>
+                    <CommandSeparator />
+                    <CommandGroup heading="Search" forceMount>
+                      <CommandItem forceMount onSelect={searchInBrowser} value="search-web">
+                        <Search className="text-muted-foreground" />
+                        <span className="truncate">
+                          Search for &ldquo;{search.trim().slice(0, 80)}&rdquo;
+                        </span>
+                      </CommandItem>
+                    </CommandGroup>
+                  </>
+                )}
               </>
-            )}
-
-            {search.trim() && (
+            ) : (
               <>
-                <CommandSeparator />
-                <CommandGroup heading="Search" forceMount>
-                  <CommandItem forceMount onSelect={searchInBrowser} value="search-web">
-                    <Search className="text-muted-foreground" />
-                    Search for &ldquo;{search.trim().slice(0, 80)}&rdquo;
-                  </CommandItem>
-                </CommandGroup>
-              </>
-            )}
-
-            {!isPromptMode && attachments.length === 0 && sortedAgents.length > 0 && (
-              <>
-                <CommandSeparator />
-                {renderAgentsGroup()}
+                {search.trim() && (
+                  <>
+                    <CommandSeparator />
+                    <CommandGroup heading="Search" forceMount>
+                      <CommandItem forceMount onSelect={searchInBrowser} value="search-web">
+                        <Search className="text-muted-foreground" />
+                        <span className="truncate">
+                          Search for &ldquo;{search.trim().slice(0, 80)}&rdquo;
+                        </span>
+                      </CommandItem>
+                    </CommandGroup>
+                  </>
+                )}
+                {sortedAgents.length > 0 && (
+                  <>
+                    <CommandSeparator />
+                    {renderAgentsGroup()}
+                  </>
+                )}
               </>
             )}
 
@@ -837,7 +893,9 @@ export function CommandPalette() {
                     onSelect={() => runAsTerminalCommand(search)}
                   >
                     <TerminalSquare className="text-muted-foreground" />
-                    Run in Terminal: &ldquo;{search.trim().slice(0, 80)}&rdquo;
+                    <span className="truncate">
+                      Run in Terminal: &ldquo;{search.trim().slice(0, 80)}&rdquo;
+                    </span>
                   </CommandItem>
                 </CommandGroup>
               </>

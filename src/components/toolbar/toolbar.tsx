@@ -602,7 +602,7 @@ export function StatusBar() {
                 ) : (
                   <Logo className="h-3 w-3 text-primary/60 shrink-0" />
                 )}
-                <span className="text-[11px] font-medium truncate max-w-40 text-muted-foreground">
+                <span className="text-[11px] font-medium truncate min-w-0 text-muted-foreground">
                   {ftTitle}
                 </span>
                 <WorktreeSwitcher termId={focusedTerminalId} />

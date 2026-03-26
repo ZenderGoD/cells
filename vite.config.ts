@@ -65,6 +65,9 @@ function buildMcpServer(): Plugin {
         target: 'node20',
         outfile: out,
         external: ['effect', 'sury', '@valibot/to-json-schema'],
+        banner: {
+          js: "import { createRequire as __mcpCjsRequire } from 'node:module';\nconst require = __mcpCjsRequire(import.meta.url);",
+        },
       })
     },
   }

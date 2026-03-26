@@ -982,6 +982,9 @@ export function CellTerminal({
           store.updateTerminalAgentStatus(termId, 'done')
           lastAgentDataRef.current = 0
           agentBellRef.current = false
+          // Clear inferred agent so subsequent shell output doesn't
+          // re-trigger the active → unread cycle on a dead agent
+          inferredAgentRef.current = null
         }
 
         if (agent === 'codex') {

@@ -162,6 +162,9 @@ function CommandInput({
               } else {
                 onKeyDown?.(e as any)
               }
+            } else if (e.key === 'Backspace' && !(value as string)?.length) {
+              // Empty input + backspace → forward to parent (e.g. remove attachment)
+              onKeyDown?.(e as any)
             } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
               // Forward arrow keys to cmdk for item navigation
               e.preventDefault()

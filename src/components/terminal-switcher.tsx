@@ -85,10 +85,11 @@ export function TerminalSwitcher() {
   const currentId = focusedTerminalId || focusedBrowserId
   const canvasWindows = getCanvasWindows(terminals, browsers)
   const viewportRect = getViewportRect(canvas)
-  const items =
+  const items = (
     tabSwitchMode === 'recent' && focusHistory.length > 0
       ? orderByRecent(chronologicalItems, currentId, focusHistory)
       : chronologicalItems
+  ).slice(0, 12)
   const selectedItemId = items[selectedIndex]?.id ?? currentId ?? null
 
   const cycle = useCallback(
@@ -101,10 +102,11 @@ export function TerminalSwitcher() {
       if (chronologicalItems.length < 2) return
 
       const currentId = state.focusedTerminalId || state.focusedBrowserId
-      const allItems =
+      const allItems = (
         state.tabSwitchMode === 'recent' && state.focusHistory.length > 0
           ? orderByRecent(chronologicalItems, currentId, state.focusHistory)
           : chronologicalItems
+      ).slice(0, 12)
 
       let nextIdx: number
       if (!openRef.current) {
@@ -221,7 +223,7 @@ export function TerminalSwitcher() {
           className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none"
         >
           <div
-            className="bg-card/92 rounded-xl ring-1 ring-border/40 p-3 pointer-events-auto max-w-[min(98vw,1280px)]"
+            className="bg-card/92 rounded-xl ring-1 ring-border/40 p-3 pointer-events-auto max-w-[min(98vw,700px)]"
             onMouseMove={() => {
               mouseActivated.current = true
             }}
@@ -242,9 +244,9 @@ export function TerminalSwitcher() {
               />
             </div>
 
-            <div className="mt-2 overflow-x-auto overflow-y-visible px-1 py-2 scrollbar-none">
-              <div className="flex w-max min-w-full gap-3 items-stretch">
-                {items.map((item, i) => (
+            <div className="mt-2 px-1 py-2">
+              <div className="flex flex-wrap gap-3 items-stretch">
+                {items.slice(0, 12).map((item, i) => (
                   <button
                     key={item.id}
                     type="button"

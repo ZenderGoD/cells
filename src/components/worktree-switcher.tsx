@@ -153,7 +153,7 @@ export function WorktreeSwitcher({ termId, className }: WorktreeSwitcherProps) {
 
       {open && (
         <div
-          className="absolute top-full right-0 mt-1 w-64 rounded-lg bg-popover shadow-lg ring-1 ring-foreground/10 z-50 overflow-hidden"
+          className="absolute bottom-full right-0 mb-1 w-64 rounded-lg bg-popover shadow-lg ring-1 ring-foreground/10 z-50 overflow-hidden"
           onMouseDown={(e) => e.stopPropagation()}
         >
           {/* Header */}
