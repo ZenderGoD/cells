@@ -381,10 +381,13 @@ export function StatusBar() {
                       exit={{ opacity: 0, width: 0 }}
                       transition={{ duration: 0.2, ease: 'easeInOut' }}
                       className="flex items-center overflow-hidden ml-1"
+                      draggable={false}
+                      onDragStart={(e) => e.stopPropagation()}
+                      onPointerDown={(e) => e.stopPropagation()}
                       title={
                         overviewAnchor
-                          ? `${overviewAnchor.title} • click a window to center it`
-                          : 'Click a window to center it'
+                          ? `${overviewAnchor.title} • drag to reposition, click to focus`
+                          : 'Drag to reposition, click to focus'
                       }
                     >
                       <WindowOverviewMap

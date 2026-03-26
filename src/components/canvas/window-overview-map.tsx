@@ -175,7 +175,7 @@ export function WindowOverviewMap({
   return (
     <div
       className={cn(
-        'relative overflow-hidden rounded-[8px] border border-border/50 bg-background/80',
+        'relative overflow-hidden rounded-none border border-border/50 bg-background/80',
         className,
       )}
       style={{ width, height }}
@@ -183,7 +183,7 @@ export function WindowOverviewMap({
     >
       {viewport && (
         <div
-          className="pointer-events-none absolute rounded-[6px] border border-foreground/28 bg-foreground/[0.05] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.03)]"
+          className="pointer-events-none absolute rounded-none border border-foreground/28 bg-foreground/[0.05] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.03)]"
           style={renderRect(viewport)}
         />
       )}
@@ -203,8 +203,8 @@ export function WindowOverviewMap({
             (onSelect || canDrag) && 'hover:scale-[1.04]',
             canDrag && 'cursor-grab active:cursor-grabbing',
             window.type === 'browser'
-              ? 'rounded-[4px] border-white/24 bg-white/14 text-foreground/55'
-              : 'rounded-[4px] border-white/16 bg-white/8 text-foreground/45',
+              ? 'rounded-none border-white/24 bg-white/14 text-foreground/55'
+              : 'rounded-none border-white/16 bg-white/8 text-foreground/45',
             isCurrent
               ? 'z-10 border-foreground/90 bg-foreground/20 text-foreground shadow-[0_0_0_1px_rgba(255,255,255,0.16),0_10px_22px_rgba(0,0,0,0.24)]'
               : isFocused
