@@ -1,10 +1,9 @@
 import ClaudeCode from '@lobehub/icons/es/ClaudeCode'
-import Codex from '@lobehub/icons/es/Codex'
+import OpenAI from '@lobehub/icons/es/OpenAI'
 import { Sparkles } from 'lucide-react'
 
+import { getAgentBrand, type AgentName } from '@/lib/agent-brand'
 import { cn } from '@/lib/utils'
-
-type AgentName = 'claude' | 'codex' | null | undefined
 
 interface AgentIconProps {
   agent: AgentName
@@ -13,12 +12,15 @@ interface AgentIconProps {
 }
 
 export function AgentIcon({ agent, className, size = 14 }: AgentIconProps) {
-  if (agent === 'claude') {
+  const brand = getAgentBrand(agent)
+  const numericSize = typeof size === 'number' ? size : Number.parseFloat(size) || 14
+
+  if (brand === 'claude-code') {
     return <ClaudeCode.Color className={cn('shrink-0', className)} size={size} />
   }
 
-  if (agent === 'codex') {
-    return <Codex.Color className={cn('shrink-0', className)} size={size} />
+  if (brand === 'openai') {
+    return <OpenAI.Avatar className={cn('shrink-0', className)} size={numericSize} />
   }
 
   return <Sparkles className={cn('shrink-0', className)} style={{ width: size, height: size }} />
