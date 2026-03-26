@@ -35,6 +35,9 @@ import { AppSettings } from '../settings/app-settings'
 import { NewProjectDialog } from '../new-project-dialog'
 import { Logo } from '../logo'
 import { WindowOverviewMap } from '../canvas/window-overview-map'
+import { WorktreeSwitcher } from '../worktree-switcher'
+import { AgentIcon } from '../agent-icon'
+import { inferAgentFromTitle } from '@/lib/agent-command'
 
 const EMPTY_BROWSER_UI = {
   browserId: null as string | null,
@@ -587,6 +590,25 @@ export function StatusBar() {
               <X className="w-3 h-3" />
             </button>
           </div>
+        ) : focusedTerminalId ? (
+          (() => {
+            const ft = terminals.find((t) => t.id === focusedTerminalId)
+            const ftTitle = ft?.title ?? 'Terminal'
+            const ftAgent = ft?.agent ?? inferAgentFromTitle(ftTitle)
+            return (
+              <div className="flex-1 flex items-center gap-2 px-3 min-w-0 no-drag">
+                {ftAgent ? (
+                  <AgentIcon agent={ftAgent} className="h-3 w-3 shrink-0" size={12} />
+                ) : (
+                  <Logo className="h-3 w-3 text-primary/60 shrink-0" />
+                )}
+                <span className="text-[11px] font-medium truncate max-w-40 text-muted-foreground">
+                  {ftTitle}
+                </span>
+                <WorktreeSwitcher termId={focusedTerminalId} />
+              </div>
+            )
+          })()
         ) : (
           <div className="flex-1" />
         )}

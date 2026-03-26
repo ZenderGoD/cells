@@ -142,6 +142,11 @@ const api: CellsAPI = {
     resizeToFit: (width: number, height: number) =>
       ipcRenderer.invoke('app:resize-to-fit', width, height),
     pickFolder: () => ipcRenderer.invoke('app:pick-folder'),
+    pickFiles: () => ipcRenderer.invoke('app:pick-files') as Promise<string[] | null>,
+    listRecentFiles: () =>
+      ipcRenderer.invoke('app:list-recent-files') as Promise<
+        Array<{ path: string; name: string; mtime: number; source: string }>
+      >,
     getPathForFile: (file: File) => webUtils.getPathForFile(file),
     saveTempFile: (data: Uint8Array, filename: string) =>
       ipcRenderer.invoke('app:save-temp-file', data, filename) as Promise<string | null>,

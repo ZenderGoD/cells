@@ -6,16 +6,20 @@ import {
   Download,
   ExternalLink,
   Github,
+  Globe,
   Loader2,
+  Plus,
   Puzzle,
   RefreshCw,
   Server,
   Skull,
   Terminal,
+  TerminalSquare,
+  Trash2,
   X,
 } from 'lucide-react'
 
-import type { ExtensionMeta } from '@/types'
+import type { ExtensionMeta, InputPrefix } from '@/types'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -46,6 +50,7 @@ type SettingsSectionId =
   | 'terminal'
   | 'browser'
   | 'agents'
+  | 'prefixes'
   | 'help'
   | 'about'
 type SettingsSelectOption = { value: string; label: string; hint?: string }
@@ -65,6 +70,7 @@ const SETTINGS_SECTIONS: Array<{ id: SettingsSectionId; label: string }> = [
   { id: 'terminal', label: 'Terminal' },
   { id: 'browser', label: 'Browser' },
   { id: 'agents', label: 'Agents' },
+  { id: 'prefixes', label: 'Prefixes' },
   { id: 'help', label: 'Help' },
   { id: 'about', label: 'About' },
 ]
@@ -136,6 +142,10 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const setLinkRules = useStore((s) => s.setLinkRules)
   const agentAliases = useStore((s) => s.agentAliases)
   const setAgentAliases = useStore((s) => s.setAgentAliases)
+  const enabledAgents = useStore((s) => s.enabledAgents)
+  const setEnabledAgents = useStore((s) => s.setEnabledAgents)
+  const inputPrefixes = useStore((s) => s.inputPrefixes)
+  const setInputPrefixes = useStore((s) => s.setInputPrefixes)
   const saveStatus = useStore((s) => s.saveStatus)
   const closeUndoTimeoutMs = useStore((s) => s.closeUndoTimeoutMs)
   const closeProcessSuppressions = useStore((s) => s.closeProcessSuppressions)
@@ -705,34 +715,156 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
 
               {activeSection === 'agents' ? (
                 <div className="space-y-3.5">
-                  <SettingsGroup title="Command Aliases">
+                  <SettingsGroup title="Agents">
                     <p className="text-[10px] text-muted-foreground/40 mb-3">
-                      Configure custom commands for AI agents. Aliases are used when launching
-                      agents from the command palette and for auto-detection in terminals.
+                      Enable or disable agents and configure custom commands. Aliases are used when
+                      launching agents from the command palette and for auto-detection in terminals.
                     </p>
-                    <div className="space-y-2.5">
-                      <SettingsField label="Claude Code">
-                        <input
-                          type="text"
-                          value={agentAliases.claude ?? ''}
-                          onChange={(e) =>
-                            setAgentAliases({ ...agentAliases, claude: e.target.value })
-                          }
-                          placeholder="claude"
-                          className="w-full rounded-md border border-border/20 bg-background/40 px-2.5 py-1.5 text-[11px] text-foreground outline-none placeholder:text-muted-foreground/30 focus:border-border/40 font-mono"
-                        />
-                      </SettingsField>
-                      <SettingsField label="Codex">
-                        <input
-                          type="text"
-                          value={agentAliases.codex ?? ''}
-                          onChange={(e) =>
-                            setAgentAliases({ ...agentAliases, codex: e.target.value })
-                          }
-                          placeholder="codex"
-                          className="w-full rounded-md border border-border/20 bg-background/40 px-2.5 py-1.5 text-[11px] text-foreground outline-none placeholder:text-muted-foreground/30 focus:border-border/40 font-mono"
-                        />
-                      </SettingsField>
+                    <div className="space-y-3">
+                      {(
+                        [
+                          { id: 'claude', label: 'Claude Code', placeholder: 'claude' },
+                          { id: 'codex', label: 'Codex', placeholder: 'codex' },
+                        ] as const
+                      ).map(({ id, label, placeholder }) => {
+                        const override = enabledAgents[id]
+                        const isEnabled =
+                          override === true || override === undefined || override === 'auto'
+                        return (
+                          <div
+                            key={id}
+                            className="rounded-md border border-border/10 p-2.5 space-y-2"
+                          >
+                            <button
+                              onClick={() => {
+                                const current = enabledAgents[id]
+                                // Toggle: enabled (true/auto/undefined) → false, false → auto
+                                const next =
+                                  current === false ? ('auto' as const) : (false as const)
+                                setEnabledAgents({ ...enabledAgents, [id]: next })
+                              }}
+                              className="flex w-full items-center justify-between text-[11px]"
+                            >
+                              <span
+                                className={cn(
+                                  'text-foreground',
+                                  !isEnabled && 'text-muted-foreground/50',
+                                )}
+                              >
+                                {label}
+                              </span>
+                              <div
+                                className={cn(
+                                  'relative h-3.5 w-6 rounded-full transition-colors',
+                                  isEnabled ? 'bg-primary' : 'bg-muted-foreground/25',
+                                )}
+                              >
+                                <div
+                                  className={cn(
+                                    'absolute top-0.5 h-2.5 w-2.5 rounded-full bg-background transition-transform',
+                                    isEnabled ? 'translate-x-3' : 'translate-x-0.5',
+                                  )}
+                                />
+                              </div>
+                            </button>
+                            {isEnabled && (
+                              <div>
+                                <label className="text-[10px] text-muted-foreground/40 mb-1 block">
+                                  Command alias
+                                </label>
+                                <input
+                                  type="text"
+                                  value={agentAliases[id] ?? ''}
+                                  onChange={(e) =>
+                                    setAgentAliases({ ...agentAliases, [id]: e.target.value })
+                                  }
+                                  placeholder={placeholder}
+                                  className="w-full rounded-md border border-border/20 bg-background/40 px-2.5 py-1.5 text-[11px] text-foreground outline-none placeholder:text-muted-foreground/30 focus:border-border/40 font-mono"
+                                />
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </SettingsGroup>
+                </div>
+              ) : null}
+
+              {activeSection === 'prefixes' ? (
+                <div className="space-y-3.5">
+                  <SettingsGroup title="Input Prefixes">
+                    <p className="text-[10px] text-muted-foreground/40 mb-3">
+                      Prefixes let you route command palette input directly to a terminal, browser,
+                      or AI agent. For example, typing{' '}
+                      <code className="font-mono text-foreground/60">!ls -la</code> runs the command
+                      in a new terminal.
+                    </p>
+                    <div className="space-y-2">
+                      {inputPrefixes.map((p, i) => (
+                        <div key={i} className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            value={p.prefix}
+                            onChange={(e) => {
+                              const updated = [...inputPrefixes]
+                              updated[i] = { ...updated[i], prefix: e.target.value }
+                              setInputPrefixes(updated)
+                            }}
+                            placeholder="!"
+                            className="w-14 rounded-md border border-border/20 bg-background/40 px-2.5 py-1.5 text-[11px] text-foreground outline-none placeholder:text-muted-foreground/30 focus:border-border/40 font-mono text-center"
+                          />
+                          <select
+                            value={p.target}
+                            onChange={(e) => {
+                              const updated = [...inputPrefixes]
+                              const target = e.target.value as InputPrefix['target']
+                              updated[i] = {
+                                ...updated[i],
+                                target,
+                                agentId: target === 'agent' ? 'claude' : undefined,
+                              }
+                              setInputPrefixes(updated)
+                            }}
+                            className="flex-1 rounded-md border border-border/20 bg-background/40 px-2.5 py-1.5 text-[11px] text-foreground outline-none focus:border-border/40"
+                          >
+                            <option value="terminal">Terminal</option>
+                            <option value="browser">Browser</option>
+                            <option value="agent">Agent</option>
+                          </select>
+                          {p.target === 'agent' && (
+                            <select
+                              value={p.agentId ?? 'claude'}
+                              onChange={(e) => {
+                                const updated = [...inputPrefixes]
+                                updated[i] = { ...updated[i], agentId: e.target.value }
+                                setInputPrefixes(updated)
+                              }}
+                              className="w-24 rounded-md border border-border/20 bg-background/40 px-2.5 py-1.5 text-[11px] text-foreground outline-none focus:border-border/40"
+                            >
+                              <option value="claude">Claude</option>
+                              <option value="codex">Codex</option>
+                            </select>
+                          )}
+                          <button
+                            onClick={() => {
+                              setInputPrefixes(inputPrefixes.filter((_, j) => j !== i))
+                            }}
+                            className="p-1 rounded-md text-muted-foreground/40 hover:text-destructive hover:bg-destructive/10 transition-colors"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                      <button
+                        onClick={() => {
+                          setInputPrefixes([...inputPrefixes, { prefix: '', target: 'terminal' }])
+                        }}
+                        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] text-muted-foreground/50 hover:text-foreground hover:bg-muted/40 transition-colors"
+                      >
+                        <Plus className="w-3 h-3" />
+                        Add prefix
+                      </button>
                     </div>
                   </SettingsGroup>
                 </div>

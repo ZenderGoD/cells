@@ -731,6 +731,46 @@ ipcMain.handle('app:pick-folder', async () => {
   return result.canceled ? null : result.filePaths[0]
 })
 
+ipcMain.handle('app:pick-files', async () => {
+  if (!mainWindow) return null
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openFile', 'multiSelections'],
+  })
+  return result.canceled ? null : result.filePaths
+})
+
+ipcMain.handle('app:list-recent-files', async () => {
+  const dirs = [
+    {
+      label: 'screenshot',
+      paths: [path.join(app.getPath('desktop')), path.join(app.getPath('home'), 'Screenshots')],
+    },
+    { label: 'download', paths: [app.getPath('downloads')] },
+  ]
+  const results: Array<{ path: string; name: string; mtime: number; source: string }> = []
+  const now = Date.now()
+  const maxAge = 7 * 24 * 60 * 60 * 1000 // 7 days
+  for (const { label, paths: dirPaths } of dirs) {
+    for (const dir of dirPaths) {
+      try {
+        const entries = fs.readdirSync(dir)
+        for (const entry of entries) {
+          if (entry.startsWith('.')) continue
+          const fullPath = path.join(dir, entry)
+          try {
+            const stat = fs.statSync(fullPath)
+            if (!stat.isFile()) continue
+            if (now - stat.mtimeMs > maxAge) continue
+            results.push({ path: fullPath, name: entry, mtime: stat.mtimeMs, source: label })
+          } catch {}
+        }
+      } catch {}
+    }
+  }
+  results.sort((a, b) => b.mtime - a.mtime)
+  return results.slice(0, 20)
+})
+
 ipcMain.handle('app:save-temp-file', async (_event, data: Uint8Array, filename: string) => {
   try {
     const tmpDir = path.join(app.getPath('temp'), 'cells-clipboard')
@@ -1801,7 +1841,18 @@ app.whenReady().then(async () => {
             },
           ],
         },
-        { role: 'viewMenu' },
+        {
+          label: 'View',
+          submenu: [
+            { role: 'toggleDevTools' },
+            { type: 'separator' },
+            { role: 'resetZoom' },
+            { role: 'zoomIn' },
+            { role: 'zoomOut' },
+            { type: 'separator' },
+            { role: 'togglefullscreen' },
+          ],
+        },
       ]),
     )
   }

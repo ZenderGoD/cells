@@ -50,6 +50,26 @@ function buildPtyDaemon(): Plugin {
   }
 }
 
+function buildMcpServer(): Plugin {
+  const src = path.resolve(__dirname, 'mcp-server/src/index.ts')
+  const out = path.resolve(__dirname, 'mcp-server/dist/index.js')
+  return {
+    name: 'build-mcp-server',
+    async buildStart() {
+      fs.mkdirSync(path.dirname(out), { recursive: true })
+      await esbuild({
+        entryPoints: [src],
+        bundle: true,
+        platform: 'node',
+        format: 'esm',
+        target: 'node20',
+        outfile: out,
+        external: ['effect', 'sury', '@valibot/to-json-schema'],
+      })
+    },
+  }
+}
+
 export default defineConfig({
   plugins: [
     react(),
@@ -78,6 +98,7 @@ export default defineConfig({
     }),
     copyBrowserPreload(),
     buildPtyDaemon(),
+    buildMcpServer(),
   ],
   resolve: {
     alias: {

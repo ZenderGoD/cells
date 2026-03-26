@@ -1,6 +1,6 @@
 {
   "name": "cells",
-  "version": "0.1.29",
+  "version": "0.1.30",
   "private": true,
   "type": "module",
   "author": "Raj Sharma <r@raj.how>",
@@ -62,6 +62,12 @@
       "dist/**/*",
       "dist-electron/**/*",
       "resources/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "mcp-server/dist/index.js",
+        "to": "mcp-server/dist/index.js"
+      }
     ],
     "mac": {
       "target": [

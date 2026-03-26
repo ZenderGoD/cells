@@ -1,4 +1,4 @@
-import React, { useState, useEffect, type ReactNode } from 'react'
+import React, { useState, useEffect, useCallback, type ReactNode } from 'react'
 import { useHotkey } from '@tanstack/react-hotkeys'
 import {
   Globe,
@@ -14,6 +14,14 @@ import {
   Skull,
   Cable,
   GitBranch,
+  TerminalSquare,
+  X,
+  Image,
+  FileText,
+  Paperclip,
+  Camera,
+  Download,
+  Copy,
 } from 'lucide-react'
 import { useCommandState } from 'cmdk'
 import {
@@ -42,10 +50,33 @@ const AGENT_OPTIONS = [
   { id: 'codex', label: 'Codex' },
 ] as const
 
-function launchAgentAction(id: string, label: string, inWorktree: boolean, searchText: string) {
+interface Attachment {
+  path: string
+  name: string
+}
+
+function shellEscapePath(filePath: string) {
+  if (/^[A-Za-z0-9_./-]+$/.test(filePath)) return filePath
+  return `'${filePath.replace(/'/g, `'\\''`)}'`
+}
+
+function buildPromptWithAttachments(prompt: string, attachments: Attachment[]): string {
+  if (attachments.length === 0) return prompt
+  const filePaths = attachments.map((a) => shellEscapePath(a.path)).join(' ')
+  if (!prompt) return filePaths
+  return `${prompt}\n\n${filePaths}`
+}
+
+function launchAgentAction(
+  id: string,
+  label: string,
+  inWorktree: boolean,
+  searchText: string,
+  attachments: Attachment[] = [],
+) {
   useStore.getState().setLastUsedAgent(id)
   const cmd = useStore.getState().getAgentCommand(id)
-  const prompt = searchText.trim()
+  const prompt = buildPromptWithAttachments(searchText.trim(), attachments)
 
   if (!inWorktree) {
     if (!prompt) {
@@ -55,7 +86,10 @@ function launchAgentAction(id: string, label: string, inWorktree: boolean, searc
     const escaped = prompt.replace(/'/g, "'\\''")
     useStore
       .getState()
-      .addTerminalWithCommand(`${cmd} '${escaped}'`, `${label}: ${prompt.slice(0, 40)}`)
+      .addTerminalWithCommand(
+        `${cmd} '${escaped}'`,
+        `${label}: ${searchText.trim().slice(0, 40) || 'attachments'}`,
+      )
     return
   }
 
@@ -75,7 +109,7 @@ function launchAgentAction(id: string, label: string, inWorktree: boolean, searc
         .getState()
         .addTerminalInWorktree(
           `${cmd} '${escaped}'`,
-          `${label}: ${prompt ? prompt.slice(0, 40) : 'worktree'}`,
+          `${label}: ${searchText.trim() ? searchText.trim().slice(0, 40) : 'worktree'}`,
           wt.path,
         )
     })
@@ -90,22 +124,58 @@ function launchAgentAction(id: string, label: string, inWorktree: boolean, searc
         const escaped = prompt.replace(/'/g, "'\\''")
         useStore
           .getState()
-          .addTerminalWithCommand(`${cmd} '${escaped}'`, `${label}: ${prompt.slice(0, 40)}`)
+          .addTerminalWithCommand(
+            `${cmd} '${escaped}'`,
+            `${label}: ${searchText.trim().slice(0, 40) || 'attachments'}`,
+          )
       }
     })
 }
 
+/** Returns the matched prefix config for the current input, if any. */
+function matchInputPrefix(text: string) {
+  const prefixes = useStore.getState().inputPrefixes
+  // Match longest prefix first so e.g. '!!' beats '!'
+  const sorted = [...prefixes].sort((a, b) => b.prefix.length - a.prefix.length)
+  for (const p of sorted) {
+    if (p.prefix && text.startsWith(p.prefix)) return p
+  }
+  return null
+}
+
 /** Reads the cmdk selected value to show a contextual icon in the input. Must be inside <Command>. */
-function DynamicCommandInput(
-  props: React.ComponentProps<typeof CommandInput> & { multiline?: boolean },
-) {
+function DynamicCommandInput({
+  searchText,
+  ...props
+}: React.ComponentProps<typeof CommandInput> & { multiline?: boolean; searchText?: string }) {
   const selectedValue = useCommandState((state) => state.value) ?? ''
+  const prefix = searchText ? matchInputPrefix(searchText) : null
 
   let icon: ReactNode = undefined
-  for (const { id } of AGENT_OPTIONS) {
-    if (selectedValue.startsWith(`ask-${id}`) || selectedValue.startsWith(`new-${id}`)) {
-      icon = <AgentIcon agent={id} className="size-4 shrink-0 opacity-70" size={16} />
-      break
+
+  // Prefix-based icon takes priority
+  if (prefix) {
+    if (prefix.target === 'terminal') {
+      icon = <TerminalSquare className="size-4 shrink-0 opacity-70" />
+    } else if (prefix.target === 'browser') {
+      icon = <Globe className="size-4 shrink-0 opacity-70" />
+    } else if (prefix.target === 'agent' && prefix.agentId) {
+      icon = (
+        <AgentIcon
+          agent={prefix.agentId as 'claude' | 'codex'}
+          className="size-4 shrink-0 opacity-70"
+          size={16}
+        />
+      )
+    }
+  }
+
+  if (!icon) {
+    for (const { id } of AGENT_OPTIONS) {
+      if (selectedValue.startsWith(`agent-${id}`)) {
+        icon = <AgentIcon agent={id} className="size-4 shrink-0 opacity-70" size={16} />
+        break
+      }
     }
   }
   if (!icon && selectedValue.startsWith('search-')) {
@@ -115,12 +185,24 @@ function DynamicCommandInput(
   return <CommandInput multiline icon={icon} {...props} />
 }
 
+const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.ico'])
+
+function getAttachmentIcon(name: string) {
+  const ext = name.slice(name.lastIndexOf('.')).toLowerCase()
+  if (IMAGE_EXTENSIONS.has(ext)) return Image
+  return FileText
+}
+
 export function CommandPalette() {
   const [open, setOpen] = useState(false)
   const [showSettingsRaw, setShowSettingsRaw] = useState(false)
   const [showNewProjectRaw, setShowNewProjectRaw] = useState(false)
   const [search, setSearch] = useState('')
   const [agents, setAgents] = useState<Record<string, boolean>>({})
+  const [attachments, setAttachments] = useState<Attachment[]>([])
+  const [recentFiles, setRecentFiles] = useState<
+    Array<{ path: string; name: string; mtime: number; source: string }>
+  >([])
   const terminals = useStore((s) => s.terminals)
   const browsers = useStore((s) => s.browsers)
   const terminalTheme = useStore((s) => s.terminalTheme)
@@ -128,6 +210,7 @@ export function CommandPalette() {
   const activeProjectId = useStore((s) => s.activeProjectId)
   const setOverlayOpen = useStore((s) => s.setOverlayOpen)
   const agentAliases = useStore((s) => s.agentAliases)
+  const enabledAgents = useStore((s) => s.enabledAgents)
   const lastUsedAgent = useStore((s) => s.lastUsedAgent)
   const isGitRepo = useStore((s) => s.isGitRepo)
   const worktrees = useStore((s) => s.worktrees)
@@ -137,6 +220,21 @@ export function CommandPalette() {
   const availableAgents = AGENT_OPTIONS.filter(({ id }) => agents[id])
   const wordCount = search.trim().split(/\s+/).filter(Boolean).length
   const isPromptMode = wordCount > 10
+
+  const addAttachments = useCallback(async (paths: string[]) => {
+    const newAttachments = paths.map((p) => ({
+      path: p,
+      name: p.split('/').pop() || p,
+    }))
+    setAttachments((prev) => {
+      const existing = new Set(prev.map((a) => a.path))
+      return [...prev, ...newAttachments.filter((a) => !existing.has(a.path))]
+    })
+  }, [])
+
+  const removeAttachment = useCallback((path: string) => {
+    setAttachments((prev) => prev.filter((a) => a.path !== path))
+  }, [])
 
   // Sort agents: last used agent first
   const sortedAgents = [...availableAgents].sort((a, b) => {
@@ -171,15 +269,30 @@ export function CommandPalette() {
 
   useEffect(() => {
     if (open) {
-      window.cells.agent.checkAvailable(agentAliases).then(setAgents)
+      window.cells.agent.checkAvailable(agentAliases).then((detected) => {
+        // Apply enabledAgents overrides: true = force on, false = force off, 'auto'/undefined = use detected
+        const merged = { ...detected }
+        for (const { id } of AGENT_OPTIONS) {
+          const override = enabledAgents[id]
+          if (override === true) merged[id] = true
+          else if (override === false) merged[id] = false
+          // 'auto' or undefined → keep detected value
+        }
+        setAgents(merged)
+      })
       useStore.getState().refreshWorktrees()
+      window.cells.app
+        .listRecentFiles()
+        .then(setRecentFiles)
+        .catch(() => {})
     }
-  }, [open, agentAliases])
+  }, [open, agentAliases, enabledAgents])
 
   const runAction = (fn: () => any) => {
     const close = () => {
       setOpen(false)
       setSearch('')
+      setAttachments([])
       setOverlayOpen(false)
     }
     const handleError = (err: Error | string) => {
@@ -204,36 +317,109 @@ export function CommandPalette() {
   const handleOpenChange = (o: boolean) => {
     setOpen(o)
     setOverlayOpen(o)
-    if (!o) setSearch('')
+    if (!o) {
+      setSearch('')
+      setAttachments([])
+    }
   }
+
+  // Handle paste events when the palette is open
+  useEffect(() => {
+    if (!open) return
+    const handlePaste = async (e: ClipboardEvent) => {
+      // Check for files/images in clipboard
+      const filePaths = await window.cells.app.pasteClipboardFiles()
+      if (filePaths && filePaths.length > 0) {
+        e.preventDefault()
+        e.stopPropagation()
+        addAttachments(filePaths)
+        return
+      }
+      // Check for files in the DataTransfer (drag-pasted files)
+      if (e.clipboardData?.files && e.clipboardData.files.length > 0) {
+        const paths: string[] = []
+        for (const file of Array.from(e.clipboardData.files)) {
+          try {
+            const path = window.cells.app.getPathForFile(file)
+            if (path) paths.push(path)
+          } catch {
+            // If getPathForFile fails, try saving as temp file
+            const buf = new Uint8Array(await file.arrayBuffer())
+            const saved = await window.cells.app.saveTempFile(buf, file.name)
+            if (saved) paths.push(saved)
+          }
+        }
+        if (paths.length > 0) {
+          e.preventDefault()
+          e.stopPropagation()
+          addAttachments(paths)
+          return
+        }
+      }
+      // Let text paste through to the input naturally
+    }
+    document.addEventListener('paste', handlePaste, true)
+    return () => document.removeEventListener('paste', handlePaste, true)
+  }, [open, addAttachments])
 
   const searchInBrowser = () => {
     if (!search.trim()) return
     runAction(() => useStore.getState().addBrowserWithUrl(search.trim()))
   }
 
+  const runAsTerminalCommand = (command: string) => {
+    if (!command.trim()) return
+    const label = command.trim().slice(0, 40)
+    runAction(() => useStore.getState().addTerminalWithCommand(command.trim(), label))
+  }
+
+  /** Execute the action for a matched prefix, returning true if handled. */
+  const executePrefixAction = (text: string): boolean => {
+    const prefix = matchInputPrefix(text)
+    if (!prefix) return false
+    const body = text.slice(prefix.prefix.length).trim()
+    if (!body) return false
+
+    if (prefix.target === 'terminal') {
+      runAsTerminalCommand(body)
+      return true
+    }
+    if (prefix.target === 'browser') {
+      runAction(() => useStore.getState().addBrowserWithUrl(body))
+      return true
+    }
+    if (prefix.target === 'agent' && prefix.agentId) {
+      const agent = AGENT_OPTIONS.find((a) => a.id === prefix.agentId)
+      if (agent) {
+        runAction(() => launchAgentAction(agent.id, agent.label, false, body, attachments))
+        return true
+      }
+    }
+    return false
+  }
+
   const renderAgentsGroup = () => (
     <CommandGroup heading="AI Agents" forceMount>
       {sortedAgents.map(({ id, label }) => (
         <CommandItem
-          key={`${id}-${search.trim() || 'new'}`}
+          key={id}
           forceMount
-          value={
-            search.trim()
-              ? `ask-${id}-${getAgentCommandLabel(id)}-${search}`
-              : `new-${id}-${getAgentCommandLabel(id)}`
-          }
+          value={`agent-${id}-${getAgentCommandLabel(id)}`}
           onSelect={() => {
             const withWorktree = wasLastSelectWithMeta()
             runAction(() => {
-              launchAgentAction(id, label, withWorktree, search)
+              launchAgentAction(id, label, withWorktree, search, attachments)
             })
           }}
         >
           <AgentIcon agent={id} className="text-muted-foreground" size={16} />
-          {search.trim()
-            ? `Ask ${label}: "${search.trim().slice(0, 50)}"`
-            : `New ${label} Terminal`}
+          {search.trim() && attachments.length > 0
+            ? `Ask ${label} with ${attachments.length} file${attachments.length > 1 ? 's' : ''}: "${search.trim().slice(0, 40)}"`
+            : search.trim()
+              ? `Ask ${label}: "${search.trim().slice(0, 50)}"`
+              : attachments.length > 0
+                ? `Send ${attachments.length} file${attachments.length > 1 ? 's' : ''} to ${label}`
+                : `New ${label} Terminal`}
           <span className="ml-auto max-w-40 truncate text-[10px] font-mono text-muted-foreground/40">
             {getAgentCommandLabel(id)}
           </span>
@@ -249,14 +435,56 @@ export function CommandPalette() {
   return (
     <>
       <CommandDialog open={open} onOpenChange={handleOpenChange} showCloseButton={false}>
-        <Command loop>
+        <Command
+          loop
+          onDragOver={(e) => {
+            if (e.dataTransfer?.types.some((t) => t === 'Files' || t === 'text/uri-list')) {
+              e.preventDefault()
+              e.dataTransfer.dropEffect = 'copy'
+            }
+          }}
+          onDrop={(e) => {
+            e.preventDefault()
+            const paths: string[] = []
+            if (e.dataTransfer?.files) {
+              for (const file of Array.from(e.dataTransfer.files)) {
+                try {
+                  const p = window.cells.app.getPathForFile(file)
+                  if (p) paths.push(p)
+                } catch {}
+              }
+            }
+            if (paths.length === 0 && e.dataTransfer) {
+              const uriList = e.dataTransfer.getData('text/uri-list')
+              if (uriList) {
+                uriList
+                  .split(/\r?\n/)
+                  .map((l) => l.trim())
+                  .filter((l) => l && !l.startsWith('#') && l.startsWith('file://'))
+                  .forEach((l) => {
+                    try {
+                      paths.push(decodeURIComponent(new URL(l).pathname))
+                    } catch {}
+                  })
+              }
+            }
+            if (paths.length > 0) addAttachments(paths)
+          }}
+        >
           <DynamicCommandInput
             placeholder="Search, enter URL, or type a prompt..."
             value={search}
+            searchText={search}
             onValueChange={setSearch}
             onKeyDown={(e) => {
-              // Enter with no matching command → search in new browser tab
               if (e.key === 'Enter' && search.trim()) {
+                // Prefix match → execute prefix action directly
+                if (matchInputPrefix(search)) {
+                  e.preventDefault()
+                  executePrefixAction(search)
+                  return
+                }
+                // Enter with no matching command → search in new browser tab
                 const list = (e.target as HTMLElement)
                   .closest('[cmdk-root]')
                   ?.querySelector('[cmdk-item][data-selected="true"]')
@@ -267,6 +495,32 @@ export function CommandPalette() {
               }
             }}
           />
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 px-2 py-1.5 border-b border-border/30">
+              {attachments.map((a) => {
+                const Icon = getAttachmentIcon(a.name)
+                return (
+                  <span
+                    key={a.path}
+                    className="inline-flex items-center gap-1 rounded-md bg-muted/60 px-2 py-0.5 text-xs text-muted-foreground"
+                  >
+                    <Icon className="size-3 shrink-0" />
+                    <span className="max-w-32 truncate">{a.name}</span>
+                    <button
+                      type="button"
+                      className="ml-0.5 rounded-sm hover:bg-muted-foreground/20 p-0.5"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        removeAttachment(a.path)
+                      }}
+                    >
+                      <X className="size-3" />
+                    </button>
+                  </span>
+                )
+              })}
+            </div>
+          )}
           <CommandList>
             <CommandEmpty className="hidden" />
 
@@ -299,6 +553,18 @@ export function CommandPalette() {
               <CommandItem onSelect={() => runAction(() => useStore.getState().addBrowser())}>
                 <Globe className="text-muted-foreground" />
                 New Browser
+              </CommandItem>
+              <CommandItem
+                value="attach-file-from-finder"
+                onSelect={async () => {
+                  const paths = await window.cells.app.pickFiles()
+                  if (paths && paths.length > 0) {
+                    addAttachments(paths)
+                  }
+                }}
+              >
+                <Paperclip className="text-muted-foreground" />
+                Attach File...
               </CommandItem>
               <CommandItem onSelect={() => runAction(() => useStore.getState().reloadFocused())}>
                 <RefreshCw className="text-muted-foreground" />
@@ -426,7 +692,7 @@ export function CommandPalette() {
                       {search.trim() && !nonBare.some((wt) => wt.branch === search.trim()) && (
                         <CommandItem
                           forceMount
-                          value={`create worktree new branch ${search}`}
+                          value="create-worktree-new-branch"
                           onSelect={() =>
                             runAction(() => useStore.getState().createWorktree(search.trim()))
                           }
@@ -500,8 +766,42 @@ export function CommandPalette() {
               </>
             )}
 
-            {/* When prompt is long (>10 words), show AI Agents first, then Search */}
-            {isPromptMode && sortedAgents.length > 0 && (
+            {recentFiles.length > 0 && (
+              <>
+                <CommandSeparator />
+                <CommandGroup heading="Recent Files">
+                  {recentFiles.map((f) => {
+                    const Icon = f.source === 'screenshot' ? Camera : Download
+                    const isAttached = attachments.some((a) => a.path === f.path)
+                    return (
+                      <CommandItem
+                        key={f.path}
+                        value={`recent-file ${f.name} ${f.source}`}
+                        data-checked={isAttached ? 'true' : undefined}
+                        onSelect={() => {
+                          if (wasLastSelectWithMeta()) {
+                            navigator.clipboard.writeText(f.path).catch(() => {})
+                            showToast('Copied path to clipboard')
+                          } else {
+                            addAttachments([f.path])
+                          }
+                        }}
+                      >
+                        <Icon className="text-muted-foreground" size={16} />
+                        <span className="truncate">{f.name}</span>
+                        <span className="ml-auto text-[10px] text-muted-foreground/40">
+                          {f.source}
+                        </span>
+                        <CommandShortcut>⌘↵ copy path</CommandShortcut>
+                      </CommandItem>
+                    )
+                  })}
+                </CommandGroup>
+              </>
+            )}
+
+            {/* When prompt is long (>10 words) or files are attached, show AI Agents first, then Search */}
+            {(isPromptMode || attachments.length > 0) && sortedAgents.length > 0 && (
               <>
                 <CommandSeparator />
                 {renderAgentsGroup()}
@@ -512,7 +812,7 @@ export function CommandPalette() {
               <>
                 <CommandSeparator />
                 <CommandGroup heading="Search" forceMount>
-                  <CommandItem forceMount onSelect={searchInBrowser} value={`search-${search}`}>
+                  <CommandItem forceMount onSelect={searchInBrowser} value="search-web">
                     <Search className="text-muted-foreground" />
                     Search for &ldquo;{search.trim().slice(0, 80)}&rdquo;
                   </CommandItem>
@@ -520,10 +820,26 @@ export function CommandPalette() {
               </>
             )}
 
-            {!isPromptMode && sortedAgents.length > 0 && (
+            {!isPromptMode && attachments.length === 0 && sortedAgents.length > 0 && (
               <>
                 <CommandSeparator />
                 {renderAgentsGroup()}
+              </>
+            )}
+
+            {search.trim() && (
+              <>
+                <CommandSeparator />
+                <CommandGroup heading="Run" forceMount>
+                  <CommandItem
+                    forceMount
+                    value={`run-terminal-${search}`}
+                    onSelect={() => runAsTerminalCommand(search)}
+                  >
+                    <TerminalSquare className="text-muted-foreground" />
+                    Run in Terminal: &ldquo;{search.trim().slice(0, 80)}&rdquo;
+                  </CommandItem>
+                </CommandGroup>
               </>
             )}
 

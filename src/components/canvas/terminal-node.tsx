@@ -139,6 +139,31 @@ export function TerminalNode({
   const zBase = terminal.pinned ? 10000 : 0
   const z = zBase + (terminal.zIndex ?? 0)
 
+  // Scale up ring widths when zoomed out so status borders remain visible
+  const statusIndicator = getStatusIndicator(
+    terminal.agentStatus,
+    terminal.agent,
+    terminal.processRunning,
+  )
+  const hasStatusRing = !isFocused && !isSelected && !!statusIndicator.ringClass
+  let ringStyle: React.CSSProperties | undefined
+  if (scale < 1) {
+    if (isFocused && showFocusRing) {
+      const w = Math.min(16, Math.round(4 / scale))
+      ringStyle = { boxShadow: `0 0 0 ${w}px var(--color-primary)` }
+    } else if (isSelected) {
+      const w = Math.min(10, Math.round(2 / scale))
+      ringStyle = {
+        ['--tw-ring-shadow' as string]: `0 0 0 calc(${w}px + var(--tw-ring-offset-width, 0px)) var(--tw-ring-color, currentcolor)`,
+      }
+    } else if (hasStatusRing) {
+      const w = Math.min(6, Math.round(1 / scale))
+      ringStyle = {
+        ['--tw-ring-shadow' as string]: `0 0 0 calc(${w}px + var(--tw-ring-offset-width, 0px)) var(--tw-ring-color, currentcolor)`,
+      }
+    }
+  }
+
   return (
     <div
       data-term-id={terminal.id}
@@ -164,11 +189,9 @@ export function TerminalNode({
           'w-full h-full rounded-lg overflow-hidden transition-shadow duration-150',
           isFocused ? (showFocusRing ? 'terminal-focused' : 'opacity-100') : 'terminal-unfocused',
           isSelected && 'ring-2 ring-primary/70 ring-offset-1 ring-offset-background',
-          !isFocused &&
-            !isSelected &&
-            getStatusIndicator(terminal.agentStatus, terminal.agent, terminal.processRunning)
-              .ringClass,
+          !isFocused && !isSelected && statusIndicator.ringClass,
         )}
+        style={ringStyle}
       >
         <CellTerminal
           termId={terminal.id}

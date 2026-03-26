@@ -111,10 +111,10 @@ export function destroyCachedTerminal(termId: string) {
   }
 }
 
-/** Reload a terminal — kills the shell and respawns a fresh one. */
+/** Repaint a terminal — recreates the renderer while keeping the shell alive. */
 export function reloadTerminal(termId: string) {
+  window.cells.terminal.unsubscribe(termId)
   destroyCachedTerminal(termId)
-  window.cells.terminal.detach(termId).catch(() => {})
   window.dispatchEvent(new CustomEvent('terminal-reload', { detail: { termId } }))
 }
 

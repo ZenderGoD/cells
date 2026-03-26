@@ -4,6 +4,7 @@ import type {
   BrowserNode,
   CanvasTransform,
   GitWorktree,
+  InputPrefix,
   Project,
   ProjectsState,
   TerminalNode,
@@ -65,6 +66,8 @@ interface StoreState {
   terminalLinkProjectId: string | null
   linkRules: Array<{ pattern: string; target: 'system' | 'browser'; projectId?: string }>
   agentAliases: Record<string, string>
+  enabledAgents: Record<string, boolean | 'auto'>
+  inputPrefixes: InputPrefix[]
   lastUsedAgent: string | null
   colorScheme: 'light' | 'dark' | 'system'
   saveStatus: 'idle' | 'saving' | 'saved' | 'error'
@@ -148,6 +151,8 @@ interface StoreState {
     rules: Array<{ pattern: string; target: 'system' | 'browser'; projectId?: string }>,
   ): void
   setAgentAliases(aliases: Record<string, string>): void
+  setEnabledAgents(agents: Record<string, boolean | 'auto'>): void
+  setInputPrefixes(prefixes: InputPrefix[]): void
   setLastUsedAgent(agent: string): void
   setColorScheme(scheme: 'light' | 'dark' | 'system'): void
   setCloseUndoTimeoutMs(timeoutMs: number): void
@@ -197,6 +202,7 @@ const DEFAULT_FONT_FAMILY = '"GeistMono NF", "Geist Mono", monospace'
 const DEFAULT_SEARCH_ENGINE = 'https://www.google.com/search?q=%s'
 const DEFAULT_HOME_PAGE = ''
 const DEFAULT_CLOSE_UNDO_TIMEOUT_MS = 15000
+const DEFAULT_INPUT_PREFIXES: InputPrefix[] = [{ prefix: '!', target: 'terminal' }]
 const SAVE_STATUS_RESET_MS = 1800
 
 /** Apply color scheme to the document and sync with system preferences. */
@@ -380,6 +386,7 @@ function snapshotActiveProject(state: StoreState): Project[] {
           focusedTerminalId: state.focusedTerminalId,
           focusedBrowserId: state.focusedBrowserId,
           focusCounts: state.focusCounts,
+          autoArrangeOnCreate: state.autoArrangeOnCreate,
         }
       : p,
   )
@@ -398,6 +405,7 @@ function projectToWorkingState(project: Project) {
     focusedBrowserId: (project.focusedBrowserId ?? null) as string | null,
     focusHistory: [] as string[],
     focusCounts: (project.focusCounts ?? {}) as Record<string, number>,
+    autoArrangeOnCreate: project.autoArrangeOnCreate ?? false,
   }
 }
 
@@ -444,6 +452,8 @@ export const useStore = create<StoreState>((set, get) => ({
   terminalLinkProjectId: null,
   linkRules: [],
   agentAliases: {},
+  enabledAgents: {},
+  inputPrefixes: DEFAULT_INPUT_PREFIXES,
   lastUsedAgent: null,
   colorScheme: 'dark' as const,
   saveStatus: 'idle',
@@ -502,7 +512,12 @@ export const useStore = create<StoreState>((set, get) => ({
 
     if (saved && (saved as any).version === 2) {
       const ps = saved as ProjectsState
-      const projects = ps.projects ?? []
+      // Migrate old global autoArrangeOnCreate into per-project field
+      const projects = (ps.projects ?? []).map((p) =>
+        p.autoArrangeOnCreate == null && ps.autoArrangeOnCreate != null
+          ? { ...p, autoArrangeOnCreate: ps.autoArrangeOnCreate }
+          : p,
+      )
       const projectLinkSettings = sanitizeProjectLinkSettings(
         projects,
         ps.terminalLinkProjectId,
@@ -521,13 +536,14 @@ export const useStore = create<StoreState>((set, get) => ({
         projectSwitchMode: ps.projectSwitchMode || 'recent',
         reducedMotion: ps.reducedMotion ?? false,
         autoUpdate: ps.autoUpdate ?? true,
-        autoArrangeOnCreate: ps.autoArrangeOnCreate ?? false,
         searchEngine: ps.searchEngine || DEFAULT_SEARCH_ENGINE,
         homePage: ps.homePage || DEFAULT_HOME_PAGE,
         terminalLinkTarget: ps.terminalLinkTarget || 'system',
         terminalLinkProjectId: projectLinkSettings.terminalLinkProjectId,
         linkRules: projectLinkSettings.linkRules,
         agentAliases: ps.agentAliases ?? {},
+        enabledAgents: ps.enabledAgents ?? {},
+        inputPrefixes: ps.inputPrefixes ?? DEFAULT_INPUT_PREFIXES,
         colorScheme: ps.colorScheme || 'dark',
         closeUndoTimeoutMs: Math.max(0, ps.closeUndoTimeoutMs ?? DEFAULT_CLOSE_UNDO_TIMEOUT_MS),
         closeProcessSuppressions: ps.closeProcessSuppressions ?? [],
@@ -671,13 +687,14 @@ export const useStore = create<StoreState>((set, get) => ({
           projectSwitchMode: freshState.projectSwitchMode,
           reducedMotion: freshState.reducedMotion,
           autoUpdate: freshState.autoUpdate,
-          autoArrangeOnCreate: freshState.autoArrangeOnCreate,
           searchEngine: freshState.searchEngine,
           homePage: freshState.homePage,
           terminalLinkTarget: freshState.terminalLinkTarget,
           terminalLinkProjectId: freshState.terminalLinkProjectId,
           linkRules: freshState.linkRules,
           agentAliases: freshState.agentAliases,
+          enabledAgents: freshState.enabledAgents,
+          inputPrefixes: freshState.inputPrefixes,
           colorScheme: freshState.colorScheme,
           closeUndoTimeoutMs: freshState.closeUndoTimeoutMs,
           closeProcessSuppressions: freshState.closeProcessSuppressions,
@@ -700,13 +717,14 @@ export const useStore = create<StoreState>((set, get) => ({
           projectSwitchMode: state.projectSwitchMode,
           reducedMotion: state.reducedMotion,
           autoUpdate: state.autoUpdate,
-          autoArrangeOnCreate: state.autoArrangeOnCreate,
           searchEngine: state.searchEngine,
           homePage: state.homePage,
           terminalLinkTarget: state.terminalLinkTarget,
           terminalLinkProjectId: state.terminalLinkProjectId,
           linkRules: state.linkRules,
           agentAliases: state.agentAliases,
+          enabledAgents: state.enabledAgents,
+          inputPrefixes: state.inputPrefixes,
           colorScheme: state.colorScheme,
           closeUndoTimeoutMs: state.closeUndoTimeoutMs,
           closeProcessSuppressions: state.closeProcessSuppressions,
@@ -913,6 +931,8 @@ export const useStore = create<StoreState>((set, get) => ({
     }))
     if (get().autoArrangeOnCreate) {
       get().autoArrangeGrid()
+      // autoArrangeGrid → zoomToFitAll clears focus; restore it to the new terminal
+      set({ focusedTerminalId: id, focusedBrowserId: null })
     } else {
       // Reset scale to 1 and snap to the new terminal
       set({ canvas: { ...get().canvas, scale: 1 } })
@@ -1474,6 +1494,14 @@ export const useStore = create<StoreState>((set, get) => ({
     set({ agentAliases: aliases })
     get().persist()
   },
+  setEnabledAgents(agents) {
+    set({ enabledAgents: agents })
+    get().persist()
+  },
+  setInputPrefixes(prefixes) {
+    set({ inputPrefixes: prefixes })
+    get().persist()
+  },
   setLastUsedAgent(agent) {
     set({ lastUsedAgent: agent })
   },
@@ -1931,6 +1959,8 @@ export const useStore = create<StoreState>((set, get) => ({
     }))
     if (get().autoArrangeOnCreate) {
       get().autoArrangeGrid()
+      // autoArrangeGrid → zoomToFitAll clears focus; restore it to the new browser
+      set({ focusedTerminalId: null, focusedBrowserId: id })
     } else {
       set({ canvas: { ...get().canvas, scale: 1 } })
       // Snap to the new browser (reuse snapToTerminal-like logic)

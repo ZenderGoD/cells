@@ -335,6 +335,15 @@ export function BrowserNode({
   const zBase = browser.pinned ? 10000 : 0
   const z = zBase + (browser.zIndex ?? 0)
 
+  // Scale up ring widths when zoomed out so borders remain visible
+  let ringStyle: React.CSSProperties | undefined
+  if (scale < 1) {
+    const w = isSelected ? Math.min(10, Math.round(2 / scale)) : Math.min(6, Math.round(1 / scale))
+    ringStyle = {
+      ['--tw-ring-shadow' as string]: `0 0 0 calc(${w}px + var(--tw-ring-offset-width, 0px)) var(--tw-ring-color, currentcolor)`,
+    }
+  }
+
   return (
     <div
       data-browser-id={browser.id}
@@ -363,6 +372,7 @@ export function BrowserNode({
           isFocused ? 'ring-1 ring-white/10' : 'ring-1 ring-border/20',
           isSelected && 'ring-2 ring-primary/70 ring-offset-1 ring-offset-background',
         )}
+        style={ringStyle}
       >
         {/* Pin control — top right corner */}
         <div

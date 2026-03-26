@@ -73,6 +73,7 @@ export interface Project {
   worktreeBaseBranch?: string
   /** Per-window focus counts for usage-based grid arrangement */
   focusCounts?: Record<string, number>
+  autoArrangeOnCreate?: boolean
 }
 
 export interface ProjectsState {
@@ -94,9 +95,13 @@ export interface ProjectsState {
   terminalLinkProjectId?: string | null
   linkRules?: Array<{ pattern: string; target: 'system' | 'browser'; projectId?: string }>
   agentAliases?: Record<string, string>
+  /** Per-agent visibility override: true = always show, false = always hide, 'auto' = detect binary */
+  enabledAgents?: Record<string, boolean | 'auto'>
+  inputPrefixes?: InputPrefix[]
   colorScheme?: 'light' | 'dark' | 'system'
   closeUndoTimeoutMs?: number
   closeProcessSuppressions?: string[]
+  /** @deprecated Moved to Project — kept for migration */
   autoArrangeOnCreate?: boolean
 }
 
@@ -107,6 +112,13 @@ export interface AppState {
   terminalTheme?: string
   fontSize?: number
   fontFamily?: string
+}
+
+export interface InputPrefix {
+  prefix: string
+  target: 'terminal' | 'browser' | 'agent'
+  /** For agent targets, which agent to use (e.g. 'claude', 'codex') */
+  agentId?: string
 }
 
 export interface ExtensionMeta {
@@ -267,6 +279,8 @@ export interface CellsAPI {
     getPinnedId(): string | null
     getPinnedType(): 'terminal' | 'browser' | null
     pickFolder(): Promise<string | null>
+    pickFiles(): Promise<string[] | null>
+    listRecentFiles(): Promise<Array<{ path: string; name: string; mtime: number; source: string }>>
     getPathForFile(file: File): string
     saveTempFile(data: Uint8Array, filename: string): Promise<string | null>
     pasteClipboardFiles(): Promise<string[] | null>
