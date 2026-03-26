@@ -344,35 +344,41 @@ export function StatusBar() {
             const isDropTarget = dropTargetId === project.id && dragId !== project.id
 
             return (
-              <button
+              <div
                 key={project.id}
-                draggable
-                onClick={() => switchProject(project.id)}
-                onDragStart={(e) => handleDragStart(e, project.id)}
-                onDragOver={(e) => handleDragOver(e, project.id)}
-                onDragLeave={() => setDropTargetId(null)}
-                onDrop={(e) => handleDrop(e, project.id)}
-                onDragEnd={handleDragEnd}
                 className={cn(
-                  'relative flex items-center gap-2 px-4 transition-colors border-r border-border/30 shrink-0',
-                  isActive
-                    ? 'text-foreground bg-white/40 dark:bg-black/35 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]'
-                    : 'text-muted-foreground/50 hover:text-muted-foreground hover:bg-white/15 dark:hover:bg-muted/30',
+                  'relative flex items-center border-r border-border/30 shrink-0',
                   isDragging && 'opacity-40',
                   isDropTarget && 'border-l-2 border-l-primary/60',
                 )}
               >
-                <span className="text-[11px] font-medium truncate max-w-28">{project.name}</span>
-                {projectWindowCount > 0 && (
-                  <span
-                    className={cn(
-                      'text-[9px] tabular-nums',
-                      isActive ? 'text-muted-foreground/60' : 'text-muted-foreground/30',
-                    )}
-                  >
-                    {projectWindowCount}
-                  </span>
-                )}
+                <button
+                  draggable
+                  onClick={() => switchProject(project.id)}
+                  onDragStart={(e) => handleDragStart(e, project.id)}
+                  onDragOver={(e) => handleDragOver(e, project.id)}
+                  onDragLeave={() => setDropTargetId(null)}
+                  onDrop={(e) => handleDrop(e, project.id)}
+                  onDragEnd={handleDragEnd}
+                  className={cn(
+                    'flex items-center gap-2 px-4 h-full transition-colors',
+                    isActive
+                      ? 'text-foreground bg-white/40 dark:bg-black/35 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]'
+                      : 'text-muted-foreground/50 hover:text-muted-foreground hover:bg-white/15 dark:hover:bg-muted/30',
+                  )}
+                >
+                  <span className="text-[11px] font-medium truncate max-w-28">{project.name}</span>
+                  {projectWindowCount > 0 && (
+                    <span
+                      className={cn(
+                        'text-[9px] tabular-nums',
+                        isActive ? 'text-muted-foreground/60' : 'text-muted-foreground/30',
+                      )}
+                    >
+                      {projectWindowCount}
+                    </span>
+                  )}
+                </button>
                 <AnimatePresence>
                   {isActive && allWindows.length > 0 && (
                     <motion.div
@@ -380,17 +386,10 @@ export function StatusBar() {
                       animate={{ opacity: 1, width: titleBarOverviewWidth }}
                       exit={{ opacity: 0, width: 0 }}
                       transition={{ duration: 0.2, ease: 'easeInOut' }}
-                      className="flex items-center overflow-hidden ml-1"
-                      ref={(el) => {
-                        if (!el) return
-                        el.draggable = false
-                        el.ondragstart = (e) => {
-                          e.preventDefault()
-                          e.stopPropagation()
-                        }
-                        el.onmousedown = (e) => e.stopPropagation()
-                      }}
-                      onPointerDown={(e) => e.stopPropagation()}
+                      className={cn(
+                        'flex items-center overflow-hidden',
+                        isActive ? 'bg-white/40 dark:bg-black/35' : '',
+                      )}
                       title={
                         overviewAnchor
                           ? `${overviewAnchor.title} • drag to reposition, click to focus`
@@ -423,7 +422,7 @@ export function StatusBar() {
                     </motion.div>
                   )}
                 </AnimatePresence>
-              </button>
+              </div>
             )
           })}
           <button
