@@ -31,7 +31,6 @@ export async function ensureDaemon(
   const existing = await tryConnect(socketPath)
   if (existing) {
     existing.destroy()
-    // Update version file so it stays current
     try {
       fs.writeFileSync(versionFile, appVersion)
     } catch {}
@@ -43,9 +42,7 @@ export async function ensureDaemon(
 
   // 2. Spawn new daemon
   try {
-    if (!fs.existsSync(stateDir)) {
-      fs.mkdirSync(stateDir, { recursive: true })
-    }
+    fs.mkdirSync(stateDir, { recursive: true })
 
     if (!fs.existsSync(daemonScript)) {
       console.warn(`PTY daemon script not found at ${daemonScript}`)
@@ -67,7 +64,6 @@ export async function ensureDaemon(
       },
     })
     child.unref()
-    // Detach from parent's process group so it survives Electron exit
     child.on('error', (err) => console.warn('Daemon child error:', err))
     fs.closeSync(logFd)
     console.log(`PTY daemon spawned with PID ${child.pid}`)
@@ -94,11 +90,6 @@ export async function ensureDaemon(
 
 function tryConnect(socketPath: string): Promise<net.Socket | null> {
   return new Promise((resolve) => {
-    if (!fs.existsSync(socketPath)) {
-      resolve(null)
-      return
-    }
-
     const timer = setTimeout(() => {
       socket.destroy()
       resolve(null)
@@ -116,32 +107,11 @@ function tryConnect(socketPath: string): Promise<net.Socket | null> {
   })
 }
 
-function waitForClose(socket: net.Socket, timeout: number): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      socket.destroy()
-      resolve()
-    }, timeout)
-    socket.on('close', () => {
-      clearTimeout(timer)
-      resolve()
-    })
-  })
-}
-
 function cleanStaleFiles(socketPath: string, pidFile: string, versionFile: string) {
   for (const f of [socketPath, pidFile, versionFile]) {
     try {
       fs.unlinkSync(f)
     } catch {}
-  }
-}
-
-function readFileOrNull(filePath: string): string | null {
-  try {
-    return fs.readFileSync(filePath, 'utf-8').trim()
-  } catch {
-    return null
   }
 }
 

@@ -211,7 +211,7 @@ export function resolveTerminalProcessInfo(
 }
 
 function isCodexCommand(command: string) {
-  const normalized = command.toLowerCase().split('/').pop() ?? command.toLowerCase()
+  const normalized = basenameCommand(command).toLowerCase()
   return normalized === 'codex' || normalized === 'codex-cli' || normalized.startsWith('codex-')
 }
 

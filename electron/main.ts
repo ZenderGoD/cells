@@ -324,17 +324,12 @@ ipcMain.handle(
       try {
         const result = await daemonClient.spawn(termId, cols, rows, cwd)
         // Subscribe BEFORE marking as subscribed in the main process.
-        // If we add to subscribedTerminals first, data messages from the
-        // daemon can be forwarded to the renderer before the buffer is
-        // replayed, causing stale buffer data to overwrite a fresh redraw.
+        // If we add to subscribedTerminals first, daemon data messages
+        // can reach the renderer before the buffered data is replayed,
+        // causing stale buffer content to overwrite a fresh redraw.
         const buffer = await daemonClient.subscribe(termId)
-        // Pick up any data that arrived via dataCallback during subscribe
-        // (it would have been locally buffered since subscribedTerminals
-        // didn't include this terminal yet).
-        const lateBuffer = ptyBuffers.get(termId) ?? ''
-        ptyBuffers.delete(termId)
         subscribedTerminals.add(termId)
-        return { reattached: result.reattached, buffer: buffer + lateBuffer }
+        return { reattached: result.reattached, buffer }
       } catch {
         // Daemon failed — fall through to fallback below
       }
@@ -1655,8 +1650,8 @@ ipcMain.handle('daemon:kill-all', async () => {
   if (!useDaemon || !daemonClient?.isConnected()) return
   try {
     const termIds = await daemonClient.list()
+    await Promise.all(termIds.map((id) => daemonClient!.kill(id).catch(() => {})))
     for (const termId of termIds) {
-      await daemonClient.kill(termId).catch(() => {})
       subscribedTerminals.delete(termId)
       forwardTerminalExit(termId)
     }

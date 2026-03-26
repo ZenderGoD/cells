@@ -41,9 +41,9 @@
 import net from 'net'
 import fs from 'fs'
 import path from 'path'
-import os from 'os'
 import * as pty from 'node-pty'
 import {
+  HOME_DIR,
   resolveShell,
   resolveCwd,
   cleanEnv,
@@ -60,7 +60,7 @@ const DAEMON_PROTOCOL_VERSION = 1
 
 // ---------- Paths ----------
 
-const STATE_DIR = process.env.CELLS_HOME_DIR || path.join(os.homedir(), '.cells')
+const STATE_DIR = process.env.CELLS_HOME_DIR || path.join(HOME_DIR, '.cells')
 const SOCKET_PATH = path.join(STATE_DIR, 'pty-daemon.sock')
 const PID_FILE = path.join(STATE_DIR, 'pty-daemon.pid')
 const VERSION_FILE = path.join(STATE_DIR, 'pty-daemon.version')
@@ -356,12 +356,6 @@ function handleClient(socket: net.Socket) {
 
 // ---------- Lifecycle ----------
 
-function ensureDir(dir: string) {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true })
-  }
-}
-
 function cleanup() {
   try {
     fs.unlinkSync(SOCKET_PATH)
@@ -376,7 +370,8 @@ function cleanup() {
 
 function gracefulShutdown() {
   server.close()
-  for (const [termId] of ptys) {
+  // Snapshot keys first — killPty mutates the map
+  for (const termId of [...ptys.keys()]) {
     killPty(termId)
   }
   cleanup()
@@ -393,7 +388,7 @@ process.on('uncaughtException', (err) => {
 
 // ---------- Start server ----------
 
-ensureDir(STATE_DIR)
+fs.mkdirSync(STATE_DIR, { recursive: true })
 
 // Clean stale socket
 try {
