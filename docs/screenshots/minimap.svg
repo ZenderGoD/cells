@@ -1,0 +1,147 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 200" width="800" height="200">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1e2228"/>
+      <stop offset="100%" stop-color="#181b20"/>
+    </linearGradient>
+    <linearGradient id="barBg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#22262d"/>
+      <stop offset="100%" stop-color="#1c2026"/>
+    </linearGradient>
+    <clipPath id="rounded">
+      <rect x="0" y="0" width="800" height="200" rx="12"/>
+    </clipPath>
+  </defs>
+
+  <!-- Background -->
+  <rect width="800" height="200" rx="12" fill="url(#bg)" clip-path="url(#rounded)"/>
+
+  <!-- Terminal content area -->
+  <g opacity="0.7">
+    <!-- Dimmed terminal line -->
+    <text x="40" y="36" font-family="'SF Mono', 'Menlo', 'Consolas', monospace" font-size="13" fill="#7a8599">*  Crunched for 6m 11s</text>
+    <!-- Separator line -->
+    <line x1="30" y1="50" x2="770" y2="50" stroke="#333a45" stroke-width="1" stroke-dasharray="2,2"/>
+    <!-- Prompt -->
+    <text x="40" y="72" font-family="'SF Mono', 'Menlo', 'Consolas', monospace" font-size="13" fill="#8a93a5">&#x276F;</text>
+    <!-- Cursor block -->
+    <rect x="56" y="60" width="9" height="16" rx="1" fill="#c8cdd6" opacity="0.8"/>
+    <!-- Separator line -->
+    <line x1="30" y1="86" x2="770" y2="86" stroke="#333a45" stroke-width="1" stroke-dasharray="2,2"/>
+    <!-- Bypass permissions -->
+    <text x="52" y="108" font-family="'SF Mono', 'Menlo', 'Consolas', monospace" font-size="12" fill="#e06070">&#x25B6;&#x25B6;</text>
+    <text x="80" y="108" font-family="'SF Mono', 'Menlo', 'Consolas', monospace" font-size="12" fill="#e06070">bypass permissions on</text>
+    <text x="268" y="108" font-family="'SF Mono', 'Menlo', 'Consolas', monospace" font-size="12" fill="#666e7d">(shift+tab to cycle)</text>
+  </g>
+
+  <!-- Bottom bar background -->
+  <rect x="0" y="130" width="800" height="70" fill="url(#barBg)"/>
+  <line x1="0" y1="130" x2="800" y2="130" stroke="#2a2f38" stroke-width="1"/>
+
+  <!-- Cells logo (hexagon) -->
+  <g transform="translate(40, 158)">
+    <polygon points="0,-12 10.4,-6 10.4,6 0,12 -10.4,6 -10.4,-6" fill="none" stroke="#8a93a5" stroke-width="1.5"/>
+    <polygon points="0,-5 4.3,-2.5 4.3,2.5 0,5 -4.3,2.5 -4.3,-2.5" fill="none" stroke="#8a93a5" stroke-width="1"/>
+  </g>
+
+  <!-- Project tabs -->
+  <!-- Default -->
+  <text x="80" y="163" font-family="-apple-system, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif" font-size="13" fill="#666e7d">Default</text>
+
+  <!-- imai -->
+  <text x="155" y="163" font-family="-apple-system, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif" font-size="13" fill="#666e7d">imai</text>
+
+  <!-- cells (active) -->
+  <g>
+    <!-- Active indicator -->
+    <rect x="210" y="145" width="80" height="30" rx="6" fill="#2a3040" opacity="0.6"/>
+    <text x="220" y="164" font-family="-apple-system, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="600" fill="#e8ecf2">cells</text>
+    <text x="262" y="164" font-family="-apple-system, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif" font-size="12" fill="#666e7d">5</text>
+  </g>
+
+  <!-- Node type icons (minimap) - the key feature -->
+  <g transform="translate(300, 144)">
+    <!-- Row 1: agent, agent, terminal, terminal -->
+    <!-- Agent icon 1 (sparkle) -->
+    <g transform="translate(0, 0)">
+      <rect width="26" height="26" rx="5" fill="#2a3040" stroke="#3a4050" stroke-width="0.5"/>
+      <g transform="translate(13, 13)" fill="#a0aab8">
+        <circle cx="0" cy="-7" r="1.2"/>
+        <circle cx="0" cy="7" r="1.2"/>
+        <circle cx="-7" cy="0" r="1.2"/>
+        <circle cx="7" cy="0" r="1.2"/>
+        <circle cx="-4" cy="-4" r="0.8"/>
+        <circle cx="4" cy="-4" r="0.8"/>
+        <circle cx="-4" cy="4" r="0.8"/>
+        <circle cx="4" cy="4" r="0.8"/>
+      </g>
+    </g>
+    <!-- Agent icon 2 (sparkle) -->
+    <g transform="translate(30, 0)">
+      <rect width="26" height="26" rx="5" fill="#2a3040" stroke="#3a4050" stroke-width="0.5"/>
+      <g transform="translate(13, 13)" fill="#a0aab8">
+        <circle cx="0" cy="-7" r="1.2"/>
+        <circle cx="0" cy="7" r="1.2"/>
+        <circle cx="-7" cy="0" r="1.2"/>
+        <circle cx="7" cy="0" r="1.2"/>
+        <circle cx="-4" cy="-4" r="0.8"/>
+        <circle cx="4" cy="-4" r="0.8"/>
+        <circle cx="-4" cy="4" r="0.8"/>
+        <circle cx="4" cy="4" r="0.8"/>
+      </g>
+    </g>
+    <!-- Terminal icon 1 -->
+    <g transform="translate(60, 0)">
+      <rect width="26" height="26" rx="5" fill="#2a3040" stroke="#3a4050" stroke-width="0.5"/>
+      <g transform="translate(13, 13)" stroke="#a0aab8" stroke-width="1.4" fill="none" stroke-linecap="round">
+        <rect x="-7" y="-6" width="14" height="12" rx="2"/>
+        <polyline points="-4,-2 -1,1 -4,4"/>
+        <line x1="1" y1="4" x2="5" y2="4"/>
+      </g>
+    </g>
+    <!-- Terminal icon 2 -->
+    <g transform="translate(90, 0)">
+      <rect width="26" height="26" rx="5" fill="#2a3040" stroke="#3a4050" stroke-width="0.5"/>
+      <g transform="translate(13, 13)" stroke="#a0aab8" stroke-width="1.4" fill="none" stroke-linecap="round">
+        <rect x="-7" y="-6" width="14" height="12" rx="2"/>
+        <polyline points="-4,-2 -1,1 -4,4"/>
+        <line x1="1" y1="4" x2="5" y2="4"/>
+      </g>
+    </g>
+    <!-- Row 2: browser icon -->
+    <g transform="translate(0, 30)">
+      <rect width="26" height="26" rx="5" fill="#2a3040" stroke="#3a4050" stroke-width="0.5"/>
+      <g transform="translate(13, 13)" stroke="#a0aab8" stroke-width="1.4" fill="none" stroke-linecap="round">
+        <rect x="-7" y="-6" width="14" height="12" rx="2"/>
+        <line x1="-7" y1="-2" x2="7" y2="-2"/>
+        <circle cx="-4" cy="-4" r="0.8" fill="#a0aab8" stroke="none"/>
+        <circle cx="-1" cy="-4" r="0.8" fill="#a0aab8" stroke="none"/>
+      </g>
+    </g>
+  </g>
+
+  <!-- vector -->
+  <text x="440" y="163" font-family="-apple-system, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif" font-size="13" fill="#666e7d">vector</text>
+
+  <!-- + button -->
+  <g transform="translate(510, 158)">
+    <text font-family="-apple-system, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif" font-size="16" fill="#555d6d" text-anchor="middle">+</text>
+  </g>
+
+  <!-- Annotation arrows and labels -->
+  <g font-family="-apple-system, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif" font-size="11">
+    <!-- Label: "projects" pointing to the tab bar -->
+    <g transform="translate(620, 150)">
+      <rect x="-2" y="-12" width="90" height="18" rx="4" fill="#3b82f6" opacity="0.15"/>
+      <text fill="#60a5fa" font-weight="500">Projects</text>
+      <line x1="-6" y1="-2" x2="-60" y2="-2" stroke="#60a5fa" stroke-width="1" opacity="0.6" stroke-dasharray="3,2"/>
+    </g>
+
+    <!-- Label: "node minimap" pointing to the icons -->
+    <g transform="translate(620, 175)">
+      <rect x="-2" y="-12" width="106" height="18" rx="4" fill="#a855f7" opacity="0.15"/>
+      <text fill="#c084fc" font-weight="500">Node minimap</text>
+      <line x1="-6" y1="-2" x2="-200" y2="-15" stroke="#c084fc" stroke-width="1" opacity="0.6" stroke-dasharray="3,2"/>
+    </g>
+  </g>
+</svg>

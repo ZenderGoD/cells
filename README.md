@@ -32,7 +32,7 @@ Embed browser panes alongside terminals, with browsing data scoped to each proje
 
 Each project includes a minimap showing all its nodes at a glance.
 
-![Minimap showing node icons within a project](docs/screenshots/minimap.png)
+![Minimap showing node icons within a project](docs/screenshots/minimap.svg)
 
 ### Ctrl+Tab navigation
 
