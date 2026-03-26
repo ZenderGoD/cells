@@ -96,6 +96,30 @@ export function getCanvasBounds(
   }
 }
 
+export function getOverviewTransform(
+  rects: Array<Pick<CanvasRect, 'x' | 'y' | 'width' | 'height'>>,
+  viewWidth: number,
+  viewHeight: number,
+  padding = 40,
+) {
+  const bounds = getCanvasBounds(rects)
+  if (!bounds) return null
+
+  const contentW = bounds.width + padding * 2
+  const contentH = bounds.height + padding * 2
+  const scale = Math.min(viewWidth / contentW, viewHeight / contentH, 1)
+  const scaledW = contentW * scale
+  const scaledH = contentH * scale
+  const offsetX = (viewWidth - scaledW) / 2
+  const offsetY = (viewHeight - scaledH) / 2
+
+  return {
+    x: offsetX - (bounds.x - padding) * scale,
+    y: offsetY - (bounds.y - padding) * scale,
+    scale,
+  }
+}
+
 export function getClosestWindow(
   windows: CanvasWindow[],
   origin: { x: number; y: number },

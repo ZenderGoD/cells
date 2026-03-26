@@ -9,6 +9,7 @@ import {
   getCanvasWindows,
   getClosestWindow,
   getDirectionalWindow,
+  getOverviewTransform,
   getWindowCenter,
   getViewportCenter,
 } from './canvas-navigation'
@@ -877,10 +878,15 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   setSelectionMode(enabled) {
+    const wasEnabled = get().selectionMode
     set({
       selectionMode: enabled,
       selectionCount: enabled ? get().selectionCount : 0,
     })
+
+    if (enabled && !wasEnabled) {
+      get().zoomToFitAll()
+    }
   },
 
   setSelectionCount(count) {
@@ -908,34 +914,15 @@ export const useStore = create<StoreState>((set, get) => ({
       ...terminals.map((t) => ({ x: t.x, y: t.y, width: t.width, height: t.height })),
       ...browsers.map((b) => ({ x: b.x, y: b.y, width: b.width, height: b.height })),
     ]
-    if (allNodes.length === 0) return
-
-    // Compute bounding box of all nodes
-    const minX = Math.min(...allNodes.map((n) => n.x))
-    const minY = Math.min(...allNodes.map((n) => n.y))
-    const maxX = Math.max(...allNodes.map((n) => n.x + n.width))
-    const maxY = Math.max(...allNodes.map((n) => n.y + n.height))
-
-    const padding = 40
-    const viewW = window.innerWidth
-    const viewH = window.innerHeight - STATUS_BAR_HEIGHT
-    const contentW = maxX - minX + padding * 2
-    const contentH = maxY - minY + padding * 2
-
-    const scale = Math.min(viewW / contentW, viewH / contentH, 1)
-
-    // Center the bounding box in the viewport
-    const scaledW = contentW * scale
-    const scaledH = contentH * scale
-    const offsetX = (viewW - scaledW) / 2
-    const offsetY = (viewH - scaledH) / 2
+    const nextTransform = getOverviewTransform(
+      allNodes,
+      window.innerWidth,
+      window.innerHeight - STATUS_BAR_HEIGHT,
+    )
+    if (!nextTransform) return
 
     set({ snapPaused: true, focusedTerminalId: null, focusedBrowserId: null, snapFast: false })
-    get().setCanvasTransform({
-      x: offsetX - (minX - padding) * scale,
-      y: offsetY - (minY - padding) * scale,
-      scale,
-    })
+    get().setCanvasTransform(nextTransform)
   },
 
   setCanvasTransform(transform) {
