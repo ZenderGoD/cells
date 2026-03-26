@@ -12,7 +12,10 @@ test('inferAgentFromCommand detects direct codex and claude launches', () => {
 
 test('inferAgentFromCommand handles prefixed env vars and path-based binaries', () => {
   assert.equal(inferAgentFromCommand('OPENAI_API_KEY=test /usr/local/bin/codex plan'), 'codex')
-  assert.equal(inferAgentFromCommand("ANTHROPIC_API_KEY=test ~/.local/bin/claude 'hello'"), 'claude')
+  assert.equal(
+    inferAgentFromCommand("ANTHROPIC_API_KEY=test ~/.local/bin/claude 'hello'"),
+    'claude',
+  )
 })
 
 test('inferAgentFromCommand returns null for non-agent commands', () => {

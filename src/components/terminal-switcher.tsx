@@ -270,9 +270,7 @@ export function TerminalSwitcher() {
                                 agent={item.agent}
                                 className={cn(
                                   'h-6 w-6',
-                                  i === selectedIndex
-                                    ? 'opacity-100'
-                                    : 'opacity-35',
+                                  i === selectedIndex ? 'opacity-100' : 'opacity-35',
                                 )}
                                 size={24}
                               />

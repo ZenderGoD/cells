@@ -1,15 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useHotkey } from '@tanstack/react-hotkeys'
-import {
-  Globe,
-  Plus,
-  RotateCcw,
-  Palette,
-  Settings,
-  FolderOpen,
-  Search,
-  LogOut,
-} from 'lucide-react'
+import { Globe, Plus, RotateCcw, Palette, Settings, FolderOpen, Search, LogOut } from 'lucide-react'
 import {
   CommandDialog,
   Command,
@@ -184,7 +175,7 @@ export function CommandPalette() {
                       key={t.id}
                       onSelect={() => runAction(() => useStore.getState().snapToTerminal(t.id))}
                     >
-                      {t.agent ?? inferAgentFromTitle(t.title) ? (
+                      {(t.agent ?? inferAgentFromTitle(t.title)) ? (
                         <AgentIcon
                           agent={t.agent ?? inferAgentFromTitle(t.title)}
                           className="text-muted-foreground"

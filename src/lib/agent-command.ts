@@ -8,7 +8,8 @@ export function inferAgentFromCommand(command: string): AgentName | null {
 
   if (!match?.groups?.cmd) return null
 
-  const normalized = match.groups.cmd.toLowerCase().split('/').pop() ?? match.groups.cmd.toLowerCase()
+  const normalized =
+    match.groups.cmd.toLowerCase().split('/').pop() ?? match.groups.cmd.toLowerCase()
   if (normalized === 'claude' || normalized.startsWith('claude-')) return 'claude'
   if (normalized === 'codex' || normalized === 'codex-cli' || normalized.startsWith('codex-')) {
     return 'codex'
