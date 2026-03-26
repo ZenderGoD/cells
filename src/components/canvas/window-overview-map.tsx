@@ -124,6 +124,7 @@ export function WindowOverviewMap({
   const handlePointerDown = useCallback(
     (e: React.PointerEvent, win: CanvasWindow) => {
       if (!onMove) return
+      e.stopPropagation()
       e.currentTarget.setPointerCapture(e.pointerId)
       dragRef.current = {
         windowId: win.id,
@@ -178,6 +179,7 @@ export function WindowOverviewMap({
         className,
       )}
       style={{ width, height }}
+      onDragStart={onMove ? (e) => e.preventDefault() : undefined}
     >
       {viewport && (
         <div
@@ -202,7 +204,7 @@ export function WindowOverviewMap({
             canDrag && 'cursor-grab active:cursor-grabbing',
             window.type === 'browser'
               ? 'rounded-[4px] border-white/24 bg-white/14 text-foreground/55'
-              : 'rounded-[3px] border-white/16 bg-white/8 text-foreground/45',
+              : 'rounded-[4px] border-white/16 bg-white/8 text-foreground/45',
             isCurrent
               ? 'z-10 border-foreground/90 bg-foreground/20 text-foreground shadow-[0_0_0_1px_rgba(255,255,255,0.16),0_10px_22px_rgba(0,0,0,0.24)]'
               : isFocused
