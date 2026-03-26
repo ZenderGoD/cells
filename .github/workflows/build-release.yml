@@ -19,7 +19,7 @@ env:
 
 jobs:
   release:
-    runs-on: macos-latest
+    runs-on: macos-latest-xlarge-blacksmith
 
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
