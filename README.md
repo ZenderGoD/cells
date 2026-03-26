@@ -2,7 +2,7 @@
 
 Cells is a desktop workspace for arranging terminals and browser panes on an infinite canvas. It is built with Electron, React, Vite, and `ghostty-web`, and is currently focused on local macOS workflows.
 
-![Cells project bar showing multiple projects and node icons](docs/screenshots/hero-banner.png)
+<img src="docs/screenshots/hero-banner.png" alt="Cells project bar showing multiple projects and node icons" width="100%">
 
 ## Features
 
