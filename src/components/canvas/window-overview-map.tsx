@@ -1,6 +1,7 @@
-import { Globe, Sparkles, TerminalSquare } from 'lucide-react'
+import { Globe, TerminalSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { getCanvasBounds, type CanvasRect, type CanvasWindow } from '@/lib/canvas-navigation'
+import { AgentIcon } from '@/components/agent-icon'
 
 interface WindowOverviewMapProps {
   windows: CanvasWindow[]
@@ -33,14 +34,9 @@ function WindowIcon({ window, iconSize }: { window: CanvasWindow; iconSize: numb
     )
   }
 
-  // Terminal with agent
+  // Terminal with agent — use the same branded icon as terminal window tabs
   if (window.agent) {
-    return (
-      <Sparkles
-        className="pointer-events-none opacity-90 text-primary/80"
-        style={{ width: iconSize, height: iconSize }}
-      />
-    )
+    return <AgentIcon agent={window.agent} className="pointer-events-none" size={iconSize} />
   }
 
   return (
@@ -155,6 +151,9 @@ export function WindowOverviewMap({
                 title={`${window.type === 'browser' ? 'Browser' : window.agent ? `Agent (${window.agent})` : 'Terminal'}: ${window.title}`}
               >
                 {canShowIcon && <WindowIcon window={window} iconSize={iconSize} />}
+                {window.agent && (
+                  <span className="pointer-events-none absolute top-0 right-0 size-1.5 rounded-full bg-primary/90 animate-pulse" />
+                )}
                 {isFocused && !isCurrent && (
                   <span className="pointer-events-none absolute bottom-0.5 right-0.5 size-1 rounded-full bg-white/90" />
                 )}
@@ -165,6 +164,9 @@ export function WindowOverviewMap({
           return (
             <div key={window.id} className={sharedClassName} style={rectStyle}>
               {canShowIcon && <WindowIcon window={window} iconSize={iconSize} />}
+              {window.agent && (
+                <span className="pointer-events-none absolute top-0 right-0 size-1.5 rounded-full bg-primary/90 animate-pulse" />
+              )}
               {isFocused && !isCurrent && (
                 <span className="pointer-events-none absolute bottom-0.5 right-0.5 size-1 rounded-full bg-white/90" />
               )}
