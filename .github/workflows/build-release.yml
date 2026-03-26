@@ -81,7 +81,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          PREV_TAG=$(
+            git tag --merged HEAD --sort=-v:refname \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+              | grep -Fxv "$RELEASE_TAG" \
+              | head -n 1 \
+              || true
+          )
 
           # Changelog — feature/fix commits only (skip release/merge commits)
           if [ -n "$PREV_TAG" ]; then
