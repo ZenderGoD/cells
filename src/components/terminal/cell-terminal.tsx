@@ -216,8 +216,10 @@ const ANSI_CSI_SEQUENCE_RE = new RegExp(`${ESCAPE_CHAR}\\[[0-9;?]*[ -/]*[@-~]`, 
 // ---------- Agent prompt detection ----------
 
 const AGENT_OUTPUT_BUF_SIZE = 400
-// How long after a prompt is detected before we consider the agent "waiting"
+// How long after a prompt is detected before we consider the agent idle
 const AGENT_PROMPT_SILENCE_MS = 800
+// Fallback: if no output for this long, assume agent is idle even without prompt detection
+const AGENT_IDLE_FALLBACK_MS = 10_000
 // Bell character — agents ring the bell when they finish and need user attention
 const BEL = '\x07'
 
@@ -236,22 +238,22 @@ function stripAnsi(str: string): string {
 /**
  * Detect whether the cleaned output buffer ends with an agent prompt.
  * This means the agent has finished output and is waiting for user input.
+ *
+ * Claude Code prompt characters vary by version:
+ *   ❯ (U+276F), › (U+203A), > (U+003E)
  */
 function detectAgentPrompt(cleanedBuffer: string, agent: AgentName | null): boolean {
   const tail = cleanedBuffer.trimEnd()
   if (!tail) return false
-  // Check the last ~30 chars for prompt patterns
   const end = tail.slice(-30)
 
-  // Claude Code uses ❯ as its prompt character.
-  // Also match (y/n) confirmation prompts that appear during tool approval.
-  if (agent === 'claude') {
-    return /❯\s*$/.test(end) || /\([Yy](?:es)?\/[Nn](?:o)?\)\s*[:?]?\s*$/.test(end)
-  }
-  if (agent === 'codex') {
-    return /[❯>]\s*$/.test(end) || /\([Yy](?:es)?\/[Nn](?:o)?\)\s*[:?]?\s*$/.test(end)
-  }
-  return /[❯›]\s*$/.test(end)
+  // Common prompt endings for CLI agents
+  const promptRe = /[❯›>]\s*$/
+  const confirmRe = /\([Yy](?:es)?\/[Nn](?:o)?\)\s*[:?]?\s*$/
+
+  if (agent === 'claude') return promptRe.test(end) || confirmRe.test(end)
+  if (agent === 'codex') return promptRe.test(end) || confirmRe.test(end)
+  return promptRe.test(end)
 }
 const ANSI_ESCAPE_RE = new RegExp(`${ESCAPE_CHAR}[@-_]`, 'g')
 const NULL_CHAR_RE = new RegExp(NULL_CHAR, 'g')
@@ -956,10 +958,13 @@ export function CellTerminal({
           const hasPrompt = detectAgentPrompt(agentOutputBufRef.current, agent)
           const heardBell = agentBellRef.current
           const focused = store.focusedTerminalId === termId
+          const promptOrBell = (hasPrompt || heardBell) && elapsed > AGENT_PROMPT_SILENCE_MS
+          // Fallback: long silence without any output = agent is idle
+          const idleFallback = lastAgentDataRef.current > 0 && elapsed > AGENT_IDLE_FALLBACK_MS
 
           let newStatus: import('@/types').AgentStatus
-          if ((hasPrompt || heardBell) && elapsed > AGENT_PROMPT_SILENCE_MS) {
-            // Agent finished — if user is watching, no indicator; otherwise unread
+          if (promptOrBell || idleFallback) {
+            // Agent is idle — if user is watching, no indicator; otherwise unread
             newStatus = focused ? null : 'unread'
           } else {
             newStatus = 'active'
@@ -1012,11 +1017,25 @@ export function CellTerminal({
         term.write(result.buffer)
       }
 
-      // Trigger SIGWINCH so the shell (and any running program) redraws.
-      // Without this, reconnected daemon sessions appear blank until the
-      // user manually presses Ctrl+L.
-      if (result?.reattached && dims) {
-        window.cells.terminal.resize(termId, dims.cols, dims.rows)
+      if (result?.reattached) {
+        // Trigger SIGWINCH so the shell (and any running program) redraws.
+        if (dims) {
+          window.cells.terminal.resize(termId, dims.cols, dims.rows)
+        }
+
+        // Force canvas repaints after the buffer and SIGWINCH output settle.
+        // The terminal emulator has the content in its internal buffer but
+        // the canvas may not have painted it yet (DOM not fully laid out,
+        // GPU backing store not allocated, etc.). Multiple deferred frames
+        // catch both the immediate buffer write and the async SIGWINCH redraw.
+        const forceRepaint = () => {
+          if (term.renderer && term.wasmTerm) {
+            term.renderer.render(term.wasmTerm, true, term.viewportY, term as any, 0)
+          }
+        }
+        requestAnimationFrame(forceRepaint)
+        setTimeout(() => requestAnimationFrame(forceRepaint), 100)
+        setTimeout(() => requestAnimationFrame(forceRepaint), 500)
       }
 
       const pendingCmd = consumePendingCommand(termId)
@@ -1099,11 +1118,17 @@ export function CellTerminal({
     }
   }, [termId, themeName, fontSize, fontFamily])
 
-  // Auto-focus
+  // Auto-focus + force repaint for reattached daemon sessions that may have
+  // a stale/blank canvas despite having content in the internal buffer.
   useEffect(() => {
-    if (isFocused && terminalRef.current) {
-      terminalRef.current.focus()
-    }
+    if (!isFocused || !terminalRef.current) return
+    terminalRef.current.focus()
+    const t = terminalRef.current
+    requestAnimationFrame(() => {
+      if (t.renderer && t.wasmTerm) {
+        t.renderer.render(t.wasmTerm, true, t.viewportY, t as any, 0)
+      }
+    })
   }, [isFocused])
 
   // Allow scrolling the scrollback buffer even when the running program has
