@@ -61,6 +61,7 @@ interface StoreState {
   linkRules: Array<{ pattern: string; target: 'system' | 'browser'; projectId?: string }>
   agentAliases: Record<string, string>
   colorScheme: 'light' | 'dark' | 'system'
+  saveStatus: 'idle' | 'saving' | 'saved' | 'error'
   closeUndoTimeoutMs: number
   closeProcessSuppressions: string[]
   pendingClosedWindows: PendingClosedWindow[]
@@ -86,6 +87,7 @@ interface StoreState {
   addTerminal(): TerminalNode
   addTerminalWithCommand(command: string, title?: string): TerminalNode
   updateTerminalAgent(id: string, agent: 'claude' | 'codex' | null): void
+  updateTerminalAgentStatus(id: string, status: import('../types').AgentStatus): void
   removeAllTerminals(): void
   removeTerminal(id: string): void
   moveTerminal(id: string, x: number, y: number): void
@@ -158,6 +160,7 @@ const DEFAULT_FONT_FAMILY = '"GeistMono NF", "Geist Mono", monospace'
 const DEFAULT_SEARCH_ENGINE = 'https://www.google.com/search?q=%s'
 const DEFAULT_HOME_PAGE = ''
 const DEFAULT_CLOSE_UNDO_TIMEOUT_MS = 15000
+const SAVE_STATUS_RESET_MS = 1800
 
 /** Apply color scheme to the document and sync with system preferences. */
 let systemThemeCleanup: (() => void) | null = null
@@ -303,9 +306,19 @@ function upsertPendingClosedWindow(
 }
 
 let persistTimer: ReturnType<typeof setTimeout> | null = null
+let persistStatusTimer: ReturnType<typeof setTimeout> | null = null
+let persistRequestId = 0
+
 function debouncedPersist(fn: () => void, delay = 500) {
   if (persistTimer) clearTimeout(persistTimer)
   persistTimer = setTimeout(fn, delay)
+}
+
+function clearPersistStatusTimer() {
+  if (persistStatusTimer) {
+    clearTimeout(persistStatusTimer)
+    persistStatusTimer = null
+  }
 }
 
 /** Snapshot the current working state back into the projects array */
@@ -375,6 +388,7 @@ export const useStore = create<StoreState>((set, get) => ({
   linkRules: [],
   agentAliases: {},
   colorScheme: 'dark' as const,
+  saveStatus: 'idle',
   closeUndoTimeoutMs: DEFAULT_CLOSE_UNDO_TIMEOUT_MS,
   closeProcessSuppressions: [],
   pendingClosedWindows: [],
@@ -533,6 +547,28 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   persist() {
+    const requestId = ++persistRequestId
+    clearPersistStatusTimer()
+    set({ saveStatus: 'saving' })
+
+    const finishPersist = (status: 'saved' | 'error') => {
+      if (requestId !== persistRequestId) return
+      set({ saveStatus: status })
+      if (status === 'saved') {
+        persistStatusTimer = setTimeout(() => {
+          if (requestId === persistRequestId) {
+            set({ saveStatus: 'idle' })
+          }
+        }, SAVE_STATUS_RESET_MS)
+      }
+    }
+
+    const saveState = (state: ProjectsState) =>
+      window.cells.state.save(state).then(
+        () => finishPersist('saved'),
+        () => finishPersist('error'),
+      )
+
     // Fetch live navigation history from all browser views, then save
     window.cells.browser
       .getAllHistory()
@@ -558,7 +594,7 @@ export const useStore = create<StoreState>((set, get) => ({
         }
 
         const freshState = get()
-        window.cells.state.save({
+        return saveState({
           version: 2,
           activeProjectId: freshState.activeProjectId,
           projects,
@@ -586,7 +622,7 @@ export const useStore = create<StoreState>((set, get) => ({
         // Fallback: save without history
         const state = get()
         const projects = snapshotActiveProject(state)
-        window.cells.state.save({
+        return saveState({
           version: 2,
           activeProjectId: state.activeProjectId,
           projects,
@@ -839,6 +875,12 @@ export const useStore = create<StoreState>((set, get) => ({
     }))
   },
 
+  updateTerminalAgentStatus(id, status) {
+    set((s) => ({
+      terminals: s.terminals.map((t) => (t.id === id ? { ...t, agentStatus: status } : t)),
+    }))
+  },
+
   removeAllTerminals() {
     const state = get()
     for (const t of state.terminals) {
@@ -907,7 +949,18 @@ export const useStore = create<StoreState>((set, get) => ({
     if (id && id !== prev) {
       get().bringToFront(id)
       const history = pushFocusHistory(get().focusHistory, id)
-      set({ focusedTerminalId: id, focusedBrowserId: null, focusHistory: history })
+      // Clear 'done' agentStatus on focus — user has acknowledged
+      const terminal = get().terminals.find((t) => t.id === id)
+      if (terminal?.agentStatus === 'done') {
+        set((s) => ({
+          focusedTerminalId: id,
+          focusedBrowserId: null,
+          focusHistory: history,
+          terminals: s.terminals.map((t) => (t.id === id ? { ...t, agentStatus: null } : t)),
+        }))
+      } else {
+        set({ focusedTerminalId: id, focusedBrowserId: null, focusHistory: history })
+      }
     } else {
       set({ focusedTerminalId: id, focusedBrowserId: null })
     }

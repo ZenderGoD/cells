@@ -12,7 +12,6 @@ import {
   Server,
   Skull,
   Terminal,
-  Trash2,
   X,
 } from 'lucide-react'
 
@@ -137,6 +136,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const setLinkRules = useStore((s) => s.setLinkRules)
   const agentAliases = useStore((s) => s.agentAliases)
   const setAgentAliases = useStore((s) => s.setAgentAliases)
+  const saveStatus = useStore((s) => s.saveStatus)
   const closeUndoTimeoutMs = useStore((s) => s.closeUndoTimeoutMs)
   const closeProcessSuppressions = useStore((s) => s.closeProcessSuppressions)
   const setCloseUndoTimeoutMs = useStore((s) => s.setCloseUndoTimeoutMs)
@@ -168,6 +168,31 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
         .label,
     [activeSection],
   )
+
+  const saveBadge = useMemo(() => {
+    if (saveStatus === 'saving') {
+      return {
+        label: 'Saving...',
+        icon: <Loader2 className="h-3 w-3 animate-spin text-muted-foreground/60" />,
+      }
+    }
+    if (saveStatus === 'saved') {
+      return {
+        label: 'Saved',
+        icon: <Check className="h-3 w-3 text-emerald-500/80" />,
+      }
+    }
+    if (saveStatus === 'error') {
+      return {
+        label: 'Save failed',
+        icon: <span className="size-1.5 rounded-full bg-destructive/80" />,
+      }
+    }
+    return {
+      label: 'Auto-save on',
+      icon: <span className="size-1.5 rounded-full bg-emerald-500/70" />,
+    }
+  }, [saveStatus])
 
   const handleOpenChange = (nextOpen: boolean) => {
     if (nextOpen) setActiveSection('appearance')
@@ -209,13 +234,19 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
             <header className={SETTINGS_SHEET_CLASSNAMES.contentHeader}>
               <div className="flex items-center justify-between">
                 <h2 className="text-xs font-medium text-foreground">{activeSectionLabel}</h2>
-                <DialogPrimitive.Close
-                  data-slot="dialog-close"
-                  render={<Button variant="ghost" size="icon-xs" />}
-                >
-                  <X className="w-2.5 h-2.5" />
-                  <span className="sr-only">Close</span>
-                </DialogPrimitive.Close>
+                <div className="flex items-center gap-1.5">
+                  <div className="inline-flex items-center gap-1.5 rounded-md border border-border/30 bg-background/60 px-2 py-1 text-[10px] text-muted-foreground/70">
+                    {saveBadge.icon}
+                    <span>{saveBadge.label}</span>
+                  </div>
+                  <DialogPrimitive.Close
+                    data-slot="dialog-close"
+                    render={<Button variant="ghost" size="icon-xs" />}
+                  >
+                    <X className="w-2.5 h-2.5" />
+                    <span className="sr-only">Close</span>
+                  </DialogPrimitive.Close>
+                </div>
               </div>
             </header>
 

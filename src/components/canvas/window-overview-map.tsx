@@ -3,6 +3,24 @@ import { Globe, TerminalSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { getCanvasBounds, type CanvasRect, type CanvasWindow } from '@/lib/canvas-navigation'
 import { AgentIcon } from '@/components/agent-icon'
+import type { AgentStatus } from '@/types'
+
+function AgentStatusDot({ status }: { status: AgentStatus }) {
+  if (status === 'waiting') {
+    return (
+      <span className="pointer-events-none absolute top-0 right-0 size-1.5 rounded-full bg-amber-400 animate-pulse" />
+    )
+  }
+  if (status === 'done') {
+    return (
+      <span className="pointer-events-none absolute top-0 right-0 size-1.5 rounded-full bg-emerald-400" />
+    )
+  }
+  // running (default for agent present)
+  return (
+    <span className="pointer-events-none absolute top-0 right-0 size-1.5 rounded-full bg-primary/90 animate-pulse" />
+  )
+}
 
 interface WindowOverviewMapProps {
   windows: CanvasWindow[]
@@ -221,11 +239,11 @@ export function WindowOverviewMap({
                 onPointerDown={canDrag ? (e) => handlePointerDown(e, window) : undefined}
                 onPointerMove={canDrag ? (e) => handlePointerMove(e, window) : undefined}
                 onPointerUp={canDrag ? (e) => handlePointerUp(e, window) : undefined}
-                title={`${window.type === 'browser' ? 'Browser' : window.agent ? `Agent (${window.agent})` : 'Terminal'}: ${window.title}`}
+                title={`${window.type === 'browser' ? 'Browser' : window.agent ? `Agent (${window.agent})${window.agentStatus ? ` — ${window.agentStatus}` : ''}` : 'Terminal'}: ${window.title}`}
               >
                 {canShowIcon && <WindowIcon window={window} iconSize={iconSize} />}
-                {window.agent && (
-                  <span className="pointer-events-none absolute top-0 right-0 size-1.5 rounded-full bg-primary/90 animate-pulse" />
+                {(window.agent || window.agentStatus === 'done') && (
+                  <AgentStatusDot status={window.agentStatus ?? 'running'} />
                 )}
                 {isFocused && !isCurrent && (
                   <span className="pointer-events-none absolute bottom-0.5 right-0.5 size-1 rounded-full bg-white/90" />
@@ -237,8 +255,8 @@ export function WindowOverviewMap({
           return (
             <div key={window.id} className={sharedClassName} style={rectStyle}>
               {canShowIcon && <WindowIcon window={window} iconSize={iconSize} />}
-              {window.agent && (
-                <span className="pointer-events-none absolute top-0 right-0 size-1.5 rounded-full bg-primary/90 animate-pulse" />
+              {(window.agent || window.agentStatus === 'done') && (
+                <AgentStatusDot status={window.agentStatus ?? 'running'} />
               )}
               {isFocused && !isCurrent && (
                 <span className="pointer-events-none absolute bottom-0.5 right-0.5 size-1 rounded-full bg-white/90" />

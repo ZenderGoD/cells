@@ -31,6 +31,11 @@ import { NewProjectDialog } from './new-project-dialog'
 import { AgentIcon } from './agent-icon'
 import { Logo } from './logo'
 
+const AGENT_OPTIONS = [
+  { id: 'claude', label: 'Claude Code' },
+  { id: 'codex', label: 'Codex' },
+] as const
+
 export function CommandPalette() {
   const [open, setOpen] = useState(false)
   const [showSettingsRaw, setShowSettingsRaw] = useState(false)
@@ -44,6 +49,12 @@ export function CommandPalette() {
   const activeProjectId = useStore((s) => s.activeProjectId)
   const setOverlayOpen = useStore((s) => s.setOverlayOpen)
   const agentAliases = useStore((s) => s.agentAliases)
+  const availableAgents = AGENT_OPTIONS.filter(({ id }) => agents[id])
+
+  const getAgentCommandLabel = (agent: (typeof AGENT_OPTIONS)[number]['id']) => {
+    const alias = agentAliases[agent]?.trim()
+    return alias && alias.length > 0 ? alias : agent
+  }
 
   const setShowSettings = (v: boolean) => {
     setShowSettingsRaw(v)
@@ -252,52 +263,47 @@ export function CommandPalette() {
               </>
             )}
 
-            {search.trim() && (agents.claude || agents.codex) && (
+            {availableAgents.length > 0 && (
               <>
                 <CommandSeparator />
                 <CommandGroup heading="AI Agents" forceMount>
-                  {agents.claude && (
+                  {availableAgents.map(({ id, label }) => (
                     <CommandItem
+                      key={`${id}-${search.trim() || 'new'}`}
                       forceMount
-                      value={`ask-claude-${search}`}
+                      value={
+                        search.trim()
+                          ? `ask-${id}-${getAgentCommandLabel(id)}-${search}`
+                          : `new-${id}-${getAgentCommandLabel(id)}`
+                      }
                       onSelect={() =>
                         runAction(() => {
+                          const cmd = useStore.getState().getAgentCommand(id)
+
+                          if (!search.trim()) {
+                            useStore.getState().addTerminalWithCommand(cmd, label)
+                            return
+                          }
+
                           const escaped = search.trim().replace(/'/g, "'\\''")
-                          const cmd = useStore.getState().getAgentCommand('claude')
                           useStore
                             .getState()
                             .addTerminalWithCommand(
                               `${cmd} '${escaped}'`,
-                              `Claude: ${search.trim().slice(0, 40)}`,
+                              `${label}: ${search.trim().slice(0, 40)}`,
                             )
                         })
                       }
                     >
-                      <AgentIcon agent="claude" className="text-muted-foreground" size={16} />
-                      Ask Claude Code: &ldquo;{search.trim().slice(0, 50)}&rdquo;
+                      <AgentIcon agent={id} className="text-muted-foreground" size={16} />
+                      {search.trim()
+                        ? `Ask ${label}: "${search.trim().slice(0, 50)}"`
+                        : `New ${label} Terminal`}
+                      <span className="ml-auto max-w-40 truncate text-[10px] font-mono text-muted-foreground/40">
+                        {getAgentCommandLabel(id)}
+                      </span>
                     </CommandItem>
-                  )}
-                  {agents.codex && (
-                    <CommandItem
-                      forceMount
-                      value={`ask-codex-${search}`}
-                      onSelect={() =>
-                        runAction(() => {
-                          const escaped = search.trim().replace(/'/g, "'\\''")
-                          const cmd = useStore.getState().getAgentCommand('codex')
-                          useStore
-                            .getState()
-                            .addTerminalWithCommand(
-                              `${cmd} '${escaped}'`,
-                              `Codex: ${search.trim().slice(0, 40)}`,
-                            )
-                        })
-                      }
-                    >
-                      <AgentIcon agent="codex" className="text-muted-foreground" size={16} />
-                      Ask Codex: &ldquo;{search.trim().slice(0, 50)}&rdquo;
-                    </CommandItem>
-                  )}
+                  ))}
                 </CommandGroup>
               </>
             )}

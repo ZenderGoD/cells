@@ -414,8 +414,13 @@ ipcMain.handle('agent:check-available', (_event, aliases?: Record<string, string
   const results: Record<string, boolean> = {}
   for (const name of ['claude', 'codex']) {
     const cmd = aliases?.[name]?.trim() || name
+    const executable = (cmd.match(/^(".*?"|'.*?'|\S+)/)?.[0] ?? name).replace(/^['"]|['"]$/g, '')
+    const escapedExecutable = executable.replace(/'/g, "'\\''")
     try {
-      execFileSync(shell, ['-lc', `which ${cmd}`], { stdio: 'pipe', timeout: 3000 })
+      execFileSync(shell, ['-lc', `command -v -- '${escapedExecutable}'`], {
+        stdio: 'pipe',
+        timeout: 3000,
+      })
       results[name] = true
     } catch {
       results[name] = false

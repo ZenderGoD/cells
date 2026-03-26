@@ -389,6 +389,8 @@ export function CellTerminal({
   const detectedAgentRef = useRef<AgentName | null>(null)
   const inputBufferRef = useRef('')
   const lastInferredTitleRef = useRef<string | null>(null)
+  const lastAgentDataRef = useRef<number>(0) // timestamp of last PTY data while agent active
+  const prevAgentRef = useRef<AgentName | null>(null) // track transitions for done detection
   const dragDepthRef = useRef(0)
   const [dropActive, setDropActive] = useState(false)
 
@@ -520,6 +522,7 @@ export function CellTerminal({
       const cached = terminalCache.get(termId)
       if (cached) {
         // Move the existing DOM back into our container
+        cached.wrapper.style.backgroundColor = buildTheme(themeNameRef.current).background
         container.appendChild(cached.wrapper)
         terminalRef.current = cached.term
         fitAddonRef.current = cached.fitAddon
@@ -559,6 +562,7 @@ export function CellTerminal({
       const wrapper = document.createElement('div')
       wrapper.style.width = '100%'
       wrapper.style.height = '100%'
+      wrapper.style.backgroundColor = buildTheme(themeNameRef.current).background
       container.appendChild(wrapper)
 
       const term = new Terminal({
@@ -778,7 +782,13 @@ export function CellTerminal({
           window.cells.terminal.write(termId, data)
         }).dispose,
         window.cells.terminal.onData((id, data) => {
-          if (id === termId) term.write(data)
+          if (id === termId) {
+            term.write(data)
+            // Track last PTY output time for agent waiting detection
+            if (detectedAgentRef.current || inferredAgentRef.current) {
+              lastAgentDataRef.current = Date.now()
+            }
+          }
         }),
         window.cells.terminal.onExit((id) => {
           if (id === termId) {
@@ -796,16 +806,39 @@ export function CellTerminal({
       wrapper.addEventListener('paste', handlePaste)
       cleanups.push(() => wrapper.removeEventListener('paste', handlePaste))
 
-      // Agent detection poll
+      // Agent detection poll — also tracks agent status (running/waiting/done)
+      const AGENT_WAITING_THRESHOLD_MS = 2500
       const agentPoll = setInterval(async () => {
         const proc = await window.cells.terminal.getProcess(termId)
         const agent = normalizeAgentProcess(proc)
+        const wasAgent = prevAgentRef.current
         detectedAgentRef.current = agent
         if (agent) inferredAgentRef.current = agent
-        const current = useStore.getState().terminals.find((t) => t.id === termId)
+        prevAgentRef.current = agent
+
+        const store = useStore.getState()
+        const current = store.terminals.find((t) => t.id === termId)
         if (current && current.agent !== agent) {
-          useStore.getState().updateTerminalAgent(termId, agent)
+          store.updateTerminalAgent(termId, agent)
         }
+
+        // Determine agent status
+        if (agent) {
+          // Agent is running — check if waiting for input
+          const elapsed = Date.now() - lastAgentDataRef.current
+          const newStatus =
+            lastAgentDataRef.current > 0 && elapsed > AGENT_WAITING_THRESHOLD_MS
+              ? ('waiting' as const)
+              : ('running' as const)
+          if (current && current.agentStatus !== newStatus) {
+            store.updateTerminalAgentStatus(termId, newStatus)
+          }
+        } else if (wasAgent && !agent) {
+          // Agent just exited — mark as done
+          store.updateTerminalAgentStatus(termId, 'done')
+          lastAgentDataRef.current = 0
+        }
+
         if (agent === 'codex') {
           const codexTitle = await window.cells.terminal.getCodexTitle(termId)
           if (codexTitle) {
@@ -886,7 +919,14 @@ export function CellTerminal({
     const term = terminalRef.current
     if (!term) return
 
-    term.options.theme = buildTheme(themeName)
+    const theme = buildTheme(themeName)
+    term.options.theme = theme
+
+    // Keep wrapper background in sync so the sub-cell gap matches the terminal bg
+    const cached = terminalCache.get(termId)
+    if (cached) {
+      cached.wrapper.style.backgroundColor = theme.background
+    }
 
     const fontChanged = term.options.fontSize !== fontSize || term.options.fontFamily !== fontFamily
 
@@ -912,15 +952,19 @@ export function CellTerminal({
   }, [isFocused])
 
   // Allow scrolling the scrollback buffer even when the running program has
-  // mouse tracking enabled (e.g. Claude Code, Codex).  When mouse tracking is
-  // on, ghostty-web forwards wheel events to the program instead of scrolling.
-  // We intercept wheel events and call scrollLines() ourselves in that case.
+  // mouse tracking enabled (e.g. Claude Code, Codex) or is using the alternate
+  // screen buffer.  In either case the default wheel behavior doesn't scroll
+  // the main buffer's scrollback, so we intercept and do it ourselves.
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
     const onWheel = (e: WheelEvent) => {
       const term = terminalRef.current
-      if (!term || !term.hasMouseTracking()) return
+      if (!term) return
+      // Intercept when mouse tracking is on (agent TUIs) OR when the program
+      // is in the alternate screen buffer (which has no scrollback of its own).
+      const inAlternate = term.buffer?.active?.type === 'alternate'
+      if (!term.hasMouseTracking() && !inAlternate) return
       e.preventDefault()
       e.stopPropagation()
       const lines = Math.round(e.deltaY / 20) || (e.deltaY > 0 ? 1 : -1)

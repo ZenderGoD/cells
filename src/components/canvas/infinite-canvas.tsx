@@ -221,7 +221,7 @@ export function InfiniteCanvas() {
       // Let terminal/browser handle their own clicks (including Cmd+click for links).
       // Only intercept Cmd+click on the non-interactive shell of the node (title bar, resize edges).
       const isInsideContent =
-        (e.target as HTMLElement).closest('.xterm') ||
+        (e.target as HTMLElement).closest('.cell-terminal') ||
         (e.target as HTMLElement).closest('.browser-node > div')
       if (clickedNode && (!e.metaKey || isInsideContent)) return
 

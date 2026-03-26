@@ -47,6 +47,7 @@ export function TerminalSwitcher() {
   const selectedIndexRef = useRef(0)
   const selectedIdRef = useRef<string | null>(null)
   const ctrlHeld = useRef(false)
+  const mouseActivated = useRef(false)
   const [, setPreviewTick] = useState(0)
 
   const updateSelected = useCallback((index: number, id: string | null) => {
@@ -120,6 +121,7 @@ export function TerminalSwitcher() {
           const startIdx = currentIdx === -1 ? 0 : currentIdx
           nextIdx = (((startIdx + direction) % allItems.length) + allItems.length) % allItems.length
         }
+        mouseActivated.current = false
         setOpen(true)
       } else {
         nextIdx =
@@ -213,7 +215,12 @@ export function TerminalSwitcher() {
           transition={{ duration: reducedMotion ? 0 : 0.12 }}
           className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none"
         >
-          <div className="bg-card/92 rounded-xl ring-1 ring-border/40 p-3 pointer-events-auto max-w-[min(98vw,1280px)]">
+          <div
+            className="bg-card/92 rounded-xl ring-1 ring-border/40 p-3 pointer-events-auto max-w-[min(98vw,1280px)]"
+            onMouseMove={() => {
+              mouseActivated.current = true
+            }}
+          >
             <div className="px-1 pb-2">
               <WindowOverviewMap
                 windows={canvasWindows}
@@ -241,7 +248,9 @@ export function TerminalSwitcher() {
                       selectedIdRef.current = item.id
                       commit()
                     }}
-                    onMouseEnter={() => updateSelected(i, item.id)}
+                    onMouseEnter={() => {
+                      if (mouseActivated.current) updateSelected(i, item.id)
+                    }}
                     className={cn(
                       'relative flex flex-col rounded-lg overflow-hidden transition-all shrink-0 bg-card text-left',
                       i === selectedIndex

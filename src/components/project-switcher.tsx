@@ -7,6 +7,8 @@ import { motion, AnimatePresence } from 'motion/react'
 import { WindowOverviewMap } from './canvas/window-overview-map'
 import type { Project } from '@/types'
 
+type ProjectAttention = 'waiting' | 'done' | 'running' | null
+
 interface ProjectSwitcherItem {
   id: string
   name: string
@@ -15,6 +17,7 @@ interface ProjectSwitcherItem {
   browsers: number
   windows: ReturnType<typeof getCanvasWindows>
   isCurrent: boolean
+  attention: ProjectAttention
 }
 
 function orderProjects(
@@ -62,6 +65,7 @@ export function ProjectSwitcher() {
   const selectedIndexRef = useRef(0)
   const selectedIdRef = useRef<string | null>(null)
   const ctrlHeld = useRef(false)
+  const mouseActivated = useRef(false)
   const openModeRef = useRef<'manual' | 'cycle' | null>(null)
 
   const updateSelected = useCallback((index: number, id: string | null) => {
@@ -77,6 +81,16 @@ export function ProjectSwitcher() {
       const projectTerminals = isCurrent ? terminals : project.terminals
       const projectBrowsers = isCurrent ? browsers : project.browsers
 
+      let attention: ProjectAttention = null
+      for (const t of projectTerminals) {
+        if (t.agentStatus === 'waiting') {
+          attention = 'waiting'
+          break
+        }
+        if (t.agentStatus === 'done') attention = 'done'
+        if (t.agent && !attention) attention = 'running'
+      }
+
       return {
         id: project.id,
         name: project.name,
@@ -85,6 +99,7 @@ export function ProjectSwitcher() {
         browsers: projectBrowsers.length,
         windows: getCanvasWindows(projectTerminals, projectBrowsers),
         isCurrent,
+        attention,
       }
     })
   }, [activeProjectId, browsers, projectSwitchMode, projects, terminals])
@@ -101,6 +116,7 @@ export function ProjectSwitcher() {
       if (!openRef.current) {
         nextIdx = direction === 1 ? 1 : ordered.length - 1
         openModeRef.current = 'cycle'
+        mouseActivated.current = false
         setOpen(true)
       } else {
         nextIdx =
@@ -132,6 +148,7 @@ export function ProjectSwitcher() {
     if (items.length < 2) return
     const currentIndex = items.findIndex((item) => item.id === currentId)
     openModeRef.current = 'manual'
+    mouseActivated.current = false
     setOpen(true)
     updateSelected(currentIndex === -1 ? 0 : currentIndex, currentId)
   }, [currentId, items, setOpen, updateSelected])
@@ -238,7 +255,12 @@ export function ProjectSwitcher() {
           transition={{ duration: reducedMotion ? 0 : 0.12 }}
           className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none"
         >
-          <div className="bg-card/92 rounded-xl ring-1 ring-border/40 p-3 pointer-events-auto max-w-[min(98vw,1360px)]">
+          <div
+            className="bg-card/92 rounded-xl ring-1 ring-border/40 p-3 pointer-events-auto max-w-[min(98vw,1360px)]"
+            onMouseMove={() => {
+              mouseActivated.current = true
+            }}
+          >
             <div className="px-1 pb-2 flex items-center justify-between">
               <span className="text-[10px] text-muted-foreground/35">Projects</span>
               <span className="text-[10px] text-muted-foreground/35">
@@ -257,7 +279,9 @@ export function ProjectSwitcher() {
                       key={item.id}
                       type="button"
                       onClick={() => selectProject(item.id)}
-                      onMouseEnter={() => updateSelected(index, item.id)}
+                      onMouseEnter={() => {
+                        if (mouseActivated.current) updateSelected(index, item.id)
+                      }}
                       className={cn(
                         'relative flex h-[132px] w-[188px] shrink-0 flex-col overflow-hidden rounded-lg bg-card text-left transition-all',
                         isSelected
@@ -307,7 +331,17 @@ export function ProjectSwitcher() {
                           <span className="min-w-0 flex-1 truncate text-[11px] font-medium">
                             {item.name}
                           </span>
-                          {item.isCurrent ? (
+                          {item.attention === 'waiting' ? (
+                            <div
+                              className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400 animate-pulse"
+                              title="Agent waiting"
+                            />
+                          ) : item.attention === 'done' ? (
+                            <div
+                              className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400"
+                              title="Agent done"
+                            />
+                          ) : item.isCurrent ? (
                             <div className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary/60" />
                           ) : null}
                         </div>

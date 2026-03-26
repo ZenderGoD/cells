@@ -4,6 +4,11 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  ghostty-web@0.4.0:
+    hash: b06bf854d6513b21ebd867855ac8baeea36a438c44053b1d1ce8f97b964071ba
+    path: patches/ghostty-web@0.4.0.patch
+
 importers:
 
   .:
@@ -40,7 +45,7 @@ importers:
         version: 6.8.3
       ghostty-web:
         specifier: ^0.4.0
-        version: 0.4.0
+        version: 0.4.0(patch_hash=b06bf854d6513b21ebd867855ac8baeea36a438c44053b1d1ce8f97b964071ba)
       lucide-react:
         specifier: ^0.460.0
         version: 0.460.0(react@19.2.4)
@@ -10076,7 +10081,7 @@ snapshots:
 
   get-value@2.0.6: {}
 
-  ghostty-web@0.4.0: {}
+  ghostty-web@0.4.0(patch_hash=b06bf854d6513b21ebd867855ac8baeea36a438c44053b1d1ce8f97b964071ba): {}
 
   giscus@1.6.0:
     dependencies:

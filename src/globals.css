@@ -352,11 +352,11 @@ body {
   -webkit-user-select: none;
 }
 
-/* Terminal node layout — fill container, no gaps */
+/* Terminal node layout — keep canvas at its natural grid-aligned size so
+   mouse-to-cell coordinate conversion stays accurate for selection.
+   The parent wrapper background fills the sub-cell-size gap. */
 .terminal-node canvas {
   display: block !important;
-  width: 100% !important;
-  height: 100% !important;
 }
 
 /* Hide ghostty-web's input textarea visually but keep it interactive for paste */

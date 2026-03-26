@@ -4,6 +4,8 @@ export interface CanvasTransform {
   scale: number
 }
 
+export type AgentStatus = 'running' | 'waiting' | 'done' | null
+
 export interface TerminalNode {
   id: string
   x: number
@@ -14,6 +16,7 @@ export interface TerminalNode {
   zIndex?: number
   pinned?: boolean
   agent?: 'claude' | 'codex' | null
+  agentStatus?: AgentStatus
 }
 
 export interface BrowserHistoryEntry {

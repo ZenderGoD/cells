@@ -56,6 +56,8 @@ function shortenUrl(url?: string): string {
   }
 }
 
+type ProjectAttention = 'waiting' | 'done' | 'running' | null
+
 function ProjectTab({
   project,
   isActive,
@@ -71,6 +73,7 @@ function ProjectTab({
   snapToBrowser,
   moveTerminal,
   moveBrowser,
+  attention,
 }: {
   project: { id: string; name: string }
   isActive: boolean
@@ -86,6 +89,7 @@ function ProjectTab({
   snapToBrowser: (id: string) => void
   moveTerminal: (id: string, x: number, y: number) => void
   moveBrowser: (id: string, x: number, y: number) => void
+  attention: ProjectAttention
 }) {
   const dragControls = useDragControls()
 
@@ -119,6 +123,15 @@ function ProjectTab({
           >
             {projectWindowCount}
           </span>
+        )}
+        {attention === 'waiting' && (
+          <span
+            className="size-1.5 shrink-0 rounded-full bg-amber-400 animate-pulse"
+            title="Agent waiting for input"
+          />
+        )}
+        {attention === 'done' && (
+          <span className="size-1.5 shrink-0 rounded-full bg-emerald-400" title="Agent finished" />
         )}
       </button>
       <AnimatePresence>
@@ -417,6 +430,18 @@ export function StatusBar() {
               ? windowCount
               : (project.terminals?.length ?? 0) + (project.browsers?.length ?? 0)
 
+            // Compute highest-priority agent attention for this project
+            const projectTerminals = isActive ? terminals : (project.terminals ?? [])
+            let attention: ProjectAttention = null
+            for (const t of projectTerminals) {
+              if (t.agentStatus === 'waiting') {
+                attention = 'waiting'
+                break
+              }
+              if (t.agentStatus === 'done') attention = 'done'
+              if (t.agent && !attention) attention = 'running'
+            }
+
             return (
               <ProjectTab
                 key={project.id}
@@ -434,6 +459,7 @@ export function StatusBar() {
                 snapToBrowser={snapToBrowser}
                 moveTerminal={moveTerminal}
                 moveBrowser={moveBrowser}
+                attention={attention}
               />
             )
           })}
