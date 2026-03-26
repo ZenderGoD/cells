@@ -32,17 +32,19 @@ function copyBrowserPreload(): Plugin {
 }
 
 function buildPtyDaemon(): Plugin {
+  const src = path.resolve(__dirname, 'electron/pty-daemon.ts')
+  const out = path.resolve(__dirname, 'dist-electron/pty-daemon.js')
   return {
     name: 'build-pty-daemon',
-    async writeBundle() {
+    async buildStart() {
+      fs.mkdirSync(path.dirname(out), { recursive: true })
       await esbuild({
-        entryPoints: [path.resolve(__dirname, 'electron/pty-daemon.ts')],
+        entryPoints: [src],
         bundle: true,
         platform: 'node',
         format: 'esm',
-        outfile: path.resolve(__dirname, 'dist-electron/pty-daemon.js'),
+        outfile: out,
         external: ['node-pty'],
-        banner: { js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);" },
       })
     },
   }
