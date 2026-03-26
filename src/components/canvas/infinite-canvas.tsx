@@ -58,6 +58,7 @@ export function InfiniteCanvas() {
   const [isPanning, setIsPanning] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
   const [isUserDriving, setIsUserDriving] = useState(false) // true while user is actively panning/scrolling
+  const [metaHeld, setMetaHeld] = useState(false)
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([])
   const [marqueeBox, setMarqueeBox] = useState<{
     x: number
@@ -217,7 +218,7 @@ export function InfiniteCanvas() {
         }
       }
 
-      if (clickedNode) return
+      if (clickedNode && !e.metaKey) return
 
       if (e.button === 0 || e.button === 1) {
         e.preventDefault()
@@ -320,6 +321,23 @@ export function InfiniteCanvas() {
       setSelectionCount(0)
     })
   }, [setSelectionCount])
+
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => {
+      if (e.key === 'Meta') setMetaHeld(true)
+    }
+    const up = (e: KeyboardEvent) => {
+      if (e.key === 'Meta') setMetaHeld(false)
+    }
+    window.addEventListener('keydown', down)
+    window.addEventListener('keyup', up)
+    window.addEventListener('blur', () => setMetaHeld(false))
+    return () => {
+      window.removeEventListener('keydown', down)
+      window.removeEventListener('keyup', up)
+      window.removeEventListener('blur', () => setMetaHeld(false))
+    }
+  }, [])
 
   // Wheel handler: trackpad pan + pinch zoom, with snap-after-idle
   // Reads canvas state directly from the store on each event so rapid trackpad
@@ -461,7 +479,8 @@ export function InfiniteCanvas() {
       className={cn(
         'canvas-stage flex-1 min-h-0 overflow-hidden relative',
         (isPanning || isDragging) && 'cursor-grabbing',
-        selectionMode && !isPanning && !isDragging && 'cursor-default',
+        metaHeld && !isPanning && !isDragging && 'cursor-grab',
+        selectionMode && !isPanning && !isDragging && !metaHeld && 'cursor-default',
       )}
       onMouseDown={handleCanvasMouseDown}
       onWheel={handleWheel}

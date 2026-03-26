@@ -48,8 +48,9 @@ export function CloseWindowDialog({
               <DialogDescription className="text-xs leading-relaxed">
                 <span className="font-medium text-foreground">{processLabel}</span>
                 {' is still running in '}
-                <span className="font-medium text-foreground">{windowTitle || 'this window'}</span>.{' '}
-                {formatUndoTimeout(undoTimeoutMs)}
+                <span className="font-medium text-foreground">
+                  {windowTitle || 'this window'}
+                </span>. {formatUndoTimeout(undoTimeoutMs)}
               </DialogDescription>
             </div>
           </div>
