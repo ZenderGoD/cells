@@ -1004,6 +1004,13 @@ export function CellTerminal({
         term.write(result.buffer)
       }
 
+      // Trigger SIGWINCH so the shell (and any running program) redraws.
+      // Without this, reconnected daemon sessions appear blank until the
+      // user manually presses Ctrl+L.
+      if (result?.reattached && dims) {
+        window.cells.terminal.resize(termId, dims.cols, dims.rows)
+      }
+
       const pendingCmd = consumePendingCommand(termId)
       if (pendingCmd) {
         setTimeout(() => {
