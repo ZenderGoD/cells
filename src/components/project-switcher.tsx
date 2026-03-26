@@ -331,17 +331,17 @@ export function ProjectSwitcher() {
                           <span className="min-w-0 flex-1 truncate text-[11px] font-medium">
                             {item.name}
                           </span>
-                          {item.attention === 'active' ? (
+                          {!item.isCurrent && item.attention === 'active' ? (
                             <div
                               className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary/90 animate-pulse"
                               title="Agent working"
                             />
-                          ) : item.attention === 'unread' ? (
+                          ) : !item.isCurrent && item.attention === 'unread' ? (
                             <div
                               className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400"
                               title="Agent has unread output"
                             />
-                          ) : item.attention === 'done' ? (
+                          ) : !item.isCurrent && item.attention === 'done' ? (
                             <div
                               className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400"
                               title="Agent done"

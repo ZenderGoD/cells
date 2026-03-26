@@ -157,12 +157,23 @@ export function TerminalNode({
     >
       {selectionMode && <div className="absolute inset-0 z-10 cursor-grab" />}
 
-      {/* Terminal container with focus ring */}
+      {/* Terminal container with focus ring + agent/process status border */}
       <div
         className={cn(
           'w-full h-full rounded-lg overflow-hidden transition-shadow duration-150',
           isFocused ? (showFocusRing ? 'terminal-focused' : 'opacity-100') : 'terminal-unfocused',
           isSelected && 'ring-2 ring-primary/70 ring-offset-1 ring-offset-background',
+          !isFocused &&
+            !isSelected &&
+            (terminal.agentStatus === 'active'
+              ? 'ring-1 ring-primary/50 animate-pulse'
+              : terminal.agentStatus === 'unread'
+                ? 'ring-1 ring-amber-400/60'
+                : terminal.agentStatus === 'done'
+                  ? 'ring-1 ring-emerald-400/60'
+                  : terminal.processRunning
+                    ? 'ring-1 ring-white/10'
+                    : ''),
         )}
       >
         <CellTerminal

@@ -125,19 +125,19 @@ function ProjectTab({
             {projectWindowCount}
           </span>
         )}
-        {attention === 'active' && (
+        {!isActive && attention === 'active' && (
           <span
             className="size-1.5 shrink-0 rounded-full bg-primary/90 animate-pulse"
             title="Agent working"
           />
         )}
-        {attention === 'unread' && (
+        {!isActive && attention === 'unread' && (
           <span
             className="size-1.5 shrink-0 rounded-full bg-amber-400"
             title="Agent has unread output"
           />
         )}
-        {attention === 'done' && (
+        {!isActive && attention === 'done' && (
           <span className="size-1.5 shrink-0 rounded-full bg-emerald-400" title="Agent finished" />
         )}
       </button>

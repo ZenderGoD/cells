@@ -107,6 +107,7 @@ interface StoreState {
   ): TerminalNode
   updateTerminalAgent(id: string, agent: 'claude' | 'codex' | null): void
   updateTerminalAgentStatus(id: string, status: import('../types').AgentStatus): void
+  updateTerminalProcessRunning(id: string, running: boolean): void
   removeAllTerminals(): void
   removeTerminal(id: string): void
   moveTerminal(id: string, x: number, y: number): void
@@ -947,6 +948,14 @@ export const useStore = create<StoreState>((set, get) => ({
   updateTerminalAgentStatus(id, status) {
     set((s) => ({
       terminals: s.terminals.map((t) => (t.id === id ? { ...t, agentStatus: status } : t)),
+    }))
+  },
+
+  updateTerminalProcessRunning(id, running) {
+    const current = get().terminals.find((t) => t.id === id)
+    if (current?.processRunning === running) return
+    set((s) => ({
+      terminals: s.terminals.map((t) => (t.id === id ? { ...t, processRunning: running } : t)),
     }))
   },
 

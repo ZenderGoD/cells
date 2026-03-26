@@ -5,20 +5,12 @@ import { getCanvasBounds, type CanvasRect, type CanvasWindow } from '@/lib/canva
 import { AgentIcon } from '@/components/agent-icon'
 import type { AgentStatus } from '@/types'
 
-/** Returns extra classes for the minimap square based on agent status */
-function agentStatusClasses(status: AgentStatus): string {
-  if (status === 'active') {
-    // Agent is actively working — pulsing ring
-    return 'ring-1 ring-primary/80 animate-pulse'
-  }
-  if (status === 'unread') {
-    // Agent finished, user hasn't seen it — solid amber ring
-    return 'ring-1 ring-amber-400/90'
-  }
-  if (status === 'done') {
-    // Agent process exited — solid green ring
-    return 'ring-1 ring-emerald-400/90'
-  }
+/** Returns extra classes for the minimap square based on agent/process status */
+function windowStatusClasses(agentStatus: AgentStatus, processRunning?: boolean): string {
+  if (agentStatus === 'active') return 'ring-1 ring-primary/80 animate-pulse'
+  if (agentStatus === 'unread') return 'ring-1 ring-amber-400/90'
+  if (agentStatus === 'done') return 'ring-1 ring-emerald-400/90'
+  if (processRunning) return 'ring-1 ring-white/15'
   return ''
 }
 
@@ -215,7 +207,7 @@ export function WindowOverviewMap({
           const canShowIcon = minDim >= 8
           const iconSize = Math.max(6, Math.min(minDim * 0.55, 14))
           const canDrag = !!onMove
-          const statusClass = agentStatusClasses(window.agentStatus ?? null)
+          const statusClass = windowStatusClasses(window.agentStatus ?? null, window.processRunning)
           const sharedClassName = cn(
             'absolute flex items-center justify-center border transition-[transform,background-color,border-color,opacity,box-shadow] duration-150',
             (onSelect || canDrag) && 'hover:scale-[1.04]',

@@ -17,6 +17,7 @@ export interface TerminalNode {
   pinned?: boolean
   agent?: 'claude' | 'codex' | null
   agentStatus?: AgentStatus
+  processRunning?: boolean
 }
 
 export interface BrowserHistoryEntry {

@@ -622,7 +622,7 @@ export function CellTerminal({
         requestAnimationFrame(() => {
           const t = cached.term
           if (t.renderer && t.wasmTerm) {
-            t.renderer.render(t.wasmTerm, true, t.viewportY, t as any)
+            t.renderer.render(t.wasmTerm, true, t.viewportY, t as any, 0)
           }
         })
 
@@ -931,7 +931,7 @@ export function CellTerminal({
       wrapper.addEventListener('paste', handlePaste)
       cleanups.push(() => wrapper.removeEventListener('paste', handlePaste))
 
-      // Agent detection poll — also tracks agent status (running/waiting/done)
+      // Agent + process detection poll
       const agentPoll = setInterval(async () => {
         const proc = await window.cells.terminal.getProcess(termId)
         const agent = normalizeAgentProcess(proc)
@@ -942,6 +942,10 @@ export function CellTerminal({
 
         const store = useStore.getState()
         const current = store.terminals.find((t) => t.id === termId)
+
+        // Track whether any non-shell process is running (for subtle indicator)
+        const hasProcess = !!proc && !agent
+        store.updateTerminalProcessRunning(termId, hasProcess)
         if (current && current.agent !== agent) {
           store.updateTerminalAgent(termId, agent)
         }

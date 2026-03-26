@@ -13,6 +13,7 @@ export interface CanvasWindow {
   zIndex: number
   agent?: 'claude' | 'codex' | null
   agentStatus?: import('../types').AgentStatus
+  processRunning?: boolean
   faviconUrl?: string
 }
 
@@ -41,6 +42,7 @@ export function getCanvasWindows(
       zIndex: terminal.zIndex ?? index + 1,
       agent: terminal.agent,
       agentStatus: terminal.agentStatus,
+      processRunning: terminal.processRunning,
     })),
     ...browsers.map((browser, index) => ({
       id: browser.id,
