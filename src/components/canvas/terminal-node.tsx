@@ -6,6 +6,7 @@ import { useStore } from '@/lib/store'
 import type { TerminalNode as TerminalNodeType } from '@/types'
 import { AgentIcon } from '@/components/agent-icon'
 import { inferAgentFromTitle } from '@/lib/agent-command'
+import { Logo } from '@/components/logo'
 
 type Edge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
 
@@ -176,7 +177,11 @@ export function TerminalNode({
               isFocused ? 'bg-card/70 opacity-100' : 'bg-card/40 opacity-0 hover:opacity-100',
             )}
           >
-            {displayAgent && <AgentIcon agent={displayAgent} className="h-3 w-3" size={12} />}
+            {displayAgent ? (
+              <AgentIcon agent={displayAgent} className="h-3 w-3" size={12} />
+            ) : (
+              <Logo className="h-3 w-3 text-primary/60 shrink-0" />
+            )}
             <span className="text-[11px] font-medium truncate max-w-40 text-muted-foreground">
               {terminal.title}
             </span>

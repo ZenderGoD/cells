@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useHotkey } from '@tanstack/react-hotkeys'
 import {
-  TerminalSquare,
   Globe,
   Plus,
   RotateCcw,
@@ -28,6 +27,7 @@ import { terminalThemes } from '@/lib/terminal-themes'
 import { AppSettings } from './settings/app-settings'
 import { NewProjectDialog } from './new-project-dialog'
 import { AgentIcon } from './agent-icon'
+import { Logo } from './logo'
 
 export function CommandPalette() {
   const [open, setOpen] = useState(false)
@@ -191,7 +191,7 @@ export function CommandPalette() {
                           size={16}
                         />
                       ) : (
-                        <TerminalSquare className="text-muted-foreground" />
+                        <Logo className="h-4 w-4 text-muted-foreground" />
                       )}
                       {t.title}
                     </CommandItem>

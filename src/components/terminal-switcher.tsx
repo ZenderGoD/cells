@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
-import { Globe, TerminalSquare } from 'lucide-react'
+import { Globe } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
 import { inferAgentFromTitle } from '@/lib/agent-command'
@@ -8,6 +8,7 @@ import { motion, AnimatePresence } from 'motion/react'
 import { WindowOverviewMap } from './canvas/window-overview-map'
 import { getTerminalPreviewSnapshot } from './terminal/cell-terminal'
 import { AgentIcon } from './agent-icon'
+import { Logo } from './logo'
 
 interface SwitcherItem {
   id: string
@@ -276,9 +277,9 @@ export function TerminalSwitcher() {
                                 size={24}
                               />
                             ) : (
-                              <TerminalSquare
+                              <Logo
                                 className={cn(
-                                  'w-6 h-6',
+                                  'h-6 w-6',
                                   i === selectedIndex
                                     ? 'text-primary/60'
                                     : 'text-muted-foreground/20',
@@ -310,7 +311,7 @@ export function TerminalSwitcher() {
                         item.agent ? (
                           <AgentIcon agent={item.agent} className="h-3 w-3 opacity-80" size={12} />
                         ) : (
-                          <TerminalSquare className="w-3 h-3 shrink-0 text-muted-foreground/50" />
+                          <Logo className="h-3 w-3 shrink-0 text-muted-foreground/50" />
                         )
                       ) : (
                         <Globe className="w-3 h-3 shrink-0 text-muted-foreground/50" />
