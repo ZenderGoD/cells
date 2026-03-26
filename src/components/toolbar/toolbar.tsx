@@ -26,6 +26,7 @@ import {
   getViewportRect,
   getViewportCenter,
 } from '@/lib/canvas-navigation'
+import { Kbd, KbdGroup } from '../ui/kbd'
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover'
 import { AppSettings } from '../settings/app-settings'
 import { NewProjectDialog } from '../new-project-dialog'
@@ -565,9 +566,14 @@ export function StatusBar() {
               >
                 <span className="font-medium text-foreground/80">Undo close</span>
                 <span className="max-w-24 truncate">{latestClosedWindow.title}</span>
-                <span className="rounded-full bg-muted/45 px-1.5 py-0.5 font-mono text-[9px] text-muted-foreground/70">
-                  ⌘⇧T {undoSecondsLeft}s
-                </span>
+                <KbdGroup className="gap-0.5">
+                  <Kbd className="h-3.5 min-w-0 px-1 text-[9px]">⌘</Kbd>
+                  <Kbd className="h-3.5 min-w-0 px-1 text-[9px]">⇧</Kbd>
+                  <Kbd className="h-3.5 min-w-0 px-1 text-[9px]">T</Kbd>
+                  <span className="ml-0.5 text-[9px] text-muted-foreground/70">
+                    {undoSecondsLeft}s
+                  </span>
+                </KbdGroup>
               </motion.button>
             ) : null}
           </AnimatePresence>
@@ -640,7 +646,10 @@ export function StatusBar() {
             </span>
           </button>
 
-          <span className="text-muted-foreground/30">⌘T</span>
+          <KbdGroup className="gap-0.5">
+            <Kbd className="h-4 min-w-4 text-[10px]">⌘</Kbd>
+            <Kbd className="h-4 min-w-4 text-[10px]">T</Kbd>
+          </KbdGroup>
 
           <button
             onClick={() => setShowSettings(true)}

@@ -13,6 +13,7 @@ import {
   ComboboxItem,
   ComboboxList,
 } from '@/components/ui/combobox'
+import { Kbd, KbdGroup } from '@/components/ui/kbd'
 import { useStore } from '@/lib/store'
 import { terminalThemes } from '@/lib/terminal-themes'
 import { cn } from '@/lib/utils'
@@ -863,6 +864,38 @@ const SHORTCUT_GROUPS = [
   },
 ]
 
+const PLAIN_WORDS = new Set([
+  '/',
+  '–',
+  '+',
+  'Click',
+  'Drag',
+  'Swipe',
+  'Release',
+  'link',
+  'in',
+  'mode',
+])
+
+function ShortcutKeys({ keys }: { keys: string }) {
+  const parts = keys.split(' ')
+  return (
+    <KbdGroup className="ml-3 shrink-0 gap-1">
+      {parts.map((part, i) =>
+        PLAIN_WORDS.has(part) ? (
+          <span key={i} className="text-[10px] text-muted-foreground/40">
+            {part}
+          </span>
+        ) : (
+          <Kbd key={i} className="h-auto min-w-0 px-1.5 py-0.5 text-[10px]">
+            {part}
+          </Kbd>
+        ),
+      )}
+    </KbdGroup>
+  )
+}
+
 function HelpSection() {
   return (
     <div className="space-y-5">
@@ -875,9 +908,7 @@ function HelpSection() {
                 className="flex items-center justify-between px-2.5 py-1.5 rounded-md text-[11px]"
               >
                 <span className="text-muted-foreground/70">{shortcut.action}</span>
-                <kbd className="ml-3 shrink-0 rounded bg-muted/30 px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground/50">
-                  {shortcut.keys}
-                </kbd>
+                <ShortcutKeys keys={shortcut.keys} />
               </div>
             ))}
           </div>
