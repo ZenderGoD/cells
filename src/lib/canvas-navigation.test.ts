@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-const { getOverviewTransform } = await import(new URL('./canvas-navigation.ts', import.meta.url).href)
+const { getOverviewTransform } = await import(
+  new URL('./canvas-navigation.ts', import.meta.url).href
+)
 
 test('getOverviewTransform zooms out to fit all windows into the viewport', () => {
   const transform = getOverviewTransform(
