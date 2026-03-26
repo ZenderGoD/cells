@@ -1,3 +1,4 @@
+import { useCallback, useRef } from 'react'
 import { Globe, TerminalSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { getCanvasBounds, type CanvasRect, type CanvasWindow } from '@/lib/canvas-navigation'
@@ -12,6 +13,7 @@ interface WindowOverviewMapProps {
   height: number
   className?: string
   onSelect?: (window: CanvasWindow) => void
+  onMove?: (window: CanvasWindow, x: number, y: number) => void
 }
 
 function WindowIcon({ window, iconSize }: { window: CanvasWindow; iconSize: number }) {
@@ -47,6 +49,8 @@ function WindowIcon({ window, iconSize }: { window: CanvasWindow; iconSize: numb
   )
 }
 
+const DRAG_THRESHOLD = 3
+
 export function WindowOverviewMap({
   windows,
   currentId = null,
@@ -56,8 +60,20 @@ export function WindowOverviewMap({
   height,
   className,
   onSelect,
+  onMove,
 }: WindowOverviewMapProps) {
   const bounds = getCanvasBounds(viewport ? [viewport, ...windows] : windows)
+  const dragRef = useRef<{
+    windowId: string
+    startX: number
+    startY: number
+    originX: number
+    originY: number
+    dragging: boolean
+  } | null>(null)
+
+  const scaleRef = useRef(1)
+
   if (!bounds) return null
 
   const availableWidth = width - 4
@@ -66,6 +82,7 @@ export function WindowOverviewMap({
     availableWidth / Math.max(bounds.width, 1),
     availableHeight / Math.max(bounds.height, 1),
   )
+  scaleRef.current = scale
   const contentWidth = bounds.width * scale
   const contentHeight = bounds.height * scale
   const offsetX = (width - contentWidth) / 2
@@ -104,6 +121,56 @@ export function WindowOverviewMap({
     }
   }
 
+  const handlePointerDown = useCallback(
+    (e: React.PointerEvent, win: CanvasWindow) => {
+      if (!onMove) return
+      e.currentTarget.setPointerCapture(e.pointerId)
+      dragRef.current = {
+        windowId: win.id,
+        startX: e.clientX,
+        startY: e.clientY,
+        originX: win.x,
+        originY: win.y,
+        dragging: false,
+      }
+    },
+    [onMove],
+  )
+
+  const handlePointerMove = useCallback(
+    (e: React.PointerEvent, win: CanvasWindow) => {
+      const drag = dragRef.current
+      if (!drag || drag.windowId !== win.id || !onMove) return
+
+      const dx = e.clientX - drag.startX
+      const dy = e.clientY - drag.startY
+
+      if (!drag.dragging) {
+        if (Math.abs(dx) < DRAG_THRESHOLD && Math.abs(dy) < DRAG_THRESHOLD) return
+        drag.dragging = true
+      }
+
+      const canvasDx = dx / scaleRef.current
+      const canvasDy = dy / scaleRef.current
+      onMove(win, drag.originX + canvasDx, drag.originY + canvasDy)
+    },
+    [onMove],
+  )
+
+  const handlePointerUp = useCallback(
+    (e: React.PointerEvent, win: CanvasWindow) => {
+      const drag = dragRef.current
+      dragRef.current = null
+      if (!drag || drag.windowId !== win.id) return
+
+      // If it wasn't a drag, treat it as a click/select
+      if (!drag.dragging && onSelect) {
+        onSelect(win)
+      }
+    },
+    [onSelect],
+  )
+
   return (
     <div
       className={cn(
@@ -128,9 +195,11 @@ export function WindowOverviewMap({
           const minDim = Math.min(rectStyle.width, rectStyle.height)
           const canShowIcon = minDim >= 8
           const iconSize = Math.max(6, Math.min(minDim * 0.55, 14))
+          const canDrag = !!onMove
           const sharedClassName = cn(
             'absolute flex items-center justify-center border transition-[transform,background-color,border-color,opacity,box-shadow] duration-150',
-            onSelect && 'hover:scale-[1.04]',
+            (onSelect || canDrag) && 'hover:scale-[1.04]',
+            canDrag && 'cursor-grab active:cursor-grabbing',
             window.type === 'browser'
               ? 'rounded-[4px] border-white/24 bg-white/14 text-foreground/55'
               : 'rounded-[3px] border-white/16 bg-white/8 text-foreground/45',
@@ -141,13 +210,16 @@ export function WindowOverviewMap({
                 : 'hover:border-foreground/45',
           )
 
-          if (onSelect) {
+          if (onSelect || canDrag) {
             return (
               <button
                 key={window.id}
                 className={sharedClassName}
                 style={rectStyle}
-                onClick={() => onSelect(window)}
+                onClick={!canDrag && onSelect ? () => onSelect(window) : undefined}
+                onPointerDown={canDrag ? (e) => handlePointerDown(e, window) : undefined}
+                onPointerMove={canDrag ? (e) => handlePointerMove(e, window) : undefined}
+                onPointerUp={canDrag ? (e) => handlePointerUp(e, window) : undefined}
                 title={`${window.type === 'browser' ? 'Browser' : window.agent ? `Agent (${window.agent})` : 'Terminal'}: ${window.title}`}
               >
                 {canShowIcon && <WindowIcon window={window} iconSize={iconSize} />}

@@ -78,6 +78,8 @@ export function StatusBar() {
   const zoomToFitAll = useStore((s) => s.zoomToFitAll)
   const snapToTerminal = useStore((s) => s.snapToTerminal)
   const snapToBrowser = useStore((s) => s.snapToBrowser)
+  const moveTerminal = useStore((s) => s.moveTerminal)
+  const moveBrowser = useStore((s) => s.moveBrowser)
   const focusedBrowserId = useStore((s) => s.focusedBrowserId)
   const closeUndoTimeoutMs = useStore((s) => s.closeUndoTimeoutMs)
   const restoreLastClosedWindow = useStore((s) => s.restoreLastClosedWindow)
@@ -399,6 +401,13 @@ export function StatusBar() {
                             return
                           }
                           snapToTerminal(window.id)
+                        }}
+                        onMove={(window, x, y) => {
+                          if (window.type === 'browser') {
+                            moveBrowser(window.id, x, y)
+                          } else {
+                            moveTerminal(window.id, x, y)
+                          }
                         }}
                       />
                     </motion.div>
