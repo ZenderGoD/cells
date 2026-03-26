@@ -175,8 +175,8 @@ const api: CellsAPI = {
     isRepo: (cwd: string) => ipcRenderer.invoke('git:is-repo', cwd),
     repoRoot: (cwd: string) => ipcRenderer.invoke('git:repo-root', cwd),
     listWorktrees: (cwd: string) => ipcRenderer.invoke('git:list-worktrees', cwd),
-    createWorktree: (cwd: string, branch: string, targetDir?: string) =>
-      ipcRenderer.invoke('git:create-worktree', cwd, branch, targetDir),
+    createWorktree: (cwd: string, branch: string, targetDir?: string, baseBranch?: string) =>
+      ipcRenderer.invoke('git:create-worktree', cwd, branch, targetDir, baseBranch),
     removeWorktree: (cwd: string, worktreePath: string) =>
       ipcRenderer.invoke('git:remove-worktree', cwd, worktreePath),
   },

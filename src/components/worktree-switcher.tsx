@@ -18,6 +18,8 @@ export function WorktreeSwitcher({ termId, className }: WorktreeSwitcherProps) {
   const createWorktree = useStore((s) => s.createWorktree)
   const setWorktreesDir = useStore((s) => s.setWorktreesDir)
   const getWorktreesDir = useStore((s) => s.getWorktreesDir)
+  const setWorktreeBaseBranch = useStore((s) => s.setWorktreeBaseBranch)
+  const getWorktreeBaseBranch = useStore((s) => s.getWorktreeBaseBranch)
   const setOverlayOpen = useStore((s) => s.setOverlayOpen)
 
   const [open, setOpen] = useState(false)
@@ -183,20 +185,42 @@ export function WorktreeSwitcher({ termId, className }: WorktreeSwitcherProps) {
             </div>
           </div>
 
-          {/* Configure worktrees dir */}
+          {/* Configure worktrees */}
           {configuring && (
-            <div className="px-3 py-2 border-b border-foreground/5">
-              <div className="text-[10px] text-muted-foreground mb-1.5">Worktrees directory</div>
-              <div className="flex items-center gap-1.5">
-                <span className="text-[11px] text-muted-foreground truncate flex-1">
-                  {getWorktreesDir() || 'Default (next to repo)'}
-                </span>
-                <button
-                  className="text-[10px] px-2 py-0.5 rounded bg-muted/60 hover:bg-muted text-foreground transition-colors shrink-0"
-                  onClick={handlePickDir}
-                >
-                  Browse
-                </button>
+            <div className="px-3 py-2 border-b border-foreground/5 space-y-2">
+              <div>
+                <div className="text-[10px] text-muted-foreground mb-1">Worktrees directory</div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[11px] text-muted-foreground truncate flex-1">
+                    {getWorktreesDir() || 'Default (next to repo)'}
+                  </span>
+                  <button
+                    className="text-[10px] px-2 py-0.5 rounded bg-muted/60 hover:bg-muted text-foreground transition-colors shrink-0"
+                    onClick={handlePickDir}
+                  >
+                    Browse
+                  </button>
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] text-muted-foreground mb-1">Base branch</div>
+                <div className="flex items-center gap-1.5">
+                  <select
+                    className="flex-1 text-[11px] bg-muted/60 rounded px-1.5 py-0.5 text-foreground outline-none focus:ring-1 focus:ring-primary/40 truncate"
+                    value={getWorktreeBaseBranch() || ''}
+                    onChange={(e) => setWorktreeBaseBranch(e.target.value)}
+                    onMouseDown={(e) => e.stopPropagation()}
+                  >
+                    <option value="">Default (HEAD)</option>
+                    {worktrees
+                      .filter((wt) => !wt.isBare)
+                      .map((wt) => (
+                        <option key={wt.branch} value={wt.branch}>
+                          {wt.branch}
+                        </option>
+                      ))}
+                  </select>
+                </div>
               </div>
             </div>
           )}

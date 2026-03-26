@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, type ReactNode } from 'react'
+import React, { useState, useEffect, type ReactNode } from 'react'
 import { useHotkey } from '@tanstack/react-hotkeys'
 import {
   Globe,
@@ -41,23 +41,73 @@ const AGENT_OPTIONS = [
   { id: 'codex', label: 'Codex' },
 ] as const
 
+function launchAgentAction(id: string, label: string, inWorktree: boolean, searchText: string) {
+  useStore.getState().setLastUsedAgent(id)
+  const cmd = useStore.getState().getAgentCommand(id)
+  const prompt = searchText.trim()
+
+  if (!inWorktree) {
+    if (!prompt) {
+      useStore.getState().addTerminalWithCommand(cmd, label)
+      return
+    }
+    const escaped = prompt.replace(/'/g, "'\\''")
+    useStore
+      .getState()
+      .addTerminalWithCommand(`${cmd} '${escaped}'`, `${label}: ${prompt.slice(0, 40)}`)
+    return
+  }
+
+  // Create a worktree with a generated temp branch, then launch the agent in it
+  const tempBranch = `ghost-${Date.now().toString(36)}`
+  useStore
+    .getState()
+    .createWorktree(tempBranch)
+    .then((wt) => {
+      const branchInstruction =
+        'First, create a descriptive git branch name for this task and switch to it with `git checkout -b <branch-name>`. Then:\n\n'
+      const fullPrompt = prompt
+        ? branchInstruction + prompt
+        : branchInstruction + 'Waiting for instructions.'
+      const escaped = fullPrompt.replace(/'/g, "'\\''")
+      useStore
+        .getState()
+        .addTerminalInWorktree(
+          `${cmd} '${escaped}'`,
+          `${label}: ${prompt ? prompt.slice(0, 40) : 'worktree'}`,
+          wt.path,
+        )
+    })
+    .catch((err) => {
+      console.error('Failed to create worktree for agent:', err)
+      // Fallback: launch without worktree
+      if (!prompt) {
+        useStore.getState().addTerminalWithCommand(cmd, label)
+      } else {
+        const escaped = prompt.replace(/'/g, "'\\''")
+        useStore
+          .getState()
+          .addTerminalWithCommand(`${cmd} '${escaped}'`, `${label}: ${prompt.slice(0, 40)}`)
+      }
+    })
+}
+
 /** Reads the cmdk selected value to show a contextual icon in the input. Must be inside <Command>. */
 function DynamicCommandInput(
   props: React.ComponentProps<typeof CommandInput> & { multiline?: boolean },
 ) {
   const selectedValue = useCommandState((state) => state.value) ?? ''
 
-  const icon: ReactNode = useMemo(() => {
-    for (const { id } of AGENT_OPTIONS) {
-      if (selectedValue.startsWith(`ask-${id}`) || selectedValue.startsWith(`new-${id}`)) {
-        return <AgentIcon agent={id} className="size-4 shrink-0 opacity-70" size={16} />
-      }
+  let icon: ReactNode = undefined
+  for (const { id } of AGENT_OPTIONS) {
+    if (selectedValue.startsWith(`ask-${id}`) || selectedValue.startsWith(`new-${id}`)) {
+      icon = <AgentIcon agent={id} className="size-4 shrink-0 opacity-70" size={16} />
+      break
     }
-    if (selectedValue.startsWith('search-')) {
-      return <Search className="size-4 shrink-0 opacity-50" />
-    }
-    return undefined
-  }, [selectedValue])
+  }
+  if (!icon && selectedValue.startsWith('search-')) {
+    icon = <Search className="size-4 shrink-0 opacity-50" />
+  }
 
   return <CommandInput multiline icon={icon} {...props} />
 }
@@ -141,54 +191,6 @@ export function CommandPalette() {
     runAction(() => useStore.getState().addBrowserWithUrl(search.trim()))
   }
 
-  const launchAgent = async (id: string, label: string, inWorktree: boolean) => {
-    useStore.getState().setLastUsedAgent(id)
-    const cmd = useStore.getState().getAgentCommand(id)
-    const prompt = search.trim()
-
-    if (!inWorktree) {
-      if (!prompt) {
-        useStore.getState().addTerminalWithCommand(cmd, label)
-        return
-      }
-      const escaped = prompt.replace(/'/g, "'\\''")
-      useStore
-        .getState()
-        .addTerminalWithCommand(`${cmd} '${escaped}'`, `${label}: ${prompt.slice(0, 40)}`)
-      return
-    }
-
-    // Create a worktree with a generated temp branch, then launch the agent in it
-    try {
-      const tempBranch = `ghost-${Date.now().toString(36)}`
-      const wt = await useStore.getState().createWorktree(tempBranch)
-      const branchInstruction =
-        'First, create a descriptive git branch name for this task and switch to it with `git checkout -b <branch-name>`. Then:\n\n'
-      const fullPrompt = prompt
-        ? branchInstruction + prompt
-        : branchInstruction + 'Waiting for instructions.'
-      const escaped = fullPrompt.replace(/'/g, "'\\''")
-      useStore
-        .getState()
-        .addTerminalInWorktree(
-          `${cmd} '${escaped}'`,
-          `${label}: ${prompt ? prompt.slice(0, 40) : 'worktree'}`,
-          wt.path,
-        )
-    } catch (err) {
-      console.error('Failed to create worktree for agent:', err)
-      // Fallback: launch without worktree
-      if (!prompt) {
-        useStore.getState().addTerminalWithCommand(cmd, label)
-      } else {
-        const escaped = prompt.replace(/'/g, "'\\''")
-        useStore
-          .getState()
-          .addTerminalWithCommand(`${cmd} '${escaped}'`, `${label}: ${prompt.slice(0, 40)}`)
-      }
-    }
-  }
-
   const renderAgentsGroup = () => (
     <CommandGroup heading="AI Agents" forceMount>
       {sortedAgents.map(({ id, label }) => (
@@ -203,7 +205,7 @@ export function CommandPalette() {
           onSelect={() => {
             const withWorktree = wasLastSelectWithMeta()
             runAction(() => {
-              launchAgent(id, label, withWorktree)
+              launchAgentAction(id, label, withWorktree, search)
             })
           }}
         >

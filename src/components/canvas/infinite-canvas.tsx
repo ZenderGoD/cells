@@ -239,7 +239,7 @@ export function InfiniteCanvas() {
         }
       }
     },
-    [transform.x, transform.y, focusTerminal, cancelSnap, selectionMode],
+    [transform.x, transform.y, focusTerminal, cancelSnap, selectionMode, setSelectedNodeIds],
   )
 
   const handleMouseMove = useCallback(
@@ -293,6 +293,7 @@ export function InfiniteCanvas() {
       moveTerminal,
       moveBrowser,
       selectableWindows,
+      setSelectedNodeIds,
     ],
   )
 
@@ -414,7 +415,7 @@ export function InfiniteCanvas() {
       setSelectedNodeIds(dragIds)
       beginSelectionDrag(dragIds, startX, startY)
     },
-    [selectionMode, selectedNodeIds, beginSelectionDrag],
+    [selectionMode, selectedNodeIds, beginSelectionDrag, setSelectedNodeIds],
   )
 
   useEffect(() => {

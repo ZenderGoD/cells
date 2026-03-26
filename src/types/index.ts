@@ -68,6 +68,8 @@ export interface Project {
   focusedBrowserId?: string | null
   lastOpenedAt: number
   worktreesDir?: string
+  /** Branch to use as base when creating new worktrees (defaults to current HEAD) */
+  worktreeBaseBranch?: string
   /** Per-window focus counts for usage-based grid arrangement */
   focusCounts?: Record<string, number>
 }
@@ -143,7 +145,12 @@ export interface CellsAPI {
     isRepo(cwd: string): Promise<boolean>
     repoRoot(cwd: string): Promise<string | null>
     listWorktrees(cwd: string): Promise<GitWorktree[]>
-    createWorktree(cwd: string, branch: string, targetDir?: string): Promise<GitWorktree>
+    createWorktree(
+      cwd: string,
+      branch: string,
+      targetDir?: string,
+      baseBranch?: string,
+    ): Promise<GitWorktree>
     removeWorktree(cwd: string, worktreePath: string): Promise<void>
   }
   agent: {

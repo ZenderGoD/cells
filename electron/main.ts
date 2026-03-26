@@ -516,27 +516,32 @@ ipcMain.handle('git:list-worktrees', (_event, cwd: string) => {
   }
 })
 
-ipcMain.handle('git:create-worktree', (_event, cwd: string, branch: string, targetDir?: string) => {
-  const repoRoot = gitExec(['rev-parse', '--show-toplevel'], cwd)
-  const dest = targetDir
-    ? path.join(targetDir, branch)
-    : path.join(path.dirname(repoRoot), `${path.basename(repoRoot)}-${branch}`)
+ipcMain.handle(
+  'git:create-worktree',
+  (_event, cwd: string, branch: string, targetDir?: string, baseBranch?: string) => {
+    const repoRoot = gitExec(['rev-parse', '--show-toplevel'], cwd)
+    const dest = targetDir
+      ? path.join(targetDir, branch)
+      : path.join(path.dirname(repoRoot), `${path.basename(repoRoot)}-${branch}`)
 
-  try {
-    // Try to create from existing branch first
-    gitExec(['worktree', 'add', dest, branch], cwd)
-  } catch {
-    // Branch doesn't exist — create a new one
-    gitExec(['worktree', 'add', '-b', branch, dest], cwd)
-  }
+    try {
+      // Try to create from existing branch first
+      gitExec(['worktree', 'add', dest, branch], cwd)
+    } catch {
+      // Branch doesn't exist — create a new one from baseBranch (or HEAD)
+      const args = ['worktree', 'add', '-b', branch, dest]
+      if (baseBranch) args.push(baseBranch)
+      gitExec(args, cwd)
+    }
 
-  // Return the new worktree info
-  const output = gitExec(['worktree', 'list', '--porcelain'], cwd)
-  const all = parseWorktreeList(output)
-  const created = all.find((w) => w.path === dest)
-  if (!created) throw new Error(`Worktree created but not found: ${dest}`)
-  return created
-})
+    // Return the new worktree info
+    const output = gitExec(['worktree', 'list', '--porcelain'], cwd)
+    const all = parseWorktreeList(output)
+    const created = all.find((w) => w.path === dest)
+    if (!created) throw new Error(`Worktree created but not found: ${dest}`)
+    return created
+  },
+)
 
 ipcMain.handle('git:remove-worktree', (_event, cwd: string, worktreePath: string) => {
   gitExec(['worktree', 'remove', worktreePath], cwd)

@@ -165,6 +165,8 @@ interface StoreState {
   createWorktree(branch: string): Promise<GitWorktree>
   setWorktreesDir(dir: string): void
   getWorktreesDir(): string | undefined
+  setWorktreeBaseBranch(branch: string): void
+  getWorktreeBaseBranch(): string | undefined
 
   // Browser actions
   addBrowser(): BrowserNode
@@ -1796,7 +1798,13 @@ export const useStore = create<StoreState>((set, get) => ({
     if (!projectPath) throw new Error('No active project')
     const project = get().getActiveProject()
     const worktreesDir = project?.worktreesDir || undefined
-    const created = await window.cells.git.createWorktree(projectPath, branch, worktreesDir)
+    const baseBranch = project?.worktreeBaseBranch || undefined
+    const created = await window.cells.git.createWorktree(
+      projectPath,
+      branch,
+      worktreesDir,
+      baseBranch,
+    )
     await get().refreshWorktrees()
     return created
   },
@@ -1814,6 +1822,21 @@ export const useStore = create<StoreState>((set, get) => ({
 
   getWorktreesDir() {
     return get().getActiveProject()?.worktreesDir
+  },
+
+  setWorktreeBaseBranch(branch) {
+    const { activeProjectId } = get()
+    if (!activeProjectId) return
+    set((s) => ({
+      projects: s.projects.map((p) =>
+        p.id === activeProjectId ? { ...p, worktreeBaseBranch: branch || undefined } : p,
+      ),
+    }))
+    get().persist()
+  },
+
+  getWorktreeBaseBranch() {
+    return get().getActiveProject()?.worktreeBaseBranch
   },
 
   // ---- Browser actions ----

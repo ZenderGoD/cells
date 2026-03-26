@@ -111,7 +111,7 @@ function CommandInput({
     )
   }
 
-  const { value, onValueChange, onKeyDown, placeholder, ...restProps } = props
+  const { value, onValueChange, onKeyDown, placeholder } = props
 
   return (
     <div data-slot="command-input-wrapper" className="p-1 pb-0">

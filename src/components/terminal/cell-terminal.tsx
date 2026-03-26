@@ -223,12 +223,14 @@ const BEL = '\x07'
 
 /** Strip ANSI escape sequences to get readable text for prompt detection. */
 function stripAnsi(str: string): string {
+  /* eslint-disable no-control-regex -- intentional: stripping terminal control characters */
   return str
     .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '') // CSI sequences
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '') // OSC sequences
     .replace(/\x1b[()][AB012]/g, '') // charset sequences
     .replace(/\x1b[^[\]]/g, '') // other 2-char escapes
     .replace(/[\x00-\x06\x08-\x1a\x1c-\x1f]/g, '') // control chars (except \x07 BEL)
+  /* eslint-enable no-control-regex */
 }
 
 /**
