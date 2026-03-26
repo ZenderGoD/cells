@@ -136,7 +136,20 @@ function CommandInput({
           placeholder={placeholder}
           rows={1}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
+            if (e.key === 'Enter' && e.altKey) {
+              // Option+Enter: insert newline (textarea doesn't do this natively)
+              e.preventDefault()
+              const ta = textareaRef.current
+              if (ta) {
+                const start = ta.selectionStart
+                const end = ta.selectionEnd
+                const val = (value as string) ?? ''
+                onValueChange?.(val.slice(0, start) + '\n' + val.slice(end))
+                requestAnimationFrame(() => {
+                  ta.selectionStart = ta.selectionEnd = start + 1
+                })
+              }
+            } else if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault()
               _lastSelectMetaKey = e.metaKey
               // Find and click the selected cmdk item, or let parent handle fallback

@@ -35,6 +35,7 @@ import { AppSettings } from './settings/app-settings'
 import { NewProjectDialog } from './new-project-dialog'
 import { AgentIcon } from './agent-icon'
 import { Logo } from './logo'
+import { showToast } from './toast'
 
 const AGENT_OPTIONS = [
   { id: 'claude', label: 'Claude Code' },
@@ -79,7 +80,9 @@ function launchAgentAction(id: string, label: string, inWorktree: boolean, searc
         )
     })
     .catch((err) => {
-      console.error('Failed to create worktree for agent:', err)
+      showToast(
+        `Worktree failed, launching without it: ${err instanceof Error ? err.message : err}`,
+      )
       // Fallback: launch without worktree
       if (!prompt) {
         useStore.getState().addTerminalWithCommand(cmd, label)
@@ -173,11 +176,29 @@ export function CommandPalette() {
     }
   }, [open, agentAliases])
 
-  const runAction = (fn: () => void) => {
-    fn()
-    setOpen(false)
-    setSearch('')
-    setOverlayOpen(false)
+  const runAction = (fn: () => any) => {
+    const close = () => {
+      setOpen(false)
+      setSearch('')
+      setOverlayOpen(false)
+    }
+    const handleError = (err: Error | string) => {
+      const raw = err instanceof Error ? err.message : err
+      // Extract the most useful line from verbose git/command errors
+      const fatal = raw.match(/fatal:\s*(.+)/)?.[1]
+      const error = raw.match(/error:\s*(.+)/)?.[1]
+      showToast(fatal ?? error ?? raw)
+    }
+    try {
+      const result = fn()
+      if (result instanceof Promise) {
+        result.then(close, handleError)
+      } else {
+        close()
+      }
+    } catch (err) {
+      handleError(err instanceof Error ? err : new Error(String(err)))
+    }
   }
 
   const handleOpenChange = (o: boolean) => {
@@ -407,9 +428,7 @@ export function CommandPalette() {
                           forceMount
                           value={`create worktree new branch ${search}`}
                           onSelect={() =>
-                            runAction(() => {
-                              useStore.getState().createWorktree(search.trim()).catch(console.error)
-                            })
+                            runAction(() => useStore.getState().createWorktree(search.trim()))
                           }
                         >
                           <Plus className="text-muted-foreground" />

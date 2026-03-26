@@ -8,6 +8,7 @@ import { Onboarding } from './components/onboarding'
 import { TerminalSwitcher } from './components/terminal-switcher'
 import { ProjectSwitcher } from './components/project-switcher'
 import { CloseWindowDialog } from './components/close-window-dialog'
+import { Toaster } from './components/toast'
 import { PinnedWindow } from './components/pinned-window'
 import { buildWindowAppearanceStyle } from './lib/window-appearance'
 
@@ -183,6 +184,7 @@ function MainApp() {
         onConfirm={confirmPendingClose}
         onCancel={cancelPendingClose}
       />
+      <Toaster />
     </div>
   )
 }
