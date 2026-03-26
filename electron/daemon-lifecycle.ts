@@ -26,28 +26,20 @@ export async function ensureDaemon(
   const pidFile = path.join(stateDir, 'pty-daemon.pid')
   const versionFile = path.join(stateDir, 'pty-daemon.version')
 
-  // 1. Try connecting to existing daemon
+  // 1. Try connecting to existing daemon — reuse it regardless of version
+  // to preserve running sessions across app updates
   const existing = await tryConnect(socketPath)
   if (existing) {
-    // Check version
-    const daemonVersion = readFileOrNull(versionFile)
-    if (daemonVersion === appVersion) {
-      existing.destroy()
-      return true
-    }
-    // Version mismatch — shut down old daemon
+    existing.destroy()
+    // Update version file so it stays current
     try {
-      existing.write(JSON.stringify({ type: 'shutdown', id: 0 }) + '\n')
-      await waitForClose(existing, 2000)
-    } catch {
-      existing.destroy()
-    }
-    // Clean up stale files
-    cleanStaleFiles(socketPath, pidFile, versionFile)
-  } else {
-    // No daemon running — clean stale files
-    cleanStaleFiles(socketPath, pidFile, versionFile)
+      fs.writeFileSync(versionFile, appVersion)
+    } catch {}
+    return true
   }
+
+  // No daemon running — clean stale files
+  cleanStaleFiles(socketPath, pidFile, versionFile)
 
   // 2. Spawn new daemon
   try {
