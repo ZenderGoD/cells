@@ -16,7 +16,7 @@ import {
   X,
 } from 'lucide-react'
 import type { ExtensionMeta } from '@/types'
-import { motion, AnimatePresence, Reorder } from 'motion/react'
+import { motion, AnimatePresence, Reorder, useDragControls } from 'motion/react'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
 import {
@@ -51,6 +51,118 @@ function shortenUrl(url?: string): string {
   } catch {
     return url
   }
+}
+
+function ProjectTab({
+  project,
+  isActive,
+  projectWindowCount,
+  switchProject,
+  allWindows,
+  titleBarOverviewWidth,
+  titleBarOverviewHeight,
+  overviewAnchor,
+  focusedWindow,
+  viewportRect,
+  snapToTerminal,
+  snapToBrowser,
+  moveTerminal,
+  moveBrowser,
+}: {
+  project: { id: string; name: string }
+  isActive: boolean
+  projectWindowCount: number
+  switchProject: (id: string) => void
+  allWindows: import('@/lib/canvas-navigation').CanvasWindow[]
+  titleBarOverviewWidth: number
+  titleBarOverviewHeight: number
+  overviewAnchor: import('@/lib/canvas-navigation').CanvasWindow | null | undefined
+  focusedWindow: import('@/lib/canvas-navigation').CanvasWindow | null | undefined
+  viewportRect: import('@/lib/canvas-navigation').CanvasRect | undefined
+  snapToTerminal: (id: string) => void
+  snapToBrowser: (id: string) => void
+  moveTerminal: (id: string, x: number, y: number) => void
+  moveBrowser: (id: string, x: number, y: number) => void
+}) {
+  const dragControls = useDragControls()
+
+  return (
+    <Reorder.Item
+      value={project}
+      as="div"
+      dragControls={dragControls}
+      dragListener={false}
+      className={cn('relative flex items-center border-r border-border/30 shrink-0')}
+      whileDrag={{ opacity: 0.5, scale: 0.98 }}
+      transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+    >
+      <button
+        onClick={() => switchProject(project.id)}
+        onPointerDown={(e) => dragControls.start(e)}
+        className={cn(
+          'flex items-center gap-2 px-4 h-full transition-colors cursor-grab active:cursor-grabbing',
+          isActive
+            ? 'text-foreground bg-white/40 dark:bg-black/35 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]'
+            : 'text-muted-foreground/50 hover:text-muted-foreground hover:bg-white/15 dark:hover:bg-muted/30',
+        )}
+      >
+        <span className="text-[11px] font-medium truncate max-w-28">{project.name}</span>
+        {projectWindowCount > 0 && (
+          <span
+            className={cn(
+              'text-[9px] tabular-nums',
+              isActive ? 'text-muted-foreground/60' : 'text-muted-foreground/30',
+            )}
+          >
+            {projectWindowCount}
+          </span>
+        )}
+      </button>
+      <AnimatePresence>
+        {isActive && allWindows.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, width: 0 }}
+            animate={{ opacity: 1, width: titleBarOverviewWidth }}
+            exit={{ opacity: 0, width: 0 }}
+            transition={{ duration: 0.2, ease: 'easeInOut' }}
+            className={cn(
+              'flex items-center overflow-hidden',
+              isActive ? 'bg-white/40 dark:bg-black/35' : '',
+            )}
+            title={
+              overviewAnchor
+                ? `${overviewAnchor.title} • drag to reposition, click to focus`
+                : 'Drag to reposition, click to focus'
+            }
+          >
+            <WindowOverviewMap
+              windows={allWindows}
+              currentId={overviewAnchor?.id}
+              focusedId={focusedWindow?.id ?? null}
+              viewport={viewportRect}
+              width={titleBarOverviewWidth}
+              height={titleBarOverviewHeight}
+              className="border-0 bg-transparent rounded-none"
+              onSelect={(window) => {
+                if (window.type === 'browser') {
+                  snapToBrowser(window.id)
+                  return
+                }
+                snapToTerminal(window.id)
+              }}
+              onMove={(window, x, y) => {
+                if (window.type === 'browser') {
+                  moveBrowser(window.id, x, y)
+                } else {
+                  moveTerminal(window.id, x, y)
+                }
+              }}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </Reorder.Item>
+  )
 }
 
 export function StatusBar() {
@@ -294,80 +406,23 @@ export function StatusBar() {
               : (project.terminals?.length ?? 0) + (project.browsers?.length ?? 0)
 
             return (
-              <Reorder.Item
+              <ProjectTab
                 key={project.id}
-                value={project}
-                as="div"
-                className={cn('relative flex items-center border-r border-border/30 shrink-0')}
-                whileDrag={{ opacity: 0.5, scale: 0.98 }}
-                transition={{ type: 'spring', stiffness: 300, damping: 30 }}
-              >
-                <button
-                  onClick={() => switchProject(project.id)}
-                  className={cn(
-                    'flex items-center gap-2 px-4 h-full transition-colors',
-                    isActive
-                      ? 'text-foreground bg-white/40 dark:bg-black/35 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]'
-                      : 'text-muted-foreground/50 hover:text-muted-foreground hover:bg-white/15 dark:hover:bg-muted/30',
-                  )}
-                >
-                  <span className="text-[11px] font-medium truncate max-w-28">{project.name}</span>
-                  {projectWindowCount > 0 && (
-                    <span
-                      className={cn(
-                        'text-[9px] tabular-nums',
-                        isActive ? 'text-muted-foreground/60' : 'text-muted-foreground/30',
-                      )}
-                    >
-                      {projectWindowCount}
-                    </span>
-                  )}
-                </button>
-                <AnimatePresence>
-                  {isActive && allWindows.length > 0 && (
-                    <motion.div
-                      initial={{ opacity: 0, width: 0 }}
-                      animate={{ opacity: 1, width: titleBarOverviewWidth }}
-                      exit={{ opacity: 0, width: 0 }}
-                      transition={{ duration: 0.2, ease: 'easeInOut' }}
-                      className={cn(
-                        'flex items-center overflow-hidden',
-                        isActive ? 'bg-white/40 dark:bg-black/35' : '',
-                      )}
-                      onPointerDown={(e) => e.stopPropagation()}
-                      title={
-                        overviewAnchor
-                          ? `${overviewAnchor.title} • drag to reposition, click to focus`
-                          : 'Drag to reposition, click to focus'
-                      }
-                    >
-                      <WindowOverviewMap
-                        windows={allWindows}
-                        currentId={overviewAnchor?.id}
-                        focusedId={focusedWindow?.id ?? null}
-                        viewport={viewportRect}
-                        width={titleBarOverviewWidth}
-                        height={titleBarOverviewHeight}
-                        className="border-0 bg-transparent rounded-none"
-                        onSelect={(window) => {
-                          if (window.type === 'browser') {
-                            snapToBrowser(window.id)
-                            return
-                          }
-                          snapToTerminal(window.id)
-                        }}
-                        onMove={(window, x, y) => {
-                          if (window.type === 'browser') {
-                            moveBrowser(window.id, x, y)
-                          } else {
-                            moveTerminal(window.id, x, y)
-                          }
-                        }}
-                      />
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </Reorder.Item>
+                project={project}
+                isActive={isActive}
+                projectWindowCount={projectWindowCount}
+                switchProject={switchProject}
+                allWindows={allWindows}
+                titleBarOverviewWidth={titleBarOverviewWidth}
+                titleBarOverviewHeight={titleBarOverviewHeight}
+                overviewAnchor={overviewAnchor}
+                focusedWindow={focusedWindow}
+                viewportRect={viewportRect}
+                snapToTerminal={snapToTerminal}
+                snapToBrowser={snapToBrowser}
+                moveTerminal={moveTerminal}
+                moveBrowser={moveBrowser}
+              />
             )
           })}
           <button
