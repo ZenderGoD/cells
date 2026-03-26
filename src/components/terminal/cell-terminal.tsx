@@ -663,6 +663,16 @@ export function CellTerminal({
         }
         if (e.ctrlKey && e.key === 'Tab') return true
 
+        // Shift+Tab → send reverse-tab (backtab) escape sequence to PTY
+        // Must intercept here to prevent browser focus navigation
+        if (e.shiftKey && !e.ctrlKey && !e.metaKey && e.key === 'Tab') {
+          e.preventDefault()
+          if (e.type === 'keydown') {
+            window.cells.terminal.write(termId, '\x1b[Z')
+          }
+          return true
+        }
+
         if (e.metaKey && !e.ctrlKey && !e.altKey) {
           if (normalizedKey === 'c') {
             if (e.type === 'keydown') {

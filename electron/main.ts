@@ -3,6 +3,7 @@ import {
   BrowserWindow,
   WebContentsView,
   ipcMain,
+  clipboard,
   dialog,
   Menu,
   nativeImage,
@@ -12,10 +13,16 @@ import {
 import path from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'fs'
-import os from 'os'
 import { execFileSync, spawnSync } from 'child_process'
 import { autoUpdater } from 'electron-updater'
 import { PtyManager } from './pty'
+import { PtyDaemonClient } from './pty-client'
+import { ensureDaemon } from './daemon-lifecycle'
+import {
+  resolveTerminalProcessInfo,
+  resolveCodexProcessPid,
+  resolveCodexThreadTitle,
+} from './pty-shared'
 import {
   ensureExtensionsLoaded,
   installExtension,
@@ -28,7 +35,6 @@ import {
   spoofChromeUA,
   setupCWSIntegration,
 } from './extensions'
-import type { TerminalProcessInfo } from '../src/types'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -120,7 +126,9 @@ configureDevPaths()
 // Enable elastic overscroll (rubber-band bounce) like native Chrome on macOS
 app.commandLine.appendSwitch('enable-features', 'ElasticOverscroll')
 
-const ptys = new PtyManager()
+let daemonClient: PtyDaemonClient | null = null
+let fallbackPtys: PtyManager | null = null
+let useDaemon = false
 let mainWindow: BrowserWindow | null = null
 
 // Per-terminal session isolation:
@@ -139,171 +147,8 @@ const LEGACY_STATE_FILE = path.join(LEGACY_STATE_DIR, 'state.json')
 const AUTO_UPDATE_CHECK_DELAY = 15_000
 const PRELOAD_FILE = 'preload.mjs'
 const BROWSER_PRELOAD_FILE = 'browser-preload.cjs'
-const CODEX_HOME_DIR = path.join(os.homedir(), '.codex')
-const CODEX_LOGS_DB = path.join(CODEX_HOME_DIR, 'logs_1.sqlite')
-const CODEX_STATE_DB = path.join(CODEX_HOME_DIR, 'state_5.sqlite')
 let quitConfirmed = false
 let quitDialogOpen = false
-
-function readSqliteValue(dbPath: string, query: string) {
-  if (!fs.existsSync(dbPath)) return null
-  try {
-    const value = execFileSync('sqlite3', [dbPath, query], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 1500,
-    }).trim()
-    return value || null
-  } catch {
-    return null
-  }
-}
-
-function readProcessTable() {
-  try {
-    return execFileSync('ps', ['-axo', 'pid=,ppid=,comm='], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 1500,
-    })
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => {
-        const match = line.match(/^(\d+)\s+(\d+)\s+(.+)$/)
-        if (!match) return null
-        return {
-          pid: Number.parseInt(match[1], 10),
-          ppid: Number.parseInt(match[2], 10),
-          command: match[3],
-        }
-      })
-      .filter((entry): entry is { pid: number; ppid: number; command: string } => !!entry)
-  } catch {
-    return []
-  }
-}
-
-function basenameCommand(command: string) {
-  const trimmed = command.trim()
-  if (!trimmed) return ''
-  return trimmed.split('/').pop() ?? trimmed
-}
-
-function isShellProcess(command: string) {
-  const normalized = basenameCommand(command).toLowerCase()
-  return (
-    normalized === 'sh' ||
-    normalized === 'bash' ||
-    normalized === 'zsh' ||
-    normalized === 'fish' ||
-    normalized === 'login'
-  )
-}
-
-function resolveTerminalProcessInfo(
-  shellPid: number,
-  shellCommand?: string | null,
-): TerminalProcessInfo | null {
-  if (!Number.isInteger(shellPid) || shellPid <= 0) return null
-
-  const processTable = readProcessTable()
-  const shellEntry =
-    processTable.find((process) => process.pid === shellPid) ??
-    (shellCommand
-      ? {
-          pid: shellPid,
-          ppid: 0,
-          command: shellCommand,
-        }
-      : null)
-
-  if (!shellEntry) return null
-
-  const childrenByParent = new Map<number, Array<{ pid: number; ppid: number; command: string }>>()
-  for (const process of processTable) {
-    const siblings = childrenByParent.get(process.ppid) ?? []
-    siblings.push(process)
-    siblings.sort((a, b) => b.pid - a.pid)
-    childrenByParent.set(process.ppid, siblings)
-  }
-
-  const queue = (childrenByParent.get(shellPid) ?? []).map((process) => ({
-    ...process,
-    depth: 1,
-  }))
-  let activeProcess: { pid: number; command: string; depth: number } | null = null
-
-  while (queue.length > 0) {
-    const current = queue.shift()!
-    if (!isShellProcess(current.command)) {
-      activeProcess = current
-      break
-    }
-    const children = childrenByParent.get(current.pid) ?? []
-    queue.push(...children.map((process) => ({ ...process, depth: current.depth + 1 })))
-  }
-
-  const resolved = activeProcess ?? { pid: shellEntry.pid, command: shellEntry.command }
-  const label = basenameCommand(resolved.command)
-  return {
-    pid: resolved.pid,
-    command: resolved.command,
-    label,
-    key: label.toLowerCase(),
-    isShell: isShellProcess(resolved.command),
-  }
-}
-
-function isCodexCommand(command: string) {
-  const normalized = command.toLowerCase().split('/').pop() ?? command.toLowerCase()
-  return normalized === 'codex' || normalized === 'codex-cli' || normalized.startsWith('codex-')
-}
-
-function resolveCodexProcessPid(shellPid: number) {
-  if (!Number.isInteger(shellPid) || shellPid <= 0) return null
-
-  const processTable = readProcessTable()
-  if (processTable.length === 0) return null
-
-  const childrenByParent = new Map<number, Array<{ pid: number; ppid: number; command: string }>>()
-  for (const process of processTable) {
-    const siblings = childrenByParent.get(process.ppid) ?? []
-    siblings.push(process)
-    childrenByParent.set(process.ppid, siblings)
-  }
-
-  const queue = [...(childrenByParent.get(shellPid) ?? [])]
-  let bestMatch: { pid: number; ppid: number; command: string } | null = null
-
-  while (queue.length > 0) {
-    const current = queue.shift()!
-    if (isCodexCommand(current.command)) {
-      bestMatch = current
-    }
-    const children = childrenByParent.get(current.pid)
-    if (children) queue.push(...children)
-  }
-
-  return bestMatch?.pid ?? null
-}
-
-function resolveCodexThreadId(pid: number) {
-  if (!Number.isInteger(pid) || pid <= 0) return null
-  return readSqliteValue(
-    CODEX_LOGS_DB,
-    `select thread_id from logs where process_uuid like 'pid:${pid}:%' and thread_id is not null order by ts desc, ts_nanos desc, id desc limit 1;`,
-  )
-}
-
-function resolveCodexThreadTitle(pid: number) {
-  const threadId = resolveCodexThreadId(pid)
-  if (!threadId || !/^[A-Za-z0-9-]+$/.test(threadId)) return null
-  return readSqliteValue(
-    CODEX_STATE_DB,
-    `select title from threads where id = '${threadId}' limit 1;`,
-  )
-}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -355,7 +200,9 @@ async function confirmAndQuitApp() {
       cancelId: 0,
       noLink: true,
       message: 'Quit Cells?',
-      detail: 'This will close the app and terminate any running windows and processes.',
+      detail: useDaemon
+        ? 'Terminal sessions will continue in the background.'
+        : 'This will close the app and terminate any running windows and processes.',
     })
 
     if (result.response === 1) {
@@ -405,57 +252,80 @@ ipcMain.handle('state:save', (_event, state) => {
 
 // ---------- Terminal IPC ----------
 
-function appendBuffer(termId: string, data: string) {
-  const existing = ptyBuffers.get(termId) ?? ''
-  const combined = existing + data
-  ptyBuffers.set(termId, combined.length > MAX_BUFFER ? combined.slice(-MAX_BUFFER) : combined)
-}
-
 function getWindowForTerminal(termId: string): BrowserWindow | null {
   const pinned = pinnedWindows.get(termId)
   if (pinned && !pinned.isDestroyed()) return pinned
   return mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
 }
 
-function setupPtyHandlers(termId: string, p: ReturnType<typeof ptys.spawn>) {
+function forwardTerminalData(termId: string, data: string) {
+  if (!subscribedTerminals.has(termId)) return
+  try {
+    const target = getWindowForTerminal(termId)
+    target?.webContents.send('terminal:data', termId, data)
+  } catch {}
+}
+
+function forwardTerminalExit(termId: string) {
+  subscribedTerminals.delete(termId)
+  try {
+    const target = getWindowForTerminal(termId)
+    target?.webContents.send('terminal:exit', termId)
+  } catch {}
+}
+
+// --- Fallback (direct PTY) helpers ---
+
+function appendBuffer(termId: string, data: string) {
+  const existing = ptyBuffers.get(termId) ?? ''
+  const combined = existing + data
+  ptyBuffers.set(termId, combined.length > MAX_BUFFER ? combined.slice(-MAX_BUFFER) : combined)
+}
+
+function setupFallbackPtyHandlers(termId: string, p: ReturnType<PtyManager['spawn']>) {
   p.onData((data) => {
-    if (ptys.get(termId) !== p) return
+    if (fallbackPtys?.get(termId) !== p) return
     if (subscribedTerminals.has(termId)) {
-      // Live forwarding — terminal component is mounted
       try {
         const target = getWindowForTerminal(termId)
         target?.webContents.send('terminal:data', termId, data)
       } catch {
-        ptys.kill(termId)
+        fallbackPtys?.kill(termId)
       }
     } else {
-      // Buffer silently — terminal is in another project
       appendBuffer(termId, data)
     }
   })
 
   p.onExit(() => {
-    if (ptys.get(termId) !== p) return
-    ptys.kill(termId)
+    if (fallbackPtys?.get(termId) !== p) return
+    fallbackPtys?.kill(termId)
     ptyBuffers.delete(termId)
-    subscribedTerminals.delete(termId)
-    try {
-      const target = getWindowForTerminal(termId)
-      target?.webContents.send('terminal:exit', termId)
-    } catch {}
+    forwardTerminalExit(termId)
   })
 }
 
 ipcMain.handle(
   'terminal:attach',
-  (_event, termId: string, cols: number, rows: number, cwd?: string) => {
-    const existing = ptys.get(termId)
+  async (_event, termId: string, cols: number, rows: number, cwd?: string) => {
+    if (useDaemon && daemonClient?.isConnected()) {
+      try {
+        const result = await daemonClient.spawn(termId, cols, rows, cwd)
+        subscribedTerminals.add(termId)
+        const buffer = await daemonClient.subscribe(termId)
+        return { reattached: result.reattached, buffer }
+      } catch {
+        // Daemon failed — fall through to fallback below
+      }
+    }
+
+    // Fallback: direct PTY
+    if (!fallbackPtys) fallbackPtys = new PtyManager()
+    const existing = fallbackPtys.get(termId)
     if (existing) {
-      // Grab buffer BEFORE subscribing so no data is lost or duplicated
       const buffer = ptyBuffers.get(termId) ?? ''
       ptyBuffers.delete(termId)
       subscribedTerminals.add(termId)
-      // Resize triggers SIGWINCH — interactive programs redraw
       try {
         existing.resize(cols, rows)
       } catch {}
@@ -464,28 +334,38 @@ ipcMain.handle(
 
     subscribedTerminals.add(termId)
     ptyBuffers.delete(termId)
-    const p = ptys.spawn(termId, cols, rows, cwd)
-    setupPtyHandlers(termId, p)
-
+    const p = fallbackPtys.spawn(termId, cols, rows, cwd)
+    setupFallbackPtyHandlers(termId, p)
     return { reattached: false, buffer: '' }
   },
 )
 
-// Unsubscribe: stop live IPC forwarding, start buffering
 ipcMain.handle('terminal:unsubscribe', (_event, termId: string) => {
   subscribedTerminals.delete(termId)
-  ptyBuffers.set(termId, '')
+  if (useDaemon && daemonClient?.isConnected()) {
+    daemonClient.unsubscribe(termId)
+  } else {
+    ptyBuffers.set(termId, '')
+  }
 })
 
 ipcMain.handle('terminal:detach', (_event, termId: string) => {
-  ptys.kill(termId)
-  ptyBuffers.delete(termId)
   subscribedTerminals.delete(termId)
+  if (useDaemon && daemonClient?.isConnected()) {
+    daemonClient.kill(termId).catch(() => {})
+  } else {
+    fallbackPtys?.kill(termId)
+    ptyBuffers.delete(termId)
+  }
 })
 
-ipcMain.handle('terminal:get-process', (_event, termId: string) => {
+ipcMain.handle('terminal:get-process', async (_event, termId: string) => {
   try {
-    const pty = ptys.get(termId)
+    if (useDaemon && daemonClient?.isConnected()) {
+      const info = await daemonClient.getProcessInfo(termId)
+      return info?.command ?? null
+    }
+    const pty = fallbackPtys?.get(termId)
     const info = pty ? resolveTerminalProcessInfo(pty.pid, pty.process) : null
     return info?.command ?? pty?.process ?? null
   } catch {
@@ -493,18 +373,24 @@ ipcMain.handle('terminal:get-process', (_event, termId: string) => {
   }
 })
 
-ipcMain.handle('terminal:get-process-info', (_event, termId: string) => {
+ipcMain.handle('terminal:get-process-info', async (_event, termId: string) => {
   try {
-    const pty = ptys.get(termId)
+    if (useDaemon && daemonClient?.isConnected()) {
+      return daemonClient.getProcessInfo(termId)
+    }
+    const pty = fallbackPtys?.get(termId)
     return pty ? resolveTerminalProcessInfo(pty.pid, pty.process) : null
   } catch {
     return null
   }
 })
 
-ipcMain.handle('terminal:get-codex-title', (_event, termId: string) => {
+ipcMain.handle('terminal:get-codex-title', async (_event, termId: string) => {
   try {
-    const shellPid = ptys.get(termId)?.pid ?? null
+    if (useDaemon && daemonClient?.isConnected()) {
+      return daemonClient.getCodexTitle(termId)
+    }
+    const shellPid = fallbackPtys?.get(termId)?.pid ?? null
     const codexPid = shellPid ? resolveCodexProcessPid(shellPid) : null
     return codexPid ? resolveCodexThreadTitle(codexPid) : null
   } catch {
@@ -682,14 +568,18 @@ ipcMain.handle('app:paste-clipboard-files', async () => {
 })
 
 ipcMain.on('terminal:write', (_event, termId: string, data: string) => {
-  if (ptys.has(termId)) {
-    ptys.write(termId, data)
+  if (useDaemon && daemonClient?.isConnected()) {
+    daemonClient.write(termId, data)
+  } else if (fallbackPtys?.has(termId)) {
+    fallbackPtys.write(termId, data)
   }
 })
 
 ipcMain.on('terminal:resize', (_event, termId: string, cols: number, rows: number) => {
-  if (ptys.has(termId)) {
-    ptys.resize(termId, cols, rows)
+  if (useDaemon && daemonClient?.isConnected()) {
+    daemonClient.resize(termId, cols, rows)
+  } else if (fallbackPtys?.has(termId)) {
+    fallbackPtys.resize(termId, cols, rows)
   }
 })
 
@@ -858,6 +748,96 @@ function setupBrowserView(browserId: string, view: WebContentsView, projectId: s
   }
   view.webContents.on('did-navigate', (_e, url) => sendNavUpdate(url))
   view.webContents.on('did-navigate-in-page', (_e, url) => sendNavUpdate(url))
+
+  // Right-click context menu (Chrome-like)
+  view.webContents.on('context-menu', (_event, params) => {
+    const template: Electron.MenuItemConstructorOptions[] = []
+
+    // Navigation
+    const nativeBack = view.webContents.navigationHistory.canGoBack()
+    const nativeFwd = view.webContents.navigationHistory.canGoForward()
+    const sh = savedHistories.get(browserId)
+    const canBack = nativeBack || (sh ? sh.activeIndex > 0 : false)
+    const canFwd = nativeFwd || (sh ? sh.activeIndex < sh.entries.length - 1 : false)
+    template.push(
+      { label: 'Back', enabled: canBack, click: () => browserGoBack(browserId) },
+      { label: 'Forward', enabled: canFwd, click: () => browserGoForward(browserId) },
+      { label: 'Reload', click: () => view.webContents.reload() },
+      { type: 'separator' },
+    )
+
+    // Link actions
+    if (params.linkURL) {
+      template.push(
+        {
+          label: 'Open Link in New Tab',
+          click: () => {
+            if (!mainWindow?.isDestroyed()) {
+              mainWindow?.webContents.send('browser:new-window', browserId, params.linkURL)
+            }
+          },
+        },
+        { label: 'Copy Link Address', click: () => clipboard.writeText(params.linkURL) },
+        { type: 'separator' },
+      )
+    }
+
+    // Image actions
+    if (params.mediaType === 'image') {
+      template.push(
+        {
+          label: 'Save Image As\u2026',
+          click: async () => {
+            let defaultName = 'image'
+            try {
+              defaultName = path.basename(new URL(params.srcURL).pathname) || defaultName
+            } catch {}
+            const result = await dialog.showSaveDialog(mainWindow!, { defaultPath: defaultName })
+            if (!result.canceled && result.filePath) {
+              const savePath = result.filePath
+              const ses = view.webContents.session
+              const handler = (_e: Electron.Event, item: Electron.DownloadItem) => {
+                item.setSavePath(savePath)
+                ses.removeListener('will-download', handler)
+              }
+              ses.on('will-download', handler)
+              view.webContents.downloadURL(params.srcURL)
+            }
+          },
+        },
+        {
+          label: 'Copy Image',
+          click: () => view.webContents.copyImageAt(params.x, params.y),
+        },
+        { label: 'Copy Image Address', click: () => clipboard.writeText(params.srcURL) },
+        { type: 'separator' },
+      )
+    }
+
+    // Editable field actions
+    if (params.isEditable) {
+      template.push(
+        { label: 'Undo', enabled: params.editFlags.canUndo, role: 'undo' },
+        { label: 'Redo', enabled: params.editFlags.canRedo, role: 'redo' },
+        { type: 'separator' },
+        { label: 'Cut', enabled: params.editFlags.canCut, role: 'cut' },
+        { label: 'Copy', enabled: params.editFlags.canCopy, role: 'copy' },
+        { label: 'Paste', enabled: params.editFlags.canPaste, role: 'paste' },
+        { label: 'Select All', enabled: params.editFlags.canSelectAll, role: 'selectAll' },
+        { type: 'separator' },
+      )
+    } else if (params.selectionText) {
+      template.push({ label: 'Copy', role: 'copy' }, { type: 'separator' })
+    }
+
+    // Inspect element
+    template.push({
+      label: 'Inspect Element',
+      click: () => view.webContents.inspectElement(params.x, params.y),
+    })
+
+    Menu.buildFromTemplate(template).popup()
+  })
 
   // CWS "Add to Chrome" interception — install extensions directly from the store
   setupCWSIntegration(view.webContents, async (extensionId) => {
@@ -1393,7 +1373,51 @@ ipcMain.handle('updater:set-auto-update', (_event, enabled: boolean) => {
 
 // ---------- App lifecycle ----------
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // Start PTY daemon before creating windows
+  try {
+    useDaemon = await ensureDaemon(STATE_DIR, app.getVersion(), process.execPath)
+    if (useDaemon) {
+      daemonClient = new PtyDaemonClient()
+      await daemonClient.connect(path.join(STATE_DIR, 'pty-daemon.sock'))
+      daemonClient.onData(forwardTerminalData)
+      daemonClient.onExit(forwardTerminalExit)
+      daemonClient.onDisconnect(() => {
+        // Daemon crashed — fall back to direct PTY mode
+        console.warn('PTY daemon disconnected, falling back to direct PTY mode')
+        useDaemon = false
+        if (!fallbackPtys) fallbackPtys = new PtyManager()
+        // Notify renderer that all daemon-managed terminals are gone
+        for (const termId of subscribedTerminals) {
+          forwardTerminalExit(termId)
+        }
+      })
+      // Clean orphaned daemon sessions
+      try {
+        const daemonTermIds = await daemonClient.list()
+        const stateData = fs.existsSync(STATE_FILE)
+          ? JSON.parse(fs.readFileSync(STATE_FILE, 'utf-8'))
+          : null
+        if (stateData?.projects) {
+          const knownIds = new Set<string>()
+          for (const project of stateData.projects) {
+            for (const t of project.terminals ?? []) knownIds.add(t.id)
+          }
+          for (const id of daemonTermIds) {
+            if (!knownIds.has(id)) {
+              daemonClient.kill(id).catch(() => {})
+            }
+          }
+        }
+      } catch {}
+    } else {
+      fallbackPtys = new PtyManager()
+    }
+  } catch {
+    useDaemon = false
+    fallbackPtys = new PtyManager()
+  }
+
   // Set dock icon on macOS (for dev; production uses the bundled .icns)
   if (process.platform === 'darwin') {
     const iconPath = path.join(__dirname, '../resources/icon.png')
@@ -1465,12 +1489,22 @@ app.on('before-quit', () => {
     }
   } catch {}
   cleanupBrowserViews()
-  ptys.cleanup()
+  if (useDaemon && daemonClient?.isConnected()) {
+    // Unsubscribe all — daemon keeps PTYs alive and buffers output
+    for (const termId of subscribedTerminals) {
+      daemonClient.unsubscribe(termId)
+    }
+    daemonClient.disconnect()
+  } else {
+    fallbackPtys?.cleanup()
+  }
 })
 
 app.on('window-all-closed', () => {
   cleanupBrowserViews()
-  ptys.cleanup()
+  if (!useDaemon) {
+    fallbackPtys?.cleanup()
+  }
   app.quit()
 })
 

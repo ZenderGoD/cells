@@ -2,6 +2,7 @@ import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import electron from 'vite-plugin-electron/simple'
 import tailwindcss from '@tailwindcss/vite'
+import { build as esbuild } from 'esbuild'
 import path from 'path'
 import fs from 'fs'
 
@@ -26,6 +27,23 @@ function copyBrowserPreload(): Plugin {
     buildStart() {
       fs.mkdirSync(path.dirname(dest), { recursive: true })
       fs.copyFileSync(src, dest)
+    },
+  }
+}
+
+function buildPtyDaemon(): Plugin {
+  return {
+    name: 'build-pty-daemon',
+    async writeBundle() {
+      await esbuild({
+        entryPoints: [path.resolve(__dirname, 'electron/pty-daemon.ts')],
+        bundle: true,
+        platform: 'node',
+        format: 'esm',
+        outfile: path.resolve(__dirname, 'dist-electron/pty-daemon.js'),
+        external: ['node-pty'],
+        banner: { js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);" },
+      })
     },
   }
 }
@@ -57,6 +75,7 @@ export default defineConfig({
       renderer: {},
     }),
     copyBrowserPreload(),
+    buildPtyDaemon(),
   ],
   resolve: {
     alias: {
