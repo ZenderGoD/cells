@@ -8,8 +8,8 @@ import {
   Globe,
   Loader2,
   Magnet,
-  Pin,
-  PinOff,
+  ArrowUpRight,
+  ArrowDownLeft,
   Plus,
   Puzzle,
   RotateCw,
@@ -634,9 +634,13 @@ export function StatusBar() {
                   ? 'text-primary/70 hover:text-primary'
                   : 'text-muted-foreground/40 hover:text-foreground',
               )}
-              title={focusedWindowPinned ? 'Unpin window (⌘⇧P)' : 'Pin window to viewport (⌘⇧P)'}
+              title={focusedWindowPinned ? 'Pop back in (⌘⇧P)' : 'Pop out (⌘⇧P)'}
             >
-              {focusedWindowPinned ? <PinOff className="w-3 h-3" /> : <Pin className="w-3 h-3" />}
+              {focusedWindowPinned ? (
+                <ArrowDownLeft className="w-3 h-3" />
+              ) : (
+                <ArrowUpRight className="w-3 h-3" />
+              )}
             </button>
           )}
 

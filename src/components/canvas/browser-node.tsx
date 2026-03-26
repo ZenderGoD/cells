@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, type MouseEvent } from 'react'
-import { EyeOff, Globe, Pin, PinOff, WifiOff } from 'lucide-react'
+import { ArrowUpRight, EyeOff, Globe, WifiOff } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
 import type { BrowserNode as BrowserNodeType } from '@/types'
@@ -372,20 +372,15 @@ export function BrowserNode({
           )}
         >
           <button
-            className={cn(
-              'p-1 rounded-md backdrop-blur-sm transition-colors cursor-pointer',
-              browser.pinned
-                ? 'text-primary/70 bg-primary/10 hover:text-primary'
-                : 'text-muted-foreground/40 bg-background/50 hover:text-foreground hover:bg-background/70',
-            )}
+            className="p-1 rounded-md backdrop-blur-sm transition-colors cursor-pointer text-muted-foreground/40 bg-background/50 hover:text-foreground hover:bg-background/70"
             onMouseDown={(e) => e.stopPropagation()}
             onClick={(e) => {
               e.stopPropagation()
               togglePin(browser.id, 'browser')
             }}
-            title={browser.pinned ? 'Unpin window' : 'Pin to separate window'}
+            title="Pop out to separate window"
           >
-            {browser.pinned ? <PinOff className="w-3 h-3" /> : <Pin className="w-3 h-3" />}
+            <ArrowUpRight className="w-3 h-3" />
           </button>
         </div>
 

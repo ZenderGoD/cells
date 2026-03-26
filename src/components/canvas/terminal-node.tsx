@@ -1,5 +1,5 @@
 import { useState, useCallback, type MouseEvent } from 'react'
-import { Pin, PinOff, X } from 'lucide-react'
+import { ArrowUpRight, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { CellTerminal } from '../terminal/cell-terminal'
 import { useStore } from '@/lib/store'
@@ -192,19 +192,14 @@ export function TerminalNode({
               {terminal.title}
             </span>
             <button
-              className={cn(
-                'p-1 rounded-md transition-colors',
-                terminal.pinned
-                  ? 'text-primary/70 hover:text-primary hover:bg-primary/10'
-                  : 'text-muted-foreground/40 hover:text-foreground hover:bg-muted/40',
-              )}
+              className="p-1 rounded-md transition-colors text-muted-foreground/40 hover:text-foreground hover:bg-muted/40"
               onClick={(e) => {
                 e.stopPropagation()
                 togglePin(terminal.id, 'terminal')
               }}
-              title={terminal.pinned ? 'Unpin window' : 'Pin to separate window'}
+              title="Pop out to separate window"
             >
-              {terminal.pinned ? <PinOff className="w-3 h-3" /> : <Pin className="w-3 h-3" />}
+              <ArrowUpRight className="w-3 h-3" />
             </button>
             <button
               className="p-1 rounded-md text-muted-foreground/40 hover:text-foreground hover:bg-muted/40 transition-colors"
