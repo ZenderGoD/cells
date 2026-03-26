@@ -47,7 +47,16 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: |
           APPLE_API_KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
-          printf '%s' "$APPLE_API_KEY_CONTENT" > "$APPLE_API_KEY_PATH"
+          APPLE_API_KEY_BODY="$(
+            printf '%s' "$APPLE_API_KEY_CONTENT" \
+              | sed 's/-----BEGIN PRIVATE KEY-----//g; s/-----END PRIVATE KEY-----//g' \
+              | tr -d '\r\n\t '
+          )"
+          {
+            printf '%s\n' '-----BEGIN PRIVATE KEY-----'
+            printf '%s' "$APPLE_API_KEY_BODY" | fold -w 64
+            printf '%s\n' '-----END PRIVATE KEY-----'
+          } > "$APPLE_API_KEY_PATH"
           chmod 600 "$APPLE_API_KEY_PATH"
           export APPLE_API_KEY="$APPLE_API_KEY_PATH"
           pnpm release
