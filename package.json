@@ -152,6 +152,7 @@
     "eslint": "^10.1.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-react-hooks": "^7.0.1",
+    "fastmcp": "^3.34.0",
     "lint-staged": "^16.4.0",
     "prettier": "^3.8.1",
     "tailwindcss": "^4.0.0",
@@ -159,7 +160,8 @@
     "typescript-eslint": "^8.57.2",
     "vite": "^6.0.0",
     "vite-plugin-electron": "^0.28.0",
-    "vite-plugin-electron-renderer": "^0.14.0"
+    "vite-plugin-electron-renderer": "^0.14.0",
+    "zod": "^3.25.76"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
