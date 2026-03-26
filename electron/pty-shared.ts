@@ -5,10 +5,13 @@ import { execFileSync } from 'child_process'
 import { createRequire } from 'module'
 import type { TerminalProcessInfo } from '../src/types'
 
-export const HOME_DIR = os.homedir()
+// Use userInfo().homedir instead of os.homedir() — the latter reads the HOME
+// env var which dev mode overrides to a sandbox directory. userInfo() reads
+// from the system password database, always returning the real user home.
+export const HOME_DIR = os.userInfo().homedir
 export const MAX_BUFFER = 64 * 1024
 
-const CODEX_HOME_DIR = path.join(os.homedir(), '.codex')
+const CODEX_HOME_DIR = path.join(HOME_DIR, '.codex')
 const CODEX_LOGS_DB = path.join(CODEX_HOME_DIR, 'logs_1.sqlite')
 const CODEX_STATE_DB = path.join(CODEX_HOME_DIR, 'state_5.sqlite')
 
