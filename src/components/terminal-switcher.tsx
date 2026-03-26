@@ -9,6 +9,7 @@ import { WindowOverviewMap } from './canvas/window-overview-map'
 import { getTerminalPreviewSnapshot } from './terminal/cell-terminal'
 import { AgentIcon } from './agent-icon'
 import { Logo } from './logo'
+import { getStatusIndicator } from '@/lib/status-indicator'
 
 interface SwitcherItem {
   id: string
@@ -355,17 +356,23 @@ export function TerminalSwitcher() {
                         <Globe className="w-3 h-3 shrink-0 text-muted-foreground/50" />
                       )}
                       <span className="text-[10px] truncate flex-1">{item.title}</span>
-                      {item.agentStatus === 'active' ? (
-                        <div className="w-1.5 h-1.5 rounded-full bg-primary/90 animate-pulse shrink-0" />
-                      ) : item.agentStatus === 'unread' ? (
-                        <div className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
-                      ) : item.agentStatus === 'done' ? (
-                        <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
-                      ) : item.processRunning ? (
-                        <div className="w-1.5 h-1.5 rounded-full bg-white/20 shrink-0" />
-                      ) : item.isCurrent ? (
-                        <div className="w-1.5 h-1.5 rounded-full bg-primary/60 shrink-0" />
-                      ) : null}
+                      {(() => {
+                        const si = getStatusIndicator(
+                          item.agentStatus,
+                          item.agent,
+                          item.processRunning,
+                        )
+                        if (si.dotClass)
+                          return (
+                            <div
+                              className={`w-1.5 h-1.5 rounded-full shrink-0 ${si.dotClass}`}
+                              title={si.label}
+                            />
+                          )
+                        if (item.isCurrent)
+                          return <div className="w-1.5 h-1.5 rounded-full bg-primary/60 shrink-0" />
+                        return null
+                      })()}
                     </div>
                   </button>
                 ))}

@@ -3,16 +3,7 @@ import { Globe, TerminalSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { getCanvasBounds, type CanvasRect, type CanvasWindow } from '@/lib/canvas-navigation'
 import { AgentIcon } from '@/components/agent-icon'
-import type { AgentStatus } from '@/types'
-
-/** Returns extra classes for the minimap square based on agent/process status */
-function windowStatusClasses(agentStatus: AgentStatus, processRunning?: boolean): string {
-  if (agentStatus === 'active') return 'ring-1 ring-primary/80 animate-pulse'
-  if (agentStatus === 'unread') return 'ring-1 ring-amber-400/90'
-  if (agentStatus === 'done') return 'ring-1 ring-emerald-400/90'
-  if (processRunning) return 'ring-1 ring-white/15'
-  return ''
-}
+import { getStatusIndicator } from '@/lib/status-indicator'
 
 interface WindowOverviewMapProps {
   windows: CanvasWindow[]
@@ -207,7 +198,10 @@ export function WindowOverviewMap({
           const canShowIcon = minDim >= 8
           const iconSize = Math.max(6, Math.min(minDim * 0.55, 14))
           const canDrag = !!onMove
-          const statusClass = windowStatusClasses(window.agentStatus ?? null, window.processRunning)
+          // Only show status ring on non-current windows to keep the current selection clear
+          const statusClass = !isCurrent
+            ? getStatusIndicator(window.agentStatus, window.agent, window.processRunning).ringClass
+            : ''
           const sharedClassName = cn(
             'absolute flex items-center justify-center border transition-[transform,background-color,border-color,opacity,box-shadow] duration-150',
             (onSelect || canDrag) && 'hover:scale-[1.04]',
@@ -216,7 +210,7 @@ export function WindowOverviewMap({
               ? 'rounded-none border-white/24 bg-white/14 text-foreground/55'
               : 'rounded-none border-white/16 bg-white/8 text-foreground/45',
             isCurrent
-              ? 'z-10 border-foreground/90 bg-foreground/20 text-foreground shadow-[0_0_0_1px_rgba(255,255,255,0.16),0_10px_22px_rgba(0,0,0,0.24)]'
+              ? 'z-10 border-foreground bg-foreground/25 text-foreground shadow-[0_0_0_2px_rgba(255,255,255,0.3),0_10px_22px_rgba(0,0,0,0.24)]'
               : isFocused
                 ? 'z-[9] border-white/70 bg-white/16 shadow-[0_0_0_1px_rgba(255,255,255,0.12)]'
                 : 'hover:border-foreground/45',

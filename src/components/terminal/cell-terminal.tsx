@@ -213,48 +213,52 @@ const ESCAPE_CHAR = String.fromCharCode(27)
 const NULL_CHAR = String.fromCharCode(0)
 const ANSI_CSI_SEQUENCE_RE = new RegExp(`${ESCAPE_CHAR}\\[[0-9;?]*[ -/]*[@-~]`, 'g')
 
-// ---------- Agent prompt detection ----------
+// ---------- Agent status detection ----------
+//
+// STATUS MODEL (state machine):
+//
+//   null ──[output arrives]──► active ──[silence >3s, unfocused]──► unread
+//     ▲                          │                                    │
+//     │                          │ [silence >3s, focused]             │
+//     │                          ▼                                    │
+//     └──────────────────────── null ◄──────[user focuses]────────────┘
+//
+//   active ──[agent exits]──► done ──[user focuses]──► null
+//
+// KEY DESIGN DECISIONS:
+//
+// 1. Only timing-based detection (no terminal output parsing).
+//    Earlier attempts tried to detect agent prompt characters (❯, ›, >)
+//    in the PTY output buffer, but this was fragile: agents render status
+//    bars below the prompt, different versions use different characters,
+//    and ANSI escape sequences leave artifacts that break regex matching.
+//    A 3-second silence threshold is simple and reliable — agents actively
+//    working always produce continuous output (streaming text, tool use
+//    blocks, progress spinners).
+//
+// 2. State machine transitions, not re-evaluation.
+//    The poll must NOT re-derive status from scratch each cycle. If it did,
+//    an idle unfocused agent would get re-marked as 'unread' every 3s,
+//    even after the user already focused it and acknowledged the output.
+//    Instead, 'unread' is only set on the active→idle transition. Once
+//    cleared to null (by focusing), it stays null until the agent produces
+//    NEW output and goes idle again while unfocused.
+//
+// 3. Focus clears status immediately (in store.focusTerminal), including
+//    when re-focusing the same terminal. Without this, clicking an already-
+//    focused terminal wouldn't clear a stale 'unread' that the poll set
+//    between focus events.
+//
+// 4. Bell character (BEL, \x07) is an early idle signal. Agents ring the
+//    bell when they finish a turn, so we don't have to wait the full 3s.
+//
+// 5. processRunning (for non-agent terminals) is purely runtime — cleared
+//    on app restart since the process tree is stale. agentStatus persists
+//    across restarts: 'active' is normalized to 'unread' on restore (the
+//    agent was mid-work when the app closed, so there's unread output).
 
-const AGENT_OUTPUT_BUF_SIZE = 400
-// How long after a prompt is detected before we consider the agent idle
-const AGENT_PROMPT_SILENCE_MS = 800
-// Fallback: if no output for this long, assume agent is idle even without prompt detection
-const AGENT_IDLE_FALLBACK_MS = 10_000
-// Bell character — agents ring the bell when they finish and need user attention
+const AGENT_IDLE_SILENCE_MS = 3_000
 const BEL = '\x07'
-
-/** Strip ANSI escape sequences to get readable text for prompt detection. */
-function stripAnsi(str: string): string {
-  /* eslint-disable no-control-regex -- intentional: stripping terminal control characters */
-  return str
-    .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '') // CSI sequences
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '') // OSC sequences
-    .replace(/\x1b[()][AB012]/g, '') // charset sequences
-    .replace(/\x1b[^[\]]/g, '') // other 2-char escapes
-    .replace(/[\x00-\x06\x08-\x1a\x1c-\x1f]/g, '') // control chars (except \x07 BEL)
-  /* eslint-enable no-control-regex */
-}
-
-/**
- * Detect whether the cleaned output buffer ends with an agent prompt.
- * This means the agent has finished output and is waiting for user input.
- *
- * Claude Code prompt characters vary by version:
- *   ❯ (U+276F), › (U+203A), > (U+003E)
- */
-function detectAgentPrompt(cleanedBuffer: string, agent: AgentName | null): boolean {
-  const tail = cleanedBuffer.trimEnd()
-  if (!tail) return false
-  const end = tail.slice(-30)
-
-  // Common prompt endings for CLI agents
-  const promptRe = /[❯›>]\s*$/
-  const confirmRe = /\([Yy](?:es)?\/[Nn](?:o)?\)\s*[:?]?\s*$/
-
-  if (agent === 'claude') return promptRe.test(end) || confirmRe.test(end)
-  if (agent === 'codex') return promptRe.test(end) || confirmRe.test(end)
-  return promptRe.test(end)
-}
 const ANSI_ESCAPE_RE = new RegExp(`${ESCAPE_CHAR}[@-_]`, 'g')
 const NULL_CHAR_RE = new RegExp(NULL_CHAR, 'g')
 const COMMAND_EDITING_SEQUENCES: Record<string, string> = {
@@ -441,9 +445,7 @@ export function CellTerminal({
   const lastInferredTitleRef = useRef<string | null>(null)
   const lastAgentDataRef = useRef<number>(0) // timestamp of last PTY data while agent active
   const prevAgentRef = useRef<AgentName | null>(null) // track transitions for done detection
-  const agentOutputBufRef = useRef('') // rolling buffer of stripped PTY output for prompt detection
   const agentBellRef = useRef(false) // whether a BEL was heard since last input
-  const promptCheckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const dragDepthRef = useRef(0)
   const [dropActive, setDropActive] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
@@ -863,11 +865,6 @@ export function CellTerminal({
             const agent = detectedAgentRef.current ?? inferredAgentRef.current
             if (agent) {
               agentBellRef.current = false
-              agentOutputBufRef.current = ''
-              if (promptCheckTimerRef.current) {
-                clearTimeout(promptCheckTimerRef.current)
-                promptCheckTimerRef.current = null
-              }
               const store = useStore.getState()
               const current = store.terminals.find((t) => t.id === termId)
               if (current?.agentStatus !== 'active') {
@@ -883,36 +880,20 @@ export function CellTerminal({
             if (agent) {
               lastAgentDataRef.current = Date.now()
 
-              // Detect terminal bell — agents ring bell when they finish a turn
+              // Bell = agent finished its turn. This lets the poll detect
+              // idle state immediately instead of waiting the full 3s.
               if (data.includes(BEL)) {
                 agentBellRef.current = true
               }
 
-              // Build rolling buffer of cleaned output for prompt detection
-              const cleaned = stripAnsi(data)
-              agentOutputBufRef.current = (agentOutputBufRef.current + cleaned).slice(
-                -AGENT_OUTPUT_BUF_SIZE,
-              )
-
-              // If this chunk contains a prompt or bell, schedule a quick status
-              // check so we don't have to wait for the next 3s poll cycle
-              const hasPrompt = detectAgentPrompt(agentOutputBufRef.current, agent)
-              if (hasPrompt || agentBellRef.current) {
-                if (promptCheckTimerRef.current) clearTimeout(promptCheckTimerRef.current)
-                promptCheckTimerRef.current = setTimeout(() => {
-                  const now = Date.now()
-                  const elapsed = now - lastAgentDataRef.current
-                  if (elapsed >= AGENT_PROMPT_SILENCE_MS) {
-                    const store = useStore.getState()
-                    const current = store.terminals.find((t) => t.id === termId)
-                    const focused = store.focusedTerminalId === termId
-                    // If focused, clear to null (user is watching). If not, mark unread.
-                    const next = focused ? null : ('unread' as const)
-                    if (current && current.agentStatus !== next) {
-                      store.updateTerminalAgentStatus(termId, next)
-                    }
-                  }
-                }, AGENT_PROMPT_SILENCE_MS + 50)
+              // Any PTY output means the agent is working. Transition to
+              // 'active' immediately — this is the only place 'active' is set
+              // (aside from user pressing Enter). The poll handles the
+              // active→idle transition after silence.
+              const store = useStore.getState()
+              const current = store.terminals.find((t) => t.id === termId)
+              if (current && current.agentStatus !== 'active') {
+                store.updateTerminalAgentStatus(termId, 'active')
               }
             }
           }
@@ -952,37 +933,55 @@ export function CellTerminal({
           store.updateTerminalAgent(termId, agent)
         }
 
-        // Determine agent status using prompt detection + bell + focus
+        // ── Agent status state machine ──
+        //
+        // This is a state machine, NOT a stateless re-evaluation. The previous
+        // status determines what transitions are valid. This is critical:
+        // a naive "idle + unfocused → unread" would re-mark terminals the
+        // user already read every 3 seconds, causing phantom notifications.
+        //
+        // Valid transitions:
+        //   null/unread → active    (output arrived — handled in onData above)
+        //   active → null           (silence + focused: user is watching)
+        //   active → unread         (silence + unfocused: user missed it)
+        //   unread/done → null      (user focused the terminal)
+        //   null → null             (no-op: user already acknowledged)
+        //   unread → unread         (no-op: user still hasn't looked)
+        //   any → done              (agent process exited)
+        //
         if (agent) {
           const elapsed = Date.now() - lastAgentDataRef.current
-          const hasPrompt = detectAgentPrompt(agentOutputBufRef.current, agent)
-          const heardBell = agentBellRef.current
           const focused = store.focusedTerminalId === termId
-          const promptOrBell = (hasPrompt || heardBell) && elapsed > AGENT_PROMPT_SILENCE_MS
-          // Fallback: long silence without any output = agent is idle
-          const idleFallback = lastAgentDataRef.current > 0 && elapsed > AGENT_IDLE_FALLBACK_MS
+          const isIdle =
+            (lastAgentDataRef.current > 0 && elapsed > AGENT_IDLE_SILENCE_MS) ||
+            agentBellRef.current
+          const prev = current?.agentStatus ?? null
 
-          let newStatus: import('@/types').AgentStatus
-          if (promptOrBell || idleFallback) {
-            // Agent is idle — if user is watching, no indicator; otherwise unread
-            newStatus = focused ? null : 'unread'
-          } else {
+          let newStatus: import('@/types').AgentStatus = prev
+          if (!isIdle && lastAgentDataRef.current > 0) {
+            // Output still flowing — agent is actively working
             newStatus = 'active'
+          } else if (isIdle && prev === 'active') {
+            // TRANSITION: agent just went from working → idle.
+            // This is the ONLY place 'unread' gets set. If the user is
+            // watching (focused), skip straight to null.
+            newStatus = focused ? null : 'unread'
+          } else if (isIdle && focused && (prev === 'unread' || prev === 'done')) {
+            // User focused an idle agent terminal — acknowledge & clear
+            newStatus = null
           }
+          // All other cases: keep current status unchanged.
+          // null stays null (user already saw it — don't re-notify).
+          // unread stays unread (user hasn't focused yet).
 
           if (current && current.agentStatus !== newStatus) {
             store.updateTerminalAgentStatus(termId, newStatus)
           }
         } else if (wasAgent && !agent) {
-          // Agent just exited — mark as done and reset state
+          // Agent process exited — mark done so user sees it
           store.updateTerminalAgentStatus(termId, 'done')
           lastAgentDataRef.current = 0
-          agentOutputBufRef.current = ''
           agentBellRef.current = false
-          if (promptCheckTimerRef.current) {
-            clearTimeout(promptCheckTimerRef.current)
-            promptCheckTimerRef.current = null
-          }
         }
 
         if (agent === 'codex') {
@@ -992,13 +991,7 @@ export function CellTerminal({
           }
         }
       }, 3000)
-      cleanups.push(() => {
-        clearInterval(agentPoll)
-        if (promptCheckTimerRef.current) {
-          clearTimeout(promptCheckTimerRef.current)
-          promptCheckTimerRef.current = null
-        }
-      })
+      cleanups.push(() => clearInterval(agentPoll))
 
       // Store in cache
       terminalCache.set(termId, { term, fitAddon, wrapper, cleanups })

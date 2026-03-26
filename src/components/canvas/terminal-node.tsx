@@ -5,6 +5,7 @@ import { CellTerminal } from '../terminal/cell-terminal'
 import { useStore } from '@/lib/store'
 import type { TerminalNode as TerminalNodeType } from '@/types'
 import { AgentIcon } from '@/components/agent-icon'
+import { getStatusIndicator } from '@/lib/status-indicator'
 import { inferAgentFromTitle } from '@/lib/agent-command'
 import { Logo } from '@/components/logo'
 import { WorktreeSwitcher } from '@/components/worktree-switcher'
@@ -165,15 +166,8 @@ export function TerminalNode({
           isSelected && 'ring-2 ring-primary/70 ring-offset-1 ring-offset-background',
           !isFocused &&
             !isSelected &&
-            (terminal.agentStatus === 'active'
-              ? 'ring-1 ring-primary/50 animate-pulse'
-              : terminal.agentStatus === 'unread'
-                ? 'ring-1 ring-amber-400/60'
-                : terminal.agentStatus === 'done'
-                  ? 'ring-1 ring-emerald-400/60'
-                  : terminal.processRunning
-                    ? 'ring-1 ring-white/10'
-                    : ''),
+            getStatusIndicator(terminal.agentStatus, terminal.agent, terminal.processRunning)
+              .ringClass,
         )}
       >
         <CellTerminal

@@ -294,6 +294,15 @@ function normalizeTerminals(terminals: TerminalNode[]) {
   return terminals.map((terminal, index) => ({
     ...terminal,
     zIndex: typeof terminal.zIndex === 'number' ? terminal.zIndex : index + 1,
+    // Normalize stale agent status from previous session.
+    // 'active' can't survive a restart (the agent isn't running anymore),
+    // so convert to 'unread' — the user hasn't seen whatever the agent
+    // produced before the app closed. 'unread' and 'done' persist as-is.
+    agentStatus:
+      terminal.agentStatus === 'active' ? ('unread' as const) : (terminal.agentStatus ?? null),
+    // processRunning is runtime-only (detected by polling the process tree).
+    // Always reset on restore since the process info is stale.
+    processRunning: false,
   }))
 }
 
@@ -1028,30 +1037,36 @@ export const useStore = create<StoreState>((set, get) => ({
     if (id && get().crossProjectReturn) {
       set({ crossProjectReturn: null })
     }
+    // Clear 'unread'/'done' status whenever the user focuses a terminal.
+    // This must run even when re-focusing the same terminal (id === prev),
+    // because the 3s poll can set 'unread' between focus events if the user
+    // briefly switches away and back. Without this, clicking an already-focused
+    // agent terminal wouldn't dismiss its notification indicator.
+    // We don't clear 'active' — that means the agent is genuinely working.
+    const terminal = id ? get().terminals.find((t) => t.id === id) : null
+    const clearStatus = !!(terminal?.agentStatus && terminal.agentStatus !== 'active')
+
     if (id && id !== prev) {
       get().bringToFront(id)
       const history = pushFocusHistory(get().focusHistory, id)
       const counts = { ...get().focusCounts, [id]: (get().focusCounts[id] ?? 0) + 1 }
-      // Clear 'done'/'unread' agentStatus on focus — user has acknowledged
-      const terminal = get().terminals.find((t) => t.id === id)
-      if (terminal?.agentStatus === 'done' || terminal?.agentStatus === 'unread') {
-        set((s) => ({
-          focusedTerminalId: id,
-          focusedBrowserId: null,
-          focusHistory: history,
-          focusCounts: counts,
-          terminals: s.terminals.map((t) => (t.id === id ? { ...t, agentStatus: null } : t)),
-        }))
-      } else {
-        set({
-          focusedTerminalId: id,
-          focusedBrowserId: null,
-          focusHistory: history,
-          focusCounts: counts,
-        })
-      }
+      set((s) => ({
+        focusedTerminalId: id,
+        focusedBrowserId: null,
+        focusHistory: history,
+        focusCounts: counts,
+        ...(clearStatus
+          ? { terminals: s.terminals.map((t) => (t.id === id ? { ...t, agentStatus: null } : t)) }
+          : {}),
+      }))
     } else {
-      set({ focusedTerminalId: id, focusedBrowserId: null })
+      set((s) => ({
+        focusedTerminalId: id,
+        focusedBrowserId: null,
+        ...(clearStatus
+          ? { terminals: s.terminals.map((t) => (t.id === id ? { ...t, agentStatus: null } : t)) }
+          : {}),
+      }))
     }
     if (id && id !== prev && get().snapOnFocus) {
       get().snapToTerminal(id)

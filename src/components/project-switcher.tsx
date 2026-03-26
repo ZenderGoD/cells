@@ -331,20 +331,14 @@ export function ProjectSwitcher() {
                           <span className="min-w-0 flex-1 truncate text-[11px] font-medium">
                             {item.name}
                           </span>
-                          {!item.isCurrent && item.attention === 'active' ? (
+                          {!item.isCurrent && item.attention ? (
                             <div
-                              className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary/90 animate-pulse"
-                              title="Agent working"
-                            />
-                          ) : !item.isCurrent && item.attention === 'unread' ? (
-                            <div
-                              className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400"
-                              title="Agent has unread output"
-                            />
-                          ) : !item.isCurrent && item.attention === 'done' ? (
-                            <div
-                              className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400"
-                              title="Agent done"
+                              className={cn(
+                                'h-1.5 w-1.5 shrink-0 rounded-full',
+                                item.attention === 'active' && 'bg-primary/90 animate-pulse',
+                                item.attention === 'unread' && 'bg-amber-400',
+                                item.attention === 'done' && 'bg-emerald-400',
+                              )}
                             />
                           ) : item.isCurrent ? (
                             <div className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary/60" />
