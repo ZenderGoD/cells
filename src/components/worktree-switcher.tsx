@@ -44,6 +44,7 @@ export function WorktreeSwitcher({ termId, className }: WorktreeSwitcherProps) {
         setSearch('')
         setCreating(false)
         setConfiguring(false)
+        requestAnimationFrame(() => window.dispatchEvent(new Event('terminal-refocus')))
       }
     },
     [setOverlayOpen],

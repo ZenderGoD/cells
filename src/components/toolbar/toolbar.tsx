@@ -235,10 +235,12 @@ export function StatusBar() {
   const setShowSettings = (v: boolean) => {
     setShowSettingsRaw(v)
     setOverlayOpen(v)
+    if (!v) requestAnimationFrame(() => window.dispatchEvent(new Event('terminal-refocus')))
   }
   const setShowNewProject = (v: boolean) => {
     setShowNewProjectRaw(v)
     setOverlayOpen(v)
+    if (!v) requestAnimationFrame(() => window.dispatchEvent(new Event('terminal-refocus')))
   }
   const [plusOpen, setPlusOpen] = useState(false)
   const tabsRef = useRef<HTMLDivElement>(null)
@@ -413,6 +415,14 @@ export function StatusBar() {
             : undefined,
         }}
         onDoubleClick={() => window.cells.app.toggleMaximize()}
+        onMouseDown={(e) => {
+          // Prevent toolbar clicks from stealing focus from the terminal,
+          // but allow the URL input to be focused normally.
+          const target = e.target as HTMLElement
+          if (!target.closest('[data-allow-focus]')) {
+            e.preventDefault()
+          }
+        }}
       >
         {/* Logo — click to zoom out and see all windows */}
         <button
@@ -519,6 +529,7 @@ export function StatusBar() {
 
             {/* URL bar */}
             <div
+              data-allow-focus
               className="flex-1 flex items-center gap-1.5 mx-1 px-2 py-1 rounded-md bg-background/60 border border-border/30 min-w-0 cursor-text"
               onClick={openUrlBar}
             >
@@ -648,6 +659,8 @@ export function StatusBar() {
             onOpenChange={(open) => {
               setPlusOpen(open)
               setOverlayOpen(open)
+              if (!open)
+                requestAnimationFrame(() => window.dispatchEvent(new Event('terminal-refocus')))
             }}
           >
             <PopoverTrigger className="text-muted-foreground/40 hover:text-foreground transition-colors">

@@ -208,7 +208,10 @@ export function TerminalNode({
         {/* Title bar — top right, inside terminal */}
         <div
           className="absolute top-0 right-0 z-20 flex items-center cursor-grab active:cursor-grabbing select-none"
-          onMouseDown={handleDragMouseDown}
+          onMouseDown={(e) => {
+            e.preventDefault()
+            handleDragMouseDown(e)
+          }}
         >
           <div
             className={cn(

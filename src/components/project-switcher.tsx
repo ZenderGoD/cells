@@ -290,7 +290,7 @@ export function ProjectSwitcher() {
                         'relative flex h-[132px] w-[188px] shrink-0 flex-col overflow-hidden rounded-lg bg-card text-left transition-all',
                         isSelected
                           ? 'ring-2 ring-primary'
-                          : 'border border-border/30 hover:border-border/50',
+                          : 'ring-1 ring-border/30 hover:ring-border/50',
                       )}
                     >
                       {number <= 9 ? (
