@@ -58,6 +58,7 @@ export function TerminalNode({
       resizeTerminal: s.resizeTerminal,
       moveTerminal: s.moveTerminal,
       updateTerminalTitle: s.updateTerminalTitle,
+      setCustomTitle: s.setCustomTitle,
       focusTerminal: s.focusTerminal,
       togglePin: s.togglePin,
     })),
