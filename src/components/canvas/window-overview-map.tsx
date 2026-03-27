@@ -210,7 +210,7 @@ export function WindowOverviewMap({
               ? 'rounded-none border-white/24 bg-white/14 text-foreground/55'
               : 'rounded-none border-white/16 bg-white/8 text-foreground/45',
             isCurrent
-              ? 'z-10 border-foreground bg-foreground/25 text-foreground shadow-[0_0_0_2px_rgba(255,255,255,0.3),0_10px_22px_rgba(0,0,0,0.24)]'
+              ? 'z-10 border-foreground bg-foreground text-background shadow-[0_0_0_2px_rgba(255,255,255,0.3),0_10px_22px_rgba(0,0,0,0.24)]'
               : isFocused
                 ? 'z-[9] border-white/70 bg-white/16 shadow-[0_0_0_1px_rgba(255,255,255,0.12)]'
                 : 'hover:border-foreground/45',

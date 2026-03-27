@@ -32,8 +32,8 @@ const ACTIVE: StatusIndicator = {
 }
 
 const UNREAD: StatusIndicator = {
-  ringClass: 'ring-1 ring-amber-400/90',
-  dotClass: 'bg-amber-400',
+  ringClass: 'ring-1 ring-amber-500/50',
+  dotClass: 'bg-amber-500/70',
   label: 'Agent has unread output',
 }
 

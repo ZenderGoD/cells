@@ -80,6 +80,9 @@ interface StoreState {
   // When a link opens a browser in a different project, tracks the source so we can return
   crossProjectReturn: { browserId: string; sourceProjectId: string } | null
 
+  // Timestamp when the currently focused terminal gained focus (runtime-only, not persisted)
+  focusedTerminalSince: number
+
   // Git worktree state
   worktrees: GitWorktree[]
   worktreesLoading: boolean
@@ -193,6 +196,10 @@ interface StoreState {
 }
 
 const TERMINAL_PAD = 8
+const FOCUS_READ_DELAY_MS = 2000
+
+// Timer for delayed agent-status clear on focus
+let _agentStatusClearTimer: ReturnType<typeof setTimeout> | null = null
 
 // Pending commands to run after terminal attaches (not persisted)
 const pendingCommands = new Map<string, string>()
@@ -465,6 +472,7 @@ export const useStore = create<StoreState>((set, get) => ({
   pendingClosedWindows: [],
   pendingCloseDialog: null,
   crossProjectReturn: null,
+  focusedTerminalSince: 0,
   worktrees: [],
   worktreesLoading: false,
   isGitRepo: false,
@@ -934,8 +942,9 @@ export const useStore = create<StoreState>((set, get) => ({
     }))
     if (get().autoArrangeOnCreate) {
       get().autoArrangeGrid()
-      // autoArrangeGrid → zoomToFitAll clears focus; restore it to the new terminal
-      set({ focusedTerminalId: id, focusedBrowserId: null })
+      // autoArrangeGrid → zoomToFitAll zooms out; snap back to the new terminal
+      set({ focusedTerminalId: id, focusedBrowserId: null, canvas: { ...get().canvas, scale: 1 } })
+      get().snapToTerminal(id)
     } else {
       // Reset scale to 1 and snap to the new terminal
       set({ canvas: { ...get().canvas, scale: 1 } })
@@ -1060,37 +1069,48 @@ export const useStore = create<StoreState>((set, get) => ({
     if (id && get().crossProjectReturn) {
       set({ crossProjectReturn: null })
     }
-    // Clear 'unread'/'done' status whenever the user focuses a terminal.
-    // This must run even when re-focusing the same terminal (id === prev),
-    // because the 3s poll can set 'unread' between focus events if the user
-    // briefly switches away and back. Without this, clicking an already-focused
-    // agent terminal wouldn't dismiss its notification indicator.
-    // We don't clear 'active' — that means the agent is genuinely working.
-    const terminal = id ? get().terminals.find((t) => t.id === id) : null
-    const clearStatus = !!(terminal?.agentStatus && terminal.agentStatus !== 'active')
+
+    // Cancel any pending delayed status clear from a previous focus
+    if (_agentStatusClearTimer) {
+      clearTimeout(_agentStatusClearTimer)
+      _agentStatusClearTimer = null
+    }
 
     if (id && id !== prev) {
       get().bringToFront(id)
       const history = pushFocusHistory(get().focusHistory, id)
       const counts = { ...get().focusCounts, [id]: (get().focusCounts[id] ?? 0) + 1 }
-      set((s) => ({
+      set({
         focusedTerminalId: id,
         focusedBrowserId: null,
         focusHistory: history,
         focusCounts: counts,
-        ...(clearStatus
-          ? { terminals: s.terminals.map((t) => (t.id === id ? { ...t, agentStatus: null } : t)) }
-          : {}),
-      }))
+        focusedTerminalSince: Date.now(),
+      })
     } else {
-      set((s) => ({
+      set({
         focusedTerminalId: id,
         focusedBrowserId: null,
-        ...(clearStatus
-          ? { terminals: s.terminals.map((t) => (t.id === id ? { ...t, agentStatus: null } : t)) }
-          : {}),
-      }))
+        focusedTerminalSince: id ? Date.now() : 0,
+      })
     }
+
+    // Delayed clear of 'unread'/'done' status — only mark as read after 2s of focus.
+    // We don't clear 'active' — that means the agent is genuinely working.
+    if (id) {
+      _agentStatusClearTimer = setTimeout(() => {
+        _agentStatusClearTimer = null
+        const store = get()
+        if (store.focusedTerminalId !== id) return
+        const terminal = store.terminals.find((t) => t.id === id)
+        if (terminal?.agentStatus && terminal.agentStatus !== 'active') {
+          set((s) => ({
+            terminals: s.terminals.map((t) => (t.id === id ? { ...t, agentStatus: null } : t)),
+          }))
+        }
+      }, FOCUS_READ_DELAY_MS)
+    }
+
     if (id && id !== prev && get().snapOnFocus) {
       get().snapToTerminal(id)
     }
@@ -1965,16 +1985,21 @@ export const useStore = create<StoreState>((set, get) => ({
     }))
     if (get().autoArrangeOnCreate) {
       get().autoArrangeGrid()
-      // autoArrangeGrid → zoomToFitAll clears focus; restore it to the new browser
-      set({ focusedTerminalId: null, focusedBrowserId: id })
+      // autoArrangeGrid → zoomToFitAll zooms out; snap back to the new browser
+      set({ focusedTerminalId: null, focusedBrowserId: id, canvas: { ...get().canvas, scale: 1 } })
+      const s = get().canvas.scale
+      get().setCanvasTransform({
+        x: TERMINAL_PAD - browser.x * s,
+        y: TERMINAL_PAD - browser.y * s,
+        scale: s,
+      })
     } else {
       set({ canvas: { ...get().canvas, scale: 1 } })
-      // Snap to the new browser (reuse snapToTerminal-like logic)
-      const scale = get().canvas.scale
+      const s = get().canvas.scale
       get().setCanvasTransform({
-        x: TERMINAL_PAD - browser.x * scale,
-        y: TERMINAL_PAD - browser.y * scale,
-        scale,
+        x: TERMINAL_PAD - browser.x * s,
+        y: TERMINAL_PAD - browser.y * s,
+        scale: s,
       })
     }
     get().persist()

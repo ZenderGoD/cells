@@ -738,9 +738,8 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                             <button
                               onClick={() => {
                                 const current = enabledAgents[id]
-                                // Toggle: enabled (true/auto/undefined) → false, false → auto
-                                const next =
-                                  current === false ? ('auto' as const) : (false as const)
+                                // Toggle: enabled (true/auto/undefined) → false, false → true (force on)
+                                const next = current === false ? (true as const) : (false as const)
                                 setEnabledAgents({ ...enabledAgents, [id]: next })
                               }}
                               className="flex w-full items-center justify-between text-[11px]"
@@ -1153,7 +1152,10 @@ function UpdateSection() {
               </span>
             ) : status === 'available' ? (
               <button
-                onClick={() => window.cells.updater.download()}
+                onClick={() => {
+                  setStatus('downloading')
+                  window.cells.updater.download()
+                }}
                 className="flex items-center gap-1.5 text-[10px] text-primary transition-colors hover:text-primary/80"
               >
                 <Download className="h-2.5 w-2.5" />
@@ -1321,12 +1323,16 @@ function DaemonSection() {
             <div className="flex items-center gap-2">
               <Server className="h-3 w-3 text-muted-foreground/60" />
               <span className="text-[11px] text-foreground">PTY Daemon</span>
-              {status?.connected ? (
+              {status === null ? (
+                <span className="flex items-center gap-1 text-[10px] text-muted-foreground/40">
+                  <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                </span>
+              ) : status.connected ? (
                 <span className="flex items-center gap-1 text-[10px] text-emerald-400/70">
                   <Circle className="h-1.5 w-1.5 fill-current" />
                   Connected
                 </span>
-              ) : status?.enabled === false ? (
+              ) : status.enabled === false ? (
                 <span className="flex items-center gap-1 text-[10px] text-muted-foreground/40">
                   <Circle className="h-1.5 w-1.5 fill-current" />
                   Disabled

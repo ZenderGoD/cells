@@ -967,8 +967,12 @@ export function CellTerminal({
             // watching (focused), skip straight to null.
             newStatus = focused ? null : 'unread'
           } else if (isIdle && focused && (prev === 'unread' || prev === 'done')) {
-            // User focused an idle agent terminal — acknowledge & clear
-            newStatus = null
+            // User focused an idle agent terminal — acknowledge & clear,
+            // but only after they've been looking at it for at least 2s
+            const focusedFor = Date.now() - store.focusedTerminalSince
+            if (focusedFor >= 2000) {
+              newStatus = null
+            }
           }
           // All other cases: keep current status unchanged.
           // null stays null (user already saw it — don't re-notify).

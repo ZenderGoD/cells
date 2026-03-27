@@ -199,6 +199,7 @@ export function CommandPalette() {
   const [showSettingsRaw, setShowSettingsRaw] = useState(false)
   const [showNewProjectRaw, setShowNewProjectRaw] = useState(false)
   const [search, setSearch] = useState('')
+  const [selectedValue, setSelectedValue] = useState('')
   const [agents, setAgents] = useState<Record<string, boolean>>({})
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [recentFiles, setRecentFiles] = useState<
@@ -298,6 +299,7 @@ export function CommandPalette() {
     const close = () => {
       setOpen(false)
       setSearch('')
+      setSelectedValue('')
       setAttachments([])
       setOverlayOpen(false)
     }
@@ -320,11 +322,18 @@ export function CommandPalette() {
     }
   }
 
+  const handleSearchChange = useCallback((value: string) => {
+    setSearch(value)
+    // Reset selected item so cmdk auto-selects the first match
+    setSelectedValue('')
+  }, [])
+
   const handleOpenChange = (o: boolean) => {
     setOpen(o)
     setOverlayOpen(o)
     if (!o) {
       setSearch('')
+      setSelectedValue('')
       setAttachments([])
     }
   }
@@ -446,6 +455,8 @@ export function CommandPalette() {
       <CommandDialog open={open} onOpenChange={handleOpenChange} showCloseButton={false}>
         <Command
           loop
+          value={selectedValue}
+          onValueChange={setSelectedValue}
           filter={(value, search) => {
             // Give forceMount items a non-zero score so cmdk includes them in
             // auto-selection when no other items match the search text.
@@ -506,7 +517,7 @@ export function CommandPalette() {
             placeholder="Search, enter URL, or type a prompt..."
             value={search}
             searchText={search}
-            onValueChange={setSearch}
+            onValueChange={handleSearchChange}
             onKeyDown={(e) => {
               if (e.key === 'Backspace' && !search && attachments.length > 0) {
                 e.preventDefault()
