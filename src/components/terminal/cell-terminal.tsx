@@ -851,8 +851,38 @@ export function CellTerminal({
         return
       }
 
+      // Batch incoming PTY data and flush in a single term.write() per frame.
+      // During rapid output (e.g. Claude streaming), many small IPC messages
+      // arrive between frames.  Writing each one individually causes the WASM
+      // terminal to process partial ANSI sequences across separate write
+      // boundaries, and its dirty-row tracking can miss scroll-induced content
+      // shifts — rows that moved up due to scrolling aren't marked dirty, so
+      // the Canvas2D renderer paints stale content over them.  Batching into
+      // one write per frame gives the WASM state machine a single consistent
+      // chunk so scroll events and dirty flags are handled atomically.
+      let writeBuf = ''
+      let writeRaf = 0
+      const flushWrites = () => {
+        writeRaf = 0
+        if (!writeBuf) return
+        const chunk = writeBuf
+        writeBuf = ''
+        term.write(chunk)
+      }
+
       // These listeners live in the cache — they persist across mount/unmount
       cleanups.push(
+        () => {
+          if (writeRaf) {
+            cancelAnimationFrame(writeRaf)
+            writeRaf = 0
+          }
+          // Flush any remaining buffered data so nothing is lost
+          if (writeBuf) {
+            term.write(writeBuf)
+            writeBuf = ''
+          }
+        },
         term.onTitleChange((title) => {
           lastInferredTitleRef.current = title || 'Terminal'
           onTitleChangeRef.current?.(title || 'Terminal')
@@ -875,7 +905,10 @@ export function CellTerminal({
         }).dispose,
         window.cells.terminal.onData((id, data) => {
           if (id === termId) {
-            term.write(data)
+            // Accumulate data and schedule a single flush per frame
+            writeBuf += data
+            if (!writeRaf) writeRaf = requestAnimationFrame(flushWrites)
+
             const agent = detectedAgentRef.current ?? inferredAgentRef.current
             if (agent) {
               lastAgentDataRef.current = Date.now()

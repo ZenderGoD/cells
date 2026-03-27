@@ -21,7 +21,6 @@ import {
   Paperclip,
   Camera,
   Download,
-  Copy,
 } from 'lucide-react'
 import { useCommandState } from 'cmdk'
 import {
@@ -207,7 +206,9 @@ export function CommandPalette() {
   const [shellHistory, setShellHistory] = useState<string[]>([])
   const [cmdkValue, setCmdkValue] = useState('')
   const cmdkValueRef = useRef(cmdkValue)
-  cmdkValueRef.current = cmdkValue
+  useEffect(() => {
+    cmdkValueRef.current = cmdkValue
+  }, [cmdkValue])
   const terminals = useStore((s) => s.terminals)
   const browsers = useStore((s) => s.browsers)
   const terminalTheme = useStore((s) => s.terminalTheme)

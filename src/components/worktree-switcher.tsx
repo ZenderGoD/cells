@@ -26,7 +26,6 @@ export function WorktreeSwitcher({ termId, className }: WorktreeSwitcherProps) {
 
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
-  const [creating, setCreating] = useState(false)
   const [switching, setSwitching] = useState<string | null>(null)
   const [configuring, setConfiguring] = useState(false)
 
@@ -42,7 +41,6 @@ export function WorktreeSwitcher({ termId, className }: WorktreeSwitcherProps) {
       setOverlayOpen(next)
       if (!next) {
         setSearch('')
-        setCreating(false)
         setConfiguring(false)
         requestAnimationFrame(() => window.dispatchEvent(new Event('terminal-refocus')))
       }

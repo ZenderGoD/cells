@@ -6,7 +6,6 @@ import {
   Download,
   ExternalLink,
   Github,
-  Globe,
   Loader2,
   Plus,
   Puzzle,
@@ -14,7 +13,6 @@ import {
   Server,
   Skull,
   Terminal,
-  TerminalSquare,
   Trash2,
   X,
 } from 'lucide-react'
