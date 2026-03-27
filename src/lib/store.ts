@@ -127,6 +127,7 @@ interface StoreState {
   moveTerminal(id: string, x: number, y: number): void
   resizeTerminal(id: string, width: number, height: number): void
   updateTerminalTitle(id: string, title: string): void
+  setCustomTitle(id: string, customTitle: string | null): void
   focusTerminal(id: string | null): void
   bringToFront(id: string): void
   togglePin(id: string, type?: 'terminal' | 'browser'): void
@@ -1233,8 +1234,17 @@ export const useStore = create<StoreState>((set, get) => ({
 
   updateTerminalTitle(id, title) {
     set((s) => ({
-      terminals: s.terminals.map((t) => (t.id === id ? { ...t, title } : t)),
+      terminals: s.terminals.map((t) => (t.id === id && !t.customTitle ? { ...t, title } : t)),
     }))
+  },
+
+  setCustomTitle(id, customTitle) {
+    set((s) => ({
+      terminals: s.terminals.map((t) =>
+        t.id === id ? { ...t, customTitle: customTitle || null } : t,
+      ),
+    }))
+    debouncedPersist(() => get().persist())
   },
 
   panToTerminal(id) {
