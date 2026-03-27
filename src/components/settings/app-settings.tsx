@@ -1119,6 +1119,8 @@ function UpdateSection() {
       setStatus(nextStatus)
       if (info) setUpdateInfo(info)
     })
+    // Auto-check when the settings dialog opens, unless already in progress
+    window.cells.updater.check()
     return unsub
   }, [])
 
@@ -1177,6 +1179,12 @@ function UpdateSection() {
           {status === 'up-to-date' ? (
             <p className="mt-1.5 text-[10px] text-muted-foreground/40">
               You're on the latest version.
+            </p>
+          ) : null}
+          {status === 'ready' ? (
+            <p className="mt-1.5 text-[10px] text-muted-foreground/40">
+              Your running processes will not be killed — terminal sessions are managed by the
+              background daemon and will reconnect after the restart.
             </p>
           ) : null}
           {support && !support.enabled ? (

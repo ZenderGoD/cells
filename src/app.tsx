@@ -147,6 +147,16 @@ function MainApp() {
     return () => clearInterval(interval)
   }, [initialized, persist])
 
+  // Subscribe to auto-updater status and expose in store for toolbar
+  useEffect(() => {
+    return window.cells.updater.onStatus((status, info) => {
+      useStore.setState({
+        updateStatus: status,
+        updateVersion: info?.version ?? useStore.getState().updateVersion,
+      })
+    })
+  }, [])
+
   if (!initialized) {
     return (
       <div className="app-shell h-full flex items-center justify-center" style={shellStyle}>

@@ -7,6 +7,7 @@ import {
   Code,
   Globe,
   LayoutGrid,
+  Download,
   Loader2,
   Magnet,
   ArrowUpRight,
@@ -230,6 +231,8 @@ export function StatusBar() {
   const restoreLastClosedWindow = useStore((s) => s.restoreLastClosedWindow)
   const pendingClosedWindows = useStore((s) => s.pendingClosedWindows)
   const setOverlayOpen = useStore((s) => s.setOverlayOpen)
+  const updateStatus = useStore((s) => s.updateStatus)
+  const updateVersion = useStore((s) => s.updateVersion)
   const [showSettings, setShowSettingsRaw] = useState(false)
   const [showNewProject, setShowNewProjectRaw] = useState(false)
   const setShowSettings = (v: boolean) => {
@@ -788,11 +791,63 @@ export function StatusBar() {
             <Kbd className="h-4 min-w-4 text-[10px]">T</Kbd>
           </KbdGroup>
 
+          {/* Update indicator */}
+          <AnimatePresence initial={false}>
+            {updateStatus === 'available' && (
+              <motion.button
+                key="update-download"
+                layout
+                initial={{ opacity: 0, x: 8, scale: 0.96 }}
+                animate={{ opacity: 1, x: 0, scale: 1 }}
+                exit={{ opacity: 0, x: 8, scale: 0.96 }}
+                transition={{ duration: 0.2, ease: 'easeOut' }}
+                onClick={() => window.cells.updater.download()}
+                className="flex shrink-0 items-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] text-primary transition-colors hover:bg-primary/20"
+              >
+                <Download className="w-2.5 h-2.5" />
+                <span className="font-medium">v{updateVersion}</span>
+              </motion.button>
+            )}
+            {updateStatus === 'downloading' && (
+              <motion.span
+                key="update-downloading"
+                layout
+                initial={{ opacity: 0, x: 8, scale: 0.96 }}
+                animate={{ opacity: 1, x: 0, scale: 1 }}
+                exit={{ opacity: 0, x: 8, scale: 0.96 }}
+                transition={{ duration: 0.2, ease: 'easeOut' }}
+                className="flex shrink-0 items-center gap-1.5 rounded-md border border-border/30 bg-background/40 px-2 py-0.5 text-[10px] text-muted-foreground/65"
+              >
+                <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                Updating...
+              </motion.span>
+            )}
+            {updateStatus === 'ready' && (
+              <motion.button
+                key="update-ready"
+                layout
+                initial={{ opacity: 0, x: 8, scale: 0.96 }}
+                animate={{ opacity: 1, x: 0, scale: 1 }}
+                exit={{ opacity: 0, x: 8, scale: 0.96 }}
+                transition={{ duration: 0.2, ease: 'easeOut' }}
+                onClick={() => window.cells.updater.install()}
+                className="flex shrink-0 items-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] text-primary transition-colors hover:bg-primary/20"
+                title="Your terminal sessions will not be interrupted — they are managed by the background daemon"
+              >
+                <RotateCw className="w-2.5 h-2.5" />
+                <span className="font-medium">Restart to update</span>
+              </motion.button>
+            )}
+          </AnimatePresence>
+
           <button
             onClick={() => setShowSettings(true)}
-            className="text-muted-foreground/40 hover:text-foreground transition-colors"
+            className="text-muted-foreground/40 hover:text-foreground transition-colors relative"
           >
             <Settings className="w-3.5 h-3.5" />
+            {(updateStatus === 'available' || updateStatus === 'ready') && (
+              <span className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-primary" />
+            )}
           </button>
         </div>
       </div>

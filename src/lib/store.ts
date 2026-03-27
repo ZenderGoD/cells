@@ -72,6 +72,8 @@ interface StoreState {
   lastCommandAction: 'search' | 'agent' | null
   colorScheme: 'light' | 'dark' | 'system'
   saveStatus: 'idle' | 'saving' | 'saved' | 'error'
+  updateStatus: string // 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'up-to-date' | 'error'
+  updateVersion: string | null
   closeUndoTimeoutMs: number
   closeProcessSuppressions: string[]
   pendingClosedWindows: PendingClosedWindow[]
@@ -468,6 +470,8 @@ export const useStore = create<StoreState>((set, get) => ({
   lastCommandAction: null,
   colorScheme: 'dark' as const,
   saveStatus: 'idle',
+  updateStatus: 'idle',
+  updateVersion: null,
   closeUndoTimeoutMs: DEFAULT_CLOSE_UNDO_TIMEOUT_MS,
   closeProcessSuppressions: [],
   pendingClosedWindows: [],
