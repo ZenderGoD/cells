@@ -578,6 +578,55 @@ function resolveMcpServerPath(): string {
   return path.join(__dirname, '..', 'mcp-server', 'dist', 'index.js')
 }
 
+/**
+ * Merge the "cells" MCP entry into a JSON config file (`.agents/mcp.json`,
+ * `.mcp.json`).  Only touches the `mcpServers.cells` key — everything else in
+ * the file is left untouched.
+ */
+function upsertMcpJsonEntry(filePath: string, entry: { command: string; args: string[] }): void {
+  let existing: Record<string, unknown> = {}
+  try {
+    existing = JSON.parse(fs.readFileSync(filePath, 'utf-8'))
+  } catch {
+    // file missing or invalid — start fresh
+  }
+  const servers = (existing.mcpServers ?? {}) as Record<string, unknown>
+  servers.cells = entry
+  existing.mcpServers = servers
+  fs.writeFileSync(filePath, JSON.stringify(existing, null, 2) + '\n')
+}
+
+/**
+ * Upsert the `[mcp_servers.cells]` section in a TOML config file (Codex CLI).
+ * Preserves all other content in the file — only the cells block is replaced or
+ * appended.
+ */
+function upsertCodexTomlEntry(filePath: string, entry: { command: string; args: string[] }): void {
+  let content = ''
+  try {
+    content = fs.readFileSync(filePath, 'utf-8')
+  } catch {
+    // file missing — start fresh
+  }
+
+  const argsToml = `[${entry.args.map((a) => JSON.stringify(a)).join(', ')}]`
+  const block = [
+    `[mcp_servers.cells]`,
+    `command = ${JSON.stringify(entry.command)}`,
+    `args = ${argsToml}`,
+  ].join('\n')
+
+  // Replace existing [mcp_servers.cells] block, or append
+  const sectionRe = /^\[mcp_servers\.cells\]\s*\n(?:[^[]*?)(?=\n\[|\s*$)/m
+  if (sectionRe.test(content)) {
+    content = content.replace(sectionRe, block)
+  } else {
+    content = content.trimEnd() + (content.length > 0 ? '\n\n' : '') + block + '\n'
+  }
+
+  fs.writeFileSync(filePath, content)
+}
+
 ipcMain.handle('mcp:install', async (_event, projectPath: string) => {
   const serverPath = resolveMcpServerPath()
   if (!fs.existsSync(serverPath)) {
@@ -591,53 +640,50 @@ ipcMain.handle('mcp:install', async (_event, projectPath: string) => {
     throw new Error('MCP server not built')
   }
 
+  const mcpEntry = { command: 'node', args: [serverPath] }
+  const targets: string[] = []
+
+  // 1. Canonical source: .agents/mcp.json
   const agentsDir = path.join(projectPath, '.agents')
   if (!fs.existsSync(agentsDir)) {
     fs.mkdirSync(agentsDir, { recursive: true })
   }
+  const configPath = path.join(agentsDir, 'mcp.json')
+  upsertMcpJsonEntry(configPath, mcpEntry)
+  targets.push('.agents/mcp.json')
 
-  const config = {
-    mcpServers: {
-      cells: {
-        command: 'node',
-        args: [serverPath],
-      },
-    },
+  // Remove stale symlinks left by older install flow
+  for (const dir of ['.claude', '.codex']) {
+    const linkPath = path.join(projectPath, dir, 'mcp.json')
+    try {
+      if (fs.lstatSync(linkPath).isSymbolicLink()) {
+        fs.unlinkSync(linkPath)
+      }
+    } catch {}
   }
 
-  const configPath = path.join(agentsDir, 'mcp.json')
-  fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n')
+  // 2. Claude Code: .mcp.json at project root
+  const mcpJsonPath = path.join(projectPath, '.mcp.json')
+  upsertMcpJsonEntry(mcpJsonPath, mcpEntry)
+  targets.push('.mcp.json')
 
-  const symlinks: string[] = []
-  const relTarget = path.join('..', '.agents', 'mcp.json')
-
-  for (const dir of ['.claude', '.codex']) {
-    const dirPath = path.join(projectPath, dir)
-    if (!fs.existsSync(dirPath)) continue
-
-    const linkPath = path.join(dirPath, 'mcp.json')
-    // Remove existing file/symlink at the target
-    try {
-      fs.unlinkSync(linkPath)
-    } catch {}
-    fs.symlinkSync(relTarget, linkPath)
-    symlinks.push(dir)
+  // 3. Codex CLI: .codex/config.toml (only if .codex/ exists)
+  const codexDir = path.join(projectPath, '.codex')
+  if (fs.existsSync(codexDir)) {
+    const codexToml = path.join(codexDir, 'config.toml')
+    upsertCodexTomlEntry(codexToml, mcpEntry)
+    targets.push('.codex/config.toml')
   }
 
   if (mainWindow && !mainWindow.isDestroyed()) {
-    const details = [`Config: .agents/mcp.json`]
-    if (symlinks.length > 0) {
-      details.push(`Symlinked to: ${symlinks.map((d) => `${d}/mcp.json`).join(', ')}`)
-    }
-    details.push(`\nServer: ${serverPath}`)
     dialog.showMessageBox(mainWindow, {
       type: 'info',
       message: 'MCP Server Installed',
-      detail: details.join('\n'),
+      detail: `Updated:\n${targets.map((t) => `  ${t}`).join('\n')}\n\nServer: ${serverPath}`,
     })
   }
 
-  return { configPath, symlinks, serverPath }
+  return { configPath, targets, serverPath }
 })
 
 ipcMain.handle('app:toggle-maximize', () => {

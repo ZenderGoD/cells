@@ -27,6 +27,7 @@ import {
   applyThemeToAllTerminals,
   reloadTerminal,
 } from '@/components/terminal/cell-terminal'
+import { showToast } from '@/components/toast'
 
 interface StoreState {
   // Project management
@@ -47,6 +48,7 @@ interface StoreState {
   focusedBrowserId: string | null
   focusHistory: string[] // stack of recently focused IDs (most recent last)
   focusCounts: Record<string, number> // per-window focus counts for usage ranking
+  commandActionCounts: Record<string, number> // per-project catch-all action usage (search, agent-claude, run, etc.)
   topZIndex: number
   snapEnabled: boolean
   snapPaused: boolean
@@ -164,6 +166,7 @@ interface StoreState {
   setInputPrefixes(prefixes: InputPrefix[]): void
   setLastUsedAgent(agent: string): void
   setLastCommandAction(action: 'search' | 'agent' | 'run'): void
+  trackCommandAction(key: string): void
   setColorScheme(scheme: 'light' | 'dark' | 'system'): void
   setCloseUndoTimeoutMs(timeoutMs: number): void
   setCloseProcessSuppressions(processes: string[]): void
@@ -171,7 +174,7 @@ interface StoreState {
   cancelPendingClose(): void
   confirmPendingClose(skipFuturePrompts?: boolean): void
   restoreLastClosedWindow(): void
-  autoArrangeGrid(): void
+  autoArrangeGrid(skipOverview?: boolean): void
   reloadFocused(): void
   getAgentCommand(agent: string): string
   getSearchUrl(query: string): string
@@ -404,6 +407,7 @@ function snapshotActiveProject(state: StoreState): Project[] {
           focusedTerminalId: state.focusedTerminalId,
           focusedBrowserId: state.focusedBrowserId,
           focusCounts: state.focusCounts,
+          commandActionCounts: state.commandActionCounts,
           autoArrangeOnCreate: state.autoArrangeOnCreate,
         }
       : p,
@@ -423,6 +427,7 @@ function projectToWorkingState(project: Project) {
     focusedBrowserId: (project.focusedBrowserId ?? null) as string | null,
     focusHistory: [] as string[],
     focusCounts: (project.focusCounts ?? {}) as Record<string, number>,
+    commandActionCounts: (project.commandActionCounts ?? {}) as Record<string, number>,
     autoArrangeOnCreate: project.autoArrangeOnCreate ?? false,
   }
 }
@@ -450,6 +455,7 @@ export const useStore = create<StoreState>((set, get) => ({
   focusedBrowserId: null,
   focusHistory: [],
   focusCounts: {},
+  commandActionCounts: {},
   topZIndex: 1,
   snapEnabled: true,
   snapPaused: false,
@@ -967,8 +973,8 @@ export const useStore = create<StoreState>((set, get) => ({
       focusHistory: pushFocusHistory(focusHistory, id),
     }))
     if (get().autoArrangeOnCreate) {
-      get().autoArrangeGrid()
-      // autoArrangeGrid → zoomToFitAll zooms out; snap back to the new terminal
+      get().autoArrangeGrid(true)
+      // Stay focused on the new terminal — no overview zoom
       set({ focusedTerminalId: id, focusedBrowserId: null, canvas: { ...get().canvas, scale: 1 } })
       get().snapToTerminal(id)
     } else {
@@ -1208,6 +1214,10 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   moveTerminal(id, x, y) {
+    if (get().autoArrangeOnCreate) {
+      get().setAutoArrangeOnCreate(false)
+      showToast('Auto-arrange disabled', 'info')
+    }
     set((s) => ({
       terminals: s.terminals.map((t) => (t.id === id ? { ...t, x, y } : t)),
     }))
@@ -1449,16 +1459,14 @@ export const useStore = create<StoreState>((set, get) => ({
     get().setCanvasTransform(nextTransform)
   },
 
-  autoArrangeGrid() {
-    const { terminals, browsers, focusCounts } = get()
+  autoArrangeGrid(skipOverview?: boolean) {
+    const { terminals, browsers } = get()
+    // Keep chronological order (array insertion order)
     const allWindows = [
       ...terminals.map((t) => ({ id: t.id, type: 'terminal' as const })),
       ...browsers.map((b) => ({ id: b.id, type: 'browser' as const })),
     ]
     if (allWindows.length === 0) return
-
-    // Sort by focus count descending (most used first)
-    allWindows.sort((a, b) => (focusCounts[b.id] ?? 0) - (focusCounts[a.id] ?? 0))
 
     // Simple row-based grid: pick columns to be roughly square
     const cols = Math.ceil(Math.sqrt(allWindows.length))
@@ -1502,8 +1510,8 @@ export const useStore = create<StoreState>((set, get) => ({
         }),
       }))
 
-      // Zoom to fit the new layout
-      get().zoomToFitAll()
+      // Only zoom to overview when explicitly arranged (not on create)
+      if (!skipOverview) get().zoomToFitAll()
       get().persist()
 
       // Clear animation flag after transition completes
@@ -1557,6 +1565,12 @@ export const useStore = create<StoreState>((set, get) => ({
   },
   setLastCommandAction(action) {
     set({ lastCommandAction: action })
+  },
+  trackCommandAction(key) {
+    const counts = { ...get().commandActionCounts }
+    counts[key] = (counts[key] ?? 0) + 1
+    set({ commandActionCounts: counts })
+    get().persist()
   },
   setColorScheme(scheme) {
     const isDark =
@@ -2011,8 +2025,8 @@ export const useStore = create<StoreState>((set, get) => ({
       focusHistory: pushFocusHistory(focusHistory, id),
     }))
     if (get().autoArrangeOnCreate) {
-      get().autoArrangeGrid()
-      // autoArrangeGrid → zoomToFitAll zooms out; snap back to the new browser
+      get().autoArrangeGrid(true)
+      // Stay focused on the new browser — no overview zoom
       set({ focusedTerminalId: null, focusedBrowserId: id, canvas: { ...get().canvas, scale: 1 } })
       const s = get().canvas.scale
       get().setCanvasTransform({
@@ -2112,6 +2126,10 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   moveBrowser(id, x, y) {
+    if (get().autoArrangeOnCreate) {
+      get().setAutoArrangeOnCreate(false)
+      showToast('Auto-arrange disabled', 'info')
+    }
     set((s) => ({
       browsers: s.browsers.map((b) => (b.id === id ? { ...b, x, y } : b)),
     }))

@@ -1,3 +1,17 @@
+/**
+ * IMPORTANT — Ordering convention for this command palette:
+ *
+ * The text input sits at the BOTTOM of the palette. The command list scrolls
+ * above it and is auto-scrolled to the bottom so the last rendered item is
+ * the default selection (closest to the input).
+ *
+ * Therefore: **LAST in render order = BOTTOM of the list = MOST RELEVANT**.
+ *
+ * When sorting or ordering items, the most preferred / most recently used /
+ * most relevant item must sort LAST (positive comparator return), NOT first.
+ * This is the opposite of typical list conventions — double-check any .sort()
+ * calls to ensure they follow this rule.
+ */
 import React, { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import { useHotkey } from '@tanstack/react-hotkeys'
 import {
@@ -44,6 +58,7 @@ import { AgentIcon } from './agent-icon'
 import { Logo } from './logo'
 import { Kbd } from './ui/kbd'
 import { showToast } from './toast'
+import { hapticNudge, hapticSuccess } from '@/lib/haptics'
 
 const AGENT_OPTIONS = [
   { id: 'claude', label: 'Claude Code' },
@@ -78,6 +93,7 @@ function launchAgentAction(
 ) {
   useStore.getState().setLastUsedAgent(id)
   useStore.getState().setLastCommandAction('agent')
+  useStore.getState().trackCommandAction(`agent-${id}`)
   const cmd = useStore.getState().getAgentCommand(id)
   const prompt = buildPromptWithAttachments(searchText.trim(), attachments)
 
@@ -153,19 +169,6 @@ function DynamicCommandInput({
   const selectedValue = useCommandState((state) => state.value) ?? ''
   const prefix = searchText ? matchInputPrefix(searchText) : null
 
-  // Generic fallback: read the icon SVG from the currently selected item in the DOM.
-  // This covers all item types (actions, themes, terminals, browsers, etc.) without
-  // needing an explicit value→icon map for every item.
-  const [selectedIconHtml, setSelectedIconHtml] = useState<string | null>(null)
-  useEffect(() => {
-    const raf = requestAnimationFrame(() => {
-      const el = document.querySelector('[cmdk-item][data-selected="true"]')
-      const svg = el?.querySelector(':scope > svg')
-      setSelectedIconHtml(svg ? svg.outerHTML : null)
-    })
-    return () => cancelAnimationFrame(raf)
-  }, [selectedValue])
-
   let icon: ReactNode = undefined
 
   // Prefix-based icon takes priority
@@ -202,6 +205,24 @@ function DynamicCommandInput({
   ) {
     icon = <TerminalSquare className="size-4 shrink-0 opacity-70" />
   }
+
+  // Resolved icon already found — skip the async DOM fallback entirely
+  const hasKnownIcon = !!icon
+
+  // Generic fallback: read the icon SVG from the currently selected item in the DOM.
+  // This covers all item types (actions, themes, terminals, browsers, etc.) without
+  // needing an explicit value→icon map for every item.
+  // Uses useLayoutEffect to read synchronously after React commits, avoiding flicker.
+  const [selectedIconHtml, setSelectedIconHtml] = useState<string | null>(null)
+  useEffect(() => {
+    if (hasKnownIcon) return
+    const raf = requestAnimationFrame(() => {
+      const el = document.querySelector('[cmdk-item][data-selected="true"]')
+      const svg = el?.querySelector(':scope > svg')
+      setSelectedIconHtml(svg ? svg.outerHTML : null)
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [selectedValue, hasKnownIcon])
 
   // Fallback to the DOM-read icon for any other item type (actions, themes, etc.)
   if (!icon && selectedIconHtml) {
@@ -255,6 +276,7 @@ export function CommandPalette() {
   const enabledAgents = useStore((s) => s.enabledAgents)
   const lastUsedAgent = useStore((s) => s.lastUsedAgent)
   const lastCommandAction = useStore((s) => s.lastCommandAction)
+  const commandActionCounts = useStore((s) => s.commandActionCounts)
   const isGitRepo = useStore((s) => s.isGitRepo)
   const worktrees = useStore((s) => s.worktrees)
   const focusedTerminalId = useStore((s) => s.focusedTerminalId)
@@ -263,10 +285,26 @@ export function CommandPalette() {
   const availableAgents = AGENT_OPTIONS.filter(({ id }) => agents[id])
   const wordCount = search.trim().split(/\s+/).filter(Boolean).length
   const isPromptMode = wordCount > 10
-  // Determine which action type should appear at the bottom (closest to input = default selected).
-  // The most recently used action type wins; fall back to prompt-mode heuristic.
-  const bottomAction: 'agent' | 'search' | 'run' =
-    lastCommandAction === 'agent'
+  // Determine which catch-all group appears at the bottom (closest to input = default selected).
+  // Uses per-project usage counts first, then falls back to lastCommandAction, then heuristic.
+  // Aggregate agent counts into a single "agent" bucket for group ordering.
+  const agentTotal = Object.entries(commandActionCounts)
+    .filter(([k]) => k.startsWith('agent-'))
+    .reduce((sum, [, v]) => sum + v, 0)
+  const groupCounts = {
+    agent: agentTotal,
+    search: commandActionCounts.search ?? 0,
+    run: commandActionCounts.run ?? 0,
+  }
+  const hasAnyCounts = groupCounts.agent + groupCounts.search + groupCounts.run > 0
+  const bottomAction: 'agent' | 'search' | 'run' = hasAnyCounts
+    ? // Most used group goes to bottom (= most relevant, closest to input)
+      groupCounts.agent >= groupCounts.run && groupCounts.agent >= groupCounts.search
+      ? 'agent'
+      : groupCounts.run >= groupCounts.search
+        ? 'run'
+        : 'search'
+    : lastCommandAction === 'agent'
       ? 'agent'
       : lastCommandAction === 'run'
         ? 'run'
@@ -314,10 +352,15 @@ export function CommandPalette() {
     setSearch((prev) => prev.replace(`[${path}] `, '').replace(`[${path}]`, '').trimEnd())
   }, [])
 
-  // Sort agents: last used agent first
+  // Sort agents by per-project usage count: most used LAST (= closest to input = most relevant).
+  // Falls back to lastUsedAgent for first-time usage within a project.
   const sortedAgents = [...availableAgents].sort((a, b) => {
-    if (a.id === lastUsedAgent) return -1
-    if (b.id === lastUsedAgent) return 1
+    const countA = commandActionCounts[`agent-${a.id}`] ?? 0
+    const countB = commandActionCounts[`agent-${b.id}`] ?? 0
+    if (countA !== countB) return countA - countB // higher count → later (bottom)
+    // Tie-break: lastUsedAgent goes last
+    if (a.id === lastUsedAgent) return 1
+    if (b.id === lastUsedAgent) return -1
     return 0
   })
 
@@ -340,6 +383,7 @@ export function CommandPalette() {
       const next = !o
       setOverlayOpen(next)
       if (!next) setSearch('')
+      hapticNudge()
       return next
     })
   })
@@ -397,6 +441,7 @@ export function CommandPalette() {
       setSearch('')
       setAttachments([])
       setOverlayOpen(false)
+      hapticSuccess()
       requestAnimationFrame(() => {
         window.dispatchEvent(new Event('terminal-refocus'))
       })
@@ -424,22 +469,21 @@ export function CommandPalette() {
     setSearch(value)
   }, [])
 
-  // Scroll to bottom (nearest to input) and fix dropped selection when search text changes
+  // On every search change: scroll to bottom and force-select the last visible
+  // item (closest to input = most relevant). We always re-select because cmdk's
+  // internal selection can land on a non-bottom item after re-filtering.
   useEffect(() => {
     if (!open) return
     const raf = requestAnimationFrame(() => {
       const list = document.querySelector('[cmdk-list]') as HTMLElement | null
       if (!list) return
       list.scrollTop = list.scrollHeight
-      const selected = list.querySelector('[cmdk-item][data-selected="true"]') as HTMLElement | null
-      if (!selected || selected.offsetParent === null) {
-        const items = list.querySelectorAll('[cmdk-item]')
-        if (items.length > 0) {
-          // Always select the last item (closest to input at bottom)
-          const last = items[items.length - 1] as HTMLElement
-          const val = last.getAttribute('data-value')
-          if (val) setCmdkValue(val)
-        }
+      // Find last visible item (BOTTOM = most relevant, see top-of-file comment)
+      const items = list.querySelectorAll('[cmdk-item]:not([aria-hidden="true"])')
+      if (items.length > 0) {
+        const last = items[items.length - 1] as HTMLElement
+        const val = last.getAttribute('data-value')
+        if (val) setCmdkValue(val)
       }
     })
     return () => cancelAnimationFrame(raf)
@@ -507,12 +551,14 @@ export function CommandPalette() {
   const searchInBrowser = () => {
     if (!search.trim()) return
     useStore.getState().setLastCommandAction('search')
+    useStore.getState().trackCommandAction('search')
     runAction(() => useStore.getState().addBrowserWithUrl(search.trim()))
   }
 
   const runAsTerminalCommand = (command: string) => {
     if (!command.trim()) return
     useStore.getState().setLastCommandAction('run')
+    useStore.getState().trackCommandAction('run')
     const label = command.trim().slice(0, 40)
     runAction(() => useStore.getState().addTerminalWithCommand(command.trim(), label))
   }
@@ -570,8 +616,10 @@ export function CommandPalette() {
                   ? `Send ${attachments.length} file${attachments.length > 1 ? 's' : ''} to ${label}`
                   : `New ${label} Terminal`}
           </span>
-          {id === lastUsedAgent && (
-            <span className="ml-auto text-[10px] text-muted-foreground/40">recent</span>
+          {sortedAgents.length > 1 && id === sortedAgents[sortedAgents.length - 1].id && (
+            <span className="ml-auto text-[10px] text-muted-foreground/40">
+              {(commandActionCounts[`agent-${id}`] ?? 0) > 0 ? 'most used' : 'recent'}
+            </span>
           )}
           {isGitRepo && cmdHeld && (
             <GitBranch className="absolute right-2 size-3.5 text-muted-foreground/50" />
@@ -897,8 +945,14 @@ export function CommandPalette() {
                 if (section === 'catchall') {
                   return (
                     <React.Fragment key="catchall">
+                      {/* Sort by per-project usage: highest count LAST = closest to input */}
                       {[...(['search', 'agent', 'run'] as const)]
-                        .sort((a, b) => (a === bottomAction ? 1 : b === bottomAction ? -1 : 0))
+                        .sort((a, b) => {
+                          const diff = groupCounts[a] - groupCounts[b]
+                          if (diff !== 0) return diff // higher count → later (bottom)
+                          // Tie-break: bottomAction (from lastCommandAction) goes last
+                          return a === bottomAction ? 1 : b === bottomAction ? -1 : 0
+                        })
                         .map((group) => {
                           if (group === 'search') {
                             if (!search.trim()) return null
@@ -1072,8 +1126,14 @@ export function CommandPalette() {
               },
             )}
           </CommandList>
-          {isGitRepo && cmdkValue.startsWith('agent-') && (
-            <div className="px-1.5 py-1 text-[11px] text-muted-foreground/40">
+          {/* Always render the hint container when agents are available to avoid
+              layout shift — cmdk briefly resets selection on every keystroke, so
+              conditional rendering causes the hint to flash in and out. */}
+          {isGitRepo && sortedAgents.length > 0 && (
+            <div
+              className="px-1.5 py-1 text-[11px] text-muted-foreground/40 transition-opacity duration-75"
+              style={{ opacity: cmdkValue.startsWith('agent-') ? 1 : 0 }}
+            >
               <Kbd className="text-[10px] h-4 min-w-4">⌘↵</Kbd> to launch in a worktree
             </div>
           )}

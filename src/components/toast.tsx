@@ -1,5 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { cn } from '@/lib/utils'
+import { hapticError } from '@/lib/haptics'
 
 // ---------- Toast store (vanilla, no deps) ----------
 
@@ -21,6 +22,7 @@ export function showToast(message: string, type: 'error' | 'info' = 'error') {
   const id = ++nextId
   toasts = [...toasts, { id, message, type }]
   emit()
+  if (type === 'error') hapticError()
   setTimeout(() => dismissToast(id), 5000)
 }
 

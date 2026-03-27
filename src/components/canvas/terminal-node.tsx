@@ -10,6 +10,7 @@ import { inferAgentFromTitle } from '@/lib/agent-command'
 import { Logo } from '@/components/logo'
 import { WorktreeSwitcher } from '@/components/worktree-switcher'
 import { useShallow } from 'zustand/react/shallow'
+import { hapticBuzz, hapticNudge } from '@/lib/haptics'
 
 type Edge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
 
@@ -242,6 +243,7 @@ export function TerminalNode({
               className="p-1 rounded-md transition-colors text-muted-foreground/40 hover:text-foreground hover:bg-muted/40"
               onClick={(e) => {
                 e.stopPropagation()
+                hapticBuzz()
                 togglePin(terminal.id, 'terminal')
               }}
               title="Pop out to separate window"
@@ -252,6 +254,7 @@ export function TerminalNode({
               className="p-1 rounded-md text-muted-foreground/40 hover:text-foreground hover:bg-muted/40 transition-colors"
               onClick={(e) => {
                 e.stopPropagation()
+                hapticNudge()
                 void requestCloseWindow({ id: terminal.id, type: 'terminal' })
               }}
             >

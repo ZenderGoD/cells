@@ -4,6 +4,7 @@ import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
 import type { BrowserNode as BrowserNodeType } from '@/types'
 import { useShallow } from 'zustand/react/shallow'
+import { hapticBuzz } from '@/lib/haptics'
 
 const MIN_W = 400
 const MIN_H = 300
@@ -435,6 +436,7 @@ export function BrowserNode({
             onMouseDown={(e) => e.stopPropagation()}
             onClick={(e) => {
               e.stopPropagation()
+              hapticBuzz()
               togglePin(browser.id, 'browser')
             }}
             title="Pop out to separate window"

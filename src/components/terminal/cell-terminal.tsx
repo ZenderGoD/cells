@@ -447,6 +447,7 @@ export function CellTerminal({
   const lastAgentDataRef = useRef<number>(0) // timestamp of last PTY data while agent active
   const prevAgentRef = useRef<AgentName | null>(null) // track transitions for done detection
   const agentBellRef = useRef(false) // whether a BEL was heard since last input
+  const processTitleRef = useRef(false) // whether the agent process has set its own title
   const dragDepthRef = useRef(0)
   const [dropActive, setDropActive] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
@@ -499,6 +500,7 @@ export function CellTerminal({
       const launch = inferAgentLaunch(line)
       if (launch) {
         inferredAgentRef.current = launch.agent
+        processTitleRef.current = false
         const current = useStore.getState().terminals.find((terminal) => terminal.id === termId)
         if (current && current.agent !== launch.agent) {
           useStore.getState().updateTerminalAgent(termId, launch.agent)
@@ -510,11 +512,16 @@ export function CellTerminal({
       const trimmed = line.trim()
       if (['exit', 'quit', 'logout'].includes(trimmed.toLowerCase())) {
         inferredAgentRef.current = null
+        processTitleRef.current = false
         return
       }
 
       const activeAgent = detectedAgentRef.current ?? inferredAgentRef.current
       if (!activeAgent) return
+
+      // If the agent process has already set its own title (via escape sequences),
+      // don't overwrite it with inferred titles from user input.
+      if (processTitleRef.current) return
 
       const inferredTitle = inferAgentPromptTitle(activeAgent, line)
       if (inferredTitle) {
@@ -888,6 +895,10 @@ export function CellTerminal({
         term.onTitleChange((title) => {
           lastInferredTitleRef.current = title || 'Terminal'
           onTitleChangeRef.current?.(title || 'Terminal')
+          // If an agent is active and the process sets its own title,
+          // remember that so we don't overwrite it with inferred titles.
+          const agent = detectedAgentRef.current ?? inferredAgentRef.current
+          if (agent) processTitleRef.current = true
         }).dispose,
         term.onData((data) => {
           trackInputForTitle(data)

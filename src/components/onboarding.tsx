@@ -3,6 +3,7 @@ import { FolderOpen } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useStore } from '@/lib/store'
+import { hapticSuccess } from '@/lib/haptics'
 
 export function Onboarding() {
   const createProject = useStore((s) => s.createProject)
@@ -21,6 +22,7 @@ export function Onboarding() {
 
   const handleCreate = () => {
     if (!name.trim() || !path.trim()) return
+    hapticSuccess()
     createProject(name.trim(), path.trim())
   }
 

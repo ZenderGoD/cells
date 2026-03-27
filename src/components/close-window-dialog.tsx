@@ -1,5 +1,6 @@
 import { useRef } from 'react'
 import { AlertTriangle } from 'lucide-react'
+import { hapticError, hapticNudge } from '@/lib/haptics'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -36,7 +37,13 @@ export function CloseWindowDialog({
   const skipFuturePromptsRef = useRef<HTMLInputElement>(null)
 
   return (
-    <Dialog open={open} onOpenChange={(nextOpen) => !nextOpen && onCancel()}>
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (nextOpen) hapticError()
+        if (!nextOpen) onCancel()
+      }}
+    >
       <DialogContent className="max-w-md" showCloseButton={false}>
         <DialogHeader>
           <div className="flex items-start gap-2.5">
@@ -67,13 +74,23 @@ export function CloseWindowDialog({
         </label>
 
         <DialogFooter>
-          <Button variant="outline" size="sm" onClick={onCancel}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              hapticNudge()
+              onCancel()
+            }}
+          >
             Cancel
           </Button>
           <Button
             variant="destructive"
             size="sm"
-            onClick={() => onConfirm(skipFuturePromptsRef.current?.checked ?? false)}
+            onClick={() => {
+              hapticError()
+              onConfirm(skipFuturePromptsRef.current?.checked ?? false)
+            }}
           >
             Close Window
           </Button>

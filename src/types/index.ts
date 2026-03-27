@@ -74,6 +74,8 @@ export interface Project {
   /** Per-window focus counts for usage-based grid arrangement */
   focusCounts?: Record<string, number>
   autoArrangeOnCreate?: boolean
+  /** Per-project usage counts for command palette catch-all actions (search, agent-claude, agent-codex, run) */
+  commandActionCounts?: Record<string, number>
 }
 
 export interface ProjectsState {
@@ -297,7 +299,7 @@ export interface CellsAPI {
   mcp: {
     install(projectPath: string): Promise<{
       configPath: string
-      symlinks: string[]
+      targets: string[]
       serverPath: string
     }>
   }

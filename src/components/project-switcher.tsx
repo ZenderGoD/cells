@@ -6,6 +6,7 @@ import { getCanvasWindows } from '@/lib/canvas-navigation'
 import { motion, AnimatePresence } from 'motion/react'
 import { WindowOverviewMap } from './canvas/window-overview-map'
 import type { Project } from '@/types'
+import { hapticNudge, hapticSuccess } from '@/lib/haptics'
 
 type ProjectAttention = 'unread' | 'done' | 'active' | null
 
@@ -129,6 +130,7 @@ export function ProjectSwitcher() {
       }
 
       updateSelected(nextIdx, ordered[nextIdx]?.id ?? null)
+      hapticNudge()
     },
     [setOpen, updateSelected],
   )
@@ -142,6 +144,7 @@ export function ProjectSwitcher() {
   const commit = useCallback(() => {
     if (openRef.current && selectedIdRef.current && selectedIdRef.current !== currentId) {
       switchProject(selectedIdRef.current)
+      hapticSuccess()
     }
     openModeRef.current = null
     setOpen(false)
@@ -161,6 +164,7 @@ export function ProjectSwitcher() {
     (id: string) => {
       if (id !== currentId) {
         switchProject(id)
+        hapticSuccess()
       }
       openModeRef.current = null
       setOpen(false)

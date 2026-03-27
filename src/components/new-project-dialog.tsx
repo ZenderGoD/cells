@@ -10,6 +10,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useStore } from '@/lib/store'
+import { hapticSuccess } from '@/lib/haptics'
 
 interface NewProjectDialogProps {
   open: boolean
@@ -33,6 +34,7 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
 
   const handleCreate = () => {
     if (!name.trim() || !path.trim()) return
+    hapticSuccess()
     createProject(name.trim(), path.trim())
     setName('')
     setPath('')

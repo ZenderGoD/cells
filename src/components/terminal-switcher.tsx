@@ -4,9 +4,9 @@ import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
 import { inferAgentFromTitle } from '@/lib/agent-command'
 import { getCanvasWindows, getViewportRect, orderByRecent } from '@/lib/canvas-navigation'
+import { hapticNudge, hapticSuccess } from '@/lib/haptics'
 import { motion, AnimatePresence } from 'motion/react'
 import { WindowOverviewMap } from './canvas/window-overview-map'
-import { getTerminalPreviewSnapshot } from './terminal/cell-terminal'
 import { AgentIcon } from './agent-icon'
 import { Logo } from './logo'
 import { getStatusIndicator } from '@/lib/status-indicator'
@@ -20,7 +20,6 @@ interface SwitcherItem {
   processRunning?: boolean
   url?: string
   isCurrent: boolean
-  previewLines?: string[]
   faviconUrl?: string
 }
 
@@ -51,7 +50,6 @@ export function TerminalSwitcher() {
   const selectedIdRef = useRef<string | null>(null)
   const ctrlHeld = useRef(false)
   const mouseActivated = useRef(false)
-  const [, setPreviewTick] = useState(0)
 
   const updateSelected = useCallback((index: number, id: string | null) => {
     selectedIndexRef.current = index
@@ -70,7 +68,6 @@ export function TerminalSwitcher() {
       agentStatus: t.agentStatus,
       processRunning: t.processRunning,
       isCurrent: t.id === focusedTerminalId,
-      previewLines: getTerminalPreviewSnapshot(t.id, { lines: 6, columns: 34 }),
     })),
     ...browsers.map((b) => ({
       id: b.id,
@@ -136,6 +133,7 @@ export function TerminalSwitcher() {
           allItems.length
       }
       updateSelected(nextIdx, allItems[nextIdx]?.id ?? null)
+      hapticNudge()
     },
     [setOpen, updateSelected],
   )
@@ -151,6 +149,7 @@ export function TerminalSwitcher() {
       } else if (isBrowser) {
         snapToBrowser(targetId)
       }
+      hapticSuccess()
     }
     setOpen(false)
     updateSelected(0, null)
@@ -202,14 +201,6 @@ export function TerminalSwitcher() {
     return unsub
   }, [cycle])
 
-  useEffect(() => {
-    if (!open) return
-    const interval = window.setInterval(() => {
-      setPreviewTick((tick) => tick + 1)
-    }, 120)
-    return () => window.clearInterval(interval)
-  }, [open])
-
   if (items.length < 2) return null
 
   return (
@@ -259,79 +250,46 @@ export function TerminalSwitcher() {
                       if (mouseActivated.current) updateSelected(i, item.id)
                     }}
                     className={cn(
-                      'relative flex flex-col rounded-lg overflow-hidden transition-all shrink-0 bg-card text-left',
+                      'relative flex flex-col rounded-lg overflow-hidden transition-all shrink-0 bg-black/30 text-left',
                       i === selectedIndex
                         ? 'ring-2 ring-primary'
                         : 'ring-1 ring-border/30 hover:ring-border/50',
                     )}
                     style={{ width: 160, height: 110 }}
                   >
-                    {/* Preview area */}
-                    <div
-                      className={cn(
-                        'relative flex-1 overflow-hidden',
-                        item.type === 'terminal' ? 'bg-neutral-950' : 'bg-neutral-900',
-                      )}
-                    >
+                    {/* Icon area */}
+                    <div className="relative flex-1 flex items-center justify-center overflow-hidden bg-neutral-950">
                       {item.type === 'terminal' ? (
-                        item.previewLines && item.previewLines.some((line) => line.length > 0) ? (
-                          <>
-                            <pre
-                              className={cn(
-                                'absolute inset-0 overflow-hidden px-2 py-1.5 text-[8px] leading-[1.25] whitespace-pre text-left',
-                                i === selectedIndex ? 'text-primary/80' : 'text-foreground/75',
-                              )}
-                              style={{
-                                fontFamily:
-                                  '"Geist Mono", "SFMono-Regular", "JetBrains Mono", "Menlo", monospace',
-                              }}
-                            >
-                              {item.previewLines.join('\n')}
-                            </pre>
-                            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-neutral-950 via-neutral-950/70 to-transparent" />
-                          </>
-                        ) : (
-                          <div className="flex h-full items-center justify-center">
-                            {item.agent ? (
-                              <AgentIcon
-                                agent={item.agent}
-                                className={cn(
-                                  'h-6 w-6',
-                                  i === selectedIndex ? 'opacity-100' : 'opacity-35',
-                                )}
-                                size={24}
-                              />
-                            ) : (
-                              <Logo
-                                className={cn(
-                                  'h-6 w-6',
-                                  i === selectedIndex
-                                    ? 'text-primary/60'
-                                    : 'text-muted-foreground/20',
-                                )}
-                              />
+                        item.agent ? (
+                          <AgentIcon
+                            agent={item.agent}
+                            className={cn(
+                              'h-6 w-6',
+                              i === selectedIndex ? 'opacity-100' : 'opacity-35',
                             )}
-                          </div>
+                            size={24}
+                          />
+                        ) : (
+                          <Logo
+                            className={cn(
+                              'h-6 w-6',
+                              i === selectedIndex ? 'text-primary/60' : 'text-muted-foreground/20',
+                            )}
+                          />
                         )
+                      ) : item.faviconUrl ? (
+                        <img
+                          src={item.faviconUrl}
+                          alt=""
+                          className="w-6 h-6 rounded-sm object-contain"
+                        />
                       ) : (
-                        <div className="absolute inset-0 flex items-center justify-center">
-                          {item.faviconUrl ? (
-                            <img
-                              src={item.faviconUrl}
-                              alt=""
-                              className="w-6 h-6 rounded-sm object-contain"
-                            />
-                          ) : (
-                            <Globe
-                              className={cn(
-                                'w-6 h-6',
-                                i === selectedIndex
-                                  ? 'text-primary/60'
-                                  : 'text-muted-foreground/20',
-                              )}
-                            />
+                        <Globe
+                          className={cn(
+                            'w-6 h-6',
+                            i === selectedIndex ? 'text-primary/60' : 'text-muted-foreground/20',
                           )}
-                        </div>
+                        />
                       )}
                     </div>
 

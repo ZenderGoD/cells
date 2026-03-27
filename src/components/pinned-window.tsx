@@ -3,6 +3,7 @@ import { ArrowDownLeft } from 'lucide-react'
 import { CellTerminal } from './terminal/cell-terminal'
 import { useStore } from '@/lib/store'
 import { getTerminalTheme } from '@/lib/terminal-themes'
+import { hapticBuzz } from '@/lib/haptics'
 
 const TITLE_BAR_HEIGHT = 38
 
@@ -65,7 +66,10 @@ export function PinnedWindow({ termId, type }: { termId: string; type: 'terminal
           }}
         >
           <button
-            onClick={() => void window.cells.app.unpinWindow(termId)}
+            onClick={() => {
+              hapticBuzz()
+              void window.cells.app.unpinWindow(termId)
+            }}
             className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] transition-colors"
             style={{ color: `${theme.foreground}80` }}
             onMouseEnter={(e) => (e.currentTarget.style.color = theme.foreground)}

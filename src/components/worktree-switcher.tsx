@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover'
 import type { GitWorktree } from '@/types'
+import { hapticNudge, hapticSuccess } from '@/lib/haptics'
 
 interface WorktreeSwitcherProps {
   termId: string
@@ -39,6 +40,7 @@ export function WorktreeSwitcher({ termId, className }: WorktreeSwitcherProps) {
     (next: boolean) => {
       setOpen(next)
       setOverlayOpen(next)
+      if (next) hapticNudge()
       if (!next) {
         setSearch('')
         setConfiguring(false)
@@ -54,6 +56,7 @@ export function WorktreeSwitcher({ termId, className }: WorktreeSwitcherProps) {
       setSwitching(wt.path)
       try {
         await switchTerminalWorktree(termId, wt.path)
+        hapticSuccess()
       } finally {
         setSwitching(null)
         handleOpenChange(false)
@@ -69,6 +72,7 @@ export function WorktreeSwitcher({ termId, className }: WorktreeSwitcherProps) {
       try {
         const created = await createWorktree(branch.trim())
         await switchTerminalWorktree(termId, created.path)
+        hapticSuccess()
       } catch (err) {
         console.error('Failed to create worktree:', err)
       } finally {
@@ -184,6 +188,7 @@ export function WorktreeSwitcher({ termId, className }: WorktreeSwitcherProps) {
             {/* Search input */}
             <div className="px-2 pt-2 pb-1">
               <CommandPrimitive.Input
+                autoFocus
                 value={search}
                 onValueChange={setSearch}
                 placeholder="Search or create branch..."

@@ -58,7 +58,7 @@ function MainApp() {
   )
   const shellStyle = buildWindowAppearanceStyle({ windowOpacity })
 
-  const [windowFocused, setWindowFocused] = useState(document.hasFocus())
+  const [windowFocused, setWindowFocused] = useState(true)
   useEffect(() => {
     const onFocus = () => setWindowFocused(true)
     const onBlur = () => setWindowFocused(false)
@@ -98,6 +98,7 @@ function MainApp() {
       const key = event.key.toLowerCase()
       if (state.overlayOpen || event.altKey) return
 
+      // Cmd+HJKL for canvas navigation (no Ctrl+Arrow — reserved for macOS text cursor)
       const direction =
         event.metaKey && !event.ctrlKey
           ? key === 'h'
@@ -109,17 +110,7 @@ function MainApp() {
                 : key === 'j'
                   ? 'down'
                   : null
-          : event.ctrlKey && !event.metaKey
-            ? key === 'arrowleft'
-              ? 'left'
-              : key === 'arrowright'
-                ? 'right'
-                : key === 'arrowup'
-                  ? 'up'
-                  : key === 'arrowdown'
-                    ? 'down'
-                    : null
-            : null
+          : null
 
       if (direction) {
         event.preventDefault()
@@ -193,7 +184,7 @@ function MainApp() {
     return (
       <div className="app-shell h-full flex items-center justify-center" style={shellStyle}>
         <p className="text-xs text-muted-foreground/40">Loading...</p>
-        {showDimOverlay && <UnfocusedOverlay />}
+        {showDimOverlay && <UnfocusedOverlay onDismiss={() => setWindowFocused(true)} />}
       </div>
     )
   }
@@ -205,7 +196,7 @@ function MainApp() {
         style={shellStyle}
       >
         <Onboarding />
-        {showDimOverlay && <UnfocusedOverlay />}
+        {showDimOverlay && <UnfocusedOverlay onDismiss={() => setWindowFocused(true)} />}
       </div>
     )
   }
@@ -229,14 +220,17 @@ function MainApp() {
         onCancel={cancelPendingClose}
       />
       <Toaster />
-      {showDimOverlay && <UnfocusedOverlay />}
+      {showDimOverlay && <UnfocusedOverlay onDismiss={() => setWindowFocused(true)} />}
     </div>
   )
 }
 
-function UnfocusedOverlay() {
+function UnfocusedOverlay({ onDismiss }: { onDismiss?: () => void }) {
   return (
-    <div className="absolute inset-0 z-[9999] flex items-center justify-center bg-black/50 backdrop-blur-[1px] rounded-lg">
+    <div
+      className="absolute inset-0 z-[9999] flex items-center justify-center bg-black/50 backdrop-blur-[1px] rounded-lg"
+      onClick={onDismiss}
+    >
       <p className="text-xs text-white/50">
         Window not in focus{' '}
         <span className="text-white/30">&middot; disable in Settings &gt; Appearance</span>

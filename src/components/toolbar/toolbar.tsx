@@ -39,6 +39,7 @@ import { WindowOverviewMap } from '../canvas/window-overview-map'
 import { WorktreeSwitcher } from '../worktree-switcher'
 import { AgentIcon } from '../agent-icon'
 import { inferAgentFromTitle } from '@/lib/agent-command'
+import { hapticNudge, hapticSuccess, hapticBuzz } from '@/lib/haptics'
 
 const EMPTY_BROWSER_UI = {
   browserId: null as string | null,
@@ -109,7 +110,10 @@ function ProjectTab({
       transition={{ type: 'spring', stiffness: 300, damping: 30 }}
     >
       <button
-        onClick={() => switchProject(project.id)}
+        onClick={() => {
+          hapticNudge()
+          switchProject(project.id)
+        }}
         onPointerDown={(e) => dragControls.start(e)}
         className={cn(
           'flex items-center gap-2 px-4 h-full transition-colors cursor-grab active:cursor-grabbing',
@@ -430,7 +434,10 @@ export function StatusBar() {
         {/* Logo — click to zoom out and see all windows */}
         <button
           className="flex items-center px-3 shrink-0 no-drag hover:bg-muted/30 transition-colors"
-          onClick={zoomToFitAll}
+          onClick={() => {
+            hapticNudge()
+            zoomToFitAll()
+          }}
           title="Overview (Cmd+Shift+O)"
         >
           <Logo className="w-3.5 h-3.5 text-foreground/80" />
@@ -638,7 +645,10 @@ export function StatusBar() {
                 animate={{ opacity: 1, x: 0, scale: 1 }}
                 exit={{ opacity: 0, x: 12, scale: 0.96 }}
                 transition={{ duration: 0.2, ease: 'easeOut' }}
-                onClick={() => restoreLastClosedWindow()}
+                onClick={() => {
+                  hapticSuccess()
+                  restoreLastClosedWindow()
+                }}
                 className="flex shrink-0 items-center gap-2 rounded-md border border-border/30 bg-background/40 px-2.5 py-1 text-[10px] text-muted-foreground/65 transition-colors hover:bg-muted/45 hover:text-foreground"
                 title="Restore closed window"
               >
@@ -672,6 +682,7 @@ export function StatusBar() {
             <PopoverContent side="top" sideOffset={8} className="w-40 p-1">
               <button
                 onClick={() => {
+                  hapticSuccess()
                   addTerminal()
                   setPlusOpen(false)
                 }}
@@ -682,6 +693,7 @@ export function StatusBar() {
               </button>
               <button
                 onClick={() => {
+                  hapticSuccess()
                   addBrowser()
                   setPlusOpen(false)
                 }}
@@ -712,14 +724,20 @@ export function StatusBar() {
               </PopoverTrigger>
               <PopoverContent side="top" sideOffset={8} className="w-48 p-1">
                 <button
-                  onClick={() => autoArrangeGrid()}
+                  onClick={() => {
+                    hapticSuccess()
+                    autoArrangeGrid()
+                  }}
                   className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-md text-[11px] text-foreground hover:bg-muted/60 transition-colors"
                 >
                   <LayoutGrid className="w-3.5 h-3.5 text-muted-foreground" />
                   Arrange now
                 </button>
                 <button
-                  onClick={() => setAutoArrangeOnCreate(!autoArrangeOnCreate)}
+                  onClick={() => {
+                    hapticBuzz()
+                    setAutoArrangeOnCreate(!autoArrangeOnCreate)
+                  }}
                   className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-md text-[11px] text-foreground hover:bg-muted/60 transition-colors"
                 >
                   {autoArrangeOnCreate ? (
@@ -736,7 +754,10 @@ export function StatusBar() {
           {/* Pin toggle */}
           {hasFocusedWindow && (
             <button
-              onClick={() => togglePinFocused()}
+              onClick={() => {
+                hapticBuzz()
+                togglePinFocused()
+              }}
               className={cn(
                 'p-1 rounded-md transition-colors',
                 focusedWindowPinned
@@ -756,6 +777,7 @@ export function StatusBar() {
           {/* Snap toggle */}
           <button
             onClick={() => {
+              hapticBuzz()
               if (selectionMode) {
                 setSelectionMode(false)
                 return
@@ -801,7 +823,10 @@ export function StatusBar() {
                 animate={{ opacity: 1, x: 0, scale: 1 }}
                 exit={{ opacity: 0, x: 8, scale: 0.96 }}
                 transition={{ duration: 0.2, ease: 'easeOut' }}
-                onClick={() => window.cells.updater.download()}
+                onClick={() => {
+                  hapticNudge()
+                  window.cells.updater.download()
+                }}
                 className="flex shrink-0 items-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] text-primary transition-colors hover:bg-primary/20"
               >
                 <Download className="w-2.5 h-2.5" />
@@ -830,7 +855,10 @@ export function StatusBar() {
                 animate={{ opacity: 1, x: 0, scale: 1 }}
                 exit={{ opacity: 0, x: 8, scale: 0.96 }}
                 transition={{ duration: 0.2, ease: 'easeOut' }}
-                onClick={() => window.cells.updater.install()}
+                onClick={() => {
+                  hapticSuccess()
+                  window.cells.updater.install()
+                }}
                 className="flex shrink-0 items-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] text-primary transition-colors hover:bg-primary/20"
                 title="Your terminal sessions will not be interrupted — they are managed by the background daemon"
               >
