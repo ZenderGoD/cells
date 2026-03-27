@@ -99,10 +99,7 @@ export function BrowserNode({
     if (!createdRef.current) return
     createdRef.current = false
     setViewReady(false)
-    if (lastVisibleRef.current) {
-      window.cells.browser.setVisible(browser.id, false)
-      lastVisibleRef.current = false
-    }
+    window.cells.browser.setVisible(browser.id, false)
     try {
       const history = await window.cells.browser.getHistory(browser.id)
       if (history?.entries?.length) {
@@ -237,15 +234,11 @@ export function BrowserNode({
   }, [])
 
   // Position and show the WebContentsView when focused, driven by prop/state changes.
-  const lastVisibleRef = useRef(false)
   const lastZoomRef = useRef(-1)
 
   useEffect(() => {
     if (!viewReady || !isFocused) {
-      if (lastVisibleRef.current) {
-        window.cells.browser.setVisible(browser.id, false)
-        lastVisibleRef.current = false
-      }
+      window.cells.browser.setVisible(browser.id, false)
       return
     }
 
@@ -293,10 +286,7 @@ export function BrowserNode({
       !transitionHidden &&
       bounds.width >= 20 &&
       bounds.height >= 20
-    if (shouldBeVisible !== lastVisibleRef.current) {
-      lastVisibleRef.current = shouldBeVisible
-      window.cells.browser.setVisible(browser.id, shouldBeVisible)
-    }
+    window.cells.browser.setVisible(browser.id, shouldBeVisible)
   }, [
     browser.id,
     browser.x,

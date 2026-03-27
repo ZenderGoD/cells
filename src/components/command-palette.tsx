@@ -56,11 +56,6 @@ interface Attachment {
   thumbnailUrl?: string
 }
 
-function shellEscapePath(filePath: string) {
-  if (/^[A-Za-z0-9_./-]+$/.test(filePath)) return filePath
-  return `'${filePath.replace(/'/g, `'\\''`)}'`
-}
-
 function buildPromptWithAttachments(prompt: string, attachments: Attachment[]): string {
   if (attachments.length === 0) return prompt
   // Strip any [path] refs already in the prompt to avoid duplication
@@ -377,10 +372,7 @@ export function CommandPalette() {
 
   // Track whether Cmd key is held
   useEffect(() => {
-    if (!open) {
-      setCmdHeld(false)
-      return
-    }
+    if (!open) return
     const down = (e: KeyboardEvent) => {
       if (e.key === 'Meta') setCmdHeld(true)
     }
@@ -395,6 +387,7 @@ export function CommandPalette() {
       window.removeEventListener('keydown', down)
       window.removeEventListener('keyup', up)
       window.removeEventListener('blur', blur)
+      setCmdHeld(false)
     }
   }, [open])
 
