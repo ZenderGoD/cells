@@ -114,6 +114,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const fontSize = useStore((s) => s.fontSize)
   const fontFamily = useStore((s) => s.fontFamily)
   const windowOpacity = useStore((s) => s.windowOpacity)
+  const dimWhenUnfocused = useStore((s) => s.dimWhenUnfocused)
   const snapOnFocus = useStore((s) => s.snapOnFocus)
   const tabSwitchMode = useStore((s) => s.tabSwitchMode)
   const projectSwitchMode = useStore((s) => s.projectSwitchMode)
@@ -124,6 +125,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const setFontSize = useStore((s) => s.setFontSize)
   const setFontFamily = useStore((s) => s.setFontFamily)
   const setWindowOpacity = useStore((s) => s.setWindowOpacity)
+  const setDimWhenUnfocused = useStore((s) => s.setDimWhenUnfocused)
   const setSnapOnFocus = useStore((s) => s.setSnapOnFocus)
   const setTabSwitchMode = useStore((s) => s.setTabSwitchMode)
   const setProjectSwitchMode = useStore((s) => s.setProjectSwitchMode)
@@ -307,6 +309,28 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                         {windowOpacity}
                       </span>
                     </div>
+                  </SettingsGroup>
+
+                  <SettingsGroup title="Dim When Unfocused">
+                    <button
+                      onClick={() => setDimWhenUnfocused(!dimWhenUnfocused)}
+                      className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-[11px] transition-colors hover:bg-muted/40"
+                    >
+                      <span className="text-foreground">Dim overlay when window loses focus</span>
+                      <div
+                        className={cn(
+                          'relative h-3.5 w-6 rounded-full transition-colors',
+                          dimWhenUnfocused ? 'bg-primary' : 'bg-muted-foreground/25',
+                        )}
+                      >
+                        <div
+                          className={cn(
+                            'absolute top-0.5 h-2.5 w-2.5 rounded-full bg-background transition-transform',
+                            dimWhenUnfocused ? 'translate-x-3' : 'translate-x-0.5',
+                          )}
+                        />
+                      </div>
+                    </button>
                   </SettingsGroup>
                 </div>
               ) : null}

@@ -3,12 +3,14 @@ import { ArrowUpRight, EyeOff, Globe, WifiOff } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
 import type { BrowserNode as BrowserNodeType } from '@/types'
+import { useShallow } from 'zustand/react/shallow'
 
 const MIN_W = 400
 const MIN_H = 300
 const HANDLE = 6
 const BORDER_W = 3 // px inset for focus ring visibility
 const STATUS_BAR_H = 40 // must match toolbar height
+const HIBERNATE_DELAY_MS = 15_000
 
 type Edge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
 
@@ -35,10 +37,23 @@ export function BrowserNode({
     updateBrowserUrl,
     updateBrowserTitle,
     updateBrowserFavicon,
+    updateBrowserHistory,
     addBrowserWithUrl,
     focusBrowser,
     togglePin,
-  } = useStore()
+  } = useStore(
+    useShallow((s) => ({
+      resizeBrowser: s.resizeBrowser,
+      moveBrowser: s.moveBrowser,
+      updateBrowserUrl: s.updateBrowserUrl,
+      updateBrowserTitle: s.updateBrowserTitle,
+      updateBrowserFavicon: s.updateBrowserFavicon,
+      updateBrowserHistory: s.updateBrowserHistory,
+      addBrowserWithUrl: s.addBrowserWithUrl,
+      focusBrowser: s.focusBrowser,
+      togglePin: s.togglePin,
+    })),
+  )
   const activeProjectId = useStore((s) => s.activeProjectId)
   const arrangeAnimating = useStore((s) => s.arrangeAnimating)
   const overlayOpen = useStore((s) => s.overlayOpen)
@@ -60,6 +75,7 @@ export function BrowserNode({
   const contentRef = useRef<HTMLDivElement>(null)
   const createdRef = useRef(false)
   const lastBoundsRef = useRef({ x: 0, y: 0, width: 0, height: 0 })
+  const hibernateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Snapshot url/history into refs so the create effect doesn't re-fire on navigation
   const initialUrlRef = useRef(browser.url)
@@ -71,9 +87,35 @@ export function BrowserNode({
     initialHistoryRef.current = browser.history
   }, [browser.history])
 
-  // Create or unpark WebContentsView on mount, park on unmount
+  const clearHibernateTimer = useCallback(() => {
+    if (hibernateTimerRef.current) {
+      window.clearTimeout(hibernateTimerRef.current)
+      hibernateTimerRef.current = null
+    }
+  }, [])
+
+  const hibernateView = useCallback(async () => {
+    clearHibernateTimer()
+    if (!createdRef.current) return
+    createdRef.current = false
+    setViewReady(false)
+    if (lastVisibleRef.current) {
+      window.cells.browser.setVisible(browser.id, false)
+      lastVisibleRef.current = false
+    }
+    try {
+      const history = await window.cells.browser.getHistory(browser.id)
+      if (history?.entries?.length) {
+        updateBrowserHistory(browser.id, history)
+      }
+    } catch {}
+    await window.cells.browser.destroy(browser.id)
+  }, [browser.id, clearHibernateTimer, updateBrowserHistory])
+
+  // Create or unpark WebContentsView only when the browser is focused.
   useEffect(() => {
-    if (!activeProjectId || createdRef.current) return
+    if (!activeProjectId || !isFocused || createdRef.current) return
+    clearHibernateTimer()
     createdRef.current = true
     const url = initialUrlRef.current
     const history = initialHistoryRef.current
@@ -86,13 +128,26 @@ export function BrowserNode({
           window.cells.browser.navigate(browser.id, url, useStore.getState().searchEngine)
         }
       })
-    return () => {
-      createdRef.current = false
-      setViewReady(false)
-      // Park instead of destroy — keeps the view alive for project switching
-      window.cells.browser.park(browser.id)
+  }, [activeProjectId, browser.id, clearHibernateTimer, hibernateView, isFocused])
+
+  useEffect(() => {
+    if (isFocused) {
+      clearHibernateTimer()
+      return
     }
-  }, [browser.id, activeProjectId])
+    if (!createdRef.current) return
+    hibernateTimerRef.current = setTimeout(() => {
+      void hibernateView()
+    }, HIBERNATE_DELAY_MS)
+    return clearHibernateTimer
+  }, [clearHibernateTimer, hibernateView, isFocused])
+
+  useEffect(() => {
+    return () => {
+      clearHibernateTimer()
+      void hibernateView()
+    }
+  }, [clearHibernateTimer, hibernateView])
 
   // Detect network loss — hide native view and auto-reload when back online
   useEffect(() => {

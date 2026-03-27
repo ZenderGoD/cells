@@ -21,6 +21,7 @@ import {
 } from '@/lib/canvas-selection'
 import { TerminalNode } from './terminal-node'
 import { BrowserNode } from './browser-node'
+import { useShallow } from 'zustand/react/shallow'
 
 const MIN_ZOOM = 0.15
 const MAX_ZOOM = 1.5
@@ -35,7 +36,7 @@ export function InfiniteCanvas() {
   const {
     terminals,
     browsers,
-    canvas: transform,
+    canvas,
     moveTerminal,
     moveBrowser,
     setCanvasTransform,
@@ -53,7 +54,31 @@ export function InfiniteCanvas() {
     focusedTerminalId,
     focusedBrowserId,
     focusTerminal,
-  } = useStore()
+  } = useStore(
+    useShallow((s) => ({
+      terminals: s.terminals,
+      browsers: s.browsers,
+      canvas: s.canvas,
+      moveTerminal: s.moveTerminal,
+      moveBrowser: s.moveBrowser,
+      setCanvasTransform: s.setCanvasTransform,
+      snapToNearest: s.snapToNearest,
+      snapToTerminal: s.snapToTerminal,
+      snapToClosest: s.snapToClosest,
+      snapEnabled: s.snapEnabled,
+      snapFast: s.snapFast,
+      setSnapPaused: s.setSnapPaused,
+      reducedMotion: s.reducedMotion,
+      selectionMode: s.selectionMode,
+      setSelectionMode: s.setSelectionMode,
+      selectedNodeIds: s.selectedNodeIds,
+      setSelectedNodeIds: s.setSelectedNodeIds,
+      focusedTerminalId: s.focusedTerminalId,
+      focusedBrowserId: s.focusedBrowserId,
+      focusTerminal: s.focusTerminal,
+    })),
+  )
+  const transform = canvas
 
   const containerRef = useRef<HTMLDivElement>(null)
   const [isPanning, setIsPanning] = useState(false)

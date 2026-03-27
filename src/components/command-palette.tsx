@@ -21,6 +21,7 @@ import {
   Paperclip,
   Camera,
   Download,
+  LayoutGrid,
 } from 'lucide-react'
 import { useCommandState } from 'cmdk'
 import {
@@ -33,7 +34,6 @@ import {
   CommandItem,
   CommandSeparator,
   CommandShortcut,
-  wasLastSelectWithMeta,
 } from '@/components/ui/command'
 import { useStore } from '@/lib/store'
 import { inferAgentFromTitle } from '@/lib/agent-command'
@@ -42,6 +42,7 @@ import { AppSettings } from './settings/app-settings'
 import { NewProjectDialog } from './new-project-dialog'
 import { AgentIcon } from './agent-icon'
 import { Logo } from './logo'
+import { Kbd } from './ui/kbd'
 import { showToast } from './toast'
 
 const AGENT_OPTIONS = [
@@ -52,6 +53,7 @@ const AGENT_OPTIONS = [
 interface Attachment {
   path: string
   name: string
+  thumbnailUrl?: string
 }
 
 function shellEscapePath(filePath: string) {
@@ -61,9 +63,15 @@ function shellEscapePath(filePath: string) {
 
 function buildPromptWithAttachments(prompt: string, attachments: Attachment[]): string {
   if (attachments.length === 0) return prompt
-  const filePaths = attachments.map((a) => shellEscapePath(a.path)).join(' ')
-  if (!prompt) return filePaths
-  return `${prompt}\n\n${filePaths}`
+  // Strip any [path] refs already in the prompt to avoid duplication
+  let clean = prompt
+  for (const a of attachments) {
+    clean = clean.replace(`[${a.path}]`, '')
+  }
+  clean = clean.replace(/\s+/g, ' ').trim()
+  const filePaths = attachments.map((a) => `[${a.path}]`).join(' ')
+  if (!clean) return filePaths
+  return `${clean}\n\n${filePaths}`
 }
 
 function launchAgentAction(
@@ -99,8 +107,7 @@ function launchAgentAction(
     .getState()
     .createWorktree(tempBranch)
     .then((wt) => {
-      const branchInstruction =
-        'First, create a descriptive git branch name for this task and switch to it with `git checkout -b <branch-name>`. Then:\n\n'
+      const branchInstruction = `First, create a descriptive git branch name for this task and switch to it with \`git checkout -b <branch-name>\`. Then delete the temporary branch that was used to set up this worktree with \`git branch -D ${tempBranch}\`. Then:\n\n`
       const fullPrompt = prompt
         ? branchInstruction + prompt
         : branchInstruction + 'Waiting for instructions.'
@@ -151,6 +158,19 @@ function DynamicCommandInput({
   const selectedValue = useCommandState((state) => state.value) ?? ''
   const prefix = searchText ? matchInputPrefix(searchText) : null
 
+  // Generic fallback: read the icon SVG from the currently selected item in the DOM.
+  // This covers all item types (actions, themes, terminals, browsers, etc.) without
+  // needing an explicit value→icon map for every item.
+  const [selectedIconHtml, setSelectedIconHtml] = useState<string | null>(null)
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => {
+      const el = document.querySelector('[cmdk-item][data-selected="true"]')
+      const svg = el?.querySelector(':scope > svg')
+      setSelectedIconHtml(svg ? svg.outerHTML : null)
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [selectedValue])
+
   let icon: ReactNode = undefined
 
   // Prefix-based icon takes priority
@@ -179,7 +199,23 @@ function DynamicCommandInput({
     }
   }
   if (!icon && selectedValue.startsWith('search-')) {
-    icon = <Search className="size-4 shrink-0 opacity-50" />
+    icon = <Search className="size-4 shrink-0 opacity-70" />
+  }
+  if (
+    !icon &&
+    (selectedValue === 'run-terminal-command' || selectedValue.startsWith('shell-history '))
+  ) {
+    icon = <TerminalSquare className="size-4 shrink-0 opacity-70" />
+  }
+
+  // Fallback to the DOM-read icon for any other item type (actions, themes, etc.)
+  if (!icon && selectedIconHtml) {
+    icon = (
+      <span
+        className="flex size-4 shrink-0 opacity-70 [&>svg]:size-4"
+        dangerouslySetInnerHTML={{ __html: selectedIconHtml }}
+      />
+    )
   }
 
   return <CommandInput multiline icon={icon} {...props} />
@@ -187,14 +223,19 @@ function DynamicCommandInput({
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.ico'])
 
-function getAttachmentIcon(name: string) {
+function isImageFile(name: string) {
   const ext = name.slice(name.lastIndexOf('.')).toLowerCase()
-  if (IMAGE_EXTENSIONS.has(ext)) return Image
+  return IMAGE_EXTENSIONS.has(ext)
+}
+
+function getAttachmentIcon(name: string) {
+  if (isImageFile(name)) return Image
   return FileText
 }
 
 export function CommandPalette() {
   const [open, setOpen] = useState(false)
+  const [cmdHeld, setCmdHeld] = useState(false)
   const [showSettingsRaw, setShowSettingsRaw] = useState(false)
   const [showNewProjectRaw, setShowNewProjectRaw] = useState(false)
   const [search, setSearch] = useState('')
@@ -227,10 +268,18 @@ export function CommandPalette() {
   const availableAgents = AGENT_OPTIONS.filter(({ id }) => agents[id])
   const wordCount = search.trim().split(/\s+/).filter(Boolean).length
   const isPromptMode = wordCount > 10
-  // Show agents before search if user recently used an agent, or fall back to prompt-mode heuristic
-  const agentsFirst =
-    lastCommandAction === 'agent' ||
-    (lastCommandAction !== 'search' && (isPromptMode || attachments.length > 0))
+  // Determine which action type should appear at the bottom (closest to input = default selected).
+  // The most recently used action type wins; fall back to prompt-mode heuristic.
+  const bottomAction: 'agent' | 'search' | 'run' =
+    lastCommandAction === 'agent'
+      ? 'agent'
+      : lastCommandAction === 'run'
+        ? 'run'
+        : lastCommandAction === 'search'
+          ? 'search'
+          : isPromptMode || attachments.length > 0
+            ? 'agent'
+            : 'run'
 
   const addAttachments = useCallback(async (paths: string[]) => {
     const newAttachments = paths.map((p) => ({
@@ -241,10 +290,33 @@ export function CommandPalette() {
       const existing = new Set(prev.map((a) => a.path))
       return [...prev, ...newAttachments.filter((a) => !existing.has(a.path))]
     })
+    // Insert [path] references into the search input for all attached files
+    const refs = newAttachments.map((a) => `[${a.path}]`).join(' ')
+    setSearch((prev) => {
+      const trimmed = prev.trimEnd()
+      return trimmed ? `${trimmed} ${refs} ` : `${refs} `
+    })
+    // Resolve thumbnails for image files in the background
+    for (const a of newAttachments) {
+      if (isImageFile(a.name)) {
+        window.cells.app
+          .fileThumbnail(a.path)
+          .then((url) => {
+            if (url) {
+              setAttachments((prev) =>
+                prev.map((att) => (att.path === a.path ? { ...att, thumbnailUrl: url } : att)),
+              )
+            }
+          })
+          .catch(() => {})
+      }
+    }
   }, [])
 
   const removeAttachment = useCallback((path: string) => {
     setAttachments((prev) => prev.filter((a) => a.path !== path))
+    // Remove the [path] reference from the search input
+    setSearch((prev) => prev.replace(`[${path}] `, '').replace(`[${path}]`, '').trimEnd())
   }, [])
 
   // Sort agents: last used agent first
@@ -303,6 +375,29 @@ export function CommandPalette() {
     }
   }, [open, agentAliases, enabledAgents])
 
+  // Track whether Cmd key is held
+  useEffect(() => {
+    if (!open) {
+      setCmdHeld(false)
+      return
+    }
+    const down = (e: KeyboardEvent) => {
+      if (e.key === 'Meta') setCmdHeld(true)
+    }
+    const up = (e: KeyboardEvent) => {
+      if (e.key === 'Meta') setCmdHeld(false)
+    }
+    const blur = () => setCmdHeld(false)
+    window.addEventListener('keydown', down)
+    window.addEventListener('keyup', up)
+    window.addEventListener('blur', blur)
+    return () => {
+      window.removeEventListener('keydown', down)
+      window.removeEventListener('keyup', up)
+      window.removeEventListener('blur', blur)
+    }
+  }, [open])
+
   const runAction = (fn: () => any) => {
     const close = () => {
       setOpen(false)
@@ -336,22 +431,20 @@ export function CommandPalette() {
     setSearch(value)
   }, [])
 
-  // Scroll to top and fix dropped selection when search text changes
+  // Scroll to bottom (nearest to input) and fix dropped selection when search text changes
   useEffect(() => {
     if (!open) return
     const raf = requestAnimationFrame(() => {
       const list = document.querySelector('[cmdk-list]') as HTMLElement | null
       if (!list) return
-      list.scrollTop = 0
+      list.scrollTop = list.scrollHeight
       const selected = list.querySelector('[cmdk-item][data-selected="true"]') as HTMLElement | null
       if (!selected || selected.offsetParent === null) {
         const items = list.querySelectorAll('[cmdk-item]')
         if (items.length > 0) {
-          // When searching, select the last item (closest to the input at bottom)
-          const target = search.trim()
-            ? (items[items.length - 1] as HTMLElement)
-            : (items[0] as HTMLElement)
-          const val = target.getAttribute('data-value')
+          // Always select the last item (closest to input at bottom)
+          const last = items[items.length - 1] as HTMLElement
+          const val = last.getAttribute('data-value')
           if (val) setCmdkValue(val)
         }
       }
@@ -375,37 +468,44 @@ export function CommandPalette() {
   // Handle paste events when the palette is open
   useEffect(() => {
     if (!open) return
-    const handlePaste = async (e: ClipboardEvent) => {
-      // Check for files/images in clipboard
-      const filePaths = await window.cells.app.pasteClipboardFiles()
-      if (filePaths && filePaths.length > 0) {
+    const handlePaste = (e: ClipboardEvent) => {
+      // Detect files synchronously before any async work so we can
+      // preventDefault() immediately and stop the filename from being
+      // pasted as text into the input.
+      const hasClipboardFiles =
+        (e.clipboardData?.files && e.clipboardData.files.length > 0) ||
+        Array.from(e.clipboardData?.items ?? []).some((i) => i.kind === 'file')
+
+      if (hasClipboardFiles) {
         e.preventDefault()
         e.stopPropagation()
-        addAttachments(filePaths)
-        return
       }
-      // Check for files in the DataTransfer (drag-pasted files)
-      if (e.clipboardData?.files && e.clipboardData.files.length > 0) {
-        const paths: string[] = []
-        for (const file of Array.from(e.clipboardData.files)) {
-          try {
-            const path = window.cells.app.getPathForFile(file)
-            if (path) paths.push(path)
-          } catch {
-            // If getPathForFile fails, try saving as temp file
-            const buf = new Uint8Array(await file.arrayBuffer())
-            const saved = await window.cells.app.saveTempFile(buf, file.name)
-            if (saved) paths.push(saved)
-          }
-        }
-        if (paths.length > 0) {
-          e.preventDefault()
-          e.stopPropagation()
-          addAttachments(paths)
+
+      // Async resolution of file paths
+      void (async () => {
+        const filePaths = await window.cells.app.pasteClipboardFiles()
+        if (filePaths && filePaths.length > 0) {
+          addAttachments(filePaths)
           return
         }
-      }
-      // Let text paste through to the input naturally
+        // Fallback: resolve from DataTransfer files
+        if (e.clipboardData?.files && e.clipboardData.files.length > 0) {
+          const paths: string[] = []
+          for (const file of Array.from(e.clipboardData.files)) {
+            try {
+              const path = window.cells.app.getPathForFile(file)
+              if (path) paths.push(path)
+            } catch {
+              const buf = new Uint8Array(await file.arrayBuffer())
+              const saved = await window.cells.app.saveTempFile(buf, file.name)
+              if (saved) paths.push(saved)
+            }
+          }
+          if (paths.length > 0) {
+            addAttachments(paths)
+          }
+        }
+      })()
     }
     document.addEventListener('paste', handlePaste, true)
     return () => document.removeEventListener('paste', handlePaste, true)
@@ -419,6 +519,7 @@ export function CommandPalette() {
 
   const runAsTerminalCommand = (command: string) => {
     if (!command.trim()) return
+    useStore.getState().setLastCommandAction('run')
     const label = command.trim().slice(0, 40)
     runAction(() => useStore.getState().addTerminalWithCommand(command.trim(), label))
   }
@@ -456,9 +557,13 @@ export function CommandPalette() {
           forceMount
           value={`agent-${id}-${getAgentCommandLabel(id)}`}
           onSelect={() => {
-            const withWorktree = wasLastSelectWithMeta()
             runAction(() => {
-              launchAgentAction(id, label, withWorktree, search, attachments)
+              launchAgentAction(id, label, false, search, attachments)
+            })
+          }}
+          onMetaSelect={() => {
+            runAction(() => {
+              launchAgentAction(id, label, true, search, attachments)
             })
           }}
         >
@@ -472,13 +577,12 @@ export function CommandPalette() {
                   ? `Send ${attachments.length} file${attachments.length > 1 ? 's' : ''} to ${label}`
                   : `New ${label} Terminal`}
           </span>
-          <span className="ml-auto max-w-40 shrink-0 truncate text-[10px] font-mono text-muted-foreground/40">
-            {getAgentCommandLabel(id)}
-          </span>
           {id === lastUsedAgent && (
-            <span className="text-[10px] text-muted-foreground/40">recent</span>
+            <span className="ml-auto text-[10px] text-muted-foreground/40">recent</span>
           )}
-          {isGitRepo && <CommandShortcut>⌘↵ worktree</CommandShortcut>}
+          {isGitRepo && cmdHeld && (
+            <GitBranch className="absolute right-2 size-3.5 text-muted-foreground/50" />
+          )}
         </CommandItem>
       ))}
     </CommandGroup>
@@ -547,130 +651,148 @@ export function CommandPalette() {
             if (paths.length > 0) addAttachments(paths)
           }}
         >
+          {/* Command list ordering (top → bottom, input is at the bottom):
+              1. Theme, Shell History, Recent Files — filterable, hidden when no match
+              2. Browsers, Terminals, Worktrees — filterable, navigational
+              3. Projects — filterable, navigational
+              4–5. Catch-all groups (Search, Agents, Run) and Actions — order swaps:
+
+              Default (no attachments):
+                4. Catch-all (forceMount)  5. Actions (filterable)
+                → Matching actions appear closest to input and auto-select.
+                  When none match, catch-all items are nearest instead.
+
+              With attachments:
+                4. Actions (filterable)    5. Catch-all (forceMount)
+                → Catch-all items (agents, search, run) are preferred since
+                  they're the natural targets when files are attached. */}
           <CommandList>
             <CommandEmpty className="hidden" />
 
-            {projects.length > 1 && (
+            <CommandGroup heading="Theme">
+              {Object.entries(terminalThemes).map(([key, theme]) => (
+                <CommandItem
+                  key={key}
+                  onSelect={() => runAction(() => useStore.getState().setTerminalTheme(key))}
+                  data-checked={key === terminalTheme ? 'true' : undefined}
+                >
+                  <Palette className="text-muted-foreground" />
+                  {theme.name}
+                  <div className="ml-auto flex items-center gap-1">
+                    <div
+                      className="w-2.5 h-2.5 rounded-full"
+                      style={{ background: theme.background }}
+                    />
+                    <div className="w-2.5 h-2.5 rounded-full" style={{ background: theme.red }} />
+                    <div className="w-2.5 h-2.5 rounded-full" style={{ background: theme.green }} />
+                    <div className="w-2.5 h-2.5 rounded-full" style={{ background: theme.blue }} />
+                  </div>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+
+            {shellHistory.length > 0 &&
+              (() => {
+                const query = search.trim().toLowerCase()
+                const filtered = query
+                  ? shellHistory.filter((cmd) => cmd.toLowerCase().includes(query))
+                  : shellHistory.slice(0, 15)
+                if (filtered.length === 0) return null
+                return (
+                  <>
+                    <CommandSeparator />
+                    <CommandGroup heading="Shell History">
+                      {filtered.slice(0, 15).map((cmd) => (
+                        <CommandItem
+                          key={`history-${cmd}`}
+                          value={`shell-history ${cmd}`}
+                          onSelect={() => runAsTerminalCommand(cmd)}
+                        >
+                          <TerminalSquare className="text-muted-foreground" />
+                          <span className="truncate font-mono text-xs">{cmd}</span>
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  </>
+                )
+              })()}
+
+            {recentFiles.length > 0 && (
               <>
-                <CommandGroup heading="Projects">
-                  {projects.map((p) => (
+                <CommandSeparator />
+                <CommandGroup heading="Recent Files">
+                  {recentFiles.map((f) => {
+                    const Icon = f.source === 'screenshot' ? Camera : Download
+                    const isAttached = attachments.some((a) => a.path === f.path)
+                    return (
+                      <CommandItem
+                        key={f.path}
+                        value={`recent-file ${f.name} ${f.source}`}
+                        data-checked={isAttached ? 'true' : undefined}
+                        onSelect={() => addAttachments([f.path])}
+                        onMetaSelect={() => {
+                          navigator.clipboard.writeText(f.path).catch(() => {})
+                          showToast('Copied path to clipboard')
+                        }}
+                      >
+                        <Icon className="text-muted-foreground" size={16} />
+                        <span className="truncate">{f.name}</span>
+                        <span className="ml-auto text-[10px] text-muted-foreground/40">
+                          {f.source}
+                        </span>
+                        <CommandShortcut>⌘↵ copy path</CommandShortcut>
+                      </CommandItem>
+                    )
+                  })}
+                </CommandGroup>
+              </>
+            )}
+
+            {browsers.length > 0 && (
+              <>
+                <CommandSeparator />
+                <CommandGroup heading="Browsers">
+                  {browsers.map((b) => (
                     <CommandItem
-                      key={p.id}
-                      onSelect={() => runAction(() => useStore.getState().switchProject(p.id))}
-                      data-checked={p.id === activeProjectId ? 'true' : undefined}
+                      key={b.id}
+                      onSelect={() => runAction(() => useStore.getState().snapToBrowser(b.id))}
                     >
-                      <FolderOpen className="text-muted-foreground" />
-                      {p.name}
-                      <span className="ml-auto text-[10px] text-muted-foreground/40 truncate max-w-40">
-                        {p.path}
-                      </span>
+                      <Globe className="text-muted-foreground" />
+                      {b.title || b.url || 'New Tab'}
                     </CommandItem>
                   ))}
                 </CommandGroup>
-                <CommandSeparator />
               </>
             )}
-            <CommandGroup heading="Actions">
-              <CommandItem onSelect={() => runAction(() => useStore.getState().addTerminal())}>
-                <Plus className="text-muted-foreground" />
-                New Terminal
-                <CommandShortcut>↵</CommandShortcut>
-              </CommandItem>
-              <CommandItem onSelect={() => runAction(() => useStore.getState().addBrowser())}>
-                <Globe className="text-muted-foreground" />
-                New Browser
-              </CommandItem>
-              <CommandItem
-                value="attach-file-from-finder"
-                onSelect={async () => {
-                  const paths = await window.cells.app.pickFiles()
-                  if (paths && paths.length > 0) {
-                    addAttachments(paths)
-                  }
-                }}
-              >
-                <Paperclip className="text-muted-foreground" />
-                Attach File...
-              </CommandItem>
-              <CommandItem onSelect={() => runAction(() => useStore.getState().reloadFocused())}>
-                <RefreshCw className="text-muted-foreground" />
-                Reload Window
-                <CommandShortcut>⌘R</CommandShortcut>
-              </CommandItem>
-              <CommandItem
-                onSelect={() =>
-                  runAction(() => useStore.getState().setCanvasTransform({ x: 0, y: 0, scale: 1 }))
-                }
-              >
-                <RotateCcw className="text-muted-foreground" />
-                Reset View
-              </CommandItem>
-              <CommandItem
-                onSelect={() => {
-                  setOpen(false)
-                  setSearch('')
-                  setShowSettings(true)
-                }}
-              >
-                <Settings className="text-muted-foreground" />
-                Settings
-                <CommandShortcut>⌘,</CommandShortcut>
-              </CommandItem>
-              <CommandItem
-                onSelect={() => {
-                  setOpen(false)
-                  setSearch('')
-                  setShowSettings(true)
-                }}
-              >
-                <Puzzle className="text-muted-foreground" />
-                Manage Extensions
-              </CommandItem>
-              <CommandItem
-                onSelect={() => {
-                  const project = useStore
-                    .getState()
-                    .projects.find((p) => p.id === useStore.getState().activeProjectId)
-                  if (!project) return
-                  runAction(() => {
-                    window.cells.mcp.install(project.path).catch(() => {})
-                  })
-                }}
-              >
-                <Cable className="text-muted-foreground" />
-                Install MCP Server
-              </CommandItem>
-              <CommandItem
-                onSelect={() => {
-                  setOpen(false)
-                  setSearch('')
-                  setShowNewProject(true)
-                }}
-              >
-                <FolderOpen className="text-muted-foreground" />
-                New Project
-              </CommandItem>
-              <CommandItem
-                onSelect={() => runAction(() => useStore.getState().removeAllTerminals())}
-              >
-                <Skull className="text-muted-foreground" />
-                Kill All Processes
-              </CommandItem>
-              <CommandItem
-                onSelect={() => {
-                  void window.cells.app.requestQuit()
-                }}
-              >
-                <LogOut className="text-muted-foreground" />
-                Quit Cells
-                <CommandShortcut>⌘Q</CommandShortcut>
-              </CommandItem>
-            </CommandGroup>
+
+            {terminals.length > 0 && (
+              <>
+                <CommandSeparator />
+                <CommandGroup heading="Terminals">
+                  {terminals.map((t) => (
+                    <CommandItem
+                      key={t.id}
+                      onSelect={() => runAction(() => useStore.getState().snapToTerminal(t.id))}
+                    >
+                      {(t.agent ?? inferAgentFromTitle(t.title)) ? (
+                        <AgentIcon
+                          agent={t.agent ?? inferAgentFromTitle(t.title)}
+                          className="text-muted-foreground"
+                          size={16}
+                        />
+                      ) : (
+                        <Logo className="h-4 w-4 text-muted-foreground" />
+                      )}
+                      {t.title}
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              </>
+            )}
 
             {isGitRepo &&
               (() => {
                 const nonBare = worktrees.filter((w) => !w.isBare)
-                // Determine which terminal IDs will be moved
                 const selectedTermIds =
                   selectionMode && selectedNodeIds.length > 0
                     ? selectedNodeIds.filter((id) => terminals.some((t) => t.id === id))
@@ -686,6 +808,38 @@ export function CommandPalette() {
                 return (
                   <>
                     <CommandSeparator />
+                    <CommandGroup heading="Worktrees">
+                      {nonBare.map((wt) => (
+                        <CommandItem
+                          key={`wt-open-${wt.path}`}
+                          value={`open worktree terminal ${wt.branch} ${wt.path}`}
+                          onSelect={() =>
+                            runAction(() => {
+                              const term = useStore.getState().addTerminal()
+                              useStore.getState().switchTerminalWorktree(term.id, wt.path)
+                            })
+                          }
+                        >
+                          <GitBranch className="text-muted-foreground" />
+                          Open terminal in {wt.branch}
+                          <span className="ml-auto text-[10px] text-muted-foreground/40 truncate max-w-40">
+                            {wt.path.replace(/^\/Users\/[^/]+/, '~')}
+                          </span>
+                        </CommandItem>
+                      ))}
+                      {search.trim() && !nonBare.some((wt) => wt.branch === search.trim()) && (
+                        <CommandItem
+                          forceMount
+                          value="create-worktree-new-branch"
+                          onSelect={() =>
+                            runAction(() => useStore.getState().createWorktree(search.trim()))
+                          }
+                        >
+                          <Plus className="text-muted-foreground" />
+                          Create worktree &ldquo;{search.trim()}&rdquo;
+                        </CommandItem>
+                      )}
+                    </CommandGroup>
                     {hasMoveTargets && (
                       <CommandGroup heading={moveLabel}>
                         {nonBare.map((wt) => (
@@ -714,237 +868,253 @@ export function CommandPalette() {
                         ))}
                       </CommandGroup>
                     )}
-                    <CommandGroup heading="Worktrees">
-                      {search.trim() && !nonBare.some((wt) => wt.branch === search.trim()) && (
-                        <CommandItem
-                          forceMount
-                          value="create-worktree-new-branch"
-                          onSelect={() =>
-                            runAction(() => useStore.getState().createWorktree(search.trim()))
-                          }
-                        >
-                          <Plus className="text-muted-foreground" />
-                          Create worktree &ldquo;{search.trim()}&rdquo;
-                        </CommandItem>
-                      )}
-                      {nonBare.map((wt) => (
-                        <CommandItem
-                          key={`wt-open-${wt.path}`}
-                          value={`open worktree terminal ${wt.branch} ${wt.path}`}
-                          onSelect={() =>
-                            runAction(() => {
-                              const term = useStore.getState().addTerminal()
-                              useStore.getState().switchTerminalWorktree(term.id, wt.path)
-                            })
-                          }
-                        >
-                          <GitBranch className="text-muted-foreground" />
-                          Open terminal in {wt.branch}
-                          <span className="ml-auto text-[10px] text-muted-foreground/40 truncate max-w-40">
-                            {wt.path.replace(/^\/Users\/[^/]+/, '~')}
-                          </span>
-                        </CommandItem>
-                      ))}
-                    </CommandGroup>
                   </>
                 )
               })()}
 
-            {terminals.length > 0 && (
+            {projects.length > 1 && (
               <>
                 <CommandSeparator />
-                <CommandGroup heading="Terminals">
-                  {terminals.map((t) => (
+                <CommandGroup heading="Projects">
+                  {projects.map((p) => (
                     <CommandItem
-                      key={t.id}
-                      onSelect={() => runAction(() => useStore.getState().snapToTerminal(t.id))}
+                      key={p.id}
+                      onSelect={() => runAction(() => useStore.getState().switchProject(p.id))}
+                      data-checked={p.id === activeProjectId ? 'true' : undefined}
                     >
-                      {(t.agent ?? inferAgentFromTitle(t.title)) ? (
-                        <AgentIcon
-                          agent={t.agent ?? inferAgentFromTitle(t.title)}
-                          className="text-muted-foreground"
-                          size={16}
-                        />
-                      ) : (
-                        <Logo className="h-4 w-4 text-muted-foreground" />
-                      )}
-                      {t.title}
+                      <FolderOpen className="text-muted-foreground" />
+                      {p.name}
+                      <span className="text-[10px] text-muted-foreground/40 truncate max-w-40">
+                        {p.path}
+                      </span>
                     </CommandItem>
                   ))}
                 </CommandGroup>
               </>
             )}
 
-            {browsers.length > 0 && (
-              <>
-                <CommandSeparator />
-                <CommandGroup heading="Browsers">
-                  {browsers.map((b) => (
-                    <CommandItem
-                      key={b.id}
-                      onSelect={() => runAction(() => useStore.getState().snapToBrowser(b.id))}
-                    >
-                      <Globe className="text-muted-foreground" />
-                      {b.title || b.url || 'New Tab'}
-                    </CommandItem>
-                  ))}
-                </CommandGroup>
-              </>
-            )}
-
-            {recentFiles.length > 0 && (
-              <>
-                <CommandSeparator />
-                <CommandGroup heading="Recent Files">
-                  {recentFiles.map((f) => {
-                    const Icon = f.source === 'screenshot' ? Camera : Download
-                    const isAttached = attachments.some((a) => a.path === f.path)
-                    return (
+            {/* Ordering between catch-all and Actions groups:
+                - Default (no attachments): catch-all first, Actions last (closest to input).
+                  Matching action items get auto-selected; when none match, catch-all items
+                  (forceMount) are the nearest visible.
+                - With attachments: Actions first, catch-all last (closest to input).
+                  Agents/search/run are more useful when files are attached. */}
+            {(attachments.length > 0 ? ['actions', 'catchall'] : ['catchall', 'actions']).map(
+              (section) => {
+                if (section === 'catchall') {
+                  return (
+                    <React.Fragment key="catchall">
+                      {[...(['search', 'agent', 'run'] as const)]
+                        .sort((a, b) => (a === bottomAction ? 1 : b === bottomAction ? -1 : 0))
+                        .map((group) => {
+                          if (group === 'search') {
+                            if (!search.trim()) return null
+                            return (
+                              <React.Fragment key="search">
+                                <CommandSeparator />
+                                <CommandGroup heading="Search" forceMount>
+                                  <CommandItem
+                                    forceMount
+                                    onSelect={searchInBrowser}
+                                    value="search-web"
+                                  >
+                                    <Search className="text-muted-foreground" />
+                                    <span className="truncate">
+                                      Search for &ldquo;{search.trim().slice(0, 80)}&rdquo;
+                                    </span>
+                                  </CommandItem>
+                                </CommandGroup>
+                              </React.Fragment>
+                            )
+                          }
+                          if (group === 'agent') {
+                            if (sortedAgents.length === 0) return null
+                            return (
+                              <React.Fragment key="agent">
+                                <CommandSeparator />
+                                {renderAgentsGroup()}
+                              </React.Fragment>
+                            )
+                          }
+                          if (group === 'run') {
+                            if (!search.trim()) return null
+                            return (
+                              <React.Fragment key="run">
+                                <CommandSeparator />
+                                <CommandGroup heading="Run" forceMount>
+                                  <CommandItem
+                                    forceMount
+                                    value="run-terminal-command"
+                                    onSelect={() => runAsTerminalCommand(search)}
+                                  >
+                                    <TerminalSquare className="text-muted-foreground" />
+                                    <span className="truncate">
+                                      Run in Terminal: &ldquo;{search.trim().slice(0, 80)}&rdquo;
+                                    </span>
+                                  </CommandItem>
+                                </CommandGroup>
+                              </React.Fragment>
+                            )
+                          }
+                          return null
+                        })}
+                    </React.Fragment>
+                  )
+                }
+                return (
+                  <React.Fragment key="actions">
+                    <CommandSeparator />
+                    <CommandGroup heading="Actions">
                       <CommandItem
-                        key={f.path}
-                        value={`recent-file ${f.name} ${f.source}`}
-                        data-checked={isAttached ? 'true' : undefined}
                         onSelect={() => {
-                          if (wasLastSelectWithMeta()) {
-                            navigator.clipboard.writeText(f.path).catch(() => {})
-                            showToast('Copied path to clipboard')
-                          } else {
-                            addAttachments([f.path])
+                          void window.cells.app.requestQuit()
+                        }}
+                      >
+                        <LogOut className="text-muted-foreground" />
+                        Quit Cells
+                        <CommandShortcut>⌘Q</CommandShortcut>
+                      </CommandItem>
+                      <CommandItem
+                        onSelect={() => runAction(() => useStore.getState().removeAllTerminals())}
+                      >
+                        <Skull className="text-muted-foreground" />
+                        Kill All Processes
+                      </CommandItem>
+                      <CommandItem
+                        onSelect={() => {
+                          setOpen(false)
+                          setSearch('')
+                          setShowNewProject(true)
+                        }}
+                      >
+                        <FolderOpen className="text-muted-foreground" />
+                        New Project
+                      </CommandItem>
+                      <CommandItem
+                        onSelect={() => {
+                          const project = useStore
+                            .getState()
+                            .projects.find((p) => p.id === useStore.getState().activeProjectId)
+                          if (!project) return
+                          runAction(() => {
+                            window.cells.mcp.install(project.path).catch(() => {})
+                          })
+                        }}
+                      >
+                        <Cable className="text-muted-foreground" />
+                        Install MCP Server
+                      </CommandItem>
+                      <CommandItem
+                        onSelect={() => {
+                          setOpen(false)
+                          setSearch('')
+                          setShowSettings(true)
+                        }}
+                      >
+                        <Puzzle className="text-muted-foreground" />
+                        Manage Extensions
+                      </CommandItem>
+                      <CommandItem
+                        onSelect={() => {
+                          setOpen(false)
+                          setSearch('')
+                          setShowSettings(true)
+                        }}
+                      >
+                        <Settings className="text-muted-foreground" />
+                        Settings
+                        <CommandShortcut>⌘,</CommandShortcut>
+                      </CommandItem>
+                      <CommandItem
+                        onSelect={() => runAction(() => useStore.getState().autoArrangeGrid())}
+                      >
+                        <LayoutGrid className="text-muted-foreground" />
+                        Arrange Windows
+                      </CommandItem>
+                      <CommandItem
+                        onSelect={() =>
+                          runAction(() =>
+                            useStore.getState().setCanvasTransform({ x: 0, y: 0, scale: 1 }),
+                          )
+                        }
+                      >
+                        <RotateCcw className="text-muted-foreground" />
+                        Reset View
+                      </CommandItem>
+                      <CommandItem
+                        onSelect={() => runAction(() => useStore.getState().reloadFocused())}
+                      >
+                        <RefreshCw className="text-muted-foreground" />
+                        Reload Window
+                        <CommandShortcut>⌘R</CommandShortcut>
+                      </CommandItem>
+                      <CommandItem
+                        value="attach-file-from-finder"
+                        onSelect={async () => {
+                          const paths = await window.cells.app.pickFiles()
+                          if (paths && paths.length > 0) {
+                            addAttachments(paths)
                           }
                         }}
                       >
-                        <Icon className="text-muted-foreground" size={16} />
-                        <span className="truncate">{f.name}</span>
-                        <span className="ml-auto text-[10px] text-muted-foreground/40">
-                          {f.source}
-                        </span>
-                        <CommandShortcut>⌘↵ copy path</CommandShortcut>
+                        <Paperclip className="text-muted-foreground" />
+                        Attach File...
                       </CommandItem>
-                    )
-                  })}
-                </CommandGroup>
-              </>
-            )}
-
-            {/* Dynamic ordering: show recently-used action type (agent/search) first */}
-            {agentsFirst ? (
-              <>
-                {sortedAgents.length > 0 && (
-                  <>
-                    <CommandSeparator />
-                    {renderAgentsGroup()}
-                  </>
-                )}
-                {search.trim() && (
-                  <>
-                    <CommandSeparator />
-                    <CommandGroup heading="Search" forceMount>
-                      <CommandItem forceMount onSelect={searchInBrowser} value="search-web">
-                        <Search className="text-muted-foreground" />
-                        <span className="truncate">
-                          Search for &ldquo;{search.trim().slice(0, 80)}&rdquo;
-                        </span>
+                      <CommandItem
+                        onSelect={() => runAction(() => useStore.getState().addBrowser())}
+                      >
+                        <Globe className="text-muted-foreground" />
+                        New Browser
+                      </CommandItem>
+                      <CommandItem
+                        onSelect={() => runAction(() => useStore.getState().addTerminal())}
+                      >
+                        <Plus className="text-muted-foreground" />
+                        New Terminal
+                        <CommandShortcut>↵</CommandShortcut>
                       </CommandItem>
                     </CommandGroup>
-                  </>
-                )}
-              </>
-            ) : (
-              <>
-                {search.trim() && (
-                  <>
-                    <CommandSeparator />
-                    <CommandGroup heading="Search" forceMount>
-                      <CommandItem forceMount onSelect={searchInBrowser} value="search-web">
-                        <Search className="text-muted-foreground" />
-                        <span className="truncate">
-                          Search for &ldquo;{search.trim().slice(0, 80)}&rdquo;
-                        </span>
-                      </CommandItem>
-                    </CommandGroup>
-                  </>
-                )}
-                {sortedAgents.length > 0 && (
-                  <>
-                    <CommandSeparator />
-                    {renderAgentsGroup()}
-                  </>
-                )}
-              </>
-            )}
-
-            {search.trim() && (
-              <>
-                <CommandSeparator />
-                <CommandGroup heading="Run" forceMount>
-                  <CommandItem
-                    forceMount
-                    value="run-terminal-command"
-                    onSelect={() => runAsTerminalCommand(search)}
-                  >
-                    <TerminalSquare className="text-muted-foreground" />
-                    <span className="truncate">
-                      Run in Terminal: &ldquo;{search.trim().slice(0, 80)}&rdquo;
-                    </span>
-                  </CommandItem>
-                </CommandGroup>
-              </>
-            )}
-
-            {shellHistory.length > 0 &&
-              (() => {
-                // Pre-filter in React so non-matching items never enter the DOM.
-                // This avoids confusing cmdk's auto-selection with many hidden items.
-                const query = search.trim().toLowerCase()
-                const filtered = query
-                  ? shellHistory.filter((cmd) => cmd.toLowerCase().includes(query))
-                  : shellHistory.slice(0, 15)
-                if (filtered.length === 0) return null
-                return (
-                  <>
-                    <CommandSeparator />
-                    <CommandGroup heading="Shell History">
-                      {filtered.slice(0, 15).map((cmd) => (
-                        <CommandItem
-                          key={`history-${cmd}`}
-                          value={`shell-history ${cmd}`}
-                          onSelect={() => runAsTerminalCommand(cmd)}
-                        >
-                          <TerminalSquare className="text-muted-foreground" />
-                          <span className="truncate font-mono text-xs">{cmd}</span>
-                        </CommandItem>
-                      ))}
-                    </CommandGroup>
-                  </>
+                  </React.Fragment>
                 )
-              })()}
-
-            <CommandSeparator />
-            <CommandGroup heading="Theme">
-              {Object.entries(terminalThemes).map(([key, theme]) => (
-                <CommandItem
-                  key={key}
-                  onSelect={() => runAction(() => useStore.getState().setTerminalTheme(key))}
-                  data-checked={key === terminalTheme ? 'true' : undefined}
-                >
-                  <Palette className="text-muted-foreground" />
-                  {theme.name}
-                  <div className="ml-auto flex items-center gap-1">
-                    <div
-                      className="w-2.5 h-2.5 rounded-full"
-                      style={{ background: theme.background }}
-                    />
-                    <div className="w-2.5 h-2.5 rounded-full" style={{ background: theme.red }} />
-                    <div className="w-2.5 h-2.5 rounded-full" style={{ background: theme.green }} />
-                    <div className="w-2.5 h-2.5 rounded-full" style={{ background: theme.blue }} />
-                  </div>
-                </CommandItem>
-              ))}
-            </CommandGroup>
+              },
+            )}
           </CommandList>
+          {isGitRepo && cmdkValue.startsWith('agent-') && (
+            <div className="px-1.5 py-1 text-[11px] text-muted-foreground/40">
+              <Kbd className="text-[10px] h-4 min-w-4">⌘↵</Kbd> to launch in a worktree
+            </div>
+          )}
           {attachments.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 px-2 py-1.5 border-t border-border/30">
+            <div className="flex flex-wrap gap-1.5 px-1.5 py-1">
               {attachments.map((a) => {
+                const isImg = isImageFile(a.name)
+                if (isImg) {
+                  return (
+                    <div key={a.path} className="relative group">
+                      {a.thumbnailUrl ? (
+                        <img
+                          src={a.thumbnailUrl}
+                          alt={a.name}
+                          className="h-12 max-w-24 rounded-md object-cover border border-border/30"
+                        />
+                      ) : (
+                        <div className="h-12 w-12 rounded-md border border-border/30 bg-muted/40 flex items-center justify-center">
+                          <Image className="size-4 text-muted-foreground/50" />
+                        </div>
+                      )}
+                      <button
+                        type="button"
+                        className="absolute -top-1 -right-1 rounded-full bg-background/80 border border-border/40 p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          removeAttachment(a.path)
+                        }}
+                      >
+                        <X className="size-2.5" />
+                      </button>
+                    </div>
+                  )
+                }
                 const Icon = getAttachmentIcon(a.name)
                 return (
                   <span
@@ -974,10 +1144,20 @@ export function CommandPalette() {
             searchText={search}
             onValueChange={handleSearchChange}
             onKeyDown={(e) => {
-              if (e.key === 'Backspace' && !search && attachments.length > 0) {
-                e.preventDefault()
-                setAttachments((prev) => prev.slice(0, -1))
-                return
+              if (e.key === 'Backspace' && attachments.length > 0) {
+                // If the input only contains [path] references (no user text), remove the last attachment
+                const withoutRefs = attachments
+                  .reduce(
+                    (s, a) => s.replace(`[${a.path}] `, '').replace(`[${a.path}]`, ''),
+                    search,
+                  )
+                  .trim()
+                if (!withoutRefs) {
+                  e.preventDefault()
+                  const last = attachments[attachments.length - 1]
+                  removeAttachment(last.path)
+                  return
+                }
               }
               if (e.key === 'Enter' && search.trim()) {
                 // Prefix match → execute prefix action directly

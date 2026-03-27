@@ -101,6 +101,7 @@ export interface ProjectsState {
   colorScheme?: 'light' | 'dark' | 'system'
   closeUndoTimeoutMs?: number
   closeProcessSuppressions?: string[]
+  dimWhenUnfocused?: boolean
   /** @deprecated Moved to Project — kept for migration */
   autoArrangeOnCreate?: boolean
 }
@@ -219,6 +220,9 @@ export interface CellsAPI {
     ): Promise<any>
     destroy(browserId: string): Promise<void>
     park(browserId: string): Promise<void>
+    getHistory(
+      browserId: string,
+    ): Promise<{ entries: BrowserHistoryEntry[]; activeIndex: number } | null>
     navigate(browserId: string, url: string, searchEngineUrl?: string): Promise<void>
     goBack(browserId: string): void
     goForward(browserId: string): void
@@ -286,7 +290,9 @@ export interface CellsAPI {
     pasteClipboardFiles(): Promise<string[] | null>
     openExternal(url: string): Promise<void>
     requestQuit(): Promise<void>
+    beep(): void
     getShellHistory(): Promise<string[]>
+    fileThumbnail(filePath: string): Promise<string | null>
   }
   mcp: {
     install(projectPath: string): Promise<{

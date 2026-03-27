@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useHotkey } from '@tanstack/react-hotkeys'
 import { useStore } from './lib/store'
 import { StatusBar } from './components/toolbar/toolbar'
@@ -11,6 +11,7 @@ import { CloseWindowDialog } from './components/close-window-dialog'
 import { Toaster } from './components/toast'
 import { PinnedWindow } from './components/pinned-window'
 import { buildWindowAppearanceStyle } from './lib/window-appearance'
+import { useShallow } from 'zustand/react/shallow'
 
 const pinnedId = window.cells.app.getPinnedId()
 const pinnedType = window.cells.app.getPinnedType()
@@ -30,6 +31,7 @@ function MainApp() {
     persist,
     projects,
     windowOpacity,
+    dimWhenUnfocused,
     requestCloseWindow,
     restoreLastClosedWindow,
     pendingCloseDialog,
@@ -37,8 +39,38 @@ function MainApp() {
     confirmPendingClose,
     cancelPendingClose,
     setOverlayOpen,
-  } = useStore()
+  } = useStore(
+    useShallow((s) => ({
+      initialized: s.initialized,
+      init: s.init,
+      persist: s.persist,
+      projects: s.projects,
+      windowOpacity: s.windowOpacity,
+      dimWhenUnfocused: s.dimWhenUnfocused,
+      requestCloseWindow: s.requestCloseWindow,
+      restoreLastClosedWindow: s.restoreLastClosedWindow,
+      pendingCloseDialog: s.pendingCloseDialog,
+      closeUndoTimeoutMs: s.closeUndoTimeoutMs,
+      confirmPendingClose: s.confirmPendingClose,
+      cancelPendingClose: s.cancelPendingClose,
+      setOverlayOpen: s.setOverlayOpen,
+    })),
+  )
   const shellStyle = buildWindowAppearanceStyle({ windowOpacity })
+
+  const [windowFocused, setWindowFocused] = useState(document.hasFocus())
+  useEffect(() => {
+    const onFocus = () => setWindowFocused(true)
+    const onBlur = () => setWindowFocused(false)
+    window.addEventListener('focus', onFocus)
+    window.addEventListener('blur', onBlur)
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      window.removeEventListener('blur', onBlur)
+    }
+  }, [])
+
+  const showDimOverlay = dimWhenUnfocused && !windowFocused
 
   const closeWindow = useCallback(() => {
     void requestCloseWindow()
@@ -161,6 +193,7 @@ function MainApp() {
     return (
       <div className="app-shell h-full flex items-center justify-center" style={shellStyle}>
         <p className="text-xs text-muted-foreground/40">Loading...</p>
+        {showDimOverlay && <UnfocusedOverlay />}
       </div>
     )
   }
@@ -172,6 +205,7 @@ function MainApp() {
         style={shellStyle}
       >
         <Onboarding />
+        {showDimOverlay && <UnfocusedOverlay />}
       </div>
     )
   }
@@ -195,6 +229,18 @@ function MainApp() {
         onCancel={cancelPendingClose}
       />
       <Toaster />
+      {showDimOverlay && <UnfocusedOverlay />}
+    </div>
+  )
+}
+
+function UnfocusedOverlay() {
+  return (
+    <div className="absolute inset-0 z-[9999] flex items-center justify-center bg-black/50 backdrop-blur-[1px] rounded-lg">
+      <p className="text-xs text-white/50">
+        Window not in focus{' '}
+        <span className="text-white/30">&middot; disable in Settings &gt; Appearance</span>
+      </p>
     </div>
   )
 }

@@ -426,6 +426,26 @@ server.addTool({
   },
 });
 
+// ==================== Notifications ====================
+
+server.addTool({
+  name: "notify",
+  description:
+    "Send an arbitrary desktop notification to the user. " +
+    "Use this to alert the user about completed tasks, errors, or anything that needs their attention.",
+  parameters: z.object({
+    title: z
+      .string()
+      .optional()
+      .describe("Notification title. Defaults to 'Cells'."),
+    body: z.string().describe("The notification body text."),
+  }),
+  execute: async ({ title, body }) => {
+    await bridgeRequest("notify", { title, body });
+    return "Notification sent.";
+  },
+});
+
 // ==================== Start server ====================
 
 server.start({

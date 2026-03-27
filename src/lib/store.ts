@@ -42,6 +42,7 @@ interface StoreState {
   fontSize: number
   fontFamily: string
   windowOpacity: number
+  dimWhenUnfocused: boolean
   focusedTerminalId: string | null
   focusedBrowserId: string | null
   focusHistory: string[] // stack of recently focused IDs (most recent last)
@@ -69,7 +70,7 @@ interface StoreState {
   enabledAgents: Record<string, boolean | 'auto'>
   inputPrefixes: InputPrefix[]
   lastUsedAgent: string | null
-  lastCommandAction: 'search' | 'agent' | null
+  lastCommandAction: 'search' | 'agent' | 'run' | null
   colorScheme: 'light' | 'dark' | 'system'
   saveStatus: 'idle' | 'saving' | 'saved' | 'error'
   updateStatus: string // 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'up-to-date' | 'error'
@@ -107,6 +108,7 @@ interface StoreState {
   setFontSize(size: number): void
   setFontFamily(family: string): void
   setWindowOpacity(opacity: number): void
+  setDimWhenUnfocused(enabled: boolean): void
 
   addTerminal(): TerminalNode
   addTerminalWithCommand(command: string, title?: string): TerminalNode
@@ -161,7 +163,7 @@ interface StoreState {
   setEnabledAgents(agents: Record<string, boolean | 'auto'>): void
   setInputPrefixes(prefixes: InputPrefix[]): void
   setLastUsedAgent(agent: string): void
-  setLastCommandAction(action: 'search' | 'agent'): void
+  setLastCommandAction(action: 'search' | 'agent' | 'run'): void
   setColorScheme(scheme: 'light' | 'dark' | 'system'): void
   setCloseUndoTimeoutMs(timeoutMs: number): void
   setCloseProcessSuppressions(processes: string[]): void
@@ -194,6 +196,10 @@ interface StoreState {
   updateBrowserUrl(id: string, url: string): void
   updateBrowserTitle(id: string, title: string): void
   updateBrowserFavicon(id: string, faviconUrl: string): void
+  updateBrowserHistory(
+    id: string,
+    history: { entries: Array<{ url: string; title: string }>; activeIndex: number } | undefined,
+  ): void
   focusBrowser(id: string): void
   bringBrowserToFront(id: string): void
 }
@@ -486,6 +492,7 @@ export const useStore = create<StoreState>((set, get) => ({
   fontSize: 13,
   fontFamily: DEFAULT_FONT_FAMILY,
   windowOpacity: DEFAULT_WINDOW_APPEARANCE.windowOpacity,
+  dimWhenUnfocused: true,
 
   setTerminalTheme(name) {
     set({ terminalTheme: name })
@@ -504,6 +511,10 @@ export const useStore = create<StoreState>((set, get) => ({
     set({
       windowOpacity: normalizeWindowAppearance({ windowOpacity: opacity }).windowOpacity,
     })
+    get().persist()
+  },
+  setDimWhenUnfocused(enabled) {
+    set({ dimWhenUnfocused: enabled })
     get().persist()
   },
 
@@ -564,6 +575,7 @@ export const useStore = create<StoreState>((set, get) => ({
         colorScheme: ps.colorScheme || 'dark',
         closeUndoTimeoutMs: Math.max(0, ps.closeUndoTimeoutMs ?? DEFAULT_CLOSE_UNDO_TIMEOUT_MS),
         closeProcessSuppressions: ps.closeProcessSuppressions ?? [],
+        dimWhenUnfocused: ps.dimWhenUnfocused ?? true,
       }
 
       if (projects.length === 0) {
@@ -715,6 +727,7 @@ export const useStore = create<StoreState>((set, get) => ({
           colorScheme: freshState.colorScheme,
           closeUndoTimeoutMs: freshState.closeUndoTimeoutMs,
           closeProcessSuppressions: freshState.closeProcessSuppressions,
+          dimWhenUnfocused: freshState.dimWhenUnfocused,
         })
       })
       .catch(() => {
@@ -745,6 +758,7 @@ export const useStore = create<StoreState>((set, get) => ({
           colorScheme: state.colorScheme,
           closeUndoTimeoutMs: state.closeUndoTimeoutMs,
           closeProcessSuppressions: state.closeProcessSuppressions,
+          dimWhenUnfocused: state.dimWhenUnfocused,
         })
       })
   },
@@ -1295,7 +1309,10 @@ export const useStore = create<StoreState>((set, get) => ({
     const current = currentId ? windows.find((window) => window.id === currentId) : null
     const origin = current ? getWindowCenter(current) : getViewportCenter(canvas)
     const next = getDirectionalWindow(windows, direction, origin, current?.id ?? null)
-    if (!next) return
+    if (!next) {
+      window.cells.app.beep()
+      return
+    }
 
     if (next.type === 'terminal') {
       get().snapToTerminal(next.id)
@@ -2124,6 +2141,12 @@ export const useStore = create<StoreState>((set, get) => ({
   updateBrowserFavicon(id, faviconUrl) {
     set((s) => ({
       browsers: s.browsers.map((b) => (b.id === id ? { ...b, faviconUrl } : b)),
+    }))
+  },
+
+  updateBrowserHistory(id, history) {
+    set((s) => ({
+      browsers: s.browsers.map((b) => (b.id === id ? { ...b, history } : b)),
     }))
   },
 

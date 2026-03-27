@@ -33,6 +33,7 @@ const api: CellsAPI = {
     ) => ipcRenderer.invoke('browser:create', browserId, projectId, history),
     destroy: (browserId: string) => ipcRenderer.invoke('browser:destroy', browserId),
     park: (browserId: string) => ipcRenderer.invoke('browser:park', browserId),
+    getHistory: (browserId: string) => ipcRenderer.invoke('browser:get-history', browserId),
     navigate: (browserId: string, url: string, searchEngineUrl?: string) =>
       ipcRenderer.invoke('browser:navigate', browserId, url, searchEngineUrl),
     goBack: (browserId: string) => ipcRenderer.send('browser:go-back', browserId),
@@ -154,7 +155,10 @@ const api: CellsAPI = {
       ipcRenderer.invoke('app:paste-clipboard-files') as Promise<string[] | null>,
     openExternal: (url: string) => ipcRenderer.invoke('app:open-external', url),
     requestQuit: () => ipcRenderer.invoke('app:request-quit'),
+    beep: () => ipcRenderer.send('app:beep'),
     getShellHistory: () => ipcRenderer.invoke('app:get-shell-history') as Promise<string[]>,
+    fileThumbnail: (filePath: string) =>
+      ipcRenderer.invoke('app:file-thumbnail', filePath) as Promise<string | null>,
     pinWindow: (
       id: string,
       type: string,

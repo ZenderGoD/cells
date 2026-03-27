@@ -11,6 +11,7 @@
 
 import net from 'net'
 import fs from 'fs'
+import { Notification } from 'electron'
 import type { BrowserWindow, WebContentsView } from 'electron'
 import type { PtyDaemonClient } from './pty-client'
 import type { PtyManager } from './pty'
@@ -376,6 +377,16 @@ async function handleRequest(ctx: BridgeContext, method: string, params: any): P
       const image = await view.webContents.capturePage()
       const png = image.toPNG()
       return { data: png.toString('base64'), mimeType: 'image/png' }
+    }
+
+    // ---- Notifications ----
+    case 'notify': {
+      const title = (params.title as string) || 'Cells'
+      const body = params.body as string
+      if (!body) throw new Error('Missing required param: body')
+      const n = new Notification({ title, body })
+      n.show()
+      return null
     }
 
     default:

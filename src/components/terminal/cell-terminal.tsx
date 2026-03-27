@@ -47,6 +47,7 @@ interface CachedTerminal {
   fitAddon: FitAddon
   wrapper: HTMLDivElement // the div term.open() was called on
   cleanups: Array<() => void>
+  setPollingEnabled(enabled: boolean): void
 }
 const terminalCache = new Map<string, CachedTerminal>()
 
@@ -592,6 +593,7 @@ export function CellTerminal({
         container.appendChild(cached.wrapper)
         terminalRef.current = cached.term
         fitAddonRef.current = cached.fitAddon
+        cached.setPollingEnabled(true)
 
         // Fit first, then get accurate dimensions for attach
         await new Promise<void>((resolve) => {
@@ -947,8 +949,8 @@ export function CellTerminal({
       wrapper.addEventListener('paste', handlePaste)
       cleanups.push(() => wrapper.removeEventListener('paste', handlePaste))
 
-      // Agent + process detection poll
-      const agentPoll = setInterval(async () => {
+      let agentPoll: ReturnType<typeof setInterval> | null = null
+      const runAgentPoll = async () => {
         const proc = await window.cells.terminal.getProcess(termId)
         const agent = normalizeAgentProcess(proc)
         const wasAgent = prevAgentRef.current
@@ -1030,11 +1032,26 @@ export function CellTerminal({
             setInferredTitle(formatAgentWindowTitle('codex', codexTitle))
           }
         }
-      }, 3000)
-      cleanups.push(() => clearInterval(agentPoll))
+      }
+      const setPollingEnabled = (enabled: boolean) => {
+        if (enabled) {
+          if (agentPoll) return
+          agentPoll = setInterval(() => {
+            void runAgentPoll()
+          }, 3000)
+          void runAgentPoll()
+          return
+        }
+        if (agentPoll) {
+          clearInterval(agentPoll)
+          agentPoll = null
+        }
+      }
+      cleanups.push(() => setPollingEnabled(false))
 
       // Store in cache
-      terminalCache.set(termId, { term, fitAddon, wrapper, cleanups })
+      terminalCache.set(termId, { term, fitAddon, wrapper, cleanups, setPollingEnabled })
+      setPollingEnabled(true)
 
       const dims = fitAddon.proposeDimensions()
       const worktreeCwd = consumePendingWorktreePath(termId)
@@ -1077,6 +1094,7 @@ export function CellTerminal({
       cancelled = true
       // DON'T dispose — just detach DOM. Terminal stays alive in cache.
       const cached = terminalCache.get(termId)
+      cached?.setPollingEnabled(false)
       if (cached && container?.contains(cached.wrapper)) {
         container.removeChild(cached.wrapper)
       }

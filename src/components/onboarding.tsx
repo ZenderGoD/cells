@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input'
 import { useStore } from '@/lib/store'
 
 export function Onboarding() {
-  const { createProject } = useStore()
+  const createProject = useStore((s) => s.createProject)
   const [name, setName] = useState('')
   const [path, setPath] = useState('')
 

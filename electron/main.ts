@@ -422,6 +422,10 @@ ipcMain.handle('app:request-quit', () => {
   return confirmAndQuitApp()
 })
 
+ipcMain.on('app:beep', () => {
+  shell.beep()
+})
+
 // ---------- Git worktree helpers ----------
 
 function gitExec(args: string[], cwd: string): string {
@@ -873,6 +877,18 @@ ipcMain.handle('app:paste-clipboard-files', async () => {
   }
 })
 
+ipcMain.handle('app:file-thumbnail', async (_event, filePath: string) => {
+  try {
+    const img = nativeImage.createFromPath(filePath)
+    if (img.isEmpty()) return null
+    // Resize to a small thumbnail to keep IPC payload small
+    const thumb = img.resize({ height: 96 })
+    return thumb.toDataURL()
+  } catch {
+    return null
+  }
+})
+
 ipcMain.on('terminal:write', (_event, termId: string, data: string) => {
   if (useDaemon && daemonClient?.isConnected()) {
     daemonClient.write(termId, data)
@@ -1277,6 +1293,23 @@ ipcMain.handle('browser:get-all-history', () => {
     } catch {}
   }
   return result
+})
+
+ipcMain.handle('browser:get-history', (_event, browserId: string) => {
+  const view = browserViews.get(browserId)
+  if (!view) return null
+  try {
+    const nav = view.webContents.navigationHistory
+    const count = nav.length()
+    const entries: Array<{ url: string; title: string }> = []
+    for (let i = 0; i < count; i++) {
+      const entry = nav.getEntryAtIndex(i)
+      if (entry) entries.push({ url: entry.url, title: entry.title })
+    }
+    return { entries, activeIndex: nav.getActiveIndex() }
+  } catch {
+    return null
+  }
 })
 
 // Park: hide the view but keep it alive (for project switching)

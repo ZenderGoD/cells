@@ -9,6 +9,7 @@ import { getStatusIndicator } from '@/lib/status-indicator'
 import { inferAgentFromTitle } from '@/lib/agent-command'
 import { Logo } from '@/components/logo'
 import { WorktreeSwitcher } from '@/components/worktree-switcher'
+import { useShallow } from 'zustand/react/shallow'
 
 type Edge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
 
@@ -42,7 +43,16 @@ export function TerminalNode({
     updateTerminalTitle,
     focusTerminal,
     togglePin,
-  } = useStore()
+  } = useStore(
+    useShallow((s) => ({
+      requestCloseWindow: s.requestCloseWindow,
+      resizeTerminal: s.resizeTerminal,
+      moveTerminal: s.moveTerminal,
+      updateTerminalTitle: s.updateTerminalTitle,
+      focusTerminal: s.focusTerminal,
+      togglePin: s.togglePin,
+    })),
+  )
   const arrangeAnimating = useStore((s) => s.arrangeAnimating)
   const [isResizing, setIsResizing] = useState(false)
   const displayAgent = terminal.agent ?? inferAgentFromTitle(terminal.title)
