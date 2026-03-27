@@ -255,10 +255,11 @@ export function StatusBar() {
   const [urlInput, setUrlInput] = useState('')
   const [urlBarFocused, setUrlBarFocused] = useState(false)
   const [copiedBrowserId, setCopiedBrowserId] = useState<string | null>(null)
-  const [isEditingTitle, setIsEditingTitle] = useState(false)
+  const [editingTitleForTermId, setEditingTitleForTermId] = useState<string | null>(null)
   const [editTitleValue, setEditTitleValue] = useState('')
   const titleInputRef = useRef<HTMLInputElement>(null)
   const setCustomTitle = useStore((s) => s.setCustomTitle)
+  const isEditingTitle = editingTitleForTermId === focusedTerminalId && !!focusedTerminalId
   const [browserUi, setBrowserUi] = useState(EMPTY_BROWSER_UI)
   const activeBrowserUi = browserUi.browserId === focusedBrowserId ? browserUi : EMPTY_BROWSER_UI
   const { canGoBack, canGoForward, isLoading, themeColor } = activeBrowserUi
@@ -283,9 +284,6 @@ export function StatusBar() {
     })
     return unsub
   }, [refreshExtensions])
-  useEffect(() => {
-    setIsEditingTitle(false)
-  }, [focusedTerminalId])
   const copyResetRef = useRef<number | null>(null)
   const showCopied = !!focusedBrowser?.url && copiedBrowserId === focusedBrowser.id
   const allWindows = getCanvasWindows(terminals, browsers)
@@ -637,7 +635,7 @@ export function StatusBar() {
                     value={editTitleValue}
                     onChange={(e) => setEditTitleValue(e.target.value)}
                     onBlur={() => {
-                      setIsEditingTitle(false)
+                      setEditingTitleForTermId(null)
                       const trimmed = editTitleValue.trim()
                       if (trimmed && trimmed !== (ft?.title ?? '')) {
                         setCustomTitle(focusedTerminalId, trimmed)
@@ -651,7 +649,7 @@ export function StatusBar() {
                         e.currentTarget.blur()
                       } else if (e.key === 'Escape') {
                         e.preventDefault()
-                        setIsEditingTitle(false)
+                        setEditingTitleForTermId(null)
                       }
                     }}
                   />
@@ -660,7 +658,7 @@ export function StatusBar() {
                     className="text-[11px] font-medium truncate min-w-0 text-muted-foreground cursor-text"
                     onDoubleClick={() => {
                       setEditTitleValue(ftTitle)
-                      setIsEditingTitle(true)
+                      setEditingTitleForTermId(focusedTerminalId)
                       requestAnimationFrame(() => {
                         titleInputRef.current?.focus()
                         titleInputRef.current?.select()
