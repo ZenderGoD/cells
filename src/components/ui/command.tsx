@@ -98,7 +98,7 @@ function CommandInput({
 
   if (!multiline) {
     return (
-      <div data-slot="command-input-wrapper" className="p-1 pb-0">
+      <div data-slot="command-input-wrapper" className="p-1 pt-0">
         <InputGroup className="h-8! rounded-lg! border-input/30 bg-input/30 shadow-none! *:data-[slot=input-group-addon]:pl-2!">
           <CommandPrimitive.Input
             data-slot="command-input"
@@ -117,7 +117,7 @@ function CommandInput({
   const { value, onValueChange, onKeyDown, placeholder } = props
 
   return (
-    <div data-slot="command-input-wrapper" className="p-1 pb-0">
+    <div data-slot="command-input-wrapper" className="p-1 pt-0">
       {/* Hidden cmdk input to drive search/filter */}
       <CommandPrimitive.Input
         value={value}

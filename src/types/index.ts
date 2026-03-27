@@ -286,6 +286,7 @@ export interface CellsAPI {
     pasteClipboardFiles(): Promise<string[] | null>
     openExternal(url: string): Promise<void>
     requestQuit(): Promise<void>
+    getShellHistory(): Promise<string[]>
   }
   mcp: {
     install(projectPath: string): Promise<{

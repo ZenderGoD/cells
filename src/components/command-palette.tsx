@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, type ReactNode } from 'react'
+import React, { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import { useHotkey } from '@tanstack/react-hotkeys'
 import {
   Globe,
@@ -199,12 +199,15 @@ export function CommandPalette() {
   const [showSettingsRaw, setShowSettingsRaw] = useState(false)
   const [showNewProjectRaw, setShowNewProjectRaw] = useState(false)
   const [search, setSearch] = useState('')
-  const [selectedValue, setSelectedValue] = useState('')
   const [agents, setAgents] = useState<Record<string, boolean>>({})
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [recentFiles, setRecentFiles] = useState<
     Array<{ path: string; name: string; mtime: number; source: string }>
   >([])
+  const [shellHistory, setShellHistory] = useState<string[]>([])
+  const [cmdkValue, setCmdkValue] = useState('')
+  const cmdkValueRef = useRef(cmdkValue)
+  cmdkValueRef.current = cmdkValue
   const terminals = useStore((s) => s.terminals)
   const browsers = useStore((s) => s.browsers)
   const terminalTheme = useStore((s) => s.terminalTheme)
@@ -292,6 +295,10 @@ export function CommandPalette() {
         .listRecentFiles()
         .then(setRecentFiles)
         .catch(() => {})
+      window.cells.app
+        .getShellHistory()
+        .then(setShellHistory)
+        .catch(() => {})
     }
   }, [open, agentAliases, enabledAgents])
 
@@ -299,9 +306,11 @@ export function CommandPalette() {
     const close = () => {
       setOpen(false)
       setSearch('')
-      setSelectedValue('')
       setAttachments([])
       setOverlayOpen(false)
+      requestAnimationFrame(() => {
+        window.dispatchEvent(new Event('terminal-refocus'))
+      })
     }
     const handleError = (err: Error | string) => {
       const raw = err instanceof Error ? err.message : err
@@ -324,17 +333,41 @@ export function CommandPalette() {
 
   const handleSearchChange = useCallback((value: string) => {
     setSearch(value)
-    // Reset selected item so cmdk auto-selects the first match
-    setSelectedValue('')
   }, [])
+
+  // Scroll to top and fix dropped selection when search text changes
+  useEffect(() => {
+    if (!open) return
+    const raf = requestAnimationFrame(() => {
+      const list = document.querySelector('[cmdk-list]') as HTMLElement | null
+      if (!list) return
+      list.scrollTop = 0
+      const selected = list.querySelector('[cmdk-item][data-selected="true"]') as HTMLElement | null
+      if (!selected || selected.offsetParent === null) {
+        const items = list.querySelectorAll('[cmdk-item]')
+        if (items.length > 0) {
+          // When searching, select the last item (closest to the input at bottom)
+          const target = search.trim()
+            ? (items[items.length - 1] as HTMLElement)
+            : (items[0] as HTMLElement)
+          const val = target.getAttribute('data-value')
+          if (val) setCmdkValue(val)
+        }
+      }
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [search, open])
 
   const handleOpenChange = (o: boolean) => {
     setOpen(o)
     setOverlayOpen(o)
     if (!o) {
       setSearch('')
-      setSelectedValue('')
       setAttachments([])
+      // Re-focus the active terminal so keyboard input works immediately
+      requestAnimationFrame(() => {
+        window.dispatchEvent(new Event('terminal-refocus'))
+      })
     }
   }
 
@@ -455,15 +488,15 @@ export function CommandPalette() {
       <CommandDialog open={open} onOpenChange={handleOpenChange} showCloseButton={false}>
         <Command
           loop
-          value={selectedValue}
-          onValueChange={setSelectedValue}
+          value={cmdkValue}
+          onValueChange={setCmdkValue}
           filter={(value, search) => {
             // Give forceMount items a non-zero score so cmdk includes them in
             // auto-selection when no other items match the search text.
             if (
               value.startsWith('agent-') ||
               value === 'search-web' ||
-              value.startsWith('run-terminal-') ||
+              value === 'run-terminal-command' ||
               value === 'create-worktree-new-branch'
             ) {
               return 1
@@ -513,61 +546,6 @@ export function CommandPalette() {
             if (paths.length > 0) addAttachments(paths)
           }}
         >
-          <DynamicCommandInput
-            placeholder="Search, enter URL, or type a prompt..."
-            value={search}
-            searchText={search}
-            onValueChange={handleSearchChange}
-            onKeyDown={(e) => {
-              if (e.key === 'Backspace' && !search && attachments.length > 0) {
-                e.preventDefault()
-                setAttachments((prev) => prev.slice(0, -1))
-                return
-              }
-              if (e.key === 'Enter' && search.trim()) {
-                // Prefix match → execute prefix action directly
-                if (matchInputPrefix(search)) {
-                  e.preventDefault()
-                  executePrefixAction(search)
-                  return
-                }
-                // Enter with no matching command → search in new browser tab
-                const list = (e.target as HTMLElement)
-                  .closest('[cmdk-root]')
-                  ?.querySelector('[cmdk-item][data-selected="true"]')
-                if (!list) {
-                  e.preventDefault()
-                  searchInBrowser()
-                }
-              }
-            }}
-          />
-          {attachments.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 px-2 py-1.5 border-b border-border/30">
-              {attachments.map((a) => {
-                const Icon = getAttachmentIcon(a.name)
-                return (
-                  <span
-                    key={a.path}
-                    className="inline-flex items-center gap-1 rounded-md bg-muted/60 px-2 py-0.5 text-xs text-muted-foreground"
-                  >
-                    <Icon className="size-3 shrink-0" />
-                    <span className="max-w-32 truncate">{a.name}</span>
-                    <button
-                      type="button"
-                      className="ml-0.5 rounded-sm hover:bg-muted-foreground/20 p-0.5"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        removeAttachment(a.path)
-                      }}
-                    >
-                      <X className="size-3" />
-                    </button>
-                  </span>
-                )
-              })}
-            </div>
-          )}
           <CommandList>
             <CommandEmpty className="hidden" />
 
@@ -900,7 +878,7 @@ export function CommandPalette() {
                 <CommandGroup heading="Run" forceMount>
                   <CommandItem
                     forceMount
-                    value={`run-terminal-${search}`}
+                    value="run-terminal-command"
                     onSelect={() => runAsTerminalCommand(search)}
                   >
                     <TerminalSquare className="text-muted-foreground" />
@@ -911,6 +889,34 @@ export function CommandPalette() {
                 </CommandGroup>
               </>
             )}
+
+            {shellHistory.length > 0 &&
+              (() => {
+                // Pre-filter in React so non-matching items never enter the DOM.
+                // This avoids confusing cmdk's auto-selection with many hidden items.
+                const query = search.trim().toLowerCase()
+                const filtered = query
+                  ? shellHistory.filter((cmd) => cmd.toLowerCase().includes(query))
+                  : shellHistory.slice(0, 15)
+                if (filtered.length === 0) return null
+                return (
+                  <>
+                    <CommandSeparator />
+                    <CommandGroup heading="Shell History">
+                      {filtered.slice(0, 15).map((cmd) => (
+                        <CommandItem
+                          key={`history-${cmd}`}
+                          value={`shell-history ${cmd}`}
+                          onSelect={() => runAsTerminalCommand(cmd)}
+                        >
+                          <TerminalSquare className="text-muted-foreground" />
+                          <span className="truncate font-mono text-xs">{cmd}</span>
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  </>
+                )
+              })()}
 
             <CommandSeparator />
             <CommandGroup heading="Theme">
@@ -935,6 +941,61 @@ export function CommandPalette() {
               ))}
             </CommandGroup>
           </CommandList>
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 px-2 py-1.5 border-t border-border/30">
+              {attachments.map((a) => {
+                const Icon = getAttachmentIcon(a.name)
+                return (
+                  <span
+                    key={a.path}
+                    className="inline-flex items-center gap-1 rounded-md bg-muted/60 px-2 py-0.5 text-xs text-muted-foreground"
+                  >
+                    <Icon className="size-3 shrink-0" />
+                    <span className="max-w-32 truncate">{a.name}</span>
+                    <button
+                      type="button"
+                      className="ml-0.5 rounded-sm hover:bg-muted-foreground/20 p-0.5"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        removeAttachment(a.path)
+                      }}
+                    >
+                      <X className="size-3" />
+                    </button>
+                  </span>
+                )
+              })}
+            </div>
+          )}
+          <DynamicCommandInput
+            placeholder="Search, enter URL, or type a prompt..."
+            value={search}
+            searchText={search}
+            onValueChange={handleSearchChange}
+            onKeyDown={(e) => {
+              if (e.key === 'Backspace' && !search && attachments.length > 0) {
+                e.preventDefault()
+                setAttachments((prev) => prev.slice(0, -1))
+                return
+              }
+              if (e.key === 'Enter' && search.trim()) {
+                // Prefix match → execute prefix action directly
+                if (matchInputPrefix(search)) {
+                  e.preventDefault()
+                  executePrefixAction(search)
+                  return
+                }
+                // Enter with no matching command → search in new browser tab
+                const list = (e.target as HTMLElement)
+                  .closest('[cmdk-root]')
+                  ?.querySelector('[cmdk-item][data-selected="true"]')
+                if (!list) {
+                  e.preventDefault()
+                  searchInBrowser()
+                }
+              }
+            }}
+          />
         </Command>
       </CommandDialog>
 

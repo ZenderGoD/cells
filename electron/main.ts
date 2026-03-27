@@ -783,6 +783,60 @@ ipcMain.handle('app:save-temp-file', async (_event, data: Uint8Array, filename: 
   }
 })
 
+// Read shell history (bash, zsh, or fish) and return deduplicated recent commands
+ipcMain.handle('app:get-shell-history', async () => {
+  try {
+    const homeDir = app.getPath('home')
+    const userShell = process.env.SHELL || '/bin/zsh'
+
+    // Determine history file based on the user's shell
+    let historyFile: string
+    let parser: (content: string) => string[]
+
+    if (userShell.includes('fish')) {
+      historyFile = path.join(homeDir, '.local', 'share', 'fish', 'fish_history')
+      parser = (content) => {
+        // Fish history format: "- cmd: <command>" lines
+        return content
+          .split('\n')
+          .filter((line) => line.startsWith('- cmd: '))
+          .map((line) => line.slice(7))
+      }
+    } else if (userShell.includes('zsh')) {
+      historyFile = path.join(homeDir, '.zsh_history')
+      parser = (content) => {
+        return content.split('\n').map((line) => {
+          // Zsh extended history format: ": <timestamp>:<elapsed>;<command>"
+          const m = line.match(/^: \d+:\d+;(.*)/)
+          return m ? m[1] : line
+        })
+      }
+    } else {
+      historyFile = path.join(homeDir, '.bash_history')
+      parser = (content) => content.split('\n')
+    }
+
+    if (!fs.existsSync(historyFile)) return []
+    const content = fs.readFileSync(historyFile, 'utf-8')
+    const lines = parser(content).filter((l) => l.trim().length > 0)
+
+    // Deduplicate, keeping the most recent occurrence, return last 100
+    const seen = new Set<string>()
+    const unique: string[] = []
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const cmd = lines[i].trim()
+      if (!seen.has(cmd)) {
+        seen.add(cmd)
+        unique.push(cmd)
+      }
+      if (unique.length >= 100) break
+    }
+    return unique
+  } catch {
+    return []
+  }
+})
+
 // Read clipboard — returns file paths (copied files, images) or null (caller falls back to text)
 ipcMain.handle('app:paste-clipboard-files', async () => {
   try {

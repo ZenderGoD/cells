@@ -154,6 +154,7 @@ const api: CellsAPI = {
       ipcRenderer.invoke('app:paste-clipboard-files') as Promise<string[] | null>,
     openExternal: (url: string) => ipcRenderer.invoke('app:open-external', url),
     requestQuit: () => ipcRenderer.invoke('app:request-quit'),
+    getShellHistory: () => ipcRenderer.invoke('app:get-shell-history') as Promise<string[]>,
     pinWindow: (
       id: string,
       type: string,

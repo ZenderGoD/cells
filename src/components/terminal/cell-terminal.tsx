@@ -1123,6 +1123,17 @@ export function CellTerminal({
     })
   }, [isFocused])
 
+  // Re-focus the terminal when overlays (command palette, etc.) close
+  useEffect(() => {
+    const handler = () => {
+      if (isFocused && terminalRef.current) {
+        terminalRef.current.focus()
+      }
+    }
+    window.addEventListener('terminal-refocus', handler)
+    return () => window.removeEventListener('terminal-refocus', handler)
+  }, [isFocused])
+
   // Allow scrolling the scrollback buffer even when the running program has
   // mouse tracking enabled (e.g. Claude Code, Codex) or is using the alternate
   // screen buffer.  In either case the default wheel behavior doesn't scroll

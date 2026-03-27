@@ -40,6 +40,7 @@ export function BrowserNode({
     togglePin,
   } = useStore()
   const activeProjectId = useStore((s) => s.activeProjectId)
+  const arrangeAnimating = useStore((s) => s.arrangeAnimating)
   const overlayOpen = useStore((s) => s.overlayOpen)
   const canvas = useStore((s) => s.canvas)
   const dragModeActive = selectionMode
@@ -358,6 +359,9 @@ export function BrowserNode({
         width: browser.width,
         height: browser.height,
         zIndex: z,
+        transition: arrangeAnimating
+          ? 'left 300ms cubic-bezier(0.4, 0, 0.2, 1), top 300ms cubic-bezier(0.4, 0, 0.2, 1)'
+          : undefined,
       }}
       onMouseDown={handleNodeMouseDown}
     >

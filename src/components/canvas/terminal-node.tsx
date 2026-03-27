@@ -43,6 +43,7 @@ export function TerminalNode({
     focusTerminal,
     togglePin,
   } = useStore()
+  const arrangeAnimating = useStore((s) => s.arrangeAnimating)
   const [isResizing, setIsResizing] = useState(false)
   const displayAgent = terminal.agent ?? inferAgentFromTitle(terminal.title)
 
@@ -178,6 +179,9 @@ export function TerminalNode({
         width: terminal.width,
         height: terminal.height,
         zIndex: z,
+        transition: arrangeAnimating
+          ? 'left 300ms cubic-bezier(0.4, 0, 0.2, 1), top 300ms cubic-bezier(0.4, 0, 0.2, 1)'
+          : undefined,
       }}
       onMouseDown={handleNodeMouseDown}
     >

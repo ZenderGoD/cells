@@ -76,6 +76,7 @@ interface StoreState {
   closeProcessSuppressions: string[]
   pendingClosedWindows: PendingClosedWindow[]
   pendingCloseDialog: PendingCloseDialog | null
+  arrangeAnimating: boolean // true while auto-arrange is animating positions
 
   // When a link opens a browser in a different project, tracks the source so we can return
   crossProjectReturn: { browserId: string; sourceProjectId: string } | null
@@ -471,6 +472,7 @@ export const useStore = create<StoreState>((set, get) => ({
   closeProcessSuppressions: [],
   pendingClosedWindows: [],
   pendingCloseDialog: null,
+  arrangeAnimating: false,
   crossProjectReturn: null,
   focusedTerminalSince: 0,
   worktrees: [],
@@ -796,14 +798,20 @@ export const useStore = create<StoreState>((set, get) => ({
 
     const updated = projects.map((p) => (p.id === id ? { ...p, lastOpenedAt: Date.now() } : p))
 
+    const workingState = projectToWorkingState(target)
     set({
       projects: updated,
       activeProjectId: id,
-      ...projectToWorkingState(target),
+      ...workingState,
       crossProjectReturn: null,
     })
     get().persist()
     get().refreshWorktrees()
+
+    // Force repaint on the restored focused terminal so it renders fresh content
+    if (workingState.focusedTerminalId) {
+      reloadTerminal(workingState.focusedTerminalId)
+    }
   },
 
   removeProject(id) {
@@ -1431,24 +1439,8 @@ export const useStore = create<StoreState>((set, get) => ({
     // Sort by focus count descending (most used first)
     allWindows.sort((a, b) => (focusCounts[b.id] ?? 0) - (focusCounts[a.id] ?? 0))
 
-    // Generate spiral positions from center outward
-    const spiralPositions: Array<{ col: number; row: number }> = [{ col: 0, row: 0 }]
-    let layer = 1
-    while (spiralPositions.length < allWindows.length) {
-      // Right column top-to-bottom
-      for (let r = -layer + 1; r <= layer && spiralPositions.length < allWindows.length; r++)
-        spiralPositions.push({ col: layer, row: r })
-      // Bottom row right-to-left
-      for (let c = layer - 1; c >= -layer && spiralPositions.length < allWindows.length; c--)
-        spiralPositions.push({ col: c, row: layer })
-      // Left column bottom-to-top
-      for (let r = layer - 1; r >= -layer && spiralPositions.length < allWindows.length; r--)
-        spiralPositions.push({ col: -layer, row: r })
-      // Top row left-to-right
-      for (let c = -layer + 1; c <= layer && spiralPositions.length < allWindows.length; c++)
-        spiralPositions.push({ col: c, row: -layer })
-      layer++
-    }
+    // Simple row-based grid: pick columns to be roughly square
+    const cols = Math.ceil(Math.sqrt(allWindows.length))
 
     // Use uniform cell size based on max window dimensions
     const allNodes = [...terminals, ...browsers]
@@ -1456,32 +1448,46 @@ export const useStore = create<StoreState>((set, get) => ({
     const cellH = Math.max(...allNodes.map((n) => n.height))
     const gap = TERMINAL_GAP
 
-    // Place each window at its spiral grid position, centered on (0,0)
+    // Total grid dimensions for centering
+    const rows = Math.ceil(allWindows.length / cols)
+    const gridW = cols * cellW + (cols - 1) * gap
+    const gridH = rows * cellH + (rows - 1) * gap
+
+    // Place windows left-to-right, top-to-bottom, centered on (0,0)
     const updatedTerminals = new Map<string, { x: number; y: number }>()
     const updatedBrowsers = new Map<string, { x: number; y: number }>()
     for (let i = 0; i < allWindows.length; i++) {
-      const { col, row } = spiralPositions[i]
-      const x = col * (cellW + gap)
-      const y = row * (cellH + gap)
+      const col = i % cols
+      const row = Math.floor(i / cols)
+      const x = col * (cellW + gap) - gridW / 2
+      const y = row * (cellH + gap) - gridH / 2
       const win = allWindows[i]
       if (win.type === 'terminal') updatedTerminals.set(win.id, { x, y })
       else updatedBrowsers.set(win.id, { x, y })
     }
 
-    set((s) => ({
-      terminals: s.terminals.map((t) => {
-        const pos = updatedTerminals.get(t.id)
-        return pos ? { ...t, x: pos.x, y: pos.y } : t
-      }),
-      browsers: s.browsers.map((b) => {
-        const pos = updatedBrowsers.get(b.id)
-        return pos ? { ...b, x: pos.x, y: pos.y } : b
-      }),
-    }))
+    // Enable CSS transition on nodes, then update positions
+    set({ arrangeAnimating: true })
+    // RAF ensures the animating class is applied before positions change
+    requestAnimationFrame(() => {
+      set((s) => ({
+        terminals: s.terminals.map((t) => {
+          const pos = updatedTerminals.get(t.id)
+          return pos ? { ...t, x: pos.x, y: pos.y } : t
+        }),
+        browsers: s.browsers.map((b) => {
+          const pos = updatedBrowsers.get(b.id)
+          return pos ? { ...b, x: pos.x, y: pos.y } : b
+        }),
+      }))
 
-    // Zoom to fit the new layout
-    get().zoomToFitAll()
-    get().persist()
+      // Zoom to fit the new layout
+      get().zoomToFitAll()
+      get().persist()
+
+      // Clear animation flag after transition completes
+      setTimeout(() => set({ arrangeAnimating: false }), 350)
+    })
   },
 
   setCanvasTransform(transform) {

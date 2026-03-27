@@ -262,7 +262,7 @@ export function TerminalSwitcher() {
                       'relative flex flex-col rounded-lg overflow-hidden transition-all shrink-0 bg-card text-left',
                       i === selectedIndex
                         ? 'ring-2 ring-primary'
-                        : 'border border-border/30 hover:border-border/50',
+                        : 'ring-1 ring-border/30 hover:ring-border/50',
                     )}
                     style={{ width: 160, height: 110 }}
                   >

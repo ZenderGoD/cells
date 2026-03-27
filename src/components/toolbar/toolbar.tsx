@@ -406,7 +406,7 @@ export function StatusBar() {
   return (
     <>
       <div
-        className="relative h-10 shrink-0 flex items-stretch overflow-hidden border-t border-border/50 text-xs draggable-region transition-colors duration-300"
+        className="relative z-10 h-10 shrink-0 flex items-stretch overflow-visible border-t border-border/50 text-xs draggable-region transition-colors duration-300"
         style={{
           backgroundColor: themeColor
             ? `color-mix(in oklch, ${themeColor} 15%, var(--background))`
