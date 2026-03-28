@@ -1186,15 +1186,21 @@ export function CellTerminal({
 
   // Auto-focus + force repaint for reattached daemon sessions that may have
   // a stale/blank canvas despite having content in the internal buffer.
+  // When unfocused, blur the terminal so keystrokes don't reach it (e.g. in
+  // overview mode).
   useEffect(() => {
-    if (!isFocused || !terminalRef.current) return
-    terminalRef.current.focus()
-    const t = terminalRef.current
-    requestAnimationFrame(() => {
-      if (t.renderer && t.wasmTerm) {
-        t.renderer.render(t.wasmTerm, true, t.viewportY, t as ScrollbackProvider, 0)
-      }
-    })
+    if (!terminalRef.current) return
+    if (isFocused) {
+      terminalRef.current.focus()
+      const t = terminalRef.current
+      requestAnimationFrame(() => {
+        if (t.renderer && t.wasmTerm) {
+          t.renderer.render(t.wasmTerm, true, t.viewportY, t as ScrollbackProvider, 0)
+        }
+      })
+    } else {
+      terminalRef.current.blur()
+    }
   }, [isFocused])
 
   // Re-focus the terminal when overlays (command palette, etc.) close

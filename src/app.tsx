@@ -119,6 +119,22 @@ function MainApp() {
         event.preventDefault()
         event.stopPropagation()
         state.zoomToFitAll()
+        // Remove text input focus so keystrokes don't go to a terminal
+        if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+      }
+
+      // ESC in overview mode → return to previously focused window
+      if (
+        key === 'escape' &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.shiftKey &&
+        !state.focusedTerminalId &&
+        !state.focusedBrowserId
+      ) {
+        event.preventDefault()
+        event.stopPropagation()
+        state.exitOverview()
       }
 
       if (key === 'enter' && event.shiftKey && event.metaKey && !event.ctrlKey) {

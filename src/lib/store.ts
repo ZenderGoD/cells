@@ -154,6 +154,7 @@ interface StoreState {
   resizeWindowToFitFocused(): void
   resizeFocusedToFitViewport(): void
   zoomToFitAll(): void
+  exitOverview(): void
   setOverlayOpen(open: boolean): void
   setSearchEngine(engine: string): void
   setHomePage(url: string): void
@@ -1467,6 +1468,35 @@ export const useStore = create<StoreState>((set, get) => ({
 
     set({ snapPaused: true, focusedTerminalId: null, focusedBrowserId: null, snapFast: false })
     get().setCanvasTransform(nextTransform)
+  },
+
+  exitOverview() {
+    const { focusedTerminalId, focusedBrowserId, focusHistory, terminals, browsers } = get()
+    // Only meaningful when no window is focused (i.e. in overview)
+    if (focusedTerminalId || focusedBrowserId) return
+
+    // Restore focus to the most recently focused window from history
+    for (let i = focusHistory.length - 1; i >= 0; i--) {
+      const id = focusHistory[i]
+      if (terminals.some((t) => t.id === id)) {
+        get().focusTerminal(id)
+        get().snapToTerminal(id)
+        return
+      }
+      if (browsers.some((b) => b.id === id)) {
+        get().focusBrowser(id)
+        get().snapToBrowser(id)
+        return
+      }
+    }
+    // Fallback: focus the first terminal or browser
+    if (terminals.length > 0) {
+      get().focusTerminal(terminals[0].id)
+      get().snapToTerminal(terminals[0].id)
+    } else if (browsers.length > 0) {
+      get().focusBrowser(browsers[0].id)
+      get().snapToBrowser(browsers[0].id)
+    }
   },
 
   autoArrangeGrid(skipOverview?: boolean) {
