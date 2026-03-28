@@ -62,9 +62,9 @@ export function TerminalSwitcher() {
   const chronologicalItems: SwitcherItem[] = [
     ...terminals.map((t) => ({
       id: t.id,
-      title: t.title,
+      title: t.customTitle || t.title,
       type: 'terminal' as const,
-      agent: t.agent ?? inferAgentFromTitle(t.title),
+      agent: t.agent ?? inferAgentFromTitle(t.customTitle || t.title),
       agentStatus: t.agentStatus,
       processRunning: t.processRunning,
       isCurrent: t.id === focusedTerminalId,

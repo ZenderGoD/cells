@@ -255,6 +255,11 @@ export function StatusBar() {
   const [urlInput, setUrlInput] = useState('')
   const [urlBarFocused, setUrlBarFocused] = useState(false)
   const [copiedBrowserId, setCopiedBrowserId] = useState<string | null>(null)
+  const [editingTitleForTermId, setEditingTitleForTermId] = useState<string | null>(null)
+  const [editTitleValue, setEditTitleValue] = useState('')
+  const titleInputRef = useRef<HTMLInputElement>(null)
+  const setCustomTitle = useStore((s) => s.setCustomTitle)
+  const isEditingTitle = editingTitleForTermId === focusedTerminalId && !!focusedTerminalId
   const [browserUi, setBrowserUi] = useState(EMPTY_BROWSER_UI)
   const activeBrowserUi = browserUi.browserId === focusedBrowserId ? browserUi : EMPTY_BROWSER_UI
   const { canGoBack, canGoForward, isLoading, themeColor } = activeBrowserUi
@@ -614,7 +619,7 @@ export function StatusBar() {
         ) : focusedTerminalId ? (
           (() => {
             const ft = terminals.find((t) => t.id === focusedTerminalId)
-            const ftTitle = ft?.title ?? 'Terminal'
+            const ftTitle = ft?.customTitle || ft?.title || 'Terminal'
             const ftAgent = ft?.agent ?? inferAgentFromTitle(ftTitle)
             return (
               <div className="flex-1 flex items-center gap-2 px-3 min-w-0 no-drag">
@@ -623,9 +628,47 @@ export function StatusBar() {
                 ) : (
                   <Logo className="h-3 w-3 text-primary/60 shrink-0" />
                 )}
-                <span className="text-[11px] font-medium truncate min-w-0 text-muted-foreground">
-                  {ftTitle}
-                </span>
+                {isEditingTitle ? (
+                  <input
+                    ref={titleInputRef}
+                    className="text-[11px] font-medium text-muted-foreground bg-transparent border-b border-muted-foreground/40 outline-none min-w-0 flex-1 max-w-48"
+                    value={editTitleValue}
+                    onChange={(e) => setEditTitleValue(e.target.value)}
+                    onBlur={() => {
+                      setEditingTitleForTermId(null)
+                      const trimmed = editTitleValue.trim()
+                      if (trimmed && trimmed !== (ft?.title ?? '')) {
+                        setCustomTitle(focusedTerminalId, trimmed)
+                      } else if (!trimmed) {
+                        setCustomTitle(focusedTerminalId, null)
+                      }
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        e.currentTarget.blur()
+                      } else if (e.key === 'Escape') {
+                        e.preventDefault()
+                        setEditingTitleForTermId(null)
+                      }
+                    }}
+                  />
+                ) : (
+                  <span
+                    className="text-[11px] font-medium truncate min-w-0 text-muted-foreground cursor-text"
+                    onDoubleClick={() => {
+                      setEditTitleValue(ftTitle)
+                      setEditingTitleForTermId(focusedTerminalId)
+                      requestAnimationFrame(() => {
+                        titleInputRef.current?.focus()
+                        titleInputRef.current?.select()
+                      })
+                    }}
+                    title="Double-click to rename"
+                  >
+                    {ftTitle}
+                  </span>
+                )}
                 <WorktreeSwitcher termId={focusedTerminalId} />
               </div>
             )

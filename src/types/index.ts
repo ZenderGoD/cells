@@ -13,6 +13,7 @@ export interface TerminalNode {
   width: number
   height: number
   title: string
+  customTitle?: string | null
   zIndex?: number
   pinned?: boolean
   agent?: 'claude' | 'codex' | null

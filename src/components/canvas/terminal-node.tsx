@@ -1,4 +1,11 @@
-import { useState, useCallback, type MouseEvent } from 'react'
+import {
+  useState,
+  useCallback,
+  useRef,
+  useEffect,
+  type MouseEvent,
+  type KeyboardEvent,
+} from 'react'
 import { ArrowUpRight, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { CellTerminal } from '../terminal/cell-terminal'
@@ -42,6 +49,7 @@ export function TerminalNode({
     resizeTerminal,
     moveTerminal,
     updateTerminalTitle,
+    setCustomTitle,
     focusTerminal,
     togglePin,
   } = useStore(
@@ -50,13 +58,18 @@ export function TerminalNode({
       resizeTerminal: s.resizeTerminal,
       moveTerminal: s.moveTerminal,
       updateTerminalTitle: s.updateTerminalTitle,
+      setCustomTitle: s.setCustomTitle,
       focusTerminal: s.focusTerminal,
       togglePin: s.togglePin,
     })),
   )
   const arrangeAnimating = useStore((s) => s.arrangeAnimating)
   const [isResizing, setIsResizing] = useState(false)
+  const [isEditingTitle, setIsEditingTitle] = useState(false)
+  const [editValue, setEditValue] = useState('')
+  const titleInputRef = useRef<HTMLInputElement>(null)
   const displayAgent = terminal.agent ?? inferAgentFromTitle(terminal.title)
+  const displayTitle = terminal.customTitle || terminal.title
 
   const handleDragMouseDown = useCallback(
     (e: MouseEvent) => {
@@ -71,6 +84,42 @@ export function TerminalNode({
     },
     [focusTerminal, terminal.id, onDragStart, selectionMode],
   )
+
+  const startEditingTitle = useCallback(() => {
+    setEditValue(displayTitle)
+    setIsEditingTitle(true)
+  }, [displayTitle])
+
+  const commitTitle = useCallback(() => {
+    setIsEditingTitle(false)
+    const trimmed = editValue.trim()
+    if (trimmed && trimmed !== terminal.title) {
+      setCustomTitle(terminal.id, trimmed)
+    } else if (!trimmed) {
+      // Clear custom title to revert to auto-inferred
+      setCustomTitle(terminal.id, null)
+    }
+  }, [editValue, terminal.id, terminal.title, setCustomTitle])
+
+  const handleTitleKeyDown = useCallback(
+    (e: KeyboardEvent) => {
+      if (e.key === 'Enter') {
+        e.preventDefault()
+        commitTitle()
+      } else if (e.key === 'Escape') {
+        e.preventDefault()
+        setIsEditingTitle(false)
+      }
+    },
+    [commitTitle],
+  )
+
+  useEffect(() => {
+    if (isEditingTitle && titleInputRef.current) {
+      titleInputRef.current.focus()
+      titleInputRef.current.select()
+    }
+  }, [isEditingTitle])
 
   const handleEdgeMouseDown = useCallback(
     (edge: Edge, e: MouseEvent) => {
@@ -235,9 +284,28 @@ export function TerminalNode({
             ) : (
               <Logo className="h-3 w-3 text-primary/60 shrink-0" />
             )}
-            <span className="text-[11px] font-medium truncate max-w-40 text-muted-foreground">
-              {terminal.title}
-            </span>
+            {isEditingTitle ? (
+              <input
+                ref={titleInputRef}
+                className="text-[11px] font-medium text-muted-foreground bg-transparent border-b border-muted-foreground/40 outline-none max-w-40 w-full"
+                value={editValue}
+                onChange={(e) => setEditValue(e.target.value)}
+                onBlur={commitTitle}
+                onKeyDown={handleTitleKeyDown}
+                onMouseDown={(e) => e.stopPropagation()}
+              />
+            ) : (
+              <span
+                className="text-[11px] font-medium truncate max-w-40 text-muted-foreground cursor-text"
+                onDoubleClick={(e) => {
+                  e.stopPropagation()
+                  startEditingTitle()
+                }}
+                title="Double-click to rename"
+              >
+                {displayTitle}
+              </span>
+            )}
             <WorktreeSwitcher termId={terminal.id} />
             <button
               className="p-1 rounded-md transition-colors text-muted-foreground/40 hover:text-foreground hover:bg-muted/40"

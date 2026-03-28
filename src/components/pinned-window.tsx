@@ -12,11 +12,17 @@ export function PinnedWindow({ termId, type }: { termId: string; type: 'terminal
   const initialized = useStore((s) => s.initialized)
   const themeName = useStore((s) => s.terminalTheme)
   const [size, setSize] = useState({ width: window.innerWidth, height: window.innerHeight })
-  const [title, setTitle] = useState('Terminal')
+  const customTitle = useStore((s) => s.terminals.find((t) => t.id === termId)?.customTitle)
+  const [inferredTitle, setInferredTitle] = useState('Terminal')
+  const title = customTitle || inferredTitle
 
   useEffect(() => {
     init()
   }, [init])
+
+  useEffect(() => {
+    document.title = title
+  }, [title])
 
   useEffect(() => {
     const onResize = () => setSize({ width: window.innerWidth, height: window.innerHeight })
@@ -90,8 +96,8 @@ export function PinnedWindow({ termId, type }: { termId: string; type: 'terminal
           height={size.height - TITLE_BAR_HEIGHT}
           isFocused={true}
           onTitleChange={(newTitle) => {
-            setTitle(newTitle)
-            document.title = newTitle
+            setInferredTitle(newTitle)
+            document.title = customTitle || newTitle
           }}
         />
       </div>
