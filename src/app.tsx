@@ -60,14 +60,10 @@ function MainApp() {
 
   const [windowFocused, setWindowFocused] = useState(true)
   useEffect(() => {
-    const onFocus = () => setWindowFocused(true)
-    const onBlur = () => setWindowFocused(false)
-    window.addEventListener('focus', onFocus)
-    window.addEventListener('blur', onBlur)
-    return () => {
-      window.removeEventListener('focus', onFocus)
-      window.removeEventListener('blur', onBlur)
-    }
+    // Use native BrowserWindow focus/blur via IPC so the overlay tracks the
+    // actual OS window state.  DOM window blur fires whenever a WebContentsView
+    // (browser panel) takes keyboard focus, which is a false positive.
+    return window.cells.app.onWindowFocus(setWindowFocused)
   }, [])
 
   const showDimOverlay = dimWhenUnfocused && !windowFocused

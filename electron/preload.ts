@@ -124,6 +124,11 @@ const api: CellsAPI = {
     save: (state: ProjectsState) => ipcRenderer.invoke('state:save', state),
   },
   app: {
+    onWindowFocus: (callback: (focused: boolean) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, focused: boolean) => callback(focused)
+      ipcRenderer.on('app:window-focus', handler)
+      return () => ipcRenderer.removeListener('app:window-focus', handler)
+    },
     onBeforeQuit: (callback: () => void) => {
       const handler = () => callback()
       ipcRenderer.on('app:before-quit', handler)

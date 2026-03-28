@@ -185,6 +185,16 @@ function createWindow() {
     mainWindow?.show()
   })
 
+  // Relay native window focus/blur to the renderer so the dim overlay
+  // tracks the actual BrowserWindow state, not the DOM window which
+  // loses focus whenever a WebContentsView (browser panel) is active.
+  mainWindow.on('focus', () => {
+    if (!mainWindow?.isDestroyed()) mainWindow?.webContents.send('app:window-focus', true)
+  })
+  mainWindow.on('blur', () => {
+    if (!mainWindow?.isDestroyed()) mainWindow?.webContents.send('app:window-focus', false)
+  })
+
   if (process.env.VITE_DEV_SERVER_URL) {
     mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL)
   } else {

@@ -270,6 +270,7 @@ export interface CellsAPI {
     onInstalled(callback: (meta: ExtensionMeta) => void): () => void
   }
   app: {
+    onWindowFocus(callback: (focused: boolean) => void): () => void
     onBeforeQuit(callback: () => void): () => void
     onNewTerminal(callback: () => void): () => void
     onCloseTerminal(callback: () => void): () => void
