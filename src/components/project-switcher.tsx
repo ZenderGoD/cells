@@ -384,6 +384,12 @@ export function ProjectSwitcher() {
                 Release ⌃ to switch, 1-9 jump
               </span>
             </div>
+
+            <div className="mt-2 px-1 text-center">
+              <span className="text-[9px] text-muted-foreground/40">
+                Configure switcher order in Settings
+              </span>
+            </div>
           </div>
         </motion.div>
       )}

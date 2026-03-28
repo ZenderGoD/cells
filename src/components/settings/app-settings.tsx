@@ -360,6 +360,11 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                   </SettingsGroup>
 
                   <SettingsGroup title="Switcher Order">
+                    <p className="text-[10px] text-muted-foreground/40 mb-3">
+                      Configure how the window and project switchers cycle through items. These
+                      settings control the behavior when you hold Ctrl and press Tab (for windows)
+                      or ` (for projects).
+                    </p>
                     <div className="space-y-2.5">
                       <SettingsField label="Ctrl+Tab windows">
                         <div className="space-y-0.5">

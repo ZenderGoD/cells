@@ -343,6 +343,12 @@ export function TerminalSwitcher() {
               <span className="text-[10px] text-muted-foreground/30">⌃Tab forward, ⇧⌃Tab back</span>
               <span className="text-[10px] text-muted-foreground/30">Release ⌃ to switch</span>
             </div>
+
+            <div className="mt-2 px-1 text-center">
+              <span className="text-[9px] text-muted-foreground/40">
+                Configure switcher order in Settings
+              </span>
+            </div>
           </div>
         </motion.div>
       )}
