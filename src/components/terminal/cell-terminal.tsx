@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { init, Terminal, FitAddon, UrlRegexProvider, OSC8LinkProvider } from 'ghostty-web'
-import type { ILinkProvider } from 'ghostty-web'
+import type { CanvasRenderer, ILinkProvider } from 'ghostty-web'
+
+/** The 4th param of CanvasRenderer.render — not exported by ghostty-web. */
+type ScrollbackProvider = NonNullable<Parameters<CanvasRenderer['render']>[3]>
 import { useStore, consumePendingCommand, consumePendingWorktreePath } from '@/lib/store'
 import { getTerminalTheme } from '@/lib/terminal-themes'
 import { cn } from '@/lib/utils'
@@ -635,7 +638,7 @@ export function CellTerminal({
         requestAnimationFrame(() => {
           const t = cached.term
           if (t.renderer && t.wasmTerm) {
-            t.renderer.render(t.wasmTerm, true, t.viewportY, t as any, 0)
+            t.renderer.render(t.wasmTerm, true, t.viewportY, t as ScrollbackProvider, 0)
           }
         })
 
@@ -884,7 +887,7 @@ export function CellTerminal({
         // rows stale.  A forced full render here ensures every row is
         // repainted immediately after new data is flushed.
         if (term.renderer && term.wasmTerm) {
-          term.renderer.render(term.wasmTerm, true, term.viewportY, term as any, 0)
+          term.renderer.render(term.wasmTerm, true, term.viewportY, term as ScrollbackProvider, 0)
         }
       }
 
@@ -1189,7 +1192,7 @@ export function CellTerminal({
     const t = terminalRef.current
     requestAnimationFrame(() => {
       if (t.renderer && t.wasmTerm) {
-        t.renderer.render(t.wasmTerm, true, t.viewportY, t as any, 0)
+        t.renderer.render(t.wasmTerm, true, t.viewportY, t as ScrollbackProvider, 0)
       }
     })
   }, [isFocused])
