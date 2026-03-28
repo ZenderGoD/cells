@@ -877,6 +877,15 @@ export function CellTerminal({
         const chunk = writeBuf
         writeBuf = ''
         term.write(chunk)
+        // Force a full repaint after the write.  The WASM dirty-row tracker
+        // only marks rows that received new characters — it misses rows that
+        // shifted up due to scrolling.  The built-in render loop (which runs
+        // every frame) uses dirty tracking and therefore leaves those shifted
+        // rows stale.  A forced full render here ensures every row is
+        // repainted immediately after new data is flushed.
+        if (term.renderer && term.wasmTerm) {
+          term.renderer.render(term.wasmTerm, true, term.viewportY, term as any, 0)
+        }
       }
 
       // These listeners live in the cache — they persist across mount/unmount
