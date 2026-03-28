@@ -1501,38 +1501,90 @@ export const useStore = create<StoreState>((set, get) => ({
 
   autoArrangeGrid(skipOverview?: boolean) {
     const { terminals, browsers } = get()
-    // Keep chronological order (array insertion order)
-    const allWindows = [
-      ...terminals.map((t) => ({ id: t.id, type: 'terminal' as const })),
-      ...browsers.map((b) => ({ id: b.id, type: 'browser' as const })),
+    const allNodes: Array<{
+      id: string
+      type: 'terminal' | 'browser'
+      x: number
+      y: number
+      width: number
+      height: number
+    }> = [
+      ...terminals.map((t) => ({
+        id: t.id,
+        type: 'terminal' as const,
+        x: t.x,
+        y: t.y,
+        width: t.width,
+        height: t.height,
+      })),
+      ...browsers.map((b) => ({
+        id: b.id,
+        type: 'browser' as const,
+        x: b.x,
+        y: b.y,
+        width: b.width,
+        height: b.height,
+      })),
     ]
-    if (allWindows.length === 0) return
+    if (allNodes.length === 0) return
 
-    // Simple row-based grid: pick columns to be roughly square
-    const cols = Math.ceil(Math.sqrt(allWindows.length))
-
-    // Use uniform cell size based on max window dimensions
-    const allNodes = [...terminals, ...browsers]
-    const cellW = Math.max(...allNodes.map((n) => n.width))
-    const cellH = Math.max(...allNodes.map((n) => n.height))
     const gap = TERMINAL_GAP
 
-    // Total grid dimensions for centering
-    const rows = Math.ceil(allWindows.length / cols)
-    const gridW = cols * cellW + (cols - 1) * gap
-    const gridH = rows * cellH + (rows - 1) * gap
+    // Sort by Y first, then X to detect rows
+    const sorted = [...allNodes].sort((a, b) => a.y - b.y || a.x - b.x)
 
-    // Place windows left-to-right, top-to-bottom, centered on (0,0)
+    // Group into rows by Y-proximity: windows within half the tallest
+    // node's height are considered the same row
+    const maxH = Math.max(...allNodes.map((n) => n.height))
+    const rowThreshold = maxH * 0.5
+    const rows: Array<typeof sorted> = []
+    let currentRow: typeof sorted = [sorted[0]]
+    for (let i = 1; i < sorted.length; i++) {
+      const rowCenterY = currentRow.reduce((s, n) => s + n.y, 0) / currentRow.length
+      if (Math.abs(sorted[i].y - rowCenterY) <= rowThreshold) {
+        currentRow.push(sorted[i])
+      } else {
+        rows.push(currentRow)
+        currentRow = [sorted[i]]
+      }
+    }
+    rows.push(currentRow)
+
+    // Within each row, sort by X position (preserve left-to-right order)
+    for (const row of rows) {
+      row.sort((a, b) => a.x - b.x)
+    }
+
+    // Tidy: snap each row to consistent positions with uniform gaps
+    // Center the whole layout around the centroid of all windows
+    const centroidX = allNodes.reduce((s, n) => s + n.x + n.width / 2, 0) / allNodes.length
+    const centroidY = allNodes.reduce((s, n) => s + n.y + n.height / 2, 0) / allNodes.length
+
+    // Calculate total grid height first
+    let totalH = 0
+    for (const row of rows) {
+      const rowH = Math.max(...row.map((n) => n.height))
+      totalH += rowH
+    }
+    totalH += (rows.length - 1) * gap
+
     const updatedTerminals = new Map<string, { x: number; y: number }>()
     const updatedBrowsers = new Map<string, { x: number; y: number }>()
-    for (let i = 0; i < allWindows.length; i++) {
-      const col = i % cols
-      const row = Math.floor(i / cols)
-      const x = col * (cellW + gap) - gridW / 2
-      const y = row * (cellH + gap) - gridH / 2
-      const win = allWindows[i]
-      if (win.type === 'terminal') updatedTerminals.set(win.id, { x, y })
-      else updatedBrowsers.set(win.id, { x, y })
+    let curY = centroidY - totalH / 2
+
+    for (const row of rows) {
+      const rowH = Math.max(...row.map((n) => n.height))
+      // Total row width
+      const totalW = row.reduce((s, n) => s + n.width, 0) + (row.length - 1) * gap
+      let curX = centroidX - totalW / 2
+
+      for (const node of row) {
+        const pos = { x: curX, y: curY }
+        if (node.type === 'terminal') updatedTerminals.set(node.id, pos)
+        else updatedBrowsers.set(node.id, pos)
+        curX += node.width + gap
+      }
+      curY += rowH + gap
     }
 
     // Enable CSS transition on nodes, then update positions

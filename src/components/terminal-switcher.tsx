@@ -236,7 +236,7 @@ export function TerminalSwitcher() {
             </div>
 
             <div className="mt-2 px-1 py-2">
-              <div className="flex flex-wrap gap-3 items-stretch">
+              <div className="flex flex-wrap gap-3 items-stretch justify-center">
                 {items.slice(0, 12).map((item, i) => (
                   <button
                     key={item.id}
@@ -250,7 +250,7 @@ export function TerminalSwitcher() {
                       if (mouseActivated.current) updateSelected(i, item.id)
                     }}
                     className={cn(
-                      'relative flex flex-col rounded-lg overflow-hidden transition-all shrink-0 bg-black/30 text-left',
+                      'relative flex flex-col rounded-lg overflow-hidden transition-all shrink-0 bg-card/30 text-left',
                       i === selectedIndex
                         ? 'ring-2 ring-primary'
                         : 'ring-1 ring-border/30 hover:ring-border/50',
@@ -258,7 +258,7 @@ export function TerminalSwitcher() {
                     style={{ width: 160, height: 110 }}
                   >
                     {/* Icon area */}
-                    <div className="relative flex-1 flex items-center justify-center overflow-hidden bg-neutral-950">
+                    <div className="relative flex-1 w-full grid place-items-center overflow-hidden bg-background">
                       {item.type === 'terminal' ? (
                         item.agent ? (
                           <AgentIcon

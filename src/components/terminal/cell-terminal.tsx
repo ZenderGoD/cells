@@ -662,6 +662,7 @@ export function CellTerminal({
         fontFamily: fontFamilyRef.current,
         theme: buildTheme(themeNameRef.current),
         scrollback: 5000,
+        smoothScrollDuration: 120,
       })
 
       if (cancelled) {
@@ -874,12 +875,37 @@ export function CellTerminal({
       // chunk so scroll events and dirty flags are handled atomically.
       let writeBuf = ''
       let writeRaf = 0
+      // How many lines from bottom the user must scroll before we stop
+      // auto-scrolling to bottom on new output.
+      const SCROLL_LOCK_THRESHOLD = 5
+      const termCanvas = wrapper.querySelector('canvas') as HTMLCanvasElement | null
       const flushWrites = () => {
         writeRaf = 0
         if (!writeBuf) return
         const chunk = writeBuf
         writeBuf = ''
-        term.write(chunk)
+
+        // If the user has scrolled up past the threshold, preserve their
+        // viewport position instead of letting writeInternal snap to bottom.
+        const scrolledUp = term.viewportY > SCROLL_LOCK_THRESHOLD
+        const savedY = term.viewportY
+        const savedTargetY = (term as any).targetViewportY ?? term.viewportY
+        const savedLen = scrolledUp ? term.getScrollbackLength() : 0
+
+        term.write(chunk) // internally calls scrollToBottom → viewportY = 0
+
+        if (scrolledUp) {
+          // Adjust for any new lines that were added to the scrollback so
+          // the user keeps looking at the same content.
+          const newLen = term.getScrollbackLength()
+          const delta = newLen - savedLen
+          ;(term as any).viewportY = Math.min(newLen, savedY + delta)
+          ;(term as any).targetViewportY = Math.min(newLen, savedTargetY + delta)
+        } else if (termCanvas) {
+          // At the bottom — clear any sub-pixel scroll transform
+          termCanvas.style.transform = ''
+        }
+
         // Force a full repaint after the write.  The WASM dirty-row tracker
         // only marks rows that received new characters — it misses rows that
         // shifted up due to scrolling.  The built-in render loop (which runs
@@ -1214,28 +1240,98 @@ export function CellTerminal({
     return () => window.removeEventListener('terminal-refocus', handler)
   }, [isFocused])
 
-  // Allow scrolling the scrollback buffer even when the running program has
-  // mouse tracking enabled (e.g. Claude Code, Codex) or is using the alternate
-  // screen buffer.  In either case the default wheel behavior doesn't scroll
-  // the main buffer's scrollback, so we intercept and do it ourselves.
+  // Pixel-level smooth scrolling.  ghostty-web scrolls line-by-line which
+  // feels janky — by tracking a sub-pixel offset and applying a CSS transform
+  // to the canvas we get true browser-like smooth scrolling.  The handler runs
+  // in the capture phase so it intercepts ALL wheel events before ghostty-web's
+  // own handler (which would do line-level scrolling or send mouse/arrow
+  // events in alternate-screen / mouse-tracking modes).
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
+    const cached = terminalCache.get(termId)
+    if (!cached) return
+
+    const { wrapper } = cached
+    const canvas = wrapper.querySelector('canvas') as HTMLCanvasElement | null
+    if (canvas) canvas.style.willChange = 'transform'
+
+    // Sub-pixel remainder (0 ≤ value < lineHeight).  Persists across events
+    // so momentum / trackpad inertia scrolling stays smooth.
+    let subPixelY = 0
+    // Last viewportY we applied — lets us detect external changes (e.g.
+    // scrollToBottom from a write) and reset the sub-pixel offset.
+    let lastAppliedViewportY = -1
+
     const onWheel = (e: WheelEvent) => {
       const term = terminalRef.current
       if (!term) return
-      // Intercept when mouse tracking is on (agent TUIs) OR when the program
-      // is in the alternate screen buffer (which has no scrollback of its own).
-      const inAlternate = term.buffer?.active?.type === 'alternate'
-      if (!term.hasMouseTracking() && !inAlternate) return
+
+      // Let Cmd/Ctrl+scroll through for canvas zoom
+      if (e.metaKey || e.ctrlKey) return
+
+      const scrollbackLen = term.getScrollbackLength()
+      if (scrollbackLen <= 0 && term.viewportY === 0) {
+        subPixelY = 0
+        if (canvas) canvas.style.transform = ''
+        return // nothing to scroll
+      }
+
       e.preventDefault()
       e.stopPropagation()
-      const lines = Math.round(e.deltaY / 20) || (e.deltaY > 0 ? 1 : -1)
-      term.scrollLines(lines)
+
+      const lineHeight = term.renderer?.getMetrics()?.height ?? 20
+
+      let deltaPixels: number
+      if (e.deltaMode === WheelEvent.DOM_DELTA_PIXEL) {
+        deltaPixels = e.deltaY
+      } else if (e.deltaMode === WheelEvent.DOM_DELTA_LINE) {
+        deltaPixels = e.deltaY * lineHeight
+      } else {
+        // DOM_DELTA_PAGE
+        deltaPixels = e.deltaY * term.rows * lineHeight
+      }
+
+      // If viewportY was changed externally (write-triggered scrollToBottom,
+      // programmatic scroll, etc.) reset sub-pixel state to stay in sync.
+      if (lastAppliedViewportY >= 0 && term.viewportY !== lastAppliedViewportY) {
+        subPixelY = 0
+      }
+
+      // Current position in pixels from bottom
+      let totalPixels = term.viewportY * lineHeight + subPixelY
+      // deltaY > 0 → scroll toward bottom → decrease distance from bottom
+      totalPixels = Math.max(0, Math.min(scrollbackLen * lineHeight, totalPixels - deltaPixels))
+
+      const newViewportY = Math.floor(totalPixels / lineHeight)
+      subPixelY = totalPixels - newViewportY * lineHeight
+
+      if (term.viewportY !== newViewportY) {
+        ;(term as any).viewportY = newViewportY
+        ;(term as any).targetViewportY = newViewportY
+        // Cancel any ongoing line-level smooth-scroll animation
+        if ((term as any).scrollAnimationFrame) {
+          cancelAnimationFrame((term as any).scrollAnimationFrame)
+          ;(term as any).scrollAnimationFrame = undefined
+        }
+      }
+      lastAppliedViewportY = newViewportY
+
+      // Sub-pixel CSS transform for the fractional offset
+      if (canvas) {
+        canvas.style.transform = subPixelY > 0.5 ? `translateY(-${subPixelY}px)` : ''
+      }
+
+      // Re-render at the new integer line position
+      if (term.renderer && term.wasmTerm) {
+        term.renderer.render(term.wasmTerm, true, term.viewportY, term as ScrollbackProvider, 0)
+      }
     }
-    container.addEventListener('wheel', onWheel, { passive: false })
-    return () => container.removeEventListener('wheel', onWheel)
-  }, [])
+
+    // Capture phase so the event never reaches ghostty-web's canvas handler
+    container.addEventListener('wheel', onWheel, { capture: true, passive: false })
+    return () => container.removeEventListener('wheel', onWheel, { capture: true })
+  }, [termId])
 
   // Handle resize
   useEffect(() => {
