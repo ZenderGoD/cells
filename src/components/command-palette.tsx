@@ -314,6 +314,17 @@ export function CommandPalette() {
             ? 'agent'
             : 'run'
 
+  // Check if there are shell history matches to hide catch-all options when history matches exist
+  const hasShellHistoryMatches =
+    shellHistory.length > 0 &&
+    (() => {
+      const query = search.trim().toLowerCase()
+      const filtered = query
+        ? shellHistory.filter((cmd) => cmd.toLowerCase().includes(query))
+        : shellHistory.slice(0, 15)
+      return filtered.length > 0
+    })()
+
   const addAttachments = useCallback(async (paths: string[]) => {
     const newAttachments = paths.map((p) => ({
       path: p,
@@ -975,7 +986,7 @@ export function CommandPalette() {
                             )
                           }
                           if (group === 'agent') {
-                            if (sortedAgents.length === 0) return null
+                            if (sortedAgents.length === 0 || hasShellHistoryMatches) return null
                             return (
                               <React.Fragment key="agent">
                                 <CommandSeparator />
