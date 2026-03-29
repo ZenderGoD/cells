@@ -71,19 +71,6 @@ interface Attachment {
   thumbnailUrl?: string
 }
 
-function buildPromptWithAttachments(prompt: string, attachments: Attachment[]): string {
-  if (attachments.length === 0) return prompt
-  // Strip any [path] refs already in the prompt to avoid duplication
-  let clean = prompt
-  for (const a of attachments) {
-    clean = clean.replace(`[${a.path}]`, '')
-  }
-  clean = clean.replace(/\s+/g, ' ').trim()
-  const filePaths = attachments.map((a) => `[${a.path}]`).join(' ')
-  if (!clean) return filePaths
-  return `${clean}\n\n${filePaths}`
-}
-
 function launchAgentAction(
   id: string,
   label: string,
@@ -95,18 +82,44 @@ function launchAgentAction(
   useStore.getState().setLastCommandAction('agent')
   useStore.getState().trackCommandAction(`agent-${id}`)
   const cmd = useStore.getState().getAgentCommand(id)
-  const prompt = buildPromptWithAttachments(searchText.trim(), attachments)
+  const prompt = searchText.trim()
+
+  // Build image/file attachment flags for the CLI
+  const imageAttachments = attachments.filter((a) => isImageFile(a.name))
+  const fileAttachments = attachments.filter((a) => !isImageFile(a.name))
+
+  // Only codex supports -i flag for images
+  const isCodex = id === 'codex'
+  const imageFlags = isCodex
+    ? imageAttachments.map((a) => `-i "${a.path.replace(/"/g, '\\"')}"`).join(' ')
+    : ''
+
+  // Only include file attachments (not images) as text references
+  const filePaths = fileAttachments.map((a) => `[${a.path}]`).join(' ')
+
+  // Build the full prompt with file references (codex images are passed via flags)
+  let fullPromptText = prompt
+  if (filePaths) {
+    fullPromptText = prompt ? `${prompt}\n\n${filePaths}` : filePaths
+  }
 
   if (!inWorktree) {
-    if (!prompt) {
+    if (!fullPromptText && imageAttachments.length === 0) {
       useStore.getState().addTerminalWithCommand(cmd, label)
       return
     }
-    const escaped = prompt.replace(/'/g, "'\\''")
+
+    let fullCommand = cmd
+    if (imageFlags) fullCommand += ` ${imageFlags}`
+    if (fullPromptText) {
+      const escaped = fullPromptText.replace(/'/g, "'\\''")
+      fullCommand += ` '${escaped}'`
+    }
+
     useStore
       .getState()
       .addTerminalWithCommand(
-        `${cmd} '${escaped}'`,
+        fullCommand,
         `${label}: ${searchText.trim().slice(0, 40) || 'attachments'}`,
       )
     return
@@ -119,14 +132,19 @@ function launchAgentAction(
     .createWorktree(tempBranch)
     .then((wt) => {
       const branchInstruction = `First, create a descriptive git branch name for this task and switch to it with \`git checkout -b <branch-name>\`. Then delete the temporary branch that was used to set up this worktree with \`git branch -D ${tempBranch}\`. Then:\n\n`
-      const fullPrompt = prompt
-        ? branchInstruction + prompt
+      const finalPrompt = fullPromptText
+        ? branchInstruction + fullPromptText
         : branchInstruction + 'Waiting for instructions.'
-      const escaped = fullPrompt.replace(/'/g, "'\\''")
+
+      let fullCommand = cmd
+      if (imageFlags) fullCommand += ` ${imageFlags}`
+      const escaped = finalPrompt.replace(/'/g, "'\\''")
+      fullCommand += ` '${escaped}'`
+
       useStore
         .getState()
         .addTerminalInWorktree(
-          `${cmd} '${escaped}'`,
+          fullCommand,
           `${label}: ${searchText.trim() ? searchText.trim().slice(0, 40) : 'worktree'}`,
           wt.path,
         )
@@ -136,14 +154,19 @@ function launchAgentAction(
         `Worktree failed, launching without it: ${err instanceof Error ? err.message : err}`,
       )
       // Fallback: launch without worktree
-      if (!prompt) {
+      if (!fullPromptText && imageAttachments.length === 0) {
         useStore.getState().addTerminalWithCommand(cmd, label)
       } else {
-        const escaped = prompt.replace(/'/g, "'\\''")
+        let fullCommand = cmd
+        if (imageFlags) fullCommand += ` ${imageFlags}`
+        if (fullPromptText) {
+          const escaped = fullPromptText.replace(/'/g, "'\\''")
+          fullCommand += ` '${escaped}'`
+        }
         useStore
           .getState()
           .addTerminalWithCommand(
-            `${cmd} '${escaped}'`,
+            fullCommand,
             `${label}: ${searchText.trim().slice(0, 40) || 'attachments'}`,
           )
       }
