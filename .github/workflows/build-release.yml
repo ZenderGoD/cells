@@ -37,17 +37,6 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Create draft release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-        run: |
-          gh release create "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --draft \
-            --title "${RELEASE_TAG#v}" \
-            --notes "Release $RELEASE_TAG" || true
-
       - name: Build and release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -81,7 +70,7 @@ jobs:
               --issuer "$APPLE_API_ISSUER"
             export APPLE_API_KEY="$APPLE_API_KEY_PATH"
           fi
-          pnpm release
+          pnpm build && electron-builder --publish always
 
       - name: Generate release notes
         id: notes
