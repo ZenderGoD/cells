@@ -82,7 +82,7 @@ function launchAgentAction(
   useStore.getState().setLastCommandAction('agent')
   useStore.getState().trackCommandAction(`agent-${id}`)
   const cmd = useStore.getState().getAgentCommand(id)
-  const prompt = searchText.trim()
+  const prompt = stripPrefix(searchText.trim())
 
   // Build image/file attachment flags for the CLI
   const imageAttachments = attachments.filter((a) => isImageFile(a.name))
@@ -182,6 +182,13 @@ function matchInputPrefix(text: string) {
     if (p.prefix && text.startsWith(p.prefix)) return p
   }
   return null
+}
+
+/** Strip any configured prefix from text and return just the content. */
+function stripPrefix(text: string): string {
+  const prefix = matchInputPrefix(text)
+  if (!prefix) return text
+  return text.slice(prefix.prefix.length).trim()
 }
 
 /** Reads the cmdk selected value to show a contextual icon in the input. Must be inside <Command>. */
@@ -586,15 +593,17 @@ export function CommandPalette() {
     if (!search.trim()) return
     useStore.getState().setLastCommandAction('search')
     useStore.getState().trackCommandAction('search')
-    runAction(() => useStore.getState().addBrowserWithUrl(search.trim()))
+    const cleanSearch = stripPrefix(search.trim())
+    runAction(() => useStore.getState().addBrowserWithUrl(cleanSearch))
   }
 
   const runAsTerminalCommand = (command: string) => {
     if (!command.trim()) return
     useStore.getState().setLastCommandAction('run')
     useStore.getState().trackCommandAction('run')
-    const label = command.trim().slice(0, 40)
-    runAction(() => useStore.getState().addTerminalWithCommand(command.trim(), label))
+    const cleanCommand = stripPrefix(command.trim())
+    const label = cleanCommand.slice(0, 40)
+    runAction(() => useStore.getState().addTerminalWithCommand(cleanCommand, label))
   }
 
   /** Execute the action for a matched prefix, returning true if handled. */
