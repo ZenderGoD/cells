@@ -202,6 +202,29 @@ function createWindow() {
   }
 }
 
+async function cleanupOrphanedDaemonSessions() {
+  if (!useDaemon || !daemonClient?.isConnected()) return
+
+  try {
+    const daemonTermIds = await daemonClient.list()
+    const stateData = fs.existsSync(STATE_FILE)
+      ? JSON.parse(fs.readFileSync(STATE_FILE, 'utf-8'))
+      : null
+    if (!stateData?.projects) return
+
+    const knownIds = new Set<string>()
+    for (const project of stateData.projects) {
+      for (const t of project.terminals ?? []) knownIds.add(t.id)
+    }
+
+    for (const id of daemonTermIds) {
+      if (!knownIds.has(id)) {
+        daemonClient.kill(id).catch(() => {})
+      }
+    }
+  } catch {}
+}
+
 async function confirmAndQuitApp() {
   if (quitConfirmed || quitDialogOpen) return
   if (!mainWindow || mainWindow.isDestroyed()) {
@@ -1900,24 +1923,6 @@ app.whenReady().then(async () => {
           forwardTerminalExit(termId)
         }
       })
-      // Clean orphaned daemon sessions
-      try {
-        const daemonTermIds = await daemonClient.list()
-        const stateData = fs.existsSync(STATE_FILE)
-          ? JSON.parse(fs.readFileSync(STATE_FILE, 'utf-8'))
-          : null
-        if (stateData?.projects) {
-          const knownIds = new Set<string>()
-          for (const project of stateData.projects) {
-            for (const t of project.terminals ?? []) knownIds.add(t.id)
-          }
-          for (const id of daemonTermIds) {
-            if (!knownIds.has(id)) {
-              daemonClient.kill(id).catch(() => {})
-            }
-          }
-        }
-      } catch {}
     } else {
       fallbackPtys = new PtyManager()
     }
@@ -1926,18 +1931,6 @@ app.whenReady().then(async () => {
     useDaemon = false
     fallbackPtys = new PtyManager()
   }
-
-  // Start MCP bridge for CLI agent integration
-  startMcpBridge(MCP_BRIDGE_SOCKET, {
-    browserViews,
-    browserIdToProject,
-    getDaemonClient: () => daemonClient,
-    getFallbackPtys: () => fallbackPtys,
-    getUseDaemon: () => useDaemon,
-    getMainWindow: () => mainWindow,
-    stateFile: STATE_FILE,
-    subscribedTerminals,
-  })
 
   // Set dock icon on macOS (for dev; production uses the bundled .icns)
   if (process.platform === 'darwin') {
@@ -2010,6 +2003,24 @@ app.whenReady().then(async () => {
   }
 
   createWindow()
+
+  setTimeout(() => {
+    startMcpBridge(MCP_BRIDGE_SOCKET, {
+      browserViews,
+      browserIdToProject,
+      getDaemonClient: () => daemonClient,
+      getFallbackPtys: () => fallbackPtys,
+      getUseDaemon: () => useDaemon,
+      getMainWindow: () => mainWindow,
+      stateFile: STATE_FILE,
+      subscribedTerminals,
+    })
+  }, 0)
+
+  setTimeout(() => {
+    void cleanupOrphanedDaemonSessions()
+  }, 0)
+
   scheduleAutomaticUpdateChecks()
 })
 

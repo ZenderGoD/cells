@@ -618,7 +618,9 @@ export const useStore = create<StoreState>((set, get) => ({
         initialized: true,
       })
       applyColorScheme(globalSettings.colorScheme)
-      get().refreshWorktrees()
+      setTimeout(() => {
+        void get().refreshWorktrees()
+      }, 0)
       return
     }
 
@@ -837,7 +839,9 @@ export const useStore = create<StoreState>((set, get) => ({
       ...projectToWorkingState(project),
     })
     get().persist()
-    get().refreshWorktrees()
+    setTimeout(() => {
+      void get().refreshWorktrees()
+    }, 0)
   },
 
   switchProject(id) {
@@ -863,7 +867,9 @@ export const useStore = create<StoreState>((set, get) => ({
       crossProjectReturn: null,
     })
     get().persist()
-    get().refreshWorktrees()
+    setTimeout(() => {
+      void get().refreshWorktrees()
+    }, 0)
 
     // Force repaint on the restored focused terminal so it renders fresh content
     if (workingState.focusedTerminalId) {
