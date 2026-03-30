@@ -36,6 +36,7 @@ import {
   Camera,
   Download,
   LayoutGrid,
+  BookOpen,
 } from 'lucide-react'
 import { useCommandState } from 'cmdk'
 import {
@@ -55,6 +56,7 @@ import { terminalThemes } from '@/lib/terminal-themes'
 import { AppSettings } from './settings/app-settings'
 import { NewProjectDialog } from './new-project-dialog'
 import { AgentIcon } from './agent-icon'
+import { getTerminalRestoreSnapshot } from './terminal/cell-terminal'
 import { Logo } from './logo'
 import { Kbd } from './ui/kbd'
 import { showToast } from './toast'
@@ -631,46 +633,106 @@ export function CommandPalette() {
     return false
   }
 
-  const renderAgentsGroup = () => (
-    <CommandGroup heading="AI Agents" forceMount>
-      {sortedAgents.map(({ id, label }) => (
-        <CommandItem
-          key={id}
-          forceMount
-          value={`agent-${id}-${getAgentCommandLabel(id)}`}
-          onSelect={() => {
-            runAction(() => {
-              launchAgentAction(id, label, false, search, attachments)
-            })
-          }}
-          onMetaSelect={() => {
-            runAction(() => {
-              launchAgentAction(id, label, true, search, attachments)
-            })
-          }}
-        >
-          <AgentIcon agent={id} className="text-muted-foreground" size={16} />
-          <span className="truncate">
-            {search.trim() && attachments.length > 0
-              ? `Ask ${label} with ${attachments.length} file${attachments.length > 1 ? 's' : ''}: "${search.trim().slice(0, 40)}"`
-              : search.trim()
-                ? `Ask ${label}: "${search.trim().slice(0, 50)}"`
-                : attachments.length > 0
-                  ? `Send ${attachments.length} file${attachments.length > 1 ? 's' : ''} to ${label}`
-                  : `New ${label} Terminal`}
-          </span>
-          {sortedAgents.length > 1 && id === sortedAgents[sortedAgents.length - 1].id && (
-            <span className="ml-auto text-[10px] text-muted-foreground/40">
-              {(commandActionCounts[`agent-${id}`] ?? 0) > 0 ? 'most used' : 'recent'}
+  const renderAgentsGroup = () => {
+    const focusedTerminal = focusedTerminalId
+      ? terminals.find((t) => t.id === focusedTerminalId)
+      : null
+    const focusedAgent =
+      focusedTerminal?.agent ??
+      (focusedTerminal ? inferAgentFromTitle(focusedTerminal.title) : null)
+    const branchTargets = focusedAgent
+      ? AGENT_OPTIONS.filter((a) => agents[a.id] === true)
+          .map((agent) => ({
+            ...agent,
+            isCurrentAgent: agent.id === focusedAgent,
+          }))
+          .sort((a, b) => {
+            // Current agent first, other agents last (bottom = most relevant)
+            if (a.isCurrentAgent && !b.isCurrentAgent) return -1
+            if (!a.isCurrentAgent && b.isCurrentAgent) return 1
+            return 0
+          })
+      : []
+
+    return (
+      <CommandGroup heading="AI Agents" forceMount>
+        {sortedAgents.map(({ id, label }) => (
+          <CommandItem
+            key={id}
+            forceMount
+            value={`agent-${id}-${getAgentCommandLabel(id)}`}
+            onSelect={() => {
+              runAction(() => {
+                launchAgentAction(id, label, false, search, attachments)
+              })
+            }}
+            onMetaSelect={() => {
+              runAction(() => {
+                launchAgentAction(id, label, true, search, attachments)
+              })
+            }}
+          >
+            <AgentIcon agent={id} className="text-muted-foreground" size={16} />
+            <span className="truncate">
+              {search.trim() && attachments.length > 0
+                ? `Ask ${label} with ${attachments.length} file${attachments.length > 1 ? 's' : ''}: "${search.trim().slice(0, 40)}"`
+                : search.trim()
+                  ? `Ask ${label}: "${search.trim().slice(0, 50)}"`
+                  : attachments.length > 0
+                    ? `Send ${attachments.length} file${attachments.length > 1 ? 's' : ''} to ${label}`
+                    : `New ${label} Terminal`}
             </span>
-          )}
-          {isGitRepo && cmdHeld && (
-            <GitBranch className="absolute right-2 size-3.5 text-muted-foreground/50" />
-          )}
-        </CommandItem>
-      ))}
-    </CommandGroup>
-  )
+            {sortedAgents.length > 1 && id === sortedAgents[sortedAgents.length - 1].id && (
+              <span className="ml-auto text-[10px] text-muted-foreground/40">
+                {(commandActionCounts[`agent-${id}`] ?? 0) > 0 ? 'most used' : 'recent'}
+              </span>
+            )}
+            {isGitRepo && cmdHeld && (
+              <GitBranch className="absolute right-2 size-3.5 text-muted-foreground/50" />
+            )}
+          </CommandItem>
+        ))}
+        {branchTargets.map((target) => (
+          <CommandItem
+            key={`branch-${target.id}`}
+            forceMount
+            value={`branch-conversation-${target.id}`}
+            onSelect={() => {
+              runAction(() => {
+                const snapshot = getTerminalRestoreSnapshot(focusedTerminalId!)
+
+                // Copy full conversation history to clipboard if we have content
+                if (snapshot) {
+                  navigator.clipboard.writeText(snapshot + '\n\n').catch(() => {
+                    // Silently fail if clipboard write fails
+                  })
+                }
+
+                // Launch new agent terminal
+                launchAgentAction(target.id, target.label, false, '', [])
+
+                // Show notification with instructions
+                showToast(
+                  snapshot
+                    ? `Chat history copied to clipboard — paste it in the new ${target.label} terminal`
+                    : `Opened ${target.label} terminal`,
+                  'info',
+                )
+              })
+            }}
+          >
+            <AgentIcon agent={target.id} className="text-muted-foreground" size={16} />
+            <span className="truncate">
+              Branch conversation in {target.label}
+              {target.isCurrentAgent && (
+                <span className="ml-1 text-muted-foreground/50">(same agent)</span>
+              )}
+            </span>
+          </CommandItem>
+        ))}
+      </CommandGroup>
+    )
+  }
 
   return (
     <>
@@ -684,6 +746,7 @@ export function CommandPalette() {
             // auto-selection when no other items match the search text.
             if (
               value.startsWith('agent-') ||
+              value.startsWith('branch-conversation-') ||
               value === 'search-web' ||
               value === 'run-terminal-command' ||
               value === 'create-worktree-new-branch'
@@ -1137,6 +1200,17 @@ export function CommandPalette() {
                         <RefreshCw className="text-muted-foreground" />
                         Reload Window
                         <CommandShortcut>⌘R</CommandShortcut>
+                      </CommandItem>
+                      <CommandItem
+                        value="keyboard-shortcuts-guide"
+                        onSelect={() => {
+                          setOpen(false)
+                          setSearch('')
+                          useStore.getState().openOnboardingGuide()
+                        }}
+                      >
+                        <BookOpen className="text-muted-foreground" />
+                        Keyboard shortcuts guide
                       </CommandItem>
                       <CommandItem
                         value="attach-file-from-finder"

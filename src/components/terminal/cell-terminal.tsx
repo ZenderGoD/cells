@@ -945,17 +945,6 @@ export function CellTerminal({
           window.cells.terminal.write(termId, '\x1bf')
           return true
         }
-        // Cmd+Left → beginning of line
-        if (e.metaKey && e.key === 'ArrowLeft') {
-          window.cells.terminal.write(termId, '\x01')
-          return true
-        }
-        // Cmd+Right → end of line
-        if (e.metaKey && e.key === 'ArrowRight') {
-          window.cells.terminal.write(termId, '\x05')
-          return true
-        }
-
         return false
       })
 

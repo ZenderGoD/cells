@@ -72,7 +72,7 @@ export function Toaster() {
   if (items.length === 0) return null
 
   return (
-    <div className="fixed bottom-10 left-1/2 z-[200] -translate-x-1/2 flex flex-col-reverse items-center gap-2 pointer-events-none">
+    <div className="fixed top-14 left-1/2 z-[200] -translate-x-1/2 flex flex-col items-center gap-2 pointer-events-none">
       {items.map((t) => (
         <ToastItem key={t.id} toast={t} onDismiss={() => dismissToast(t.id)} />
       ))}
