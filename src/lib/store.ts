@@ -825,7 +825,6 @@ export const useStore = create<StoreState>((set, get) => ({
   createProject(name, path) {
     const state = get()
     const projects = snapshotActiveProject(state)
-    const isFirstProject = projects.length === 0
 
     // Park browser views (keep alive for when user switches back)
     for (const b of state.browsers) {
