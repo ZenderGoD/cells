@@ -129,6 +129,11 @@ export class PtyDaemonClient {
     return result.buffer ?? ''
   }
 
+  async getHistory(termId: string): Promise<string> {
+    const result = await this.request('get-history', { termId })
+    return result.buffer ?? ''
+  }
+
   async getShellPid(termId: string): Promise<number | null> {
     return this.request('get-shell-pid', { termId })
   }

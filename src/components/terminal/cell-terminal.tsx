@@ -700,6 +700,17 @@ export function CellTerminal({
     async function setup() {
       if (!container) return
       const cleanups: Array<() => void> = []
+      const bumpPtySize = (cols: number, rows: number) => {
+        // Force a real SIGWINCH so shells and fullscreen TUIs redraw after
+        // the terminal is reattached. A same-size resize is a no-op at the
+        // PTY layer, so briefly bump the width and restore it.
+        const bumpCols = Math.max(1, cols - 1)
+        window.cells.terminal.resize(termId, bumpCols, rows)
+        setTimeout(() => {
+          if (cancelled) return
+          window.cells.terminal.resize(termId, cols, rows)
+        }, 50)
+      }
 
       // Check cache first — reattach if exists
       const cached = terminalCache.get(termId)
@@ -743,6 +754,10 @@ export function CellTerminal({
             t.renderer.render(t.wasmTerm, true, t.viewportY, t as ScrollbackProvider, 0)
           }
         })
+
+        if (result?.reattached && dims) {
+          bumpPtySize(dims.cols, dims.rows)
+        }
 
         return
       }
@@ -1246,14 +1261,23 @@ export function CellTerminal({
         projectPath,
       )
 
-      if (!result?.reattached && restoredOutput) {
+      let replayedRawHistory = false
+      if (result?.reattached) {
+        const history = await window.cells.terminal.getHistory(termId).catch(() => '')
+        if (history) {
+          term.write(history)
+          replayedRawHistory = true
+        }
+      }
+
+      if (!replayedRawHistory && !result?.reattached && restoredOutput) {
         term.write(restoredOutput)
         if (!restoredOutput.endsWith('\r\n')) {
           term.write('\r\n')
         }
       }
 
-      if (result?.buffer) {
+      if (!replayedRawHistory && result?.buffer) {
         term.write(result.buffer)
       }
 
@@ -1265,16 +1289,7 @@ export function CellTerminal({
       }
 
       if (result?.reattached && dims) {
-        // Force a real SIGWINCH so the shell/TUI program fully redraws.
-        // The daemon's spawn() already resized to (cols, rows), so sending
-        // the same size is a no-op — the kernel won't deliver SIGWINCH.
-        // Briefly resize to cols-1, then restore the correct size.
-        const bumpCols = Math.max(1, dims.cols - 1)
-        window.cells.terminal.resize(termId, bumpCols, dims.rows)
-        setTimeout(() => {
-          if (cancelled) return
-          window.cells.terminal.resize(termId, dims.cols, dims.rows)
-        }, 50)
+        bumpPtySize(dims.cols, dims.rows)
       }
 
       const pendingCmd = consumePendingCommand(termId)

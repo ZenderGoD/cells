@@ -447,6 +447,17 @@ ipcMain.handle('terminal:get-codex-title', async (_event, termId: string) => {
   }
 })
 
+ipcMain.handle('terminal:get-history', async (_event, termId: string) => {
+  try {
+    if (useDaemon && daemonClient?.isConnected()) {
+      return daemonClient.getHistory(termId)
+    }
+    return ptyBuffers.get(termId) ?? ''
+  } catch {
+    return ''
+  }
+})
+
 ipcMain.handle('app:open-external', (_event, url: string) => {
   shell.openExternal(url)
 })

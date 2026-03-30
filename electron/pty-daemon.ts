@@ -69,6 +69,7 @@ const VERSION_FILE = path.join(STATE_DIR, 'pty-daemon.version')
 
 const ptys = new Map<string, pty.IPty>()
 const buffers = new Map<string, string>()
+const histories = new Map<string, { chunks: string[]; length: number }>()
 const subscribers = new Map<string, net.Socket>() // termId → subscribed client socket
 const metadata = new Map<string, { shellPid: number }>()
 
@@ -77,10 +78,44 @@ const clientSubscriptions = new Map<net.Socket, Set<string>>()
 
 // ---------- Buffer management ----------
 
+const MAX_HISTORY = 4 * 1024 * 1024
+
 function appendBuffer(termId: string, data: string) {
   const existing = buffers.get(termId) ?? ''
   const combined = existing + data
   buffers.set(termId, combined.length > MAX_BUFFER ? combined.slice(-MAX_BUFFER) : combined)
+}
+
+function appendHistory(termId: string, data: string) {
+  if (!data) return
+
+  let history = histories.get(termId)
+  if (!history) {
+    history = { chunks: [], length: 0 }
+    histories.set(termId, history)
+  }
+
+  history.chunks.push(data)
+  history.length += data.length
+
+  while (history.length > MAX_HISTORY && history.chunks.length > 0) {
+    const excess = history.length - MAX_HISTORY
+    const first = history.chunks[0]
+    if (first.length <= excess) {
+      history.chunks.shift()
+      history.length -= first.length
+      continue
+    }
+
+    history.chunks[0] = first.slice(excess)
+    history.length -= excess
+    break
+  }
+}
+
+function readHistory(termId: string) {
+  const history = histories.get(termId)
+  return history ? history.chunks.join('') : ''
 }
 
 // ---------- Send helpers ----------
@@ -132,6 +167,7 @@ function spawnPty(
 
   p.onData((data) => {
     if (ptys.get(termId) !== p) return
+    appendHistory(termId, data)
     appendBuffer(termId, data)
     const sub = subscribers.get(termId)
     if (sub) {
@@ -164,6 +200,7 @@ function killPty(termId: string) {
     ptys.delete(termId)
   }
   buffers.delete(termId)
+  histories.delete(termId)
   metadata.delete(termId)
   subscribers.delete(termId)
 }
@@ -276,6 +313,11 @@ function handleMessage(socket: net.Socket, msg: any) {
     case 'get-buffer': {
       const buffer = buffers.get(msg.termId) ?? ''
       sendResponse(socket, id, true, { buffer })
+      break
+    }
+
+    case 'get-history': {
+      sendResponse(socket, id, true, { buffer: readHistory(msg.termId) })
       break
     }
 

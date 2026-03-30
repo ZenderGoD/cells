@@ -13,6 +13,7 @@ const api: CellsAPI = {
     getProcess: (termId: string) => ipcRenderer.invoke('terminal:get-process', termId),
     getProcessInfo: (termId: string) => ipcRenderer.invoke('terminal:get-process-info', termId),
     getCodexTitle: (termId: string) => ipcRenderer.invoke('terminal:get-codex-title', termId),
+    getHistory: (termId: string) => ipcRenderer.invoke('terminal:get-history', termId),
     onData: (callback: (termId: string, data: string) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, termId: string, data: string) =>
         callback(termId, data)

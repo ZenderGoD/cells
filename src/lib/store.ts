@@ -886,10 +886,9 @@ export const useStore = create<StoreState>((set, get) => ({
       void get().refreshWorktrees()
     }, 0)
 
-    // Force repaint on the restored focused terminal so it renders fresh content
-    if (workingState.focusedTerminalId) {
-      reloadTerminal(workingState.focusedTerminalId)
-    }
+    // Do not recreate the focused terminal on project switch.
+    // The renderer cache is the only thing preserving fullscreen / alternate-
+    // screen state across switches; forcing a reload destroys that state.
   },
 
   removeProject(id) {

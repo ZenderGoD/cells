@@ -159,6 +159,7 @@ export interface CellsAPI {
     getProcess(termId: string): Promise<string | null>
     getProcessInfo(termId: string): Promise<TerminalProcessInfo | null>
     getCodexTitle(termId: string): Promise<string | null>
+    getHistory(termId: string): Promise<string>
     onData(callback: (termId: string, data: string) => void): () => void
     onExit(callback: (termId: string) => void): () => void
   }
