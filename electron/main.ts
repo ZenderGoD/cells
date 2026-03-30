@@ -997,6 +997,15 @@ function setupBrowserView(browserId: string, view: WebContentsView, projectId: s
       return
     }
 
+    if (input.control && input.code === 'Backquote') {
+      _e.preventDefault()
+      if (input.type === 'keyDown' && !mainWindow?.isDestroyed()) {
+        mainWindow?.webContents.focus()
+        mainWindow?.webContents.send('browser:project-cycle', input.shift ? -1 : 1)
+      }
+      return
+    }
+
     if (input.meta || input.control) {
       const key = input.key.toLowerCase()
       const shouldForwardShortcut =

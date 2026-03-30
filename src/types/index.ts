@@ -256,6 +256,7 @@ export interface CellsAPI {
       callback: (browserId: string, progress: number, direction: string | null) => void,
     ): () => void
     onWindowCycle(callback: (direction: 1 | -1) => void): () => void
+    onProjectCycle(callback: (direction: 1 | -1) => void): () => void
   }
   extensions: {
     install(input: string): Promise<ExtensionMeta>

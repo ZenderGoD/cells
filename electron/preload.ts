@@ -118,6 +118,11 @@ const api: CellsAPI = {
       ipcRenderer.on('browser:window-cycle', handler)
       return () => ipcRenderer.removeListener('browser:window-cycle', handler)
     },
+    onProjectCycle: (callback: (direction: 1 | -1) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, direction: 1 | -1) => callback(direction)
+      ipcRenderer.on('browser:project-cycle', handler)
+      return () => ipcRenderer.removeListener('browser:project-cycle', handler)
+    },
   },
   state: {
     load: () => ipcRenderer.invoke('state:load'),

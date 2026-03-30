@@ -251,6 +251,14 @@ export function ProjectSwitcher() {
     }
   }, [cancel, commit, cycle, items, openManual, selectProject])
 
+  useEffect(() => {
+    const unsub = window.cells.browser.onProjectCycle((direction) => {
+      ctrlHeld.current = true
+      cycle(direction)
+    })
+    return unsub
+  }, [cycle])
+
   if (items.length < 2) return null
 
   return (
