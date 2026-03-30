@@ -107,6 +107,7 @@ export interface ProjectsState {
   closeUndoTimeoutMs?: number
   closeProcessSuppressions?: string[]
   dimWhenUnfocused?: boolean
+  hasSeenOnboardingGuide?: boolean
   /** @deprecated Moved to Project — kept for migration */
   autoArrangeOnCreate?: boolean
 }

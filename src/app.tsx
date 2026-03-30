@@ -6,6 +6,7 @@ import { InfiniteCanvas } from './components/canvas/infinite-canvas'
 import { CommandPalette } from './components/command-palette'
 import { Onboarding } from './components/onboarding'
 import { TerminalSwitcher } from './components/terminal-switcher'
+import { OnboardingGuide } from './components/onboarding-guide'
 import { ProjectSwitcher } from './components/project-switcher'
 import { CloseWindowDialog } from './components/close-window-dialog'
 import { Toaster } from './components/toast'
@@ -238,6 +239,7 @@ function MainApp() {
         onCancel={cancelPendingClose}
       />
       <Toaster />
+      <OnboardingGuide />
       {showDimOverlay && <UnfocusedOverlay onDismiss={() => setWindowFocused(true)} />}
     </div>
   )

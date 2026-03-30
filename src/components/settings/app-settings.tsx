@@ -1108,8 +1108,20 @@ function ShortcutKeys({ keys }: { keys: string }) {
 }
 
 function HelpSection() {
+  const openOnboardingGuide = useStore((s) => s.openOnboardingGuide)
+
   return (
     <div className="space-y-3.5">
+      <SettingsGroup title="Getting Started">
+        <button
+          onClick={() => openOnboardingGuide()}
+          className="w-full flex items-center justify-between px-3 py-2 rounded-lg bg-muted/30 hover:bg-muted/50 transition-colors text-sm"
+        >
+          <span className="text-foreground">Keyboard shortcuts guide</span>
+          <span className="text-xs text-muted-foreground">View all shortcuts</span>
+        </button>
+      </SettingsGroup>
+
       {SHORTCUT_GROUPS.map((group) => (
         <SettingsGroup key={group.title} title={group.title}>
           <div className="space-y-0">

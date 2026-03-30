@@ -677,6 +677,9 @@ export function StatusBar() {
           <div className="flex-1" />
         )}
 
+        {/* Draggable spacer - allows dragging from the title bar */}
+        <div className="flex-1" />
+
         {/* Right side controls */}
         <div className="flex items-center gap-3 px-3 shrink-0 no-drag">
           <AnimatePresence initial={false}>

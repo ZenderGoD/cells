@@ -45,6 +45,8 @@ interface StoreState {
   fontFamily: string
   windowOpacity: number
   dimWhenUnfocused: boolean
+  hasSeenOnboardingGuide: boolean
+  showOnboardingGuide: boolean
   focusedTerminalId: string | null
   focusedBrowserId: string | null
   focusHistory: string[] // stack of recently focused IDs (most recent last)
@@ -157,6 +159,8 @@ interface StoreState {
   zoomToFitAll(): void
   exitOverview(): void
   setOverlayOpen(open: boolean): void
+  dismissOnboardingGuide(): void
+  openOnboardingGuide(): void
   setSearchEngine(engine: string): void
   setHomePage(url: string): void
   setTerminalLinkTarget(target: 'system' | 'browser'): void
@@ -513,6 +517,8 @@ export const useStore = create<StoreState>((set, get) => ({
   fontFamily: DEFAULT_FONT_FAMILY,
   windowOpacity: DEFAULT_WINDOW_APPEARANCE.windowOpacity,
   dimWhenUnfocused: true,
+  hasSeenOnboardingGuide: false,
+  showOnboardingGuide: false,
 
   setTerminalTheme(name) {
     set({ terminalTheme: name })
@@ -596,6 +602,7 @@ export const useStore = create<StoreState>((set, get) => ({
         closeUndoTimeoutMs: Math.max(0, ps.closeUndoTimeoutMs ?? DEFAULT_CLOSE_UNDO_TIMEOUT_MS),
         closeProcessSuppressions: ps.closeProcessSuppressions ?? [],
         dimWhenUnfocused: ps.dimWhenUnfocused ?? true,
+        hasSeenOnboardingGuide: ps.hasSeenOnboardingGuide ?? false,
       }
 
       if (projects.length === 0) {
@@ -761,6 +768,7 @@ export const useStore = create<StoreState>((set, get) => ({
           closeUndoTimeoutMs: freshState.closeUndoTimeoutMs,
           closeProcessSuppressions: freshState.closeProcessSuppressions,
           dimWhenUnfocused: freshState.dimWhenUnfocused,
+          hasSeenOnboardingGuide: freshState.hasSeenOnboardingGuide,
         })
       })
       .catch(() => {
@@ -800,6 +808,7 @@ export const useStore = create<StoreState>((set, get) => ({
           closeUndoTimeoutMs: state.closeUndoTimeoutMs,
           closeProcessSuppressions: state.closeProcessSuppressions,
           dimWhenUnfocused: state.dimWhenUnfocused,
+          hasSeenOnboardingGuide: state.hasSeenOnboardingGuide,
         })
       })
   },
@@ -816,6 +825,7 @@ export const useStore = create<StoreState>((set, get) => ({
   createProject(name, path) {
     const state = get()
     const projects = snapshotActiveProject(state)
+    const isFirstProject = projects.length === 0
 
     // Park browser views (keep alive for when user switches back)
     for (const b of state.browsers) {
@@ -839,6 +849,12 @@ export const useStore = create<StoreState>((set, get) => ({
       ...projectToWorkingState(project),
     })
     get().persist()
+
+    // Auto-trigger disabled due to infinite loop issue
+    // if (isFirstProject) {
+    //   setTimeout(() => get().openOnboardingGuide(), 400)
+    // }
+
     setTimeout(() => {
       void get().refreshWorktrees()
     }, 0)
@@ -1655,6 +1671,17 @@ export const useStore = create<StoreState>((set, get) => ({
 
   setOverlayOpen(open) {
     set({ overlayOpen: open })
+  },
+
+  dismissOnboardingGuide() {
+    set({ hasSeenOnboardingGuide: true, showOnboardingGuide: false })
+    get().setOverlayOpen(false)
+    get().persist()
+  },
+
+  openOnboardingGuide() {
+    set({ showOnboardingGuide: true })
+    get().setOverlayOpen(true)
   },
 
   setSearchEngine(engine) {
