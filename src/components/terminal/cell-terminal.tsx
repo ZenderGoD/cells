@@ -69,6 +69,42 @@ function buildTheme(themeName: string) {
   }
 }
 
+function applyThemeToTerminal(term: Terminal, theme: ReturnType<typeof buildTheme>) {
+  term.options.theme = theme
+
+  if (term.renderer) {
+    term.renderer.setTheme(theme)
+  }
+
+  if (term.renderer && term.wasmTerm) {
+    term.renderer.render(term.wasmTerm, true, term.viewportY, term as ScrollbackProvider, 0)
+  }
+}
+
+function replaceLinkProviders(term: Terminal, providers: ILinkProvider[]) {
+  const linkDetector = Reflect.get(term, 'linkDetector')
+  if (!linkDetector) {
+    for (const provider of providers) {
+      term.registerLinkProvider(provider)
+    }
+    return
+  }
+
+  const existingProviders = Reflect.get(linkDetector, 'providers')
+  if (Array.isArray(existingProviders)) {
+    for (const provider of existingProviders) {
+      provider?.dispose?.()
+    }
+  }
+
+  Reflect.set(linkDetector, 'providers', [])
+  linkDetector.invalidateCache?.()
+
+  for (const provider of providers) {
+    term.registerLinkProvider(provider)
+  }
+}
+
 // ---- Terminal instance cache ----
 // Keeps ghostty Terminal alive across project switches so state (colors,
 // scrollback, cursor position, alternate screen) is never lost.
@@ -164,7 +200,7 @@ export function getTerminalRestoreSnapshot(termId: string): string | null {
 export function applyThemeToAllTerminals(themeName: string) {
   const theme = buildTheme(themeName)
   for (const [, cached] of terminalCache) {
-    cached.term.options.theme = theme
+    applyThemeToTerminal(cached.term, theme)
   }
 }
 
@@ -514,6 +550,9 @@ export function CellTerminal({
   const inputBufferRef = useRef('')
   const lastInferredTitleRef = useRef<string | null>(null)
   const lastAgentDataRef = useRef<number>(0) // timestamp of last PTY data while agent active
+  const lastCodexTitleDataRef = useRef<number>(-1)
+  const lastCodexTitleRef = useRef<string | null>(null)
+  const agentPollInFlightRef = useRef(false)
   const prevAgentRef = useRef<AgentName | null>(null) // track transitions for done detection
   const agentBellRef = useRef(false) // whether a BEL was heard since last input
   const processTitleRef = useRef(false) // whether the agent process has set its own title
@@ -694,11 +733,6 @@ export function CellTerminal({
           cached.term.write(result.buffer)
         }
 
-        // Resize triggers SIGWINCH for interactive programs to redraw
-        if (dims) {
-          window.cells.terminal.resize(termId, dims.cols, dims.rows)
-        }
-
         // Force a full redraw after DOM reattachment — the canvas backing
         // store may have been reclaimed while the wrapper was detached,
         // leaving the terminal visually stale or blank even though the
@@ -742,6 +776,7 @@ export function CellTerminal({
       const fitAddon = new FitAddon()
       term.loadAddon(fitAddon)
       term.open(wrapper)
+      fitAddon.observeResize()
       setTerminalRenderLoopEnabled(term, shouldRenderRef.current)
 
       terminalRef.current = term
@@ -792,8 +827,12 @@ export function CellTerminal({
         },
       })
 
-      term.registerLinkProvider(wrapProvider(new UrlRegexProvider(term as any)))
-      term.registerLinkProvider(wrapProvider(new OSC8LinkProvider(term as any)))
+      // ghostty-web registers its own providers during open(). Replace them so
+      // our routing logic controls where links open without duplicate scans.
+      replaceLinkProviders(term, [
+        wrapProvider(new OSC8LinkProvider(term as any)),
+        wrapProvider(new UrlRegexProvider(term as any)),
+      ])
 
       if (term.textarea) {
         term.textarea.style.opacity = '0'
@@ -870,12 +909,12 @@ export function CellTerminal({
             // Try files/images from native clipboard
             const filePaths = await window.cells.app.pasteClipboardFiles()
             if (filePaths && filePaths.length > 0) {
-              window.cells.terminal.write(termId, filePaths.map(shellEscapePath).join(' ') + ' ')
+              pasteToTerminal(filePaths.map(shellEscapePath).join(' ') + ' ')
               return
             }
             // Fallback to text
             const text = await navigator.clipboard.readText()
-            if (text) window.cells.terminal.write(termId, text)
+            if (text) pasteToTerminal(text)
           })()
           return true
         }
@@ -1025,6 +1064,9 @@ export function CellTerminal({
             }
           }
         }).dispose,
+        term.onResize(({ cols, rows }) => {
+          window.cells.terminal.resize(termId, cols, rows)
+        }).dispose,
         window.cells.terminal.onData((id, data) => {
           if (id === termId) {
             if (initialReplayPending) {
@@ -1069,93 +1111,117 @@ export function CellTerminal({
       const handlePaste = (e: ClipboardEvent) => {
         e.preventDefault()
         const text = e.clipboardData?.getData('text')
-        if (text) window.cells.terminal.write(termId, text)
+        if (text) pasteToTerminal(text)
       }
       wrapper.addEventListener('paste', handlePaste)
       cleanups.push(() => wrapper.removeEventListener('paste', handlePaste))
 
       let agentPoll: ReturnType<typeof setInterval> | null = null
       const runAgentPoll = async () => {
-        const proc = await window.cells.terminal.getProcess(termId)
-        const agent = normalizeAgentProcess(proc)
-        const wasAgent = prevAgentRef.current
-        detectedAgentRef.current = agent
-        if (agent) inferredAgentRef.current = agent
-        prevAgentRef.current = agent
+        if (agentPollInFlightRef.current) return
+        agentPollInFlightRef.current = true
+        try {
+          const procInfo = await window.cells.terminal.getProcessInfo(termId)
+          if (cancelled) return
 
-        const store = useStore.getState()
-        const current = store.terminals.find((t) => t.id === termId)
+          const proc = procInfo?.command ?? null
+          const agent = normalizeAgentProcess(proc)
+          const wasAgent = prevAgentRef.current
+          detectedAgentRef.current = agent
+          if (agent) inferredAgentRef.current = agent
+          prevAgentRef.current = agent
 
-        // Track whether any non-shell process is running (for subtle indicator)
-        const hasProcess = !!proc && !agent
-        store.updateTerminalProcessRunning(termId, hasProcess)
-        if (current && current.agent !== agent) {
-          store.updateTerminalAgent(termId, agent)
-        }
+          const store = useStore.getState()
+          const current = store.terminals.find((t) => t.id === termId)
 
-        // ── Agent status state machine ──
-        //
-        // This is a state machine, NOT a stateless re-evaluation. The previous
-        // status determines what transitions are valid. This is critical:
-        // a naive "idle + unfocused → unread" would re-mark terminals the
-        // user already read every 3 seconds, causing phantom notifications.
-        //
-        // Valid transitions:
-        //   null/unread → active    (output arrived — handled in onData above)
-        //   active → null           (silence + focused: user is watching)
-        //   active → unread         (silence + unfocused: user missed it)
-        //   unread/done → null      (user focused the terminal)
-        //   null → null             (no-op: user already acknowledged)
-        //   unread → unread         (no-op: user still hasn't looked)
-        //   any → done              (agent process exited)
-        //
-        if (agent) {
-          const elapsed = Date.now() - lastAgentDataRef.current
-          const focused = store.focusedTerminalId === termId
-          const isIdle =
-            (lastAgentDataRef.current > 0 && elapsed > AGENT_IDLE_SILENCE_MS) ||
-            agentBellRef.current
-          const prev = current?.agentStatus ?? null
+          // Track whether any non-shell process is running (for subtle indicator)
+          const hasProcess = Boolean(procInfo && !procInfo.isShell && !agent)
+          if (current?.processRunning !== hasProcess) {
+            store.updateTerminalProcessRunning(termId, hasProcess)
+          }
+          if (current && current.agent !== agent) {
+            store.updateTerminalAgent(termId, agent)
+          }
 
-          let newStatus: import('@/types').AgentStatus = prev
-          if (!isIdle && lastAgentDataRef.current > 0) {
-            // Output still flowing — agent is actively working
-            newStatus = 'active'
-          } else if (isIdle && prev === 'active') {
-            // TRANSITION: agent just went from working → idle.
-            // This is the ONLY place 'unread' gets set. If the user is
-            // watching (focused), skip straight to null.
-            newStatus = focused ? null : 'unread'
-          } else if (isIdle && focused && (prev === 'unread' || prev === 'done')) {
-            // User focused an idle agent terminal — acknowledge & clear,
-            // but only after they've been looking at it for at least 2s
-            const focusedFor = Date.now() - store.focusedTerminalSince
-            if (focusedFor >= 2000) {
-              newStatus = null
+          // ── Agent status state machine ──
+          //
+          // This is a state machine, NOT a stateless re-evaluation. The previous
+          // status determines what transitions are valid. This is critical:
+          // a naive "idle + unfocused → unread" would re-mark terminals the
+          // user already read every 3 seconds, causing phantom notifications.
+          //
+          // Valid transitions:
+          //   null/unread → active    (output arrived — handled in onData above)
+          //   active → null           (silence + focused: user is watching)
+          //   active → unread         (silence + unfocused: user missed it)
+          //   unread/done → null      (user focused the terminal)
+          //   null → null             (no-op: user already acknowledged)
+          //   unread → unread         (no-op: user still hasn't looked)
+          //   any → done              (agent process exited)
+          //
+          if (agent) {
+            const elapsed = Date.now() - lastAgentDataRef.current
+            const focused = store.focusedTerminalId === termId
+            const isIdle =
+              (lastAgentDataRef.current > 0 && elapsed > AGENT_IDLE_SILENCE_MS) ||
+              agentBellRef.current
+            const prev = current?.agentStatus ?? null
+
+            let newStatus: import('@/types').AgentStatus = prev
+            if (!isIdle && lastAgentDataRef.current > 0) {
+              // Output still flowing — agent is actively working
+              newStatus = 'active'
+            } else if (isIdle && prev === 'active') {
+              // TRANSITION: agent just went from working → idle.
+              // This is the ONLY place 'unread' gets set. If the user is
+              // watching (focused), skip straight to null.
+              newStatus = focused ? null : 'unread'
+            } else if (isIdle && focused && (prev === 'unread' || prev === 'done')) {
+              // User focused an idle agent terminal — acknowledge & clear,
+              // but only after they've been looking at it for at least 2s
+              const focusedFor = Date.now() - store.focusedTerminalSince
+              if (focusedFor >= 2000) {
+                newStatus = null
+              }
             }
-          }
-          // All other cases: keep current status unchanged.
-          // null stays null (user already saw it — don't re-notify).
-          // unread stays unread (user hasn't focused yet).
+            // All other cases: keep current status unchanged.
+            // null stays null (user already saw it — don't re-notify).
+            // unread stays unread (user hasn't focused yet).
 
-          if (current && current.agentStatus !== newStatus) {
-            store.updateTerminalAgentStatus(termId, newStatus)
+            if (current && current.agentStatus !== newStatus) {
+              store.updateTerminalAgentStatus(termId, newStatus)
+            }
+          } else if (wasAgent && !agent) {
+            // Agent process exited — mark done so user sees it
+            store.updateTerminalAgentStatus(termId, 'done')
+            lastAgentDataRef.current = 0
+            lastCodexTitleDataRef.current = -1
+            lastCodexTitleRef.current = null
+            agentBellRef.current = false
+            // Clear inferred agent so subsequent shell output doesn't
+            // re-trigger the active → unread cycle on a dead agent
+            inferredAgentRef.current = null
           }
-        } else if (wasAgent && !agent) {
-          // Agent process exited — mark done so user sees it
-          store.updateTerminalAgentStatus(termId, 'done')
-          lastAgentDataRef.current = 0
-          agentBellRef.current = false
-          // Clear inferred agent so subsequent shell output doesn't
-          // re-trigger the active → unread cycle on a dead agent
-          inferredAgentRef.current = null
-        }
 
-        if (agent === 'codex') {
-          const codexTitle = await window.cells.terminal.getCodexTitle(termId)
-          if (codexTitle) {
-            setInferredTitle(formatAgentWindowTitle('codex', codexTitle))
+          if (agent === 'codex') {
+            const shouldRefreshCodexTitle =
+              lastCodexTitleRef.current === null ||
+              lastCodexTitleDataRef.current !== lastAgentDataRef.current
+            if (shouldRefreshCodexTitle) {
+              const codexTitle = await window.cells.terminal.getCodexTitle(termId)
+              if (cancelled) return
+              lastCodexTitleDataRef.current = lastAgentDataRef.current
+              lastCodexTitleRef.current = codexTitle
+              if (codexTitle) {
+                setInferredTitle(formatAgentWindowTitle('codex', codexTitle))
+              }
+            }
+          } else {
+            lastCodexTitleDataRef.current = -1
+            lastCodexTitleRef.current = null
           }
+        } finally {
+          agentPollInFlightRef.current = false
         }
       }
       const setPollingEnabled = (enabled: boolean) => {
@@ -1247,7 +1313,14 @@ export function CellTerminal({
       // Tell main process to buffer instead of sending live IPC
       window.cells.terminal.unsubscribe(termId)
     }
-  }, [copySelectionToClipboard, reloadKey, setInferredTitle, termId, trackInputForTitle])
+  }, [
+    copySelectionToClipboard,
+    pasteToTerminal,
+    reloadKey,
+    setInferredTitle,
+    termId,
+    trackInputForTitle,
+  ])
 
   useEffect(() => {
     if (!isFocused) return
@@ -1280,7 +1353,7 @@ export function CellTerminal({
     if (!term) return
 
     const theme = buildTheme(themeName)
-    term.options.theme = theme
+    applyThemeToTerminal(term, theme)
 
     // Keep wrapper background in sync so the sub-cell gap matches the terminal bg
     const cached = terminalCache.get(termId)
@@ -1296,10 +1369,6 @@ export function CellTerminal({
 
       requestAnimationFrame(() => {
         fitAddonRef.current?.fit()
-        const dims = fitAddonRef.current?.proposeDimensions()
-        if (dims) {
-          window.cells.terminal.resize(termId, dims.cols, dims.rows)
-        }
       })
     }
   }, [termId, themeName, fontSize, fontFamily])
@@ -1440,13 +1509,9 @@ export function CellTerminal({
     if (!fitAddonRef.current || !terminalRef.current) return
     const timer = setTimeout(() => {
       fitAddonRef.current?.fit()
-      const dims = fitAddonRef.current?.proposeDimensions()
-      if (dims) {
-        window.cells.terminal.resize(termId, dims.cols, dims.rows)
-      }
     }, 100)
     return () => clearTimeout(timer)
-  }, [width, height, termId])
+  }, [width, height])
 
   return (
     <div
