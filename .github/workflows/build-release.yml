@@ -70,7 +70,7 @@ jobs:
               --issuer "$APPLE_API_ISSUER"
             export APPLE_API_KEY="$APPLE_API_KEY_PATH"
           fi
-          pnpm build && electron-builder --publish always
+          pnpm release
 
       - name: Generate release notes
         id: notes
