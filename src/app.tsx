@@ -164,6 +164,12 @@ function MainApp() {
   }, [persist])
 
   useEffect(() => {
+    const handleBeforeUnload = () => persist()
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [persist])
+
+  useEffect(() => {
     const cleanupClose = window.cells.app.onCloseTerminal(closeWindow)
     return () => {
       cleanupClose()

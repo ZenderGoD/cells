@@ -15,6 +15,33 @@ function ensureInit() {
   return ghosttyReady
 }
 
+function setTerminalRenderLoopEnabled(term: Terminal | null, enabled: boolean) {
+  if (!term) return
+
+  const animationFrameId = Reflect.get(term, 'animationFrameId')
+
+  if (!enabled) {
+    if (typeof animationFrameId === 'number') {
+      cancelAnimationFrame(animationFrameId)
+      Reflect.set(term, 'animationFrameId', undefined)
+    }
+    return
+  }
+
+  if (typeof animationFrameId === 'number') return
+
+  const startRenderLoop = Reflect.get(term, 'startRenderLoop')
+  const renderer = Reflect.get(term, 'renderer')
+  const wasmTerm = Reflect.get(term, 'wasmTerm')
+  const isDisposed = Reflect.get(term, 'isDisposed')
+  const isOpen = Reflect.get(term, 'isOpen')
+
+  if (typeof startRenderLoop !== 'function' || !renderer || !wasmTerm) return
+  if (isDisposed === true || isOpen === false) return
+
+  startRenderLoop.call(term)
+}
+
 function buildTheme(themeName: string) {
   const theme = getTerminalTheme(themeName)
   return {
@@ -59,6 +86,8 @@ interface TerminalPreviewOptions {
   columns?: number
 }
 
+const TERMINAL_RESTORE_SNAPSHOT_LIMIT = 256 * 1024
+
 export function getTerminalPreviewSnapshot(
   termId: string,
   options: TerminalPreviewOptions = {},
@@ -96,6 +125,41 @@ export function getTerminalPreviewSnapshot(
   return previewLines
 }
 
+export function getTerminalRestoreSnapshot(termId: string): string | null {
+  const cached = terminalCache.get(termId)
+  const term = cached?.term
+  if (!term) return null
+
+  const activeBuffer = term.buffer.active
+  const logicalLines: string[] = []
+
+  for (let lineIndex = 0; lineIndex < activeBuffer.length; lineIndex += 1) {
+    const line = activeBuffer.getLine(lineIndex)
+    if (!line) {
+      logicalLines.push('')
+      continue
+    }
+
+    const text = line.translateToString(true, 0, line.length)
+    if (line.isWrapped && logicalLines.length > 0) {
+      logicalLines[logicalLines.length - 1] += text
+    } else {
+      logicalLines.push(text)
+    }
+  }
+
+  while (logicalLines.length > 0 && logicalLines[logicalLines.length - 1] === '') {
+    logicalLines.pop()
+  }
+
+  if (logicalLines.length === 0) return ''
+
+  const snapshot = logicalLines.join('\r\n')
+  return snapshot.length > TERMINAL_RESTORE_SNAPSHOT_LIMIT
+    ? snapshot.slice(-TERMINAL_RESTORE_SNAPSHOT_LIMIT)
+    : snapshot
+}
+
 /** Apply a theme to every cached terminal instance (mounted or not). */
 export function applyThemeToAllTerminals(themeName: string) {
   const theme = buildTheme(themeName)
@@ -126,6 +190,7 @@ interface CellTerminalProps {
   termId: string
   width: number
   height: number
+  isVisible: boolean
   isFocused: boolean
   onTitleChange?: (title: string) => void
 }
@@ -428,6 +493,7 @@ export function CellTerminal({
   termId,
   width,
   height,
+  isVisible,
   isFocused,
   onTitleChange,
 }: CellTerminalProps) {
@@ -452,6 +518,7 @@ export function CellTerminal({
   const agentBellRef = useRef(false) // whether a BEL was heard since last input
   const processTitleRef = useRef(false) // whether the agent process has set its own title
   const dragDepthRef = useRef(0)
+  const shouldRenderRef = useRef(isFocused || isVisible)
   const [dropActive, setDropActive] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
 
@@ -604,6 +671,7 @@ export function CellTerminal({
         terminalRef.current = cached.term
         fitAddonRef.current = cached.fitAddon
         cached.setPollingEnabled(true)
+        setTerminalRenderLoopEnabled(cached.term, shouldRenderRef.current)
 
         // Fit first, then get accurate dimensions for attach
         await new Promise<void>((resolve) => {
@@ -637,7 +705,7 @@ export function CellTerminal({
         // internal buffer state is correct.
         requestAnimationFrame(() => {
           const t = cached.term
-          if (t.renderer && t.wasmTerm) {
+          if (shouldRenderRef.current && t.renderer && t.wasmTerm) {
             t.renderer.render(t.wasmTerm, true, t.viewportY, t as ScrollbackProvider, 0)
           }
         })
@@ -674,6 +742,7 @@ export function CellTerminal({
       const fitAddon = new FitAddon()
       term.loadAddon(fitAddon)
       term.open(wrapper)
+      setTerminalRenderLoopEnabled(term, shouldRenderRef.current)
 
       terminalRef.current = term
       fitAddonRef.current = fitAddon
@@ -875,6 +944,8 @@ export function CellTerminal({
       // chunk so scroll events and dirty flags are handled atomically.
       let writeBuf = ''
       let writeRaf = 0
+      let initialReplayPending = true
+      const pendingReplayData: string[] = []
       // How many lines from bottom the user must scroll before we stop
       // auto-scrolling to bottom on new output.
       const SCROLL_LOCK_THRESHOLD = 5
@@ -912,7 +983,7 @@ export function CellTerminal({
         // every frame) uses dirty tracking and therefore leaves those shifted
         // rows stale.  A forced full render here ensures every row is
         // repainted immediately after new data is flushed.
-        if (term.renderer && term.wasmTerm) {
+        if (shouldRenderRef.current && term.renderer && term.wasmTerm) {
           term.renderer.render(term.wasmTerm, true, term.viewportY, term as ScrollbackProvider, 0)
         }
       }
@@ -956,6 +1027,11 @@ export function CellTerminal({
         }).dispose,
         window.cells.terminal.onData((id, data) => {
           if (id === termId) {
+            if (initialReplayPending) {
+              pendingReplayData.push(data)
+              return
+            }
+
             // Accumulate data and schedule a single flush per frame
             writeBuf += data
             if (!writeRaf) writeRaf = requestAnimationFrame(flushWrites)
@@ -1105,6 +1181,9 @@ export function CellTerminal({
       const dims = fitAddon.proposeDimensions()
       const worktreeCwd = consumePendingWorktreePath(termId)
       const projectPath = worktreeCwd ?? useStore.getState().getActiveProjectPath()
+      const restoredOutput =
+        useStore.getState().terminals.find((terminal) => terminal.id === termId)?.restoredOutput ??
+        ''
       const result = await window.cells.terminal.attach(
         termId,
         dims?.cols ?? 80,
@@ -1112,8 +1191,22 @@ export function CellTerminal({
         projectPath,
       )
 
-      if (result?.reattached && result.buffer) {
+      if (!result?.reattached && restoredOutput) {
+        term.write(restoredOutput)
+        if (!restoredOutput.endsWith('\r\n')) {
+          term.write('\r\n')
+        }
+      }
+
+      if (result?.buffer) {
         term.write(result.buffer)
+      }
+
+      initialReplayPending = false
+      if (pendingReplayData.length > 0) {
+        writeBuf += pendingReplayData.join('')
+        pendingReplayData.length = 0
+        if (!writeRaf) writeRaf = requestAnimationFrame(flushWrites)
       }
 
       if (result?.reattached && dims) {
@@ -1144,6 +1237,7 @@ export function CellTerminal({
       // DON'T dispose — just detach DOM. Terminal stays alive in cache.
       const cached = terminalCache.get(termId)
       cached?.setPollingEnabled(false)
+      setTerminalRenderLoopEnabled(cached?.term ?? null, false)
       if (cached && container?.contains(cached.wrapper)) {
         container.removeChild(cached.wrapper)
       }
@@ -1215,19 +1309,27 @@ export function CellTerminal({
   // When unfocused, blur the terminal so keystrokes don't reach it (e.g. in
   // overview mode).
   useEffect(() => {
-    if (!terminalRef.current) return
+    shouldRenderRef.current = isFocused || isVisible
+
+    const term = terminalRef.current
+    if (!term) return
+
+    setTerminalRenderLoopEnabled(term, shouldRenderRef.current)
+
     if (isFocused) {
-      terminalRef.current.focus()
-      const t = terminalRef.current
-      requestAnimationFrame(() => {
-        if (t.renderer && t.wasmTerm) {
-          t.renderer.render(t.wasmTerm, true, t.viewportY, t as ScrollbackProvider, 0)
-        }
-      })
+      term.focus()
     } else {
-      terminalRef.current.blur()
+      term.blur()
     }
-  }, [isFocused])
+
+    if (!shouldRenderRef.current) return
+
+    requestAnimationFrame(() => {
+      if (term.renderer && term.wasmTerm) {
+        term.renderer.render(term.wasmTerm, true, term.viewportY, term as ScrollbackProvider, 0)
+      }
+    })
+  }, [isFocused, isVisible])
 
   // Re-focus the terminal when overlays (command palette, etc.) close
   useEffect(() => {

@@ -28,6 +28,7 @@ const HANDLE = 6 // px width of edge handles
 interface TerminalNodeProps {
   terminal: TerminalNodeType
   scale: number
+  isVisible: boolean
   selectionMode: boolean
   isSelected: boolean
   isFocused: boolean
@@ -38,6 +39,7 @@ interface TerminalNodeProps {
 export function TerminalNode({
   terminal,
   scale,
+  isVisible,
   selectionMode,
   isSelected,
   isFocused,
@@ -261,6 +263,7 @@ export function TerminalNode({
           termId={terminal.id}
           width={terminal.width}
           height={terminal.height}
+          isVisible={isVisible}
           isFocused={isFocused}
           onTitleChange={(title) => updateTerminalTitle(terminal.id, title)}
         />

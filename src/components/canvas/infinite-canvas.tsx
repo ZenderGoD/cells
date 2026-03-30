@@ -28,6 +28,7 @@ const MAX_ZOOM = 1.5
 const SNAP_DELAY_MIN = 80 // snap almost instantly when terminal fills view
 const SNAP_DELAY_MAX = 400 // slow snap when terminal is barely visible
 const SNAP_DISABLE_ZOOM = 0.5
+const TERMINAL_VISIBILITY_OVERSCAN_PX = 240
 
 const SPRING_NORMAL = { stiffness: 300, damping: 30 }
 const SPRING_FAST = { stiffness: 800, damping: 50 }
@@ -125,6 +126,15 @@ export function InfiniteCanvas() {
   const animatedY = reducedMotion ? motionY : springY
   const animatedScale = reducedMotion ? motionScale : springScale
   const viewportRect = getViewportRect(transform)
+  const terminalViewportRect = useMemo(() => {
+    const overscan = TERMINAL_VISIBILITY_OVERSCAN_PX / Math.max(transform.scale, MIN_ZOOM)
+    return {
+      x: viewportRect.x - overscan,
+      y: viewportRect.y - overscan,
+      width: viewportRect.width + overscan * 2,
+      height: viewportRect.height + overscan * 2,
+    }
+  }, [transform.scale, viewportRect.x, viewportRect.y, viewportRect.width, viewportRect.height])
   const viewportArea = viewportRect.width * viewportRect.height
   const visibleWindowCount =
     viewportArea > 0
@@ -144,6 +154,15 @@ export function InfiniteCanvas() {
         }, 0)
       : 0
   const showFocusedTerminalRing = visibleWindowCount >= 2
+
+  const isTerminalVisible = useCallback(
+    (terminal: { x: number; y: number; width: number; height: number }) =>
+      terminal.x + terminal.width >= terminalViewportRect.x &&
+      terminal.x <= terminalViewportRect.x + terminalViewportRect.width &&
+      terminal.y + terminal.height >= terminalViewportRect.y &&
+      terminal.y <= terminalViewportRect.y + terminalViewportRect.height,
+    [terminalViewportRect],
+  )
 
   // When user is actively driving (panning/scrolling), bypass springs and set directly
   // When animating (snap), let springs interpolate
@@ -530,6 +549,7 @@ export function InfiniteCanvas() {
               key={terminal.id}
               terminal={terminal}
               scale={transform.scale}
+              isVisible={isTerminalVisible(terminal)}
               selectionMode={selectionMode}
               isSelected={selectedNodeIds.includes(terminal.id)}
               isFocused={focusedTerminalId === terminal.id}

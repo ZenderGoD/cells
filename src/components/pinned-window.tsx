@@ -94,6 +94,7 @@ export function PinnedWindow({ termId, type }: { termId: string; type: 'terminal
           termId={termId}
           width={size.width}
           height={size.height - TITLE_BAR_HEIGHT}
+          isVisible={true}
           isFocused={true}
           onTitleChange={(newTitle) => {
             setInferredTitle(newTitle)

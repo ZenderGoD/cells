@@ -19,6 +19,8 @@ export interface TerminalNode {
   agent?: 'claude' | 'codex' | null
   agentStatus?: AgentStatus
   processRunning?: boolean
+  /** Plain-text terminal snapshot used to restore visible history after reload/restart. */
+  restoredOutput?: string
 }
 
 export interface BrowserHistoryEntry {

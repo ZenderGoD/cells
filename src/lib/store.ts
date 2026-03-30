@@ -25,6 +25,7 @@ import {
 import {
   destroyCachedTerminal,
   applyThemeToAllTerminals,
+  getTerminalRestoreSnapshot,
   reloadTerminal,
 } from '@/components/terminal/cell-terminal'
 import { showToast } from '@/components/toast'
@@ -371,6 +372,17 @@ function getTopZIndex(terminals: TerminalNode[], browsers: BrowserNode[] = []) {
   return Math.max(termMax, browMax)
 }
 
+function mergeTerminalSnapshots(terminals: TerminalNode[]) {
+  return terminals.map((terminal) => {
+    const snapshot = getTerminalRestoreSnapshot(terminal.id)
+    if (snapshot === null) return terminal
+    return {
+      ...terminal,
+      restoredOutput: snapshot || undefined,
+    }
+  })
+}
+
 function upsertPendingClosedWindow(
   pending: PendingClosedWindow[],
   entry: PendingClosedWindow,
@@ -692,6 +704,15 @@ export const useStore = create<StoreState>((set, get) => ({
       .then((allHistory) => {
         const state = get()
         let projects = snapshotActiveProject(state)
+        const terminals = mergeTerminalSnapshots(state.terminals)
+
+        projects = projects.map((project) => ({
+          ...project,
+          terminals:
+            project.id === state.activeProjectId
+              ? terminals
+              : mergeTerminalSnapshots(project.terminals ?? []),
+        }))
 
         // Merge history into every project's browser nodes before saving so
         // parked browsers keep their back/forward stacks across restarts too.
@@ -707,7 +728,9 @@ export const useStore = create<StoreState>((set, get) => ({
               return history ? { ...browser, history } : browser
             }),
           }))
-          set({ browsers, projects })
+          set({ terminals, browsers, projects })
+        } else {
+          set({ terminals, projects })
         }
 
         const freshState = get()
@@ -741,7 +764,15 @@ export const useStore = create<StoreState>((set, get) => ({
       .catch(() => {
         // Fallback: save without history
         const state = get()
-        const projects = snapshotActiveProject(state)
+        const terminals = mergeTerminalSnapshots(state.terminals)
+        const projects = snapshotActiveProject(state).map((project) => ({
+          ...project,
+          terminals:
+            project.id === state.activeProjectId
+              ? terminals
+              : mergeTerminalSnapshots(project.terminals ?? []),
+        }))
+        set({ terminals, projects })
         return saveState({
           version: 2,
           activeProjectId: state.activeProjectId,
