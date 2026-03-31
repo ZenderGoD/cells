@@ -1,0 +1,35 @@
+name: General Feedback
+description: Share feedback, ideas, or ask questions
+title: "[Feedback] "
+labels: ["feedback"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have feedback, questions, or general ideas? We'd love to hear from you!
+
+  - type: textarea
+    id: feedback
+    attributes:
+      label: Your feedback
+      description: What's on your mind?
+      placeholder: "Share your thoughts, questions, or suggestions"
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+    placeholder: "Optional: any additional details that might be helpful"
+
+  - type: checkboxes
+    id: type
+    attributes:
+      label: Feedback type
+      options:
+        - label: Question
+        - label: Feature idea
+        - label: General feedback
+        - label: Documentation improvement
+        - label: Other

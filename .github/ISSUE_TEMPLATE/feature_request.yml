@@ -1,41 +1,52 @@
-name: Feature request
-description: Suggest an improvement for Cells
-title: "[Feature]: "
-labels:
-  - enhancement
+name: Feature Request
+description: Suggest a new feature or enhancement
+title: "[Feature] "
+labels: ["enhancement"]
 body:
   - type: markdown
     attributes:
       value: |
-        Describe the problem first, then the proposed change. Concrete workflows are more helpful than broad ideas.
-  - type: checkboxes
-    id: checks
-    attributes:
-      label: Pre-flight
-      options:
-        - label: I searched for existing issues before opening this request.
-          required: true
+        Have an idea to make Cells better? Please describe it below.
+
   - type: textarea
     id: problem
     attributes:
-      label: Problem to solve
-      placeholder: What workflow is currently blocked or inefficient?
+      label: Problem or use case
+      description: What problem does this solve? Or what's the use case?
+      placeholder: "Example: I want to be able to split terminals horizontally so I can see multiple outputs at once"
     validations:
       required: true
+
   - type: textarea
-    id: proposal
+    id: solution
     attributes:
       label: Proposed solution
-      placeholder: What should Cells do instead?
+      description: How would you like this to work?
+      placeholder: |
+        Example: Add a "Split terminal" command to the command palette that creates another terminal in a split view. Could use Cmd+Shift+D to split down, Cmd+Shift+R to split right.
     validations:
       required: true
+
   - type: textarea
     id: alternatives
     attributes:
-      label: Alternatives considered
-      placeholder: Workarounds, rejected ideas, or related tools
+      label: Alternative approaches
+      description: Are there other ways this could work?
+      placeholder: "Optional: describe other solutions you've considered"
+
   - type: textarea
     id: context
     attributes:
       label: Additional context
-      placeholder: Mockups, examples, screenshots, or other notes
+      description: Any other details that might help?
+      placeholder: "Optional: screenshots, examples, or related issues"
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I've searched for existing feature requests
+          required: true
+        - label: This doesn't duplicate existing functionality
+          required: true
