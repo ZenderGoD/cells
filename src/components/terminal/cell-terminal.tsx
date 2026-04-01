@@ -558,6 +558,7 @@ export function CellTerminal({
   const processTitleRef = useRef(false) // whether the agent process has set its own title
   const dragDepthRef = useRef(0)
   const shouldRenderRef = useRef(isFocused || isVisible)
+  const focusStateRef = useRef({ isFocused, isVisible })
   const [dropActive, setDropActive] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
 
@@ -571,25 +572,58 @@ export function CellTerminal({
     return () => window.removeEventListener('terminal-reload', handler)
   }, [termId])
 
+  const getLiveTerminal = useCallback(
+    () => terminalCache.get(termId)?.term ?? terminalRef.current,
+    [termId],
+  )
+
+  useEffect(() => {
+    focusStateRef.current = { isFocused, isVisible }
+  }, [isFocused, isVisible])
+
+  const syncTerminalState = useCallback(
+    (term: Terminal | null = getLiveTerminal()) => {
+      if (!term) return
+
+      const { isFocused: focused, isVisible: visible } = focusStateRef.current
+      const shouldRender = focused || visible
+      shouldRenderRef.current = shouldRender
+      setTerminalRenderLoopEnabled(term, shouldRender)
+
+      requestAnimationFrame(() => {
+        if (focused) {
+          term.focus()
+        } else {
+          term.blur()
+        }
+
+        if (shouldRender && term.renderer && term.wasmTerm) {
+          term.renderer.render(term.wasmTerm, true, term.viewportY, term as ScrollbackProvider, 0)
+        }
+      })
+    },
+    [getLiveTerminal],
+  )
+
   const pasteToTerminal = useCallback(
     (text: string) => {
-      const term = terminalRef.current
+      const term = getLiveTerminal()
       if (!term || !text) return
       focusTerminal(termId)
       term.focus()
       term.paste(text)
     },
-    [focusTerminal, termId],
+    [focusTerminal, getLiveTerminal, termId],
   )
 
   const copySelectionToClipboard = useCallback(() => {
-    const term = terminalRef.current
+    const term = getLiveTerminal()
     if (!term || !term.hasSelection()) return false
     const selection = term.getSelection()
     if (!selection) return false
     void navigator.clipboard.writeText(selection).catch(() => {})
     return true
-  }, [])
+  }, [getLiveTerminal])
 
   useEffect(() => {
     onTitleChangeRef.current = onTitleChange
@@ -721,7 +755,7 @@ export function CellTerminal({
         terminalRef.current = cached.term
         fitAddonRef.current = cached.fitAddon
         cached.setPollingEnabled(true)
-        setTerminalRenderLoopEnabled(cached.term, shouldRenderRef.current)
+        syncTerminalState(cached.term)
 
         // Fit first, then get accurate dimensions for attach
         await new Promise<void>((resolve) => {
@@ -759,6 +793,7 @@ export function CellTerminal({
           bumpPtySize(dims.cols, dims.rows)
         }
 
+        syncTerminalState(cached.term)
         return
       }
 
@@ -796,6 +831,7 @@ export function CellTerminal({
 
       terminalRef.current = term
       fitAddonRef.current = fitAddon
+      syncTerminalState(term)
 
       // Register link providers — wraps built-in providers with custom activate
       // that routes links based on user settings (system browser vs built-in)
@@ -1298,6 +1334,8 @@ export function CellTerminal({
           if (!cancelled) window.cells.terminal.write(termId, pendingCmd + '\n')
         }, 150)
       }
+
+      syncTerminalState(term)
     }
 
     setup()
@@ -1322,6 +1360,7 @@ export function CellTerminal({
     pasteToTerminal,
     reloadKey,
     setInferredTitle,
+    syncTerminalState,
     termId,
     trackInputForTitle,
   ])
@@ -1343,13 +1382,13 @@ export function CellTerminal({
       if (!copySelectionToClipboard()) return
       event.preventDefault()
       event.stopPropagation()
-      const selection = terminalRef.current?.getSelection()
+      const selection = getLiveTerminal()?.getSelection()
       if (selection) event.clipboardData?.setData('text/plain', selection)
     }
 
     document.addEventListener('copy', handleCopy, true)
     return () => document.removeEventListener('copy', handleCopy, true)
-  }, [copySelectionToClipboard, isFocused])
+  }, [copySelectionToClipboard, getLiveTerminal, isFocused])
 
   // Theme/font updates
   useEffect(() => {
@@ -1382,38 +1421,20 @@ export function CellTerminal({
   // When unfocused, blur the terminal so keystrokes don't reach it (e.g. in
   // overview mode).
   useEffect(() => {
-    shouldRenderRef.current = isFocused || isVisible
-
-    const term = terminalRef.current
-    if (!term) return
-
-    setTerminalRenderLoopEnabled(term, shouldRenderRef.current)
-
-    if (isFocused) {
-      term.focus()
-    } else {
-      term.blur()
-    }
-
-    if (!shouldRenderRef.current) return
-
-    requestAnimationFrame(() => {
-      if (term.renderer && term.wasmTerm) {
-        term.renderer.render(term.wasmTerm, true, term.viewportY, term as ScrollbackProvider, 0)
-      }
-    })
-  }, [isFocused, isVisible])
+    syncTerminalState()
+  }, [isFocused, isVisible, syncTerminalState])
 
   // Re-focus the terminal when overlays (command palette, etc.) close
   useEffect(() => {
     const handler = () => {
-      if (isFocused && terminalRef.current) {
-        terminalRef.current.focus()
+      const term = getLiveTerminal()
+      if (isFocused && term) {
+        term.focus()
       }
     }
     window.addEventListener('terminal-refocus', handler)
     return () => window.removeEventListener('terminal-refocus', handler)
-  }, [isFocused])
+  }, [getLiveTerminal, isFocused])
 
   // Pixel-level smooth scrolling.  ghostty-web scrolls line-by-line which
   // feels janky — by tracking a sub-pixel offset and applying a CSS transform
