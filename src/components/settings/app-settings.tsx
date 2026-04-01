@@ -30,6 +30,10 @@ import {
 } from '@/components/ui/combobox'
 import { Kbd, KbdGroup } from '@/components/ui/kbd'
 import { useStore } from '@/lib/store'
+import {
+  MAX_TERMINAL_SCROLLBACK_LINES,
+  MIN_TERMINAL_SCROLLBACK_LINES,
+} from '@/lib/terminal-scrollback'
 import { terminalThemes } from '@/lib/terminal-themes'
 import { cn } from '@/lib/utils'
 
@@ -113,7 +117,9 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const terminalTheme = useStore((s) => s.terminalTheme)
   const fontSize = useStore((s) => s.fontSize)
   const fontFamily = useStore((s) => s.fontFamily)
+  const terminalScrollbackLines = useStore((s) => s.terminalScrollbackLines)
   const windowOpacity = useStore((s) => s.windowOpacity)
+  const useTransparentWindow = useStore((s) => s.useTransparentWindow)
   const dimWhenUnfocused = useStore((s) => s.dimWhenUnfocused)
   const snapOnFocus = useStore((s) => s.snapOnFocus)
   const tabSwitchMode = useStore((s) => s.tabSwitchMode)
@@ -124,7 +130,9 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const setTerminalTheme = useStore((s) => s.setTerminalTheme)
   const setFontSize = useStore((s) => s.setFontSize)
   const setFontFamily = useStore((s) => s.setFontFamily)
+  const setTerminalScrollbackLines = useStore((s) => s.setTerminalScrollbackLines)
   const setWindowOpacity = useStore((s) => s.setWindowOpacity)
+  const setUseTransparentWindow = useStore((s) => s.setUseTransparentWindow)
   const setDimWhenUnfocused = useStore((s) => s.setDimWhenUnfocused)
   const setSnapOnFocus = useStore((s) => s.setSnapOnFocus)
   const setTabSwitchMode = useStore((s) => s.setTabSwitchMode)
@@ -134,6 +142,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const setColorScheme = useStore((s) => s.setColorScheme)
   const setSearchEngine = useStore((s) => s.setSearchEngine)
   const setHomePage = useStore((s) => s.setHomePage)
+  const persist = useStore((s) => s.persist)
   const terminalLinkTarget = useStore((s) => s.terminalLinkTarget)
   const terminalLinkProjectId = useStore((s) => s.terminalLinkProjectId)
   const setTerminalLinkTarget = useStore((s) => s.setTerminalLinkTarget)
@@ -308,6 +317,48 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                       <span className="text-[10px] tabular-nums text-muted-foreground/50 w-6 text-right">
                         {windowOpacity}
                       </span>
+                    </div>
+                  </SettingsGroup>
+
+                  <SettingsGroup title="Window Transparency">
+                    <div className="space-y-2">
+                      <button
+                        onClick={() => setUseTransparentWindow(!useTransparentWindow)}
+                        className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-[11px] transition-colors hover:bg-muted/40"
+                      >
+                        <div className="flex min-w-0 flex-col items-start gap-0.5 text-left">
+                          <span className="text-foreground">Use translucent Electron window</span>
+                          <span className="text-[10px] text-muted-foreground/40">
+                            Turn this off to reduce WindowServer compositing. Applies after restart.
+                          </span>
+                        </div>
+                        <div
+                          className={cn(
+                            'relative h-3.5 w-6 rounded-full transition-colors',
+                            useTransparentWindow ? 'bg-primary' : 'bg-muted-foreground/25',
+                          )}
+                        >
+                          <div
+                            className={cn(
+                              'absolute top-0.5 h-2.5 w-2.5 rounded-full bg-background transition-transform',
+                              useTransparentWindow ? 'translate-x-3' : 'translate-x-0.5',
+                            )}
+                          />
+                        </div>
+                      </button>
+                      <div className="flex justify-end px-0.5">
+                        <button
+                          onClick={() => {
+                            persist()
+                            window.setTimeout(() => {
+                              void window.cells.app.relaunch()
+                            }, 150)
+                          }}
+                          className="rounded-md border border-border/20 bg-background/40 px-2.5 py-1 text-[10px] text-muted-foreground/65 transition-colors hover:bg-muted/40 hover:text-foreground"
+                        >
+                          Restart now
+                        </button>
+                      </div>
                     </div>
                   </SettingsGroup>
 
@@ -517,6 +568,31 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                         </button>
                       ))}
                     </div>
+                  </SettingsGroup>
+
+                  <SettingsGroup title="History">
+                    <SettingsField
+                      label="Scrollback lines"
+                      hint={`${MIN_TERMINAL_SCROLLBACK_LINES.toLocaleString()}-${MAX_TERMINAL_SCROLLBACK_LINES.toLocaleString()}`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          min={MIN_TERMINAL_SCROLLBACK_LINES}
+                          max={MAX_TERMINAL_SCROLLBACK_LINES}
+                          step={1000}
+                          value={terminalScrollbackLines}
+                          onChange={(event) =>
+                            setTerminalScrollbackLines(Number(event.target.value))
+                          }
+                          className="h-7 w-28 rounded-md border border-border/20 bg-background/40 px-2.5 text-[11px] text-foreground outline-none focus:border-border/40"
+                        />
+                        <span className="text-[10px] text-muted-foreground/40">
+                          Live terminals rebuild when this changes. Search and reconnect replay use
+                          chunked history loads to keep large buffers responsive.
+                        </span>
+                      </div>
+                    </SettingsField>
                   </SettingsGroup>
 
                   <SettingsGroup title="Close Behavior">
@@ -1065,6 +1141,7 @@ const SHORTCUT_GROUPS = [
   {
     title: 'Terminal Editing',
     shortcuts: [
+      { keys: '⌘ F', action: 'Find in focused terminal' },
       { keys: '⌘ V', action: 'Paste (supports files/images)' },
       { keys: '⌥ ⌫', action: 'Delete word backward' },
       { keys: '⌘ ⌫', action: 'Delete to start of line' },

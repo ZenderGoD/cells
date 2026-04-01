@@ -2,10 +2,12 @@ import type { CSSProperties } from 'react'
 
 export interface WindowAppearanceSettings {
   windowOpacity: number
+  useTransparentWindow: boolean
 }
 
 export const DEFAULT_WINDOW_APPEARANCE: WindowAppearanceSettings = {
   windowOpacity: 82,
+  useTransparentWindow: true,
 }
 
 const SHELL_SURFACE_OPACITY = 0.82
@@ -24,6 +26,8 @@ export function normalizeWindowAppearance(
       MIN_WINDOW_OPACITY,
       MAX_WINDOW_OPACITY,
     ),
+    useTransparentWindow:
+      value?.useTransparentWindow ?? DEFAULT_WINDOW_APPEARANCE.useTransparentWindow,
   }
 }
 

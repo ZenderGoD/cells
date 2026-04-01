@@ -154,6 +154,7 @@ export function InfiniteCanvas() {
         }, 0)
       : 0
   const showFocusedTerminalRing = visibleWindowCount >= 2
+  const canvasWillChange = isPanning || isDragging || isUserDriving ? 'transform' : undefined
 
   const isTerminalVisible = useCallback(
     (terminal: { x: number; y: number; width: number; height: number }) =>
@@ -539,7 +540,7 @@ export function InfiniteCanvas() {
           x: animatedX,
           y: animatedY,
           scale: animatedScale,
-          willChange: 'transform',
+          willChange: canvasWillChange,
         }}
       >
         {terminals

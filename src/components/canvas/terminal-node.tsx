@@ -8,7 +8,7 @@ import {
 } from 'react'
 import { ArrowUpRight, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { CellTerminal } from '../terminal/cell-terminal'
+import { CellTerminal, getTerminalPreviewSnapshot } from '../terminal/cell-terminal'
 import { useStore } from '@/lib/store'
 import type { TerminalNode as TerminalNodeType } from '@/types'
 import { AgentIcon } from '@/components/agent-icon'
@@ -24,6 +24,8 @@ type Edge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
 const MIN_W = 320
 const MIN_H = 200
 const HANDLE = 6 // px width of edge handles
+const LIVE_TERMINAL_MIN_SCREEN_W = 260
+const LIVE_TERMINAL_MIN_SCREEN_H = 170
 
 interface TerminalNodeProps {
   terminal: TerminalNodeType
@@ -72,6 +74,20 @@ export function TerminalNode({
   const titleInputRef = useRef<HTMLInputElement>(null)
   const displayAgent = terminal.agent ?? inferAgentFromTitle(terminal.title)
   const displayTitle = terminal.customTitle || terminal.title
+  const screenWidth = terminal.width * scale
+  const screenHeight = terminal.height * scale
+  const shouldMountLiveTerminal =
+    isFocused ||
+    (isVisible &&
+      screenWidth >= LIVE_TERMINAL_MIN_SCREEN_W &&
+      screenHeight >= LIVE_TERMINAL_MIN_SCREEN_H)
+  const previewLines =
+    isVisible && !shouldMountLiveTerminal
+      ? getTerminalPreviewSnapshot(terminal.id, {
+          lines: Math.max(3, Math.min(6, Math.floor(screenHeight / 26))),
+          columns: Math.max(24, Math.min(48, Math.floor(screenWidth / 9))),
+        })
+      : []
 
   const handleDragMouseDown = useCallback(
     (e: MouseEvent) => {
@@ -259,14 +275,42 @@ export function TerminalNode({
         )}
         style={ringStyle}
       >
-        <CellTerminal
-          termId={terminal.id}
-          width={terminal.width}
-          height={terminal.height}
-          isVisible={isVisible}
-          isFocused={isFocused}
-          onTitleChange={(title) => updateTerminalTitle(terminal.id, title)}
-        />
+        {shouldMountLiveTerminal ? (
+          <CellTerminal
+            termId={terminal.id}
+            width={terminal.width}
+            height={terminal.height}
+            isVisible={isVisible}
+            isFocused={isFocused}
+            onTitleChange={(title) => updateTerminalTitle(terminal.id, title)}
+          />
+        ) : (
+          isVisible && (
+            <div className="pointer-events-none absolute inset-0 overflow-hidden bg-background/92">
+              <div className="absolute inset-x-0 top-0 h-12 bg-linear-to-b from-background via-background/70 to-transparent" />
+              <div className="flex h-full flex-col gap-1 px-4 pb-4 pt-11 font-mono text-[11px] leading-5 text-muted-foreground/60">
+                {previewLines.length > 0 ? (
+                  previewLines.map((line, index) => (
+                    <div
+                      key={`${terminal.id}-preview-${index}`}
+                      className="truncate whitespace-pre"
+                    >
+                      {line || ' '}
+                    </div>
+                  ))
+                ) : (
+                  <div className="truncate text-muted-foreground/40">Terminal paused offscreen</div>
+                )}
+              </div>
+              <div className="absolute bottom-3 left-4 text-[10px] text-muted-foreground/35">
+                {screenWidth < LIVE_TERMINAL_MIN_SCREEN_W ||
+                screenHeight < LIVE_TERMINAL_MIN_SCREEN_H
+                  ? 'Preview while zoomed out'
+                  : 'Terminal paused offscreen'}
+              </div>
+            </div>
+          )
+        )}
 
         {/* Title bar — top right, inside terminal */}
         <div

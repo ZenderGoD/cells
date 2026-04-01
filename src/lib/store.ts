@@ -27,8 +27,13 @@ import {
   applyThemeToAllTerminals,
   getTerminalRestoreSnapshot,
   reloadTerminal,
+  reloadAllTerminals,
 } from '@/components/terminal/cell-terminal'
 import { showToast } from '@/components/toast'
+import {
+  DEFAULT_TERMINAL_SCROLLBACK_LINES,
+  normalizeTerminalScrollbackLines,
+} from './terminal-scrollback'
 
 interface StoreState {
   // Project management
@@ -43,10 +48,18 @@ interface StoreState {
   terminalTheme: string
   fontSize: number
   fontFamily: string
+  terminalScrollbackLines: number
   windowOpacity: number
+  useTransparentWindow: boolean
   dimWhenUnfocused: boolean
   hasSeenOnboardingGuide: boolean
   showOnboardingGuide: boolean
+  terminalFindOpen: boolean
+  terminalFindQuery: string
+  terminalFindResultTermId: string | null
+  terminalFindResultCount: number
+  terminalFindActiveIndex: number
+  terminalFindResultLimitHit: boolean
   focusedTerminalId: string | null
   focusedBrowserId: string | null
   focusHistory: string[] // stack of recently focused IDs (most recent last)
@@ -112,8 +125,19 @@ interface StoreState {
   setTerminalTheme(name: string): void
   setFontSize(size: number): void
   setFontFamily(family: string): void
+  setTerminalScrollbackLines(lines: number): void
   setWindowOpacity(opacity: number): void
+  setUseTransparentWindow(enabled: boolean): void
   setDimWhenUnfocused(enabled: boolean): void
+  openTerminalFind(): void
+  closeTerminalFind(): void
+  setTerminalFindQuery(query: string): void
+  setTerminalFindResults(
+    termId: string,
+    resultCount: number,
+    activeIndex: number,
+    limitHit?: boolean,
+  ): void
 
   addTerminal(): TerminalNode
   addTerminalWithCommand(command: string, title?: string): TerminalNode
@@ -515,10 +539,18 @@ export const useStore = create<StoreState>((set, get) => ({
   terminalTheme: DEFAULT_THEME,
   fontSize: 13,
   fontFamily: DEFAULT_FONT_FAMILY,
+  terminalScrollbackLines: DEFAULT_TERMINAL_SCROLLBACK_LINES,
   windowOpacity: DEFAULT_WINDOW_APPEARANCE.windowOpacity,
+  useTransparentWindow: DEFAULT_WINDOW_APPEARANCE.useTransparentWindow,
   dimWhenUnfocused: true,
   hasSeenOnboardingGuide: false,
   showOnboardingGuide: false,
+  terminalFindOpen: false,
+  terminalFindQuery: '',
+  terminalFindResultTermId: null,
+  terminalFindResultCount: 0,
+  terminalFindActiveIndex: 0,
+  terminalFindResultLimitHit: false,
 
   setTerminalTheme(name) {
     set({ terminalTheme: name })
@@ -533,15 +565,60 @@ export const useStore = create<StoreState>((set, get) => ({
     set({ fontFamily: family })
     get().persist()
   },
+  setTerminalScrollbackLines(lines) {
+    const next = normalizeTerminalScrollbackLines(lines)
+    if (next === get().terminalScrollbackLines) return
+    set({ terminalScrollbackLines: next })
+    reloadAllTerminals()
+    showToast(`Terminal history limit set to ${next.toLocaleString()} lines`, 'info')
+    get().persist()
+  },
   setWindowOpacity(opacity) {
     set({
       windowOpacity: normalizeWindowAppearance({ windowOpacity: opacity }).windowOpacity,
     })
     get().persist()
   },
+  setUseTransparentWindow(enabled) {
+    set({ useTransparentWindow: enabled })
+    showToast('Window transparency changes apply after restarting Cells', 'info')
+    get().persist()
+  },
   setDimWhenUnfocused(enabled) {
     set({ dimWhenUnfocused: enabled })
     get().persist()
+  },
+  openTerminalFind() {
+    if (!get().focusedTerminalId) return
+    set({ terminalFindOpen: true })
+  },
+  closeTerminalFind() {
+    set({
+      terminalFindOpen: false,
+      terminalFindQuery: '',
+      terminalFindResultTermId: null,
+      terminalFindResultCount: 0,
+      terminalFindActiveIndex: 0,
+      terminalFindResultLimitHit: false,
+    })
+  },
+  setTerminalFindQuery(query) {
+    set({
+      terminalFindOpen: true,
+      terminalFindQuery: query,
+      terminalFindResultTermId: null,
+      terminalFindResultCount: 0,
+      terminalFindActiveIndex: 0,
+      terminalFindResultLimitHit: false,
+    })
+  },
+  setTerminalFindResults(termId, resultCount, activeIndex, limitHit = false) {
+    set({
+      terminalFindResultTermId: termId,
+      terminalFindResultCount: resultCount,
+      terminalFindActiveIndex: activeIndex,
+      terminalFindResultLimitHit: limitHit,
+    })
   },
 
   async init() {
@@ -582,8 +659,10 @@ export const useStore = create<StoreState>((set, get) => ({
         terminalTheme: ps.terminalTheme || DEFAULT_THEME,
         fontSize: ps.fontSize || 13,
         fontFamily: ps.fontFamily || DEFAULT_FONT_FAMILY,
+        terminalScrollbackLines: normalizeTerminalScrollbackLines(ps.terminalScrollbackLines),
         ...normalizeWindowAppearance({
           windowOpacity: ps.windowOpacity,
+          useTransparentWindow: ps.useTransparentWindow,
         }),
         snapOnFocus: ps.snapOnFocus ?? true,
         tabSwitchMode: ps.tabSwitchMode || 'chronological',
@@ -670,8 +749,12 @@ export const useStore = create<StoreState>((set, get) => ({
         terminalTheme: (saved as any).terminalTheme || DEFAULT_THEME,
         fontSize: (saved as any).fontSize || 13,
         fontFamily: (saved as any).fontFamily || DEFAULT_FONT_FAMILY,
+        terminalScrollbackLines: normalizeTerminalScrollbackLines(
+          (saved as any).terminalScrollbackLines,
+        ),
         ...normalizeWindowAppearance({
           windowOpacity: (saved as any).windowOpacity,
+          useTransparentWindow: (saved as any).useTransparentWindow,
         }),
         initialized: true,
       })
@@ -750,7 +833,9 @@ export const useStore = create<StoreState>((set, get) => ({
           terminalTheme: freshState.terminalTheme,
           fontSize: freshState.fontSize,
           fontFamily: freshState.fontFamily,
+          terminalScrollbackLines: freshState.terminalScrollbackLines,
           windowOpacity: freshState.windowOpacity,
+          useTransparentWindow: freshState.useTransparentWindow,
           snapOnFocus: freshState.snapOnFocus,
           tabSwitchMode: freshState.tabSwitchMode,
           projectSwitchMode: freshState.projectSwitchMode,
@@ -790,7 +875,9 @@ export const useStore = create<StoreState>((set, get) => ({
           terminalTheme: state.terminalTheme,
           fontSize: state.fontSize,
           fontFamily: state.fontFamily,
+          terminalScrollbackLines: state.terminalScrollbackLines,
           windowOpacity: state.windowOpacity,
+          useTransparentWindow: state.useTransparentWindow,
           snapOnFocus: state.snapOnFocus,
           tabSwitchMode: state.tabSwitchMode,
           projectSwitchMode: state.projectSwitchMode,

@@ -52,6 +52,7 @@ import {
   resolveCodexProcessPid,
   resolveCodexThreadTitle,
   MAX_BUFFER,
+  MAX_REPLAY_HISTORY_BYTES,
 } from './pty-shared'
 
 // Protocol version — bumped only when the daemon wire format changes in a
@@ -78,8 +79,6 @@ const clientSubscriptions = new Map<net.Socket, Set<string>>()
 
 // ---------- Buffer management ----------
 
-const MAX_HISTORY = 4 * 1024 * 1024
-
 function appendBuffer(termId: string, data: string) {
   const existing = buffers.get(termId) ?? ''
   const combined = existing + data
@@ -98,8 +97,8 @@ function appendHistory(termId: string, data: string) {
   history.chunks.push(data)
   history.length += data.length
 
-  while (history.length > MAX_HISTORY && history.chunks.length > 0) {
-    const excess = history.length - MAX_HISTORY
+  while (history.length > MAX_REPLAY_HISTORY_BYTES && history.chunks.length > 0) {
+    const excess = history.length - MAX_REPLAY_HISTORY_BYTES
     const first = history.chunks[0]
     if (first.length <= excess) {
       history.chunks.shift()

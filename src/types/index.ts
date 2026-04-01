@@ -88,7 +88,9 @@ export interface ProjectsState {
   terminalTheme?: string
   fontSize?: number
   fontFamily?: string
+  terminalScrollbackLines?: number
   windowOpacity?: number
+  useTransparentWindow?: boolean
   snapOnFocus?: boolean
   tabSwitchMode?: 'recent' | 'chronological'
   projectSwitchMode?: 'recent' | 'chronological'
@@ -160,6 +162,18 @@ export interface CellsAPI {
     getProcessInfo(termId: string): Promise<TerminalProcessInfo | null>
     getCodexTitle(termId: string): Promise<string | null>
     getHistory(termId: string): Promise<string>
+    getHistoryPage(
+      termId: string,
+      token?: string | null,
+      offset?: number | null,
+      maxBytes?: number,
+    ): Promise<{
+      chunk: string
+      done: boolean
+      offset: number | null
+      token: string | null
+      totalBytes: number
+    }>
     onData(callback: (termId: string, data: string) => void): () => void
     onExit(callback: (termId: string) => void): () => void
   }
@@ -299,6 +313,7 @@ export interface CellsAPI {
     pasteClipboardFiles(): Promise<string[] | null>
     openExternal(url: string): Promise<void>
     requestQuit(): Promise<void>
+    relaunch(): Promise<void>
     beep(): void
     getShellHistory(): Promise<string[]>
     fileThumbnail(filePath: string): Promise<string | null>

@@ -4,6 +4,8 @@ import {
   ArrowLeft,
   ArrowRight,
   Check,
+  ChevronDown,
+  ChevronUp,
   Code,
   Globe,
   LayoutGrid,
@@ -15,6 +17,7 @@ import {
   Plus,
   Puzzle,
   RotateCw,
+  Search,
   Settings,
   TerminalSquare,
   X,
@@ -258,8 +261,17 @@ export function StatusBar() {
   const [editingTitleForTermId, setEditingTitleForTermId] = useState<string | null>(null)
   const [editTitleValue, setEditTitleValue] = useState('')
   const titleInputRef = useRef<HTMLInputElement>(null)
+  const terminalFindOpen = useStore((s) => s.terminalFindOpen)
+  const terminalFindQuery = useStore((s) => s.terminalFindQuery)
+  const terminalFindResultTermId = useStore((s) => s.terminalFindResultTermId)
+  const terminalFindResultCount = useStore((s) => s.terminalFindResultCount)
+  const terminalFindActiveIndex = useStore((s) => s.terminalFindActiveIndex)
+  const terminalFindResultLimitHit = useStore((s) => s.terminalFindResultLimitHit)
+  const setTerminalFindQuery = useStore((s) => s.setTerminalFindQuery)
+  const closeTerminalFind = useStore((s) => s.closeTerminalFind)
   const setCustomTitle = useStore((s) => s.setCustomTitle)
   const isEditingTitle = editingTitleForTermId === focusedTerminalId && !!focusedTerminalId
+  const findInputRef = useRef<HTMLInputElement>(null)
   const [browserUi, setBrowserUi] = useState(EMPTY_BROWSER_UI)
   const activeBrowserUi = browserUi.browserId === focusedBrowserId ? browserUi : EMPTY_BROWSER_UI
   const { canGoBack, canGoForward, isLoading, themeColor } = activeBrowserUi
@@ -416,6 +428,58 @@ export function StatusBar() {
   const undoSecondsLeft = latestClosedWindow
     ? Math.max(0, Math.ceil((latestClosedWindow.expiresAt - undoNow) / 1000))
     : 0
+  const showTerminalFind = !!focusedTerminalId && terminalFindOpen
+  const terminalFindWaitingForResults =
+    !!focusedTerminalId &&
+    terminalFindOpen &&
+    !!terminalFindQuery.trim() &&
+    terminalFindResultTermId !== focusedTerminalId
+  const terminalFindResultLabel = !terminalFindQuery.trim()
+    ? 'Type to search'
+    : terminalFindWaitingForResults
+      ? '…'
+      : terminalFindResultCount > 0
+        ? `${terminalFindActiveIndex}/${terminalFindResultCount}${terminalFindResultLimitHit ? '+' : ''}`
+        : terminalFindResultLimitHit
+          ? `0/${terminalFindResultCount}+`
+          : '0 results'
+
+  const focusTerminalFindInput = useCallback(() => {
+    requestAnimationFrame(() => {
+      findInputRef.current?.focus()
+      findInputRef.current?.select()
+    })
+  }, [])
+
+  useEffect(() => {
+    const handleFocus = () => {
+      if (!useStore.getState().focusedTerminalId) return
+      useStore.getState().openTerminalFind()
+      focusTerminalFindInput()
+    }
+
+    window.addEventListener('terminal-find-focus', handleFocus)
+    return () => window.removeEventListener('terminal-find-focus', handleFocus)
+  }, [focusTerminalFindInput])
+
+  useEffect(() => {
+    if (showTerminalFind) {
+      focusTerminalFindInput()
+    }
+  }, [focusTerminalFindInput, showTerminalFind])
+
+  const navigateTerminalFind = useCallback((direction: 1 | -1) => {
+    window.dispatchEvent(
+      new CustomEvent('terminal-find-navigate', {
+        detail: { direction },
+      }),
+    )
+  }, [])
+
+  const dismissTerminalFind = useCallback(() => {
+    closeTerminalFind()
+    requestAnimationFrame(() => window.dispatchEvent(new Event('terminal-refocus')))
+  }, [closeTerminalFind])
 
   return (
     <>
@@ -670,6 +734,53 @@ export function StatusBar() {
                   </span>
                 )}
                 <WorktreeSwitcher termId={focusedTerminalId} />
+                {showTerminalFind ? (
+                  <div className="flex min-w-0 flex-[0_1_360px] items-center gap-1.5 rounded-md border border-border/25 bg-background/45 px-1.5 py-1">
+                    <Search className="h-3 w-3 shrink-0 text-muted-foreground/45" />
+                    <input
+                      ref={findInputRef}
+                      value={terminalFindQuery}
+                      onChange={(event) => setTerminalFindQuery(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault()
+                          navigateTerminalFind(event.shiftKey ? -1 : 1)
+                          return
+                        }
+                        if (event.key === 'Escape') {
+                          event.preventDefault()
+                          dismissTerminalFind()
+                        }
+                      }}
+                      placeholder="Find in terminal"
+                      className="h-6 min-w-0 flex-1 bg-transparent text-[11px] text-foreground outline-none placeholder:text-muted-foreground/35"
+                    />
+                    <span className="shrink-0 text-[10px] text-muted-foreground/45">
+                      {terminalFindResultLabel}
+                    </span>
+                    <button
+                      onClick={() => navigateTerminalFind(-1)}
+                      className="rounded-md p-1 text-muted-foreground/40 transition-colors hover:bg-muted/40 hover:text-foreground"
+                      title="Previous match"
+                    >
+                      <ChevronUp className="h-3 w-3" />
+                    </button>
+                    <button
+                      onClick={() => navigateTerminalFind(1)}
+                      className="rounded-md p-1 text-muted-foreground/40 transition-colors hover:bg-muted/40 hover:text-foreground"
+                      title="Next match"
+                    >
+                      <ChevronDown className="h-3 w-3" />
+                    </button>
+                    <button
+                      onClick={dismissTerminalFind}
+                      className="rounded-md p-1 text-muted-foreground/40 transition-colors hover:bg-muted/40 hover:text-foreground"
+                      title="Close search"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ) : null}
               </div>
             )
           })()

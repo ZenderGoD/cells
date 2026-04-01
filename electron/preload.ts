@@ -14,6 +14,12 @@ const api: CellsAPI = {
     getProcessInfo: (termId: string) => ipcRenderer.invoke('terminal:get-process-info', termId),
     getCodexTitle: (termId: string) => ipcRenderer.invoke('terminal:get-codex-title', termId),
     getHistory: (termId: string) => ipcRenderer.invoke('terminal:get-history', termId),
+    getHistoryPage: (
+      termId: string,
+      token?: string | null,
+      offset?: number | null,
+      maxBytes?: number,
+    ) => ipcRenderer.invoke('terminal:get-history-page', termId, token, offset, maxBytes),
     onData: (callback: (termId: string, data: string) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, termId: string, data: string) =>
         callback(termId, data)
@@ -166,6 +172,7 @@ const api: CellsAPI = {
       ipcRenderer.invoke('app:paste-clipboard-files') as Promise<string[] | null>,
     openExternal: (url: string) => ipcRenderer.invoke('app:open-external', url),
     requestQuit: () => ipcRenderer.invoke('app:request-quit'),
+    relaunch: () => ipcRenderer.invoke('app:relaunch'),
     beep: () => ipcRenderer.send('app:beep'),
     getShellHistory: () => ipcRenderer.invoke('app:get-shell-history') as Promise<string[]>,
     fileThumbnail: (filePath: string) =>

@@ -11,7 +11,10 @@ const MIN_H = 300
 const HANDLE = 6
 const BORDER_W = 3 // px inset for focus ring visibility
 const STATUS_BAR_H = 40 // must match toolbar height
-const HIBERNATE_DELAY_MS = 15_000
+// Hidden browser views are the Electron equivalent of VS Code webviews:
+// keeping them alive is convenient, but expensive. Hibernate quickly once
+// they are no longer focused so the GPU/helper processes can cool down.
+const HIBERNATE_DELAY_MS = 5_000
 
 type Edge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
 

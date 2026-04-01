@@ -13,6 +13,7 @@ import {
 import path from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'fs'
+import { randomUUID } from 'crypto'
 import { execFileSync, spawnSync } from 'child_process'
 import { autoUpdater } from 'electron-updater'
 import { PtyManager } from './pty'
@@ -23,6 +24,7 @@ import {
   resolveCodexProcessPid,
   resolveCodexThreadTitle,
 } from './pty-shared'
+import { TerminalHistoryBuffer } from './terminal-history'
 import {
   ensureExtensionsLoaded,
   installExtension,
@@ -145,6 +147,8 @@ let mainWindow: BrowserWindow | null = null
 // - On re-attach: buffer replayed then cleared, live forwarding resumes
 const MAX_BUFFER = 64 * 1024
 const ptyBuffers = new Map<string, string>()
+const fallbackHistories = new Map<string, TerminalHistoryBuffer>()
+const historySnapshots = new Map<string, { buffer: string; termId: string }>()
 const subscribedTerminals = new Set<string>()
 const pinnedWindows = new Map<string, BrowserWindow>()
 
@@ -159,16 +163,34 @@ const BROWSER_PRELOAD_FILE = 'browser-preload.cjs'
 let quitConfirmed = false
 let quitDialogOpen = false
 
+function readSavedState() {
+  try {
+    if (fs.existsSync(STATE_FILE)) {
+      return readStateFile(STATE_FILE)
+    }
+    if (fs.existsSync(LEGACY_STATE_FILE)) {
+      return readStateFile(LEGACY_STATE_FILE)
+    }
+  } catch {}
+  return null
+}
+
+function isTransparentWindowModeEnabled() {
+  return readSavedState()?.useTransparentWindow !== false
+}
+
 function createWindow() {
+  const transparentWindow = isTransparentWindowModeEnabled()
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
     minWidth: 800,
     minHeight: 600,
     show: false, // Don't show until ready — avoids GPU race on launch
-    transparent: true,
-    vibrancy: 'under-window',
-    visualEffectState: 'active',
+    transparent: transparentWindow,
+    backgroundColor: transparentWindow ? '#00000000' : '#15171a',
+    vibrancy: transparentWindow ? 'under-window' : undefined,
+    visualEffectState: transparentWindow ? 'active' : undefined,
     titleBarStyle: 'hidden',
     trafficLightPosition: { x: -20, y: -20 },
     roundedCorners: true,
@@ -294,6 +316,80 @@ ipcMain.handle('state:save', (_event, state) => {
 
 // ---------- Terminal IPC ----------
 
+function getFallbackHistory(termId: string) {
+  let history = fallbackHistories.get(termId)
+  if (!history) {
+    history = new TerminalHistoryBuffer()
+    fallbackHistories.set(termId, history)
+  }
+  return history
+}
+
+function clearFallbackHistory(termId: string) {
+  fallbackHistories.get(termId)?.clear()
+  fallbackHistories.delete(termId)
+}
+
+function clearHistorySnapshotsForTerm(termId: string) {
+  for (const [token, snapshot] of historySnapshots) {
+    if (snapshot.termId === termId) {
+      historySnapshots.delete(token)
+    }
+  }
+}
+
+async function readTerminalHistory(termId: string) {
+  if (useDaemon && daemonClient?.isConnected()) {
+    return daemonClient.getHistory(termId)
+  }
+  return fallbackHistories.get(termId)?.readAll() ?? ''
+}
+
+async function getTerminalHistoryPage(
+  termId: string,
+  token?: string | null,
+  offset?: number | null,
+  maxBytes = 256 * 1024,
+) {
+  let snapshot = token ? historySnapshots.get(token) : undefined
+
+  if (!snapshot || snapshot.termId !== termId) {
+    const buffer = await readTerminalHistory(termId)
+    if (!buffer) {
+      return {
+        chunk: '',
+        done: true,
+        offset: null,
+        token: null,
+        totalBytes: 0,
+      }
+    }
+
+    token = randomUUID()
+    snapshot = { buffer, termId }
+    historySnapshots.set(token, snapshot)
+    offset = 0
+  }
+
+  const start = Math.max(0, offset ?? 0)
+  const byteLimit = Math.max(16 * 1024, Math.min(1024 * 1024, Math.floor(maxBytes)))
+  const end = Math.min(snapshot.buffer.length, start + byteLimit)
+  const chunk = snapshot.buffer.slice(start, end)
+  const nextOffset = end >= snapshot.buffer.length ? null : end
+
+  if (nextOffset == null && token) {
+    historySnapshots.delete(token)
+  }
+
+  return {
+    chunk,
+    done: nextOffset == null,
+    offset: nextOffset,
+    token: nextOffset == null ? null : (token ?? null),
+    totalBytes: snapshot.buffer.length,
+  }
+}
+
 function getWindowForTerminal(termId: string): BrowserWindow | null {
   const pinned = pinnedWindows.get(termId)
   if (pinned && !pinned.isDestroyed()) return pinned
@@ -312,6 +408,8 @@ function forwardTerminalData(termId: string, data: string) {
 function forwardTerminalExit(termId: string) {
   subscribedTerminals.delete(termId)
   clearTerminalOutputRing(termId)
+  clearHistorySnapshotsForTerm(termId)
+  clearFallbackHistory(termId)
   try {
     const target = getWindowForTerminal(termId)
     target?.webContents.send('terminal:exit', termId)
@@ -329,6 +427,7 @@ function appendBuffer(termId: string, data: string) {
 function setupFallbackPtyHandlers(termId: string, p: ReturnType<PtyManager['spawn']>) {
   p.onData((data) => {
     if (fallbackPtys?.get(termId) !== p) return
+    getFallbackHistory(termId).append(data)
     bufferTerminalOutput(termId, data)
     if (subscribedTerminals.has(termId)) {
       try {
@@ -346,6 +445,8 @@ function setupFallbackPtyHandlers(termId: string, p: ReturnType<PtyManager['spaw
     if (fallbackPtys?.get(termId) !== p) return
     fallbackPtys?.kill(termId)
     ptyBuffers.delete(termId)
+    clearFallbackHistory(termId)
+    clearHistorySnapshotsForTerm(termId)
     forwardTerminalExit(termId)
   })
 }
@@ -353,6 +454,8 @@ function setupFallbackPtyHandlers(termId: string, p: ReturnType<PtyManager['spaw
 ipcMain.handle(
   'terminal:attach',
   async (_event, termId: string, cols: number, rows: number, cwd?: string) => {
+    clearHistorySnapshotsForTerm(termId)
+
     if (useDaemon && daemonClient?.isConnected()) {
       try {
         const result = await daemonClient.spawn(termId, cols, rows, cwd)
@@ -383,6 +486,7 @@ ipcMain.handle(
 
     subscribedTerminals.add(termId)
     ptyBuffers.delete(termId)
+    clearFallbackHistory(termId)
     const p = fallbackPtys.spawn(termId, cols, rows, cwd)
     setupFallbackPtyHandlers(termId, p)
     return { reattached: false, buffer: '' }
@@ -400,11 +504,13 @@ ipcMain.handle('terminal:unsubscribe', (_event, termId: string) => {
 
 ipcMain.handle('terminal:detach', (_event, termId: string) => {
   subscribedTerminals.delete(termId)
+  clearHistorySnapshotsForTerm(termId)
   if (useDaemon && daemonClient?.isConnected()) {
     daemonClient.kill(termId).catch(() => {})
   } else {
     fallbackPtys?.kill(termId)
     ptyBuffers.delete(termId)
+    clearFallbackHistory(termId)
   }
 })
 
@@ -449,14 +555,34 @@ ipcMain.handle('terminal:get-codex-title', async (_event, termId: string) => {
 
 ipcMain.handle('terminal:get-history', async (_event, termId: string) => {
   try {
-    if (useDaemon && daemonClient?.isConnected()) {
-      return daemonClient.getHistory(termId)
-    }
-    return ptyBuffers.get(termId) ?? ''
+    return await readTerminalHistory(termId)
   } catch {
     return ''
   }
 })
+
+ipcMain.handle(
+  'terminal:get-history-page',
+  async (
+    _event,
+    termId: string,
+    token?: string | null,
+    offset?: number | null,
+    maxBytes?: number,
+  ) => {
+    try {
+      return await getTerminalHistoryPage(termId, token, offset, maxBytes)
+    } catch {
+      return {
+        chunk: '',
+        done: true,
+        offset: null,
+        token: null,
+        totalBytes: 0,
+      }
+    }
+  },
+)
 
 ipcMain.handle('app:open-external', (_event, url: string) => {
   shell.openExternal(url)
@@ -464,6 +590,12 @@ ipcMain.handle('app:open-external', (_event, url: string) => {
 
 ipcMain.handle('app:request-quit', () => {
   return confirmAndQuitApp()
+})
+
+ipcMain.handle('app:relaunch', () => {
+  app.relaunch()
+  quitConfirmed = true
+  app.quit()
 })
 
 ipcMain.on('app:beep', () => {
@@ -757,6 +889,7 @@ ipcMain.handle(
     if (existing && !existing.isDestroyed()) existing.close()
 
     const isBrowser = type === 'browser' && browserUrl
+    const transparentWindow = isTransparentWindowModeEnabled()
 
     const win = new BrowserWindow({
       width: Math.round(bounds.width),
@@ -769,9 +902,10 @@ ipcMain.handle(
       titleBarStyle: isBrowser ? 'hiddenInset' : 'hidden',
       trafficLightPosition: isBrowser ? { x: 12, y: 16 } : { x: 12, y: 11 },
       roundedCorners: true,
-      backgroundColor: isBrowser ? '#1e1e1e' : '#00000000',
-      vibrancy: isBrowser ? undefined : 'under-window',
-      visualEffectState: isBrowser ? undefined : 'active',
+      transparent: isBrowser ? false : transparentWindow,
+      backgroundColor: isBrowser ? '#1e1e1e' : transparentWindow ? '#00000000' : '#15171a',
+      vibrancy: isBrowser || !transparentWindow ? undefined : 'under-window',
+      visualEffectState: isBrowser || !transparentWindow ? undefined : 'active',
       webPreferences: isBrowser
         ? { nodeIntegration: false, contextIsolation: true, webgl: true }
         : {

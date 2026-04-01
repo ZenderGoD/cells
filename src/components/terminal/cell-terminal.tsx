@@ -1,16 +1,72 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { init, Terminal, FitAddon, UrlRegexProvider, OSC8LinkProvider } from 'ghostty-web'
-import type { CanvasRenderer, ILinkProvider } from 'ghostty-web'
+import {
+  init,
+  Terminal,
+  FitAddon,
+  UrlRegexProvider,
+  OSC8LinkProvider,
+  CanvasRenderer,
+  CellFlags,
+} from 'ghostty-web'
+import type { ILinkProvider } from 'ghostty-web'
 
 /** The 4th param of CanvasRenderer.render — not exported by ghostty-web. */
 type ScrollbackProvider = NonNullable<Parameters<CanvasRenderer['render']>[3]>
 import { useStore, consumePendingCommand, consumePendingWorktreePath } from '@/lib/store'
+import { DEFAULT_TERMINAL_SCROLLBACK_LINES } from '@/lib/terminal-scrollback'
 import { getTerminalTheme } from '@/lib/terminal-themes'
 import { cn } from '@/lib/utils'
 
 // Initialize WASM lazily on first terminal mount
 let ghosttyReady: Promise<void> | null = null
+let ghosttyRendererPatched = false
+
+const GHOSTTY_SMOOTH_SCROLL_DURATION_MS = 125
+const CANVAS_MIN_ZOOM = 0.15
+const CANVAS_MAX_ZOOM = 1.5
+const HISTORY_PAGE_BYTES = 256 * 1024
+const HISTORY_WRITE_BYTES = 64 * 1024
+const TERMINAL_SEARCH_MATCH_LIMIT = 2_000
+
+function patchGhosttyRenderer() {
+  if (ghosttyRendererPatched) return
+  ghosttyRendererPatched = true
+
+  const proto = CanvasRenderer.prototype as any
+  const originalRenderCursor = proto.renderCursor
+
+  proto.renderCursor = function renderCursorPatched(this: any, x: number, y: number) {
+    if (this.cursorStyle !== 'block') {
+      originalRenderCursor.call(this, x, y)
+      return
+    }
+
+    const cursorX = x * this.metrics.width
+    const cursorY = y * this.metrics.height
+    this.ctx.fillStyle = this.theme.cursor
+    this.ctx.fillRect(cursorX, cursorY, this.metrics.width, this.metrics.height)
+
+    const line = this.currentBuffer?.getLine?.(y)
+    const cell = line?.[x]
+    if (!cell || cell.flags & CellFlags.INVISIBLE || cell.grapheme_len <= 0) return
+
+    let font = ''
+    if (cell.flags & CellFlags.ITALIC) font += 'italic '
+    if (cell.flags & CellFlags.BOLD) font += 'bold '
+    this.ctx.font = `${font}${this.fontSize}px ${this.fontFamily}`
+    this.ctx.fillStyle = this.theme.cursorAccent ?? this.theme.background
+    if (cell.flags & CellFlags.FAINT) this.ctx.globalAlpha = 0.5
+
+    const grapheme = this.currentBuffer?.getGraphemeString?.(y, x)
+    const text = grapheme || String.fromCodePoint(cell.codepoint || 32)
+    this.ctx.fillText(text, cursorX, cursorY + this.metrics.baseline)
+
+    if (cell.flags & CellFlags.FAINT) this.ctx.globalAlpha = 1
+  }
+}
+
 function ensureInit() {
+  patchGhosttyRenderer()
   if (!ghosttyReady) ghosttyReady = init()
   return ghosttyReady
 }
@@ -48,6 +104,7 @@ function buildTheme(themeName: string) {
     background: theme.background,
     foreground: theme.foreground,
     cursor: theme.cursor,
+    cursorAccent: theme.background,
     selectionBackground: theme.selectionBackground,
     selectionForeground: theme.selectionForeground,
     black: theme.black,
@@ -103,6 +160,154 @@ function replaceLinkProviders(term: Terminal, providers: ILinkProvider[]) {
   for (const provider of providers) {
     term.registerLinkProvider(provider)
   }
+}
+
+function nextAnimationFrame() {
+  return new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+}
+
+async function writeHistoryChunk(term: Terminal, chunk: string) {
+  for (let offset = 0; offset < chunk.length; offset += HISTORY_WRITE_BYTES) {
+    term.write(chunk.slice(offset, offset + HISTORY_WRITE_BYTES))
+    await nextAnimationFrame()
+  }
+}
+
+async function replayPagedTerminalHistory(termId: string, term: Terminal) {
+  let token: string | null = null
+  let offset: number | null = null
+
+  while (true) {
+    const page = await window.cells.terminal.getHistoryPage(
+      termId,
+      token,
+      offset,
+      HISTORY_PAGE_BYTES,
+    )
+    if (page.chunk) {
+      await writeHistoryChunk(term, page.chunk)
+    }
+    if (page.done || page.offset == null) break
+    token = page.token
+    offset = page.offset
+  }
+}
+
+interface SearchMatch {
+  absoluteRow: number
+  length: number
+  startCol: number
+}
+
+interface SearchResultSet {
+  limitHit: boolean
+  matches: SearchMatch[]
+}
+
+function locateSearchMatch(
+  segments: Array<{ absoluteRow: number; text: string }>,
+  startIndex: number,
+  length: number,
+): SearchMatch | null {
+  let remaining = startIndex
+
+  for (const segment of segments) {
+    if (remaining < segment.text.length) {
+      return {
+        absoluteRow: segment.absoluteRow,
+        startCol: remaining,
+        length,
+      }
+    }
+    remaining -= segment.text.length
+  }
+
+  return null
+}
+
+function buildSearchMatches(term: Terminal, query: string): SearchResultSet {
+  const buffer = term.buffer.active
+  const needle = query.trim()
+  if (!needle) {
+    return { matches: [], limitHit: false }
+  }
+
+  const normalizedNeedle = needle.toLocaleLowerCase()
+  const matches: SearchMatch[] = []
+  let limitHit = false
+  let logicalText = ''
+  let logicalSegments: Array<{ absoluteRow: number; text: string }> = []
+
+  const flushLogicalLine = () => {
+    if (logicalSegments.length === 0 || logicalText.length === 0 || limitHit) {
+      logicalText = ''
+      logicalSegments = []
+      return
+    }
+
+    const haystack = logicalText.toLocaleLowerCase()
+    let searchOffset = 0
+
+    while (searchOffset <= haystack.length - normalizedNeedle.length) {
+      const found = haystack.indexOf(normalizedNeedle, searchOffset)
+      if (found === -1) break
+
+      const match = locateSearchMatch(logicalSegments, found, needle.length)
+      if (match) {
+        matches.push(match)
+      }
+      if (matches.length >= TERMINAL_SEARCH_MATCH_LIMIT) {
+        limitHit = true
+        break
+      }
+
+      searchOffset = found + Math.max(1, normalizedNeedle.length)
+    }
+
+    logicalText = ''
+    logicalSegments = []
+  }
+
+  for (let lineIndex = 0; lineIndex < buffer.length; lineIndex += 1) {
+    const line = buffer.getLine(lineIndex)
+    if (!line) {
+      flushLogicalLine()
+      continue
+    }
+
+    const text = line.translateToString(false, 0, line.length)
+    if (line.isWrapped && logicalSegments.length > 0) {
+      logicalSegments.push({ absoluteRow: lineIndex, text })
+      logicalText += text
+    } else {
+      flushLogicalLine()
+      logicalSegments = [{ absoluteRow: lineIndex, text }]
+      logicalText = text
+    }
+
+    if (limitHit) break
+  }
+
+  flushLogicalLine()
+  return { matches, limitHit }
+}
+
+function scrollToSearchMatch(term: Terminal, match: SearchMatch) {
+  const buffer = term.buffer.active
+  const scrollbackLength = Math.max(0, buffer.length - term.rows)
+  const preferredTopRow = Math.max(
+    0,
+    Math.min(scrollbackLength, match.absoluteRow - Math.floor(term.rows * 0.35)),
+  )
+  term.scrollToLine(scrollbackLength - preferredTopRow)
+
+  requestAnimationFrame(() => {
+    const visibleTop = Math.max(0, buffer.length - term.rows - term.viewportY)
+    const viewportRow = match.absoluteRow - visibleTop
+    if (viewportRow < 0 || viewportRow >= term.rows) return
+    term.clearSelection()
+    term.select(match.startCol, viewportRow, Math.max(1, match.length))
+  })
 }
 
 // ---- Terminal instance cache ----
@@ -220,6 +425,12 @@ export function reloadTerminal(termId: string) {
   window.cells.terminal.unsubscribe(termId)
   destroyCachedTerminal(termId)
   window.dispatchEvent(new CustomEvent('terminal-reload', { detail: { termId } }))
+}
+
+export function reloadAllTerminals() {
+  for (const termId of [...terminalCache.keys()]) {
+    reloadTerminal(termId)
+  }
 }
 
 interface CellTerminalProps {
@@ -540,11 +751,15 @@ export function CellTerminal({
   const themeName = useStore((s) => s.terminalTheme)
   const fontSize = useStore((s) => s.fontSize)
   const fontFamily = useStore((s) => s.fontFamily)
+  const scrollbackLines = useStore((s) => s.terminalScrollbackLines)
   const overlayOpen = useStore((s) => s.overlayOpen)
   const focusTerminal = useStore((s) => s.focusTerminal)
+  const terminalFindOpen = useStore((s) => s.terminalFindOpen)
+  const terminalFindQuery = useStore((s) => s.terminalFindQuery)
   const themeNameRef = useRef(themeName)
   const fontSizeRef = useRef(fontSize)
   const fontFamilyRef = useRef(fontFamily)
+  const scrollbackLinesRef = useRef(scrollbackLines)
   const inferredAgentRef = useRef<AgentName | null>(null)
   const detectedAgentRef = useRef<AgentName | null>(null)
   const inputBufferRef = useRef('')
@@ -559,6 +774,9 @@ export function CellTerminal({
   const dragDepthRef = useRef(0)
   const shouldRenderRef = useRef(isFocused || isVisible)
   const focusStateRef = useRef({ isFocused, isVisible })
+  const searchMatchesRef = useRef<SearchMatch[]>([])
+  const searchDebounceRef = useRef<number | null>(null)
+  const searchLimitHitRef = useRef(false)
   const [dropActive, setDropActive] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
 
@@ -580,6 +798,22 @@ export function CellTerminal({
   useEffect(() => {
     focusStateRef.current = { isFocused, isVisible }
   }, [isFocused, isVisible])
+
+  useEffect(() => {
+    themeNameRef.current = themeName
+  }, [themeName])
+
+  useEffect(() => {
+    fontSizeRef.current = fontSize
+  }, [fontSize])
+
+  useEffect(() => {
+    fontFamilyRef.current = fontFamily
+  }, [fontFamily])
+
+  useEffect(() => {
+    scrollbackLinesRef.current = scrollbackLines
+  }, [scrollbackLines])
 
   const syncTerminalState = useCallback(
     (term: Terminal | null = getLiveTerminal()) => {
@@ -625,12 +859,102 @@ export function CellTerminal({
     return true
   }, [getLiveTerminal])
 
+  const refreshTerminalSearch = useCallback(() => {
+    const term = getLiveTerminal()
+    if (!term) return
+
+    if (!terminalFindOpen || !isFocused) {
+      searchMatchesRef.current = []
+      searchLimitHitRef.current = false
+      term.clearSelection()
+      if (useStore.getState().terminalFindResultTermId === termId) {
+        useStore.getState().setTerminalFindResults(termId, 0, 0, false)
+      }
+      return
+    }
+
+    const query = terminalFindQuery.trim()
+    if (!query) {
+      searchMatchesRef.current = []
+      searchLimitHitRef.current = false
+      term.clearSelection()
+      useStore.getState().setTerminalFindResults(termId, 0, 0, false)
+      return
+    }
+
+    const results = buildSearchMatches(term, query)
+    searchMatchesRef.current = results.matches
+    searchLimitHitRef.current = results.limitHit
+
+    if (results.matches.length === 0) {
+      term.clearSelection()
+      useStore.getState().setTerminalFindResults(termId, 0, 0, results.limitHit)
+      return
+    }
+
+    const store = useStore.getState()
+    const previousActive =
+      store.terminalFindResultTermId === termId ? Math.max(0, store.terminalFindActiveIndex - 1) : 0
+    const nextActive = Math.min(previousActive, results.matches.length - 1)
+    scrollToSearchMatch(term, results.matches[nextActive])
+    store.setTerminalFindResults(termId, results.matches.length, nextActive + 1, results.limitHit)
+  }, [getLiveTerminal, isFocused, termId, terminalFindOpen, terminalFindQuery])
+
+  const scheduleTerminalSearchRefresh = useCallback(
+    (delayMs = 50) => {
+      if (searchDebounceRef.current) {
+        window.clearTimeout(searchDebounceRef.current)
+      }
+      searchDebounceRef.current = window.setTimeout(() => {
+        searchDebounceRef.current = null
+        refreshTerminalSearch()
+      }, delayMs)
+    },
+    [refreshTerminalSearch],
+  )
+
   useEffect(() => {
     onTitleChangeRef.current = onTitleChange
-    themeNameRef.current = themeName
-    fontSizeRef.current = fontSize
-    fontFamilyRef.current = fontFamily
-  }, [onTitleChange, themeName, fontSize, fontFamily])
+  }, [onTitleChange])
+
+  useEffect(() => {
+    scheduleTerminalSearchRefresh(0)
+    return () => {
+      if (searchDebounceRef.current) {
+        window.clearTimeout(searchDebounceRef.current)
+        searchDebounceRef.current = null
+      }
+    }
+  }, [scheduleTerminalSearchRefresh])
+
+  useEffect(() => {
+    const handleNavigate = (event: Event) => {
+      if (!isFocused || !terminalFindOpen) return
+      const query = terminalFindQuery.trim()
+      if (!query) return
+
+      const term = getLiveTerminal()
+      const matches = searchMatchesRef.current
+      if (!term || matches.length === 0) return
+
+      const direction =
+        (event as CustomEvent<{ direction?: 1 | -1 }>).detail?.direction === -1 ? -1 : 1
+      const store = useStore.getState()
+      const currentIndex =
+        store.terminalFindResultTermId === termId && store.terminalFindActiveIndex > 0
+          ? store.terminalFindActiveIndex - 1
+          : 0
+      const nextIndex = (currentIndex + direction + matches.length) % matches.length
+
+      scrollToSearchMatch(term, matches[nextIndex])
+      store.setTerminalFindResults(termId, matches.length, nextIndex + 1, searchLimitHitRef.current)
+    }
+
+    window.addEventListener('terminal-find-navigate', handleNavigate as EventListener)
+    return () => {
+      window.removeEventListener('terminal-find-navigate', handleNavigate as EventListener)
+    }
+  }, [getLiveTerminal, isFocused, termId, terminalFindOpen, terminalFindQuery])
 
   const setInferredTitle = useCallback((title: string) => {
     if (!title || title === lastInferredTitleRef.current) return
@@ -809,12 +1133,12 @@ export function CellTerminal({
 
       const term = new Terminal({
         cursorBlink: false,
-        cursorStyle: 'bar',
+        cursorStyle: 'block',
         fontSize: fontSizeRef.current,
         fontFamily: fontFamilyRef.current,
         theme: buildTheme(themeNameRef.current),
-        scrollback: 5000,
-        smoothScrollDuration: 120,
+        scrollback: scrollbackLinesRef.current || DEFAULT_TERMINAL_SCROLLBACK_LINES,
+        smoothScrollDuration: GHOSTTY_SMOOTH_SCROLL_DURATION_MS,
       })
 
       if (cancelled) {
@@ -930,6 +1254,15 @@ export function CellTerminal({
         }
 
         if (e.metaKey && !e.ctrlKey && !e.altKey) {
+          if (normalizedKey === 'f') {
+            if (e.type === 'keydown') {
+              e.preventDefault()
+              useStore.getState().openTerminalFind()
+              window.dispatchEvent(new Event('terminal-find-focus'))
+            }
+            return true
+          }
+
           if (normalizedKey === 'c') {
             if (e.type === 'keydown') {
               e.preventDefault()
@@ -1064,6 +1397,10 @@ export function CellTerminal({
         // repainted immediately after new data is flushed.
         if (shouldRenderRef.current && term.renderer && term.wasmTerm) {
           term.renderer.render(term.wasmTerm, true, term.viewportY, term as ScrollbackProvider, 0)
+        }
+
+        if (terminalFindOpen && focusStateRef.current.isFocused) {
+          scheduleTerminalSearchRefresh()
         }
       }
 
@@ -1299,10 +1636,15 @@ export function CellTerminal({
 
       let replayedRawHistory = false
       if (result?.reattached) {
-        const history = await window.cells.terminal.getHistory(termId).catch(() => '')
-        if (history) {
-          term.write(history)
+        try {
+          await replayPagedTerminalHistory(termId, term)
           replayedRawHistory = true
+        } catch {
+          const history = await window.cells.terminal.getHistory(termId).catch(() => '')
+          if (history) {
+            await writeHistoryChunk(term, history)
+            replayedRawHistory = true
+          }
         }
       }
 
@@ -1323,6 +1665,8 @@ export function CellTerminal({
         pendingReplayData.length = 0
         if (!writeRaf) writeRaf = requestAnimationFrame(flushWrites)
       }
+
+      scheduleTerminalSearchRefresh(0)
 
       if (result?.reattached && dims) {
         bumpPtySize(dims.cols, dims.rows)
@@ -1359,8 +1703,10 @@ export function CellTerminal({
     copySelectionToClipboard,
     pasteToTerminal,
     reloadKey,
+    scheduleTerminalSearchRefresh,
     setInferredTitle,
     syncTerminalState,
+    terminalFindOpen,
     termId,
     trackInputForTitle,
   ])
@@ -1397,6 +1743,12 @@ export function CellTerminal({
 
     const theme = buildTheme(themeName)
     applyThemeToTerminal(term, theme)
+    if (term.options.cursorStyle !== 'block') {
+      term.options.cursorStyle = 'block'
+    }
+    if (term.options.smoothScrollDuration !== GHOSTTY_SMOOTH_SCROLL_DURATION_MS) {
+      term.options.smoothScrollDuration = GHOSTTY_SMOOTH_SCROLL_DURATION_MS
+    }
 
     // Keep wrapper background in sync so the sub-cell gap matches the terminal bg
     const cached = terminalCache.get(termId)
@@ -1436,95 +1788,38 @@ export function CellTerminal({
     return () => window.removeEventListener('terminal-refocus', handler)
   }, [getLiveTerminal, isFocused])
 
-  // Pixel-level smooth scrolling.  ghostty-web scrolls line-by-line which
-  // feels janky — by tracking a sub-pixel offset and applying a CSS transform
-  // to the canvas we get true browser-like smooth scrolling.  The handler runs
-  // in the capture phase so it intercepts ALL wheel events before ghostty-web's
-  // own handler (which would do line-level scrolling or send mouse/arrow
-  // events in alternate-screen / mouse-tracking modes).
+  // Let ghostty-web handle normal wheel scrolling. The custom sub-pixel canvas
+  // transform looked smoother on paper, but in practice it fights the terminal's
+  // own repaint cycle and feels less stable than VS Code's native xterm scroll.
+  // Keep only Cmd/Ctrl+wheel interception here so canvas zoom still works.
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
-    const cached = terminalCache.get(termId)
-    if (!cached) return
-
-    const { wrapper } = cached
-    const canvas = wrapper.querySelector('canvas') as HTMLCanvasElement | null
-    if (canvas) canvas.style.willChange = 'transform'
-
-    // Sub-pixel remainder (0 ≤ value < lineHeight).  Persists across events
-    // so momentum / trackpad inertia scrolling stays smooth.
-    let subPixelY = 0
-    // Last viewportY we applied — lets us detect external changes (e.g.
-    // scrollToBottom from a write) and reset the sub-pixel offset.
-    let lastAppliedViewportY = -1
 
     const onWheel = (e: WheelEvent) => {
-      const term = terminalRef.current
-      if (!term) return
-
-      // Let Cmd/Ctrl+scroll through for canvas zoom
-      if (e.metaKey || e.ctrlKey) return
-
-      const scrollbackLen = term.getScrollbackLength()
-      if (scrollbackLen <= 0 && term.viewportY === 0) {
-        subPixelY = 0
-        if (canvas) canvas.style.transform = ''
-        return // nothing to scroll
-      }
+      if (!e.metaKey && !e.ctrlKey) return
 
       e.preventDefault()
       e.stopPropagation()
+      e.stopImmediatePropagation()
 
-      const lineHeight = term.renderer?.getMetrics()?.height ?? 20
-
-      let deltaPixels: number
-      if (e.deltaMode === WheelEvent.DOM_DELTA_PIXEL) {
-        deltaPixels = e.deltaY
-      } else if (e.deltaMode === WheelEvent.DOM_DELTA_LINE) {
-        deltaPixels = e.deltaY * lineHeight
-      } else {
-        // DOM_DELTA_PAGE
-        deltaPixels = e.deltaY * term.rows * lineHeight
-      }
-
-      // If viewportY was changed externally (write-triggered scrollToBottom,
-      // programmatic scroll, etc.) reset sub-pixel state to stay in sync.
-      if (lastAppliedViewportY >= 0 && term.viewportY !== lastAppliedViewportY) {
-        subPixelY = 0
-      }
-
-      // Current position in pixels from bottom
-      let totalPixels = term.viewportY * lineHeight + subPixelY
-      // deltaY > 0 → scroll toward bottom → decrease distance from bottom
-      totalPixels = Math.max(0, Math.min(scrollbackLen * lineHeight, totalPixels - deltaPixels))
-
-      const newViewportY = Math.floor(totalPixels / lineHeight)
-      subPixelY = totalPixels - newViewportY * lineHeight
-
-      if (term.viewportY !== newViewportY) {
-        ;(term as any).viewportY = newViewportY
-        ;(term as any).targetViewportY = newViewportY
-        // Cancel any ongoing line-level smooth-scroll animation
-        if ((term as any).scrollAnimationFrame) {
-          cancelAnimationFrame((term as any).scrollAnimationFrame)
-          ;(term as any).scrollAnimationFrame = undefined
-        }
-      }
-      lastAppliedViewportY = newViewportY
-
-      // Sub-pixel CSS transform for the fractional offset
-      if (canvas) {
-        canvas.style.transform = subPixelY > 0.5 ? `translateY(-${subPixelY}px)` : ''
-      }
-
-      // Re-render at the new integer line position
-      if (term.renderer && term.wasmTerm) {
-        term.renderer.render(term.wasmTerm, true, term.viewportY, term as ScrollbackProvider, 0)
-      }
+      const rect = container.getBoundingClientRect()
+      const current = useStore.getState().canvas
+      const zoomIntensity = 0.01
+      const newScale = Math.max(
+        CANVAS_MIN_ZOOM,
+        Math.min(CANVAS_MAX_ZOOM, current.scale * (1 - e.deltaY * zoomIntensity)),
+      )
+      const mouseX = e.clientX - rect.left
+      const mouseY = e.clientY - rect.top
+      const ratio = newScale / current.scale
+      useStore.getState().setCanvasTransform({
+        x: mouseX - (mouseX - current.x) * ratio,
+        y: mouseY - (mouseY - current.y) * ratio,
+        scale: newScale,
+      })
     }
 
-    // Capture phase so the event never reaches ghostty-web's canvas handler
     container.addEventListener('wheel', onWheel, { capture: true, passive: false })
     return () => container.removeEventListener('wheel', onWheel, { capture: true })
   }, [termId])

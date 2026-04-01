@@ -32,6 +32,7 @@ function MainApp() {
     persist,
     projects,
     windowOpacity,
+    useTransparentWindow,
     dimWhenUnfocused,
     requestCloseWindow,
     restoreLastClosedWindow,
@@ -47,6 +48,7 @@ function MainApp() {
       persist: s.persist,
       projects: s.projects,
       windowOpacity: s.windowOpacity,
+      useTransparentWindow: s.useTransparentWindow,
       dimWhenUnfocused: s.dimWhenUnfocused,
       requestCloseWindow: s.requestCloseWindow,
       restoreLastClosedWindow: s.restoreLastClosedWindow,
@@ -57,7 +59,7 @@ function MainApp() {
       setOverlayOpen: s.setOverlayOpen,
     })),
   )
-  const shellStyle = buildWindowAppearanceStyle({ windowOpacity })
+  const shellStyle = buildWindowAppearanceStyle({ windowOpacity, useTransparentWindow })
 
   const [windowFocused, setWindowFocused] = useState(true)
   useEffect(() => {
@@ -94,6 +96,14 @@ function MainApp() {
       const state = useStore.getState()
       const key = event.key.toLowerCase()
       if (state.overlayOpen || event.altKey) return
+
+      if (key === 'f' && event.metaKey && !event.ctrlKey && state.focusedTerminalId) {
+        event.preventDefault()
+        event.stopPropagation()
+        state.openTerminalFind()
+        window.dispatchEvent(new Event('terminal-find-focus'))
+        return
+      }
 
       // Cmd+HJKL for canvas navigation (no Ctrl+Arrow — reserved for macOS text cursor)
       const direction =

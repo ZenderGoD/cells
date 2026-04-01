@@ -11,6 +11,7 @@ test('normalizeWindowAppearance clamps stored values into the supported slider r
 
   assert.deepEqual(normalized, {
     windowOpacity: 100,
+    useTransparentWindow: true,
   })
 })
 
@@ -21,11 +22,19 @@ test('normalizeWindowAppearance preserves a fully transparent window opacity', (
 
   assert.deepEqual(normalized, {
     windowOpacity: 0,
+    useTransparentWindow: true,
   })
 })
 
 test('normalizeWindowAppearance falls back to defaults when settings are missing', () => {
   assert.deepEqual(normalizeWindowAppearance({}), DEFAULT_WINDOW_APPEARANCE)
+})
+
+test('normalizeWindowAppearance preserves explicit transparent-window preference', () => {
+  assert.deepEqual(normalizeWindowAppearance({ useTransparentWindow: false }), {
+    windowOpacity: DEFAULT_WINDOW_APPEARANCE.windowOpacity,
+    useTransparentWindow: false,
+  })
 })
 
 test('buildWindowAppearanceStyle exposes CSS variables for the app shell', () => {

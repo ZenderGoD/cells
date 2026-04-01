@@ -10,6 +10,7 @@ import type { TerminalProcessInfo } from '../src/types'
 // from the system password database, always returning the real user home.
 export const HOME_DIR = os.userInfo().homedir
 export const MAX_BUFFER = 64 * 1024
+export const MAX_REPLAY_HISTORY_BYTES = 24 * 1024 * 1024
 
 const CODEX_HOME_DIR = path.join(HOME_DIR, '.codex')
 const CODEX_LOGS_DB = path.join(CODEX_HOME_DIR, 'logs_1.sqlite')
@@ -75,6 +76,7 @@ export function ensureSpawnHelperExecutable(): void {
  *  HOME stays as the real user home — CELLS_HOME_DIR is only for app config storage. */
 export function cleanEnv(): Record<string, string> {
   const env = { ...process.env } as Record<string, string>
+  const appVersion = env.CELLS_APP_VERSION
   for (const key of Object.keys(env)) {
     if (
       key.startsWith('ELECTRON') ||
@@ -93,8 +95,13 @@ export function cleanEnv(): Record<string, string> {
   delete env['XDG_DATA_HOME']
   // Ensure full color support
   env.COLORTERM = 'truecolor'
-  // Don't claim to be native ghostty — ghostty-web (WASM) has different capabilities
-  delete env['TERM_PROGRAM']
+  // Expose a stable modern terminal identity so TUIs can avoid falling back
+  // to their most generic xterm path. ghostty-web is not native Ghostty, but
+  // its capability profile is closer to that than an anonymous xterm session.
+  env.TERM_PROGRAM = env.TERM_PROGRAM || 'ghostty'
+  if (appVersion && !env['TERM_PROGRAM_VERSION']) {
+    env.TERM_PROGRAM_VERSION = appVersion
+  }
   return env
 }
 
