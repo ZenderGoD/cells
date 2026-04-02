@@ -1,5 +1,13 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
-import type { CellsAPI, ProjectsState, TerminalExitDetails } from '../src/types'
+import type {
+  CellsAPI,
+  PerfEventRecord,
+  PerfMonitorStatus,
+  ProjectsState,
+  RendererPerfSample,
+  TerminalExitDetails,
+  TerminalPerfSample,
+} from '../src/types'
 
 const api: CellsAPI = {
   terminal: {
@@ -298,6 +306,42 @@ const api: CellsAPI = {
       ipcRenderer.on('updater:status', handler)
       return () => ipcRenderer.removeListener('updater:status', handler)
     },
+  },
+  perf: {
+    reportRendererSample: async (sample: RendererPerfSample) => {
+      const electronProcess = process as NodeJS.Process & {
+        getCPUUsage?: () => { percentCPUUsage: number; idleWakeupsPerSecond: number }
+        getProcessMemoryInfo?: () => Promise<{
+          residentSet: number
+          private: number
+          shared: number
+        }>
+        getHeapStatistics?: () => {
+          totalHeapSize: number
+          usedHeapSize: number
+          heapSizeLimit: number
+        }
+      }
+
+      const memory = electronProcess.getProcessMemoryInfo
+        ? await electronProcess.getProcessMemoryInfo().catch(() => null)
+        : null
+      const heap = electronProcess.getHeapStatistics?.() ?? null
+
+      ipcRenderer.send('perf:renderer-sample', {
+        ...sample,
+        rendererPid: process.pid,
+        cpu: electronProcess.getCPUUsage?.() ?? null,
+        memory,
+        heap,
+      })
+    },
+    reportTerminalSample: (sample: TerminalPerfSample) => {
+      ipcRenderer.send('perf:terminal-sample', sample)
+    },
+    getStatus: () => ipcRenderer.invoke('perf:get-status') as Promise<PerfMonitorStatus | null>,
+    getRecentEvents: (limit?: number) =>
+      ipcRenderer.invoke('perf:get-recent-events', limit) as Promise<PerfEventRecord[]>,
   },
 }
 

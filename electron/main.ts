@@ -25,6 +25,7 @@ import {
   resolveCodexThreadTitle,
 } from './pty-shared'
 import { TerminalHistoryBuffer } from './terminal-history'
+import { PerfMonitor, type RendererPerfReport, type TerminalPerfReport } from './perf-monitor'
 import {
   ensureExtensionsLoaded,
   installExtension,
@@ -141,6 +142,7 @@ let daemonClient: PtyDaemonClient | null = null
 let fallbackPtys: PtyManager | null = null
 let useDaemon = false
 let mainWindow: BrowserWindow | null = null
+let perfMonitor: PerfMonitor | null = null
 
 // Per-terminal session isolation:
 // - "subscribed" = renderer component mounted → data forwarded live via IPC
@@ -314,6 +316,22 @@ ipcMain.handle('state:save', (_event, state) => {
   } catch (err) {
     console.error('Failed to save state:', err)
   }
+})
+
+ipcMain.on('perf:renderer-sample', (_event, sample: RendererPerfReport) => {
+  perfMonitor?.reportRendererSample(sample)
+})
+
+ipcMain.on('perf:terminal-sample', (_event, sample: TerminalPerfReport) => {
+  perfMonitor?.reportTerminalSample(sample)
+})
+
+ipcMain.handle('perf:get-status', () => {
+  return perfMonitor?.getStatus() ?? null
+})
+
+ipcMain.handle('perf:get-recent-events', (_event, limit?: number) => {
+  return perfMonitor?.getRecentEvents(limit) ?? []
 })
 
 // ---------- Terminal IPC ----------
@@ -2124,6 +2142,9 @@ ipcMain.handle('daemon:restart', async () => {
 // ---------- App lifecycle ----------
 
 app.whenReady().then(async () => {
+  perfMonitor = new PerfMonitor(app.getPath('logs'))
+  perfMonitor.start()
+
   // Start PTY daemon before creating windows
   try {
     console.log('Starting PTY daemon...')
@@ -2249,6 +2270,7 @@ app.whenReady().then(async () => {
 })
 
 app.on('before-quit', () => {
+  perfMonitor?.stop()
   quitConfirmed = true
   stopMcpBridge(MCP_BRIDGE_SOCKET)
   try {

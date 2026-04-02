@@ -150,6 +150,50 @@ export interface InputPrefix {
   agentId?: string
 }
 
+export interface RendererPerfSample {
+  sampleWindowMs: number
+  fps: number
+  longTaskCount: number
+  maxLongTaskMs: number
+  liveTerminalCount: number
+  cachedTerminalCount: number
+  totalTerminalCount: number
+  totalBrowserCount: number
+  projectCount: number
+  focusedTerminalId: string | null
+  focusedBrowserId: string | null
+  useTransparentWindow: boolean
+  windowOpacity: number
+  overlayOpen: boolean
+}
+
+export interface TerminalPerfSample {
+  termId: string
+  sampleWindowMs: number
+  bytes: number
+  writeCalls: number
+  forcedFullRenders: number
+  viewportY: number
+  scrollbackLines: number
+  isFocused: boolean
+  isVisible: boolean
+}
+
+export interface PerfEventRecord {
+  timestamp: number
+  kind: 'sample' | 'spike' | 'renderer' | 'terminal'
+  data: Record<string, unknown>
+}
+
+export interface PerfMonitorStatus {
+  enabled: boolean
+  logPath: string
+  sampleIntervalMs: number
+  hardwareAccelerationEnabled: boolean
+  gpuFeatureStatus: Record<string, string>
+  recentEventCount: number
+}
+
 export interface ExtensionMeta {
   id: string
   name: string
@@ -254,6 +298,12 @@ export interface CellsAPI {
     getVersion(): Promise<string>
     setAutoUpdate(enabled: boolean): Promise<void>
     onStatus(callback: (status: string, info?: any) => void): () => void
+  }
+  perf: {
+    reportRendererSample(sample: RendererPerfSample): Promise<void>
+    reportTerminalSample(sample: TerminalPerfSample): void
+    getStatus(): Promise<PerfMonitorStatus | null>
+    getRecentEvents(limit?: number): Promise<PerfEventRecord[]>
   }
   state: {
     load(): Promise<ProjectsState | null>

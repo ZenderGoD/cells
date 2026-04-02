@@ -11,6 +11,7 @@ import { ProjectSwitcher } from './components/project-switcher'
 import { CloseWindowDialog } from './components/close-window-dialog'
 import { Toaster } from './components/toast'
 import { PinnedWindow } from './components/pinned-window'
+import { getCachedTerminalCount } from './components/terminal/cell-terminal'
 import { buildWindowAppearanceStyle } from './lib/window-appearance'
 import { useShallow } from 'zustand/react/shallow'
 
@@ -198,6 +199,72 @@ function MainApp() {
     const interval = setInterval(() => persist(), 10000)
     return () => clearInterval(interval)
   }, [initialized, persist])
+
+  useEffect(() => {
+    if (!initialized) return
+
+    let frameCount = 0
+    let sampleStart = performance.now()
+    let longTaskCount = 0
+    let maxLongTaskMs = 0
+    let frameHandle = 0
+
+    const tick = () => {
+      frameCount += 1
+      frameHandle = window.requestAnimationFrame(tick)
+    }
+    frameHandle = window.requestAnimationFrame(tick)
+
+    let longTaskObserver: PerformanceObserver | null = null
+    if (typeof PerformanceObserver !== 'undefined') {
+      try {
+        longTaskObserver = new PerformanceObserver((list) => {
+          for (const entry of list.getEntries()) {
+            longTaskCount += 1
+            maxLongTaskMs = Math.max(maxLongTaskMs, entry.duration)
+          }
+        })
+        longTaskObserver.observe({ entryTypes: ['longtask'] })
+      } catch {
+        longTaskObserver = null
+      }
+    }
+
+    const interval = window.setInterval(() => {
+      const now = performance.now()
+      const sampleWindowMs = Math.max(1, Math.round(now - sampleStart))
+      const fps = Number(((frameCount * 1000) / sampleWindowMs).toFixed(1))
+      const state = useStore.getState()
+
+      void window.cells.perf.reportRendererSample({
+        sampleWindowMs,
+        fps,
+        longTaskCount,
+        maxLongTaskMs: Number(maxLongTaskMs.toFixed(1)),
+        liveTerminalCount: document.querySelectorAll('.cell-terminal').length,
+        cachedTerminalCount: getCachedTerminalCount(),
+        totalTerminalCount: state.terminals.length,
+        totalBrowserCount: state.browsers.length,
+        projectCount: state.projects.length,
+        focusedTerminalId: state.focusedTerminalId,
+        focusedBrowserId: state.focusedBrowserId,
+        useTransparentWindow: state.useTransparentWindow,
+        windowOpacity: state.windowOpacity,
+        overlayOpen: state.overlayOpen,
+      })
+
+      sampleStart = now
+      frameCount = 0
+      longTaskCount = 0
+      maxLongTaskMs = 0
+    }, 5_000)
+
+    return () => {
+      window.cancelAnimationFrame(frameHandle)
+      window.clearInterval(interval)
+      longTaskObserver?.disconnect()
+    }
+  }, [initialized])
 
   // Subscribe to auto-updater status and expose in store for toolbar
   useEffect(() => {

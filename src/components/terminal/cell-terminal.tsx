@@ -17,6 +17,8 @@ import { DEFAULT_TERMINAL_CURSOR_SETTINGS, type TerminalCursorStyle } from '@/li
 import { DEFAULT_TERMINAL_SCROLLBACK_LINES } from '@/lib/terminal-scrollback'
 import { getTerminalTheme } from '@/lib/terminal-themes'
 import { cn } from '@/lib/utils'
+import { inferAgentFromTitle } from '@/lib/agent-command'
+import type { TerminalPerfSample } from '@/types'
 
 // Initialize WASM lazily on first terminal mount
 let ghosttyReady: Promise<void> | null = null
@@ -194,6 +196,16 @@ async function replayPagedTerminalHistory(termId: string, term: Terminal) {
   }
 }
 
+function shouldPreferSnapshotRestoreForTerminal(terminal: {
+  agent?: AgentName | null
+  title?: string | null
+  customTitle?: string | null
+}) {
+  if (terminal.agent === 'codex') return true
+  const inferred = inferAgentFromTitle(terminal.customTitle ?? terminal.title ?? '')
+  return inferred === 'codex'
+}
+
 interface SearchMatch {
   absoluteRow: number
   length: number
@@ -323,12 +335,168 @@ interface CachedTerminal {
 }
 const terminalCache = new Map<string, CachedTerminal>()
 
+export function getCachedTerminalCount() {
+  return terminalCache.size
+}
+
 interface TerminalPreviewOptions {
   lines?: number
   columns?: number
 }
 
 const TERMINAL_RESTORE_SNAPSHOT_LIMIT = 256 * 1024
+
+interface SerializedCellStyle {
+  bg: number
+  blink: boolean
+  bold: boolean
+  faint: boolean
+  fg: number
+  inverse: boolean
+  invisible: boolean
+  italic: boolean
+  strikethrough: boolean
+  underline: boolean
+}
+
+function parseHexColor(hex: string) {
+  const normalized = hex.trim().replace(/^#/, '')
+  if (!/^[0-9a-f]{6}$/i.test(normalized)) return 0
+  return Number.parseInt(normalized, 16)
+}
+
+function getRgbChannels(color: number) {
+  return [(color >> 16) & 0xff, (color >> 8) & 0xff, color & 0xff] as const
+}
+
+function getDefaultSerializedCellStyle(themeName: string): SerializedCellStyle {
+  const theme = buildTheme(themeName)
+  return {
+    fg: parseHexColor(theme.foreground),
+    bg: parseHexColor(theme.background),
+    bold: false,
+    faint: false,
+    italic: false,
+    underline: false,
+    strikethrough: false,
+    blink: false,
+    inverse: false,
+    invisible: false,
+  }
+}
+
+function getSerializedCellStyle(
+  cell: { getFgColor(): number; getBgColor(): number; isBold(): number; isItalic(): number } & {
+    isUnderline(): number
+    isStrikethrough(): number
+    isBlink(): number
+    isInverse(): number
+    isInvisible(): number
+    isFaint(): number
+  },
+): SerializedCellStyle {
+  return {
+    fg: cell.getFgColor(),
+    bg: cell.getBgColor(),
+    bold: Boolean(cell.isBold()),
+    faint: Boolean(cell.isFaint()),
+    italic: Boolean(cell.isItalic()),
+    underline: Boolean(cell.isUnderline()),
+    strikethrough: Boolean(cell.isStrikethrough()),
+    blink: Boolean(cell.isBlink()),
+    inverse: Boolean(cell.isInverse()),
+    invisible: Boolean(cell.isInvisible()),
+  }
+}
+
+function areSerializedCellStylesEqual(a: SerializedCellStyle | null, b: SerializedCellStyle) {
+  return (
+    a !== null &&
+    a.fg === b.fg &&
+    a.bg === b.bg &&
+    a.bold === b.bold &&
+    a.faint === b.faint &&
+    a.italic === b.italic &&
+    a.underline === b.underline &&
+    a.strikethrough === b.strikethrough &&
+    a.blink === b.blink &&
+    a.inverse === b.inverse &&
+    a.invisible === b.invisible
+  )
+}
+
+function buildSgrSequence(style: SerializedCellStyle) {
+  const fg = getRgbChannels(style.fg)
+  const bg = getRgbChannels(style.bg)
+  const codes = ['0']
+  if (style.bold) codes.push('1')
+  if (style.faint) codes.push('2')
+  if (style.italic) codes.push('3')
+  if (style.underline) codes.push('4')
+  if (style.blink) codes.push('5')
+  if (style.inverse) codes.push('7')
+  if (style.invisible) codes.push('8')
+  if (style.strikethrough) codes.push('9')
+  codes.push(`38;2;${fg[0]};${fg[1]};${fg[2]}`)
+  codes.push(`48;2;${bg[0]};${bg[1]};${bg[2]}`)
+  return `\u001b[${codes.join(';')}m`
+}
+
+function getSnapshotViewportRange(term: Terminal) {
+  const activeBuffer = term.buffer.active
+  const viewportY = Math.max(0, activeBuffer.viewportY ?? 0)
+  const start =
+    activeBuffer.type === 'alternate'
+      ? Math.max(0, activeBuffer.length - term.rows)
+      : Math.max(0, activeBuffer.length - term.rows - viewportY)
+  const end = Math.min(activeBuffer.length, start + term.rows)
+  return { activeBuffer, start, end }
+}
+
+function serializeVisibleTerminalSnapshot(term: Terminal, themeName: string) {
+  const { activeBuffer, start, end } = getSnapshotViewportRange(term)
+  const defaultStyle = getDefaultSerializedCellStyle(themeName)
+  const parts: string[] = []
+  let activeStyle: SerializedCellStyle | null = null
+
+  if (activeBuffer.type === 'alternate') {
+    parts.push('\u001b[?1049h')
+  }
+
+  parts.push('\u001b[2J')
+
+  for (let row = 0; row < term.rows; row += 1) {
+    parts.push(`\u001b[${row + 1};1H`)
+    const line = row < end - start ? activeBuffer.getLine(start + row) : undefined
+
+    for (let col = 0; col < term.cols; col += 1) {
+      const cell = line?.getCell(col)
+      if (cell && cell.getWidth() === 0) continue
+
+      const style = cell ? getSerializedCellStyle(cell) : defaultStyle
+      if (!areSerializedCellStylesEqual(activeStyle, style)) {
+        parts.push(buildSgrSequence(style))
+        activeStyle = style
+      }
+
+      const chars = cell?.getChars() || ' '
+      parts.push(chars)
+    }
+  }
+
+  const cursorRow = Math.max(1, Math.min(term.rows, activeBuffer.cursorY + 1))
+  const cursorCol = Math.max(1, Math.min(term.cols, activeBuffer.cursorX + 1))
+  const cursorLine = activeBuffer.getLine(start + activeBuffer.cursorY)
+  const cursorCell = cursorLine?.getCell(activeBuffer.cursorX)
+  const cursorStyle = cursorCell ? getSerializedCellStyle(cursorCell) : defaultStyle
+  if (!areSerializedCellStylesEqual(activeStyle, cursorStyle)) {
+    parts.push(buildSgrSequence(cursorStyle))
+  }
+  parts.push(`\u001b[${cursorRow};${cursorCol}H`)
+
+  const snapshot = parts.join('')
+  return snapshot.length > TERMINAL_RESTORE_SNAPSHOT_LIMIT ? null : snapshot
+}
 
 export function getTerminalPreviewSnapshot(
   termId: string,
@@ -371,6 +539,11 @@ export function getTerminalRestoreSnapshot(termId: string): string | null {
   const cached = terminalCache.get(termId)
   const term = cached?.term
   if (!term) return null
+
+  const terminalState = useStore.getState().terminals.find((terminal) => terminal.id === termId)
+  if (terminalState && shouldPreferSnapshotRestoreForTerminal(terminalState)) {
+    return serializeVisibleTerminalSnapshot(term, useStore.getState().terminalTheme)
+  }
 
   const activeBuffer = term.buffer.active
   const logicalLines: string[] = []
@@ -1382,10 +1555,39 @@ export function CellTerminal({
       let writeRaf = 0
       let initialReplayPending = true
       const pendingReplayData: string[] = []
+      let perfWindowStart = performance.now()
+      let perfBytes = 0
+      let perfWriteCalls = 0
+      let perfForcedFullRenders = 0
       // How many lines from bottom the user must scroll before we stop
       // auto-scrolling to bottom on new output.
       const SCROLL_LOCK_THRESHOLD = 5
       const termCanvas = wrapper.querySelector('canvas') as HTMLCanvasElement | null
+      const reportTerminalPerf = () => {
+        const sampleWindowMs = Math.max(1, Math.round(performance.now() - perfWindowStart))
+        if (perfBytes <= 0 && perfWriteCalls <= 0 && perfForcedFullRenders <= 0) {
+          perfWindowStart = performance.now()
+          return
+        }
+
+        const sample: TerminalPerfSample = {
+          termId,
+          sampleWindowMs,
+          bytes: perfBytes,
+          writeCalls: perfWriteCalls,
+          forcedFullRenders: perfForcedFullRenders,
+          viewportY: term.viewportY,
+          scrollbackLines: term.getScrollbackLength(),
+          isFocused: focusStateRef.current.isFocused,
+          isVisible: focusStateRef.current.isVisible,
+        }
+        window.cells.perf.reportTerminalSample(sample)
+
+        perfWindowStart = performance.now()
+        perfBytes = 0
+        perfWriteCalls = 0
+        perfForcedFullRenders = 0
+      }
       const flushWrites = () => {
         writeRaf = 0
         if (!writeBuf) return
@@ -1400,6 +1602,8 @@ export function CellTerminal({
         const savedLen = scrolledUp ? term.getScrollbackLength() : 0
 
         term.write(chunk) // internally calls scrollToBottom → viewportY = 0
+        perfBytes += chunk.length
+        perfWriteCalls += 1
 
         if (scrolledUp) {
           // Adjust for any new lines that were added to the scrollback so
@@ -1421,6 +1625,7 @@ export function CellTerminal({
         // repainted immediately after new data is flushed.
         if (shouldRenderRef.current && term.renderer && term.wasmTerm) {
           term.renderer.render(term.wasmTerm, true, term.viewportY, term as ScrollbackProvider, 0)
+          perfForcedFullRenders += 1
         }
 
         if (terminalFindOpen && focusStateRef.current.isFocused) {
@@ -1438,8 +1643,11 @@ export function CellTerminal({
           // Flush any remaining buffered data so nothing is lost
           if (writeBuf) {
             term.write(writeBuf)
+            perfBytes += writeBuf.length
+            perfWriteCalls += 1
             writeBuf = ''
           }
+          reportTerminalPerf()
         },
         term.onTitleChange((title) => {
           lastInferredTitleRef.current = title || 'Terminal'
@@ -1502,6 +1710,8 @@ export function CellTerminal({
           }
         }),
       )
+      const perfInterval = window.setInterval(reportTerminalPerf, 10_000)
+      cleanups.push(() => window.clearInterval(perfInterval))
 
       // Handle paste events from any source (Raycast, right-click, etc.)
       const handlePaste = (e: ClipboardEvent) => {
@@ -1643,9 +1853,11 @@ export function CellTerminal({
       const dims = fitAddon.proposeDimensions()
       const worktreeCwd = consumePendingWorktreePath(termId)
       const projectPath = worktreeCwd ?? useStore.getState().getActiveProjectPath()
-      const restoredOutput =
-        useStore.getState().terminals.find((terminal) => terminal.id === termId)?.restoredOutput ??
-        ''
+      const terminalState = useStore.getState().terminals.find((terminal) => terminal.id === termId)
+      const restoredOutput = terminalState?.restoredOutput ?? ''
+      const preferSnapshotRestore =
+        restoredOutput.length > 0 &&
+        Boolean(terminalState && shouldPreferSnapshotRestoreForTerminal(terminalState))
       const result = await window.cells.terminal.attach(
         termId,
         dims?.cols ?? 80,
@@ -1654,7 +1866,7 @@ export function CellTerminal({
       )
 
       let replayedRawHistory = false
-      if (result?.reattached) {
+      if (result?.reattached && !preferSnapshotRestore) {
         try {
           await replayPagedTerminalHistory(termId, term)
           replayedRawHistory = true
@@ -1667,9 +1879,9 @@ export function CellTerminal({
         }
       }
 
-      if (!replayedRawHistory && !result?.reattached && restoredOutput) {
+      if (!replayedRawHistory && restoredOutput && (!result?.reattached || preferSnapshotRestore)) {
         term.write(restoredOutput)
-        if (!restoredOutput.endsWith('\r\n')) {
+        if (!preferSnapshotRestore && !restoredOutput.endsWith('\r\n')) {
           term.write('\r\n')
         }
       }
@@ -1687,7 +1899,7 @@ export function CellTerminal({
 
       scheduleTerminalSearchRefresh(0)
 
-      if (result?.reattached && dims) {
+      if (result?.reattached && dims && !preferSnapshotRestore) {
         bumpPtySize(dims.cols, dims.rows)
       }
 
