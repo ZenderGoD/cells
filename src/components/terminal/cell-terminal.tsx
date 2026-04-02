@@ -11,6 +11,7 @@ import {
 import type { ILinkProvider } from 'ghostty-web'
 
 /** The 4th param of CanvasRenderer.render — not exported by ghostty-web. */
+type Renderable = Parameters<CanvasRenderer['render']>[0]
 type ScrollbackProvider = NonNullable<Parameters<CanvasRenderer['render']>[3]>
 import { useStore, consumePendingCommand, consumePendingWorktreePath } from '@/lib/store'
 import { DEFAULT_TERMINAL_CURSOR_SETTINGS, type TerminalCursorStyle } from '@/lib/terminal-cursor'
@@ -30,6 +31,7 @@ const CANVAS_MAX_ZOOM = 1.5
 const HISTORY_PAGE_BYTES = 256 * 1024
 const HISTORY_WRITE_BYTES = 64 * 1024
 const TERMINAL_SEARCH_MATCH_LIMIT = 2_000
+const TERMINAL_FULL_RENDER_THROTTLE_MS = 100
 
 function patchGhosttyRenderer() {
   if (ghosttyRendererPatched) return
@@ -131,6 +133,74 @@ function patchTerminalViewportPreservation(term: Terminal) {
       }
     },
   )
+}
+
+function patchTerminalFullRenderScheduler(term: Terminal) {
+  if (Reflect.get(term, '__cellsFullRenderSchedulerPatched')) return
+
+  const renderer = Reflect.get(term, 'renderer')
+  if (!renderer) return
+
+  const originalRender = Reflect.get(renderer, 'render')
+  if (typeof originalRender !== 'function') return
+
+  Reflect.set(term, '__cellsFullRenderSchedulerPatched', true)
+  Reflect.set(term, '__cellsPendingFullRender', false)
+  Reflect.set(term, '__cellsLastForcedFullRenderAt', 0)
+  Reflect.set(term, '__cellsPerfForcedFullRenderCount', 0)
+
+  Reflect.set(
+    renderer,
+    'render',
+    function patchedRender(
+      this: CanvasRenderer,
+      wasmTerm: Renderable,
+      forceFull: boolean,
+      viewportY: number,
+      scrollbackProvider: ScrollbackProvider,
+      scrollbarOpacity: number,
+    ) {
+      let shouldForceFull = forceFull
+
+      if (!shouldForceFull && Reflect.get(term, '__cellsPendingFullRender') === true) {
+        const now = performance.now()
+        const lastForcedFullRenderAt = Number(
+          Reflect.get(term, '__cellsLastForcedFullRenderAt') ?? 0,
+        )
+        if (now - lastForcedFullRenderAt >= TERMINAL_FULL_RENDER_THROTTLE_MS) {
+          shouldForceFull = true
+        }
+      }
+
+      if (shouldForceFull) {
+        Reflect.set(term, '__cellsPendingFullRender', false)
+        Reflect.set(term, '__cellsLastForcedFullRenderAt', performance.now())
+        const forcedFullRenderCount = Number(
+          Reflect.get(term, '__cellsPerfForcedFullRenderCount') ?? 0,
+        )
+        Reflect.set(term, '__cellsPerfForcedFullRenderCount', forcedFullRenderCount + 1)
+      }
+
+      return originalRender.call(
+        this,
+        wasmTerm,
+        shouldForceFull,
+        viewportY,
+        scrollbackProvider,
+        scrollbarOpacity,
+      )
+    },
+  )
+}
+
+function requestTerminalFullRender(term: Terminal) {
+  Reflect.set(term, '__cellsPendingFullRender', true)
+}
+
+function consumeTerminalFullRenderCount(term: Terminal) {
+  const forcedFullRenderCount = Number(Reflect.get(term, '__cellsPerfForcedFullRenderCount') ?? 0)
+  Reflect.set(term, '__cellsPerfForcedFullRenderCount', 0)
+  return forcedFullRenderCount
 }
 
 function buildTheme(themeName: string) {
@@ -1303,6 +1373,7 @@ export function CellTerminal({
       const cached = terminalCache.get(termId)
       if (cached) {
         patchTerminalViewportPreservation(cached.term)
+        patchTerminalFullRenderScheduler(cached.term)
         // Move the existing DOM back into our container
         cached.wrapper.style.backgroundColor = buildTheme(themeNameRef.current).background
         container.appendChild(cached.wrapper)
@@ -1381,6 +1452,7 @@ export function CellTerminal({
       const fitAddon = new FitAddon()
       term.loadAddon(fitAddon)
       term.open(wrapper)
+      patchTerminalFullRenderScheduler(term)
       fitAddon.observeResize()
       setTerminalRenderLoopEnabled(term, shouldRenderRef.current)
 
@@ -1598,6 +1670,7 @@ export function CellTerminal({
       const SCROLL_LOCK_THRESHOLD = 5
       const termCanvas = wrapper.querySelector('canvas') as HTMLCanvasElement | null
       const reportTerminalPerf = () => {
+        perfForcedFullRenders += consumeTerminalFullRenderCount(term)
         const sampleWindowMs = Math.max(1, Math.round(performance.now() - perfWindowStart))
         if (perfBytes <= 0 && perfWriteCalls <= 0 && perfForcedFullRenders <= 0) {
           perfWindowStart = performance.now()
@@ -1633,35 +1706,31 @@ export function CellTerminal({
         const scrolledUp = term.viewportY > SCROLL_LOCK_THRESHOLD
         const savedY = term.viewportY
         const savedTargetY = (term as any).targetViewportY ?? term.viewportY
-        const savedLen = scrolledUp ? term.getScrollbackLength() : 0
+        const savedLen = term.getScrollbackLength()
 
         Reflect.set(term, '__cellsPreserveViewportOnWrite', scrolledUp)
         term.write(chunk)
         Reflect.set(term, '__cellsPreserveViewportOnWrite', false)
         perfBytes += chunk.length
         perfWriteCalls += 1
+        const newLen = term.getScrollbackLength()
+        const scrollbackDelta = newLen - savedLen
 
         if (scrolledUp) {
           // Adjust for any new lines that were added to the scrollback so
           // the user keeps looking at the same content.
-          const newLen = term.getScrollbackLength()
-          const delta = newLen - savedLen
-          ;(term as any).viewportY = Math.min(newLen, savedY + delta)
-          ;(term as any).targetViewportY = Math.min(newLen, savedTargetY + delta)
+          ;(term as any).viewportY = Math.min(newLen, savedY + scrollbackDelta)
+          ;(term as any).targetViewportY = Math.min(newLen, savedTargetY + scrollbackDelta)
         } else if (termCanvas) {
           // At the bottom — clear any sub-pixel scroll transform
           termCanvas.style.transform = ''
         }
 
-        // Force a full repaint after the write.  The WASM dirty-row tracker
-        // only marks rows that received new characters — it misses rows that
-        // shifted up due to scrolling.  The built-in render loop (which runs
-        // every frame) uses dirty tracking and therefore leaves those shifted
-        // rows stale.  A forced full render here ensures every row is
-        // repainted immediately after new data is flushed.
-        if (shouldRenderRef.current && term.renderer && term.wasmTerm) {
-          term.renderer.render(term.wasmTerm, true, term.viewportY, term as ScrollbackProvider, 0)
-          perfForcedFullRenders += 1
+        // ghostty-web's dirty-row tracking can miss lines that shifted due to
+        // scrollback growth. Ask for a full repaint only when scrollback moved,
+        // then let the render loop coalesce and throttle the actual redraws.
+        if (scrollbackDelta > 0) {
+          requestTerminalFullRender(term)
         }
 
         if (terminalFindOpen && focusStateRef.current.isFocused) {
