@@ -34,6 +34,7 @@ import {
   MAX_TERMINAL_SCROLLBACK_LINES,
   MIN_TERMINAL_SCROLLBACK_LINES,
 } from '@/lib/terminal-scrollback'
+import { TERMINAL_CURSOR_STYLE_OPTIONS } from '@/lib/terminal-cursor'
 import { terminalThemes } from '@/lib/terminal-themes'
 import { cn } from '@/lib/utils'
 
@@ -118,6 +119,8 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const fontSize = useStore((s) => s.fontSize)
   const fontFamily = useStore((s) => s.fontFamily)
   const terminalScrollbackLines = useStore((s) => s.terminalScrollbackLines)
+  const terminalCursorStyle = useStore((s) => s.terminalCursorStyle)
+  const terminalCursorBlink = useStore((s) => s.terminalCursorBlink)
   const windowOpacity = useStore((s) => s.windowOpacity)
   const useTransparentWindow = useStore((s) => s.useTransparentWindow)
   const dimWhenUnfocused = useStore((s) => s.dimWhenUnfocused)
@@ -131,6 +134,8 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const setFontSize = useStore((s) => s.setFontSize)
   const setFontFamily = useStore((s) => s.setFontFamily)
   const setTerminalScrollbackLines = useStore((s) => s.setTerminalScrollbackLines)
+  const setTerminalCursorStyle = useStore((s) => s.setTerminalCursorStyle)
+  const setTerminalCursorBlink = useStore((s) => s.setTerminalCursorBlink)
   const setWindowOpacity = useStore((s) => s.setWindowOpacity)
   const setUseTransparentWindow = useStore((s) => s.setUseTransparentWindow)
   const setDimWhenUnfocused = useStore((s) => s.setDimWhenUnfocused)
@@ -567,6 +572,60 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                           )}
                         </button>
                       ))}
+                    </div>
+                  </SettingsGroup>
+
+                  <SettingsGroup title="Cursor">
+                    <div className="space-y-2.5">
+                      <SettingsField label="Style">
+                        <div className="space-y-0.5">
+                          {TERMINAL_CURSOR_STYLE_OPTIONS.map((option) => (
+                            <button
+                              key={option.value}
+                              onClick={() => setTerminalCursorStyle(option.value)}
+                              className={cn(
+                                'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
+                                terminalCursorStyle === option.value
+                                  ? 'bg-accent text-foreground'
+                                  : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
+                              )}
+                            >
+                              <span className="flex-1">{option.label}</span>
+                              <span className="text-[10px] text-muted-foreground/40">
+                                {option.hint}
+                              </span>
+                              {terminalCursorStyle === option.value && (
+                                <Check className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
+                              )}
+                            </button>
+                          ))}
+                        </div>
+                      </SettingsField>
+
+                      <SettingsField
+                        label="Blink"
+                        hint={terminalCursorBlink ? 'Animated' : 'Steady'}
+                      >
+                        <button
+                          onClick={() => setTerminalCursorBlink(!terminalCursorBlink)}
+                          className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-[11px] transition-colors hover:bg-muted/40"
+                        >
+                          <span className="text-foreground">Blink terminal cursor</span>
+                          <div
+                            className={cn(
+                              'relative h-3.5 w-6 rounded-full transition-colors',
+                              terminalCursorBlink ? 'bg-primary' : 'bg-muted-foreground/25',
+                            )}
+                          >
+                            <div
+                              className={cn(
+                                'absolute top-0.5 h-2.5 w-2.5 rounded-full bg-background transition-transform',
+                                terminalCursorBlink ? 'translate-x-3' : 'translate-x-0.5',
+                              )}
+                            />
+                          </div>
+                        </button>
+                      </SettingsField>
                     </div>
                   </SettingsGroup>
 

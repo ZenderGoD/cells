@@ -1,3 +1,5 @@
+import type { TerminalCursorStyle } from '../lib/terminal-cursor'
+
 export interface CanvasTransform {
   x: number
   y: number
@@ -89,6 +91,8 @@ export interface ProjectsState {
   fontSize?: number
   fontFamily?: string
   terminalScrollbackLines?: number
+  terminalCursorStyle?: TerminalCursorStyle
+  terminalCursorBlink?: boolean
   windowOpacity?: number
   useTransparentWindow?: boolean
   snapOnFocus?: boolean

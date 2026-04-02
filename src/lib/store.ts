@@ -34,6 +34,12 @@ import {
   DEFAULT_TERMINAL_SCROLLBACK_LINES,
   normalizeTerminalScrollbackLines,
 } from './terminal-scrollback'
+import {
+  DEFAULT_TERMINAL_CURSOR_SETTINGS,
+  normalizeTerminalCursorSettings,
+  normalizeTerminalCursorStyle,
+  type TerminalCursorStyle,
+} from './terminal-cursor'
 
 interface StoreState {
   // Project management
@@ -49,6 +55,8 @@ interface StoreState {
   fontSize: number
   fontFamily: string
   terminalScrollbackLines: number
+  terminalCursorStyle: TerminalCursorStyle
+  terminalCursorBlink: boolean
   windowOpacity: number
   useTransparentWindow: boolean
   dimWhenUnfocused: boolean
@@ -126,6 +134,8 @@ interface StoreState {
   setFontSize(size: number): void
   setFontFamily(family: string): void
   setTerminalScrollbackLines(lines: number): void
+  setTerminalCursorStyle(style: TerminalCursorStyle): void
+  setTerminalCursorBlink(enabled: boolean): void
   setWindowOpacity(opacity: number): void
   setUseTransparentWindow(enabled: boolean): void
   setDimWhenUnfocused(enabled: boolean): void
@@ -540,6 +550,8 @@ export const useStore = create<StoreState>((set, get) => ({
   fontSize: 13,
   fontFamily: DEFAULT_FONT_FAMILY,
   terminalScrollbackLines: DEFAULT_TERMINAL_SCROLLBACK_LINES,
+  terminalCursorStyle: DEFAULT_TERMINAL_CURSOR_SETTINGS.terminalCursorStyle,
+  terminalCursorBlink: DEFAULT_TERMINAL_CURSOR_SETTINGS.terminalCursorBlink,
   windowOpacity: DEFAULT_WINDOW_APPEARANCE.windowOpacity,
   useTransparentWindow: DEFAULT_WINDOW_APPEARANCE.useTransparentWindow,
   dimWhenUnfocused: true,
@@ -571,6 +583,17 @@ export const useStore = create<StoreState>((set, get) => ({
     set({ terminalScrollbackLines: next })
     reloadAllTerminals()
     showToast(`Terminal history limit set to ${next.toLocaleString()} lines`, 'info')
+    get().persist()
+  },
+  setTerminalCursorStyle(style) {
+    const next = normalizeTerminalCursorStyle(style)
+    if (next === get().terminalCursorStyle) return
+    set({ terminalCursorStyle: next })
+    get().persist()
+  },
+  setTerminalCursorBlink(enabled) {
+    if (enabled === get().terminalCursorBlink) return
+    set({ terminalCursorBlink: enabled })
     get().persist()
   },
   setWindowOpacity(opacity) {
@@ -660,6 +683,10 @@ export const useStore = create<StoreState>((set, get) => ({
         fontSize: ps.fontSize || 13,
         fontFamily: ps.fontFamily || DEFAULT_FONT_FAMILY,
         terminalScrollbackLines: normalizeTerminalScrollbackLines(ps.terminalScrollbackLines),
+        ...normalizeTerminalCursorSettings({
+          terminalCursorStyle: ps.terminalCursorStyle,
+          terminalCursorBlink: ps.terminalCursorBlink,
+        }),
         ...normalizeWindowAppearance({
           windowOpacity: ps.windowOpacity,
           useTransparentWindow: ps.useTransparentWindow,
@@ -752,6 +779,10 @@ export const useStore = create<StoreState>((set, get) => ({
         terminalScrollbackLines: normalizeTerminalScrollbackLines(
           (saved as any).terminalScrollbackLines,
         ),
+        ...normalizeTerminalCursorSettings({
+          terminalCursorStyle: (saved as any).terminalCursorStyle,
+          terminalCursorBlink: (saved as any).terminalCursorBlink,
+        }),
         ...normalizeWindowAppearance({
           windowOpacity: (saved as any).windowOpacity,
           useTransparentWindow: (saved as any).useTransparentWindow,
@@ -834,6 +865,8 @@ export const useStore = create<StoreState>((set, get) => ({
           fontSize: freshState.fontSize,
           fontFamily: freshState.fontFamily,
           terminalScrollbackLines: freshState.terminalScrollbackLines,
+          terminalCursorStyle: freshState.terminalCursorStyle,
+          terminalCursorBlink: freshState.terminalCursorBlink,
           windowOpacity: freshState.windowOpacity,
           useTransparentWindow: freshState.useTransparentWindow,
           snapOnFocus: freshState.snapOnFocus,
@@ -876,6 +909,8 @@ export const useStore = create<StoreState>((set, get) => ({
           fontSize: state.fontSize,
           fontFamily: state.fontFamily,
           terminalScrollbackLines: state.terminalScrollbackLines,
+          terminalCursorStyle: state.terminalCursorStyle,
+          terminalCursorBlink: state.terminalCursorBlink,
           windowOpacity: state.windowOpacity,
           useTransparentWindow: state.useTransparentWindow,
           snapOnFocus: state.snapOnFocus,

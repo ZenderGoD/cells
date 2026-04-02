@@ -13,6 +13,7 @@ import type { ILinkProvider } from 'ghostty-web'
 /** The 4th param of CanvasRenderer.render — not exported by ghostty-web. */
 type ScrollbackProvider = NonNullable<Parameters<CanvasRenderer['render']>[3]>
 import { useStore, consumePendingCommand, consumePendingWorktreePath } from '@/lib/store'
+import { DEFAULT_TERMINAL_CURSOR_SETTINGS, type TerminalCursorStyle } from '@/lib/terminal-cursor'
 import { DEFAULT_TERMINAL_SCROLLBACK_LINES } from '@/lib/terminal-scrollback'
 import { getTerminalTheme } from '@/lib/terminal-themes'
 import { cn } from '@/lib/utils'
@@ -752,6 +753,8 @@ export function CellTerminal({
   const fontSize = useStore((s) => s.fontSize)
   const fontFamily = useStore((s) => s.fontFamily)
   const scrollbackLines = useStore((s) => s.terminalScrollbackLines)
+  const cursorStyle = useStore((s) => s.terminalCursorStyle)
+  const cursorBlink = useStore((s) => s.terminalCursorBlink)
   const overlayOpen = useStore((s) => s.overlayOpen)
   const focusTerminal = useStore((s) => s.focusTerminal)
   const terminalFindOpen = useStore((s) => s.terminalFindOpen)
@@ -760,6 +763,8 @@ export function CellTerminal({
   const fontSizeRef = useRef(fontSize)
   const fontFamilyRef = useRef(fontFamily)
   const scrollbackLinesRef = useRef(scrollbackLines)
+  const cursorStyleRef = useRef<TerminalCursorStyle>(cursorStyle)
+  const cursorBlinkRef = useRef(cursorBlink)
   const inferredAgentRef = useRef<AgentName | null>(null)
   const detectedAgentRef = useRef<AgentName | null>(null)
   const inputBufferRef = useRef('')
@@ -814,6 +819,14 @@ export function CellTerminal({
   useEffect(() => {
     scrollbackLinesRef.current = scrollbackLines
   }, [scrollbackLines])
+
+  useEffect(() => {
+    cursorStyleRef.current = cursorStyle
+  }, [cursorStyle])
+
+  useEffect(() => {
+    cursorBlinkRef.current = cursorBlink
+  }, [cursorBlink])
 
   const syncTerminalState = useCallback(
     (term: Terminal | null = getLiveTerminal()) => {
@@ -1132,8 +1145,8 @@ export function CellTerminal({
       container.appendChild(wrapper)
 
       const term = new Terminal({
-        cursorBlink: false,
-        cursorStyle: 'block',
+        cursorBlink: cursorBlinkRef.current,
+        cursorStyle: cursorStyleRef.current ?? DEFAULT_TERMINAL_CURSOR_SETTINGS.terminalCursorStyle,
         fontSize: fontSizeRef.current,
         fontFamily: fontFamilyRef.current,
         theme: buildTheme(themeNameRef.current),
@@ -1743,8 +1756,11 @@ export function CellTerminal({
 
     const theme = buildTheme(themeName)
     applyThemeToTerminal(term, theme)
-    if (term.options.cursorStyle !== 'block') {
-      term.options.cursorStyle = 'block'
+    if (term.options.cursorStyle !== cursorStyle) {
+      term.options.cursorStyle = cursorStyle
+    }
+    if (term.options.cursorBlink !== cursorBlink) {
+      term.options.cursorBlink = cursorBlink
     }
     if (term.options.smoothScrollDuration !== GHOSTTY_SMOOTH_SCROLL_DURATION_MS) {
       term.options.smoothScrollDuration = GHOSTTY_SMOOTH_SCROLL_DURATION_MS
@@ -1766,7 +1782,7 @@ export function CellTerminal({
         fitAddonRef.current?.fit()
       })
     }
-  }, [termId, themeName, fontSize, fontFamily])
+  }, [termId, themeName, fontSize, fontFamily, cursorStyle, cursorBlink])
 
   // Auto-focus + force repaint for reattached daemon sessions that may have
   // a stale/blank canvas despite having content in the internal buffer.
