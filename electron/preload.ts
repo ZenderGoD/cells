@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
-import type { CellsAPI, ProjectsState } from '../src/types'
+import type { CellsAPI, ProjectsState, TerminalExitDetails } from '../src/types'
 
 const api: CellsAPI = {
   terminal: {
@@ -26,8 +26,12 @@ const api: CellsAPI = {
       ipcRenderer.on('terminal:data', handler)
       return () => ipcRenderer.removeListener('terminal:data', handler)
     },
-    onExit: (callback: (termId: string) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, termId: string) => callback(termId)
+    onExit: (callback: (termId: string, details?: TerminalExitDetails) => void) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        termId: string,
+        details?: TerminalExitDetails,
+      ) => callback(termId, details)
       ipcRenderer.on('terminal:exit', handler)
       return () => ipcRenderer.removeListener('terminal:exit', handler)
     },
@@ -245,9 +249,15 @@ const api: CellsAPI = {
         connected: boolean
         sessionCount: number
         appVersion: string
+        currentElectronVersion: string | null
+        currentNodeAbi: string
+        restartRecommended: boolean
+        restartReason: string | null
         daemonVersion: {
           protocolVersion: number
           appVersion: string | null
+          electronVersion: string | null
+          nodeAbi: string | null
           pid: number
           uptime: number
         } | null

@@ -35,6 +35,7 @@ import {
   MIN_TERMINAL_SCROLLBACK_LINES,
 } from '@/lib/terminal-scrollback'
 import { TERMINAL_CURSOR_STYLE_OPTIONS } from '@/lib/terminal-cursor'
+import { TERMINAL_FONT_FAMILIES } from '@/lib/terminal-fonts'
 import { terminalThemes } from '@/lib/terminal-themes'
 import { cn } from '@/lib/utils'
 
@@ -59,13 +60,6 @@ type SettingsSectionId =
 type SettingsSelectOption = { value: string; label: string; hint?: string }
 
 const FONT_SIZES = [11, 12, 13, 14, 15, 16]
-const FONT_FAMILIES = [
-  { label: 'GeistMono Nerd Font', value: '"GeistMono NF", monospace' },
-  { label: 'JetBrainsMono Nerd Font', value: '"JetBrainsMono NF", monospace' },
-  { label: 'FiraCode Nerd Font', value: '"FiraCode NF", monospace' },
-  { label: 'Meslo Nerd Font', value: '"Meslo NF", monospace' },
-  { label: 'Hack Nerd Font', value: '"Hack NF", monospace' },
-]
 
 const SETTINGS_SECTIONS: Array<{ id: SettingsSectionId; label: string }> = [
   { id: 'appearance', label: 'Appearance' },
@@ -554,7 +548,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
 
                   <SettingsGroup title="Font">
                     <div className="space-y-0.5">
-                      {FONT_FAMILIES.map((font) => (
+                      {TERMINAL_FONT_FAMILIES.map((font) => (
                         <button
                           key={font.value}
                           onClick={() => setFontFamily(font.value)}
@@ -1447,9 +1441,15 @@ function DaemonSection() {
     connected: boolean
     sessionCount: number
     appVersion: string
+    currentElectronVersion: string | null
+    currentNodeAbi: string
+    restartRecommended: boolean
+    restartReason: string | null
     daemonVersion: {
       protocolVersion: number
       appVersion: string | null
+      electronVersion: string | null
+      nodeAbi: string | null
       pid: number
       uptime: number
     } | null
@@ -1457,6 +1457,7 @@ function DaemonSection() {
   const [sessions, setSessions] = useState<DaemonSession[]>([])
   const [loading, setLoading] = useState(false)
   const [restarting, setRestarting] = useState(false)
+  const [confirmRestart, setConfirmRestart] = useState(false)
 
   const refresh = useCallback(() => {
     window.cells.daemon.getStatus().then(setStatus)
@@ -1473,6 +1474,7 @@ function DaemonSection() {
       await window.cells.daemon.restart()
     } finally {
       setRestarting(false)
+      setConfirmRestart(false)
       refresh()
     }
   }
@@ -1492,11 +1494,7 @@ function DaemonSection() {
     refresh()
   }
 
-  const needsUpdate =
-    status?.connected &&
-    status.daemonVersion?.appVersion &&
-    status.appVersion &&
-    status.daemonVersion.appVersion !== status.appVersion
+  const needsUpdate = status?.restartRecommended ?? false
 
   return (
     <div className="space-y-3.5">
@@ -1535,7 +1533,7 @@ function DaemonSection() {
                 </span>
               ) : needsUpdate ? (
                 <button
-                  onClick={handleRestart}
+                  onClick={() => setConfirmRestart(true)}
                   className="flex items-center gap-1 text-[10px] text-primary transition-colors hover:text-primary/80"
                 >
                   <RefreshCw className="h-2.5 w-2.5" />
@@ -1543,7 +1541,7 @@ function DaemonSection() {
                 </button>
               ) : (
                 <button
-                  onClick={handleRestart}
+                  onClick={() => setConfirmRestart(true)}
                   className="flex items-center gap-1 text-[10px] text-muted-foreground/60 transition-colors hover:text-foreground"
                 >
                   <RefreshCw className="h-2.5 w-2.5" />
@@ -1564,8 +1562,22 @@ function DaemonSection() {
                 <p className="text-[10px] text-muted-foreground/40">
                   Daemon v{status.daemonVersion.appVersion}
                   {needsUpdate ? (
-                    <span className="text-amber-400/70"> (app is v{status.appVersion})</span>
+                    <span className="text-amber-400/70">
+                      {' '}
+                      (ABI {status.daemonVersion.nodeAbi ?? '?'} does not match current ABI{' '}
+                      {status.currentNodeAbi})
+                    </span>
+                  ) : status.daemonVersion.appVersion !== status.appVersion ? (
+                    <span className="text-muted-foreground/35">
+                      {' '}
+                      (app is v{status.appVersion}, restart not required)
+                    </span>
                   ) : null}
+                </p>
+              ) : null}
+              {status.restartRecommended && status.restartReason === 'node-abi-mismatch' ? (
+                <p className="text-[10px] text-amber-400/70">
+                  Restart recommended because the daemon is still running on an older runtime ABI.
                 </p>
               ) : null}
             </div>
@@ -1575,6 +1587,35 @@ function DaemonSection() {
                 ? 'Daemon is not available in this build. Using direct PTY mode.'
                 : 'Daemon is not running. Sessions will not persist across restarts.'}
             </p>
+          ) : null}
+          {confirmRestart && status?.connected ? (
+            <div className="mt-2 rounded-md border border-destructive/15 bg-destructive/5 px-2.5 py-2">
+              <div className="text-[11px] text-foreground">
+                {needsUpdate ? 'Update PTY daemon?' : 'Restart PTY daemon?'}
+              </div>
+              <div className="mt-1 text-[10px] leading-4 text-muted-foreground/45">
+                This will immediately kill {status.sessionCount} daemon-managed process
+                {status.sessionCount === 1 ? '' : 'es'}. Their terminal windows and visible
+                scrollback stay in place, but every running shell or agent inside those windows will
+                stop and need to be relaunched.
+              </div>
+              <div className="mt-2 flex justify-end gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setConfirmRestart(false)}
+                  className="rounded-md border border-border/20 bg-background/40 px-2.5 py-1 text-[10px] text-muted-foreground/65 transition-colors hover:bg-muted/40 hover:text-foreground"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleRestart}
+                  className="rounded-md border border-destructive/20 bg-destructive/10 px-2.5 py-1 text-[10px] text-destructive transition-colors hover:bg-destructive/15"
+                >
+                  {needsUpdate ? 'Update and kill processes' : 'Restart and kill processes'}
+                </button>
+              </div>
+            </div>
           ) : null}
         </div>
       </SettingsGroup>

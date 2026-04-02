@@ -34,12 +34,14 @@ import {
   DEFAULT_TERMINAL_SCROLLBACK_LINES,
   normalizeTerminalScrollbackLines,
 } from './terminal-scrollback'
+import { formatTerminalExitMessage } from './terminal-exit'
 import {
   DEFAULT_TERMINAL_CURSOR_SETTINGS,
   normalizeTerminalCursorSettings,
   normalizeTerminalCursorStyle,
   type TerminalCursorStyle,
 } from './terminal-cursor'
+import { DEFAULT_TERMINAL_FONT_FAMILY, normalizeTerminalFontFamily } from './terminal-fonts'
 
 interface StoreState {
   // Project management
@@ -136,6 +138,8 @@ interface StoreState {
   setTerminalScrollbackLines(lines: number): void
   setTerminalCursorStyle(style: TerminalCursorStyle): void
   setTerminalCursorBlink(enabled: boolean): void
+  markTerminalExited(id: string, message?: string | null, restoredOutput?: string | null): void
+  restartTerminalSession(id: string): void
   setWindowOpacity(opacity: number): void
   setUseTransparentWindow(enabled: boolean): void
   setDimWhenUnfocused(enabled: boolean): void
@@ -260,7 +264,6 @@ const pendingCommands = new Map<string, string>()
 const pendingWorktreePaths = new Map<string, string>()
 const TERMINAL_GAP = 60
 const DEFAULT_CANVAS: CanvasTransform = { x: 0, y: 0, scale: 1 }
-const DEFAULT_FONT_FAMILY = '"GeistMono NF", "Geist Mono", monospace'
 const DEFAULT_SEARCH_ENGINE = 'https://www.google.com/search?q=%s'
 const DEFAULT_HOME_PAGE = ''
 const DEFAULT_CLOSE_UNDO_TIMEOUT_MS = 15000
@@ -371,6 +374,8 @@ function normalizeTerminals(terminals: TerminalNode[]) {
     // processRunning is runtime-only (detected by polling the process tree).
     // Always reset on restore since the process info is stale.
     processRunning: false,
+    exited: false,
+    exitStatusMessage: null,
   }))
 }
 
@@ -467,8 +472,13 @@ function snapshotActiveProject(state: StoreState): Project[] {
 }
 
 /** Load a project's state into the working fields */
-function projectToWorkingState(project: Project) {
-  const terminals = normalizeTerminals(project.terminals ?? [])
+function projectToWorkingState(project: Project, preserveRuntime = false) {
+  const terminals = preserveRuntime
+    ? (project.terminals ?? []).map((terminal, index) => ({
+        ...terminal,
+        zIndex: typeof terminal.zIndex === 'number' ? terminal.zIndex : index + 1,
+      }))
+    : normalizeTerminals(project.terminals ?? [])
   const browsers = project.browsers ?? []
   return {
     terminals,
@@ -548,7 +558,7 @@ export const useStore = create<StoreState>((set, get) => ({
   isGitRepo: false,
   terminalTheme: DEFAULT_THEME,
   fontSize: 13,
-  fontFamily: DEFAULT_FONT_FAMILY,
+  fontFamily: DEFAULT_TERMINAL_FONT_FAMILY,
   terminalScrollbackLines: DEFAULT_TERMINAL_SCROLLBACK_LINES,
   terminalCursorStyle: DEFAULT_TERMINAL_CURSOR_SETTINGS.terminalCursorStyle,
   terminalCursorBlink: DEFAULT_TERMINAL_CURSOR_SETTINGS.terminalCursorBlink,
@@ -574,7 +584,7 @@ export const useStore = create<StoreState>((set, get) => ({
     get().persist()
   },
   setFontFamily(family) {
-    set({ fontFamily: family })
+    set({ fontFamily: normalizeTerminalFontFamily(family) })
     get().persist()
   },
   setTerminalScrollbackLines(lines) {
@@ -595,6 +605,72 @@ export const useStore = create<StoreState>((set, get) => ({
     if (enabled === get().terminalCursorBlink) return
     set({ terminalCursorBlink: enabled })
     get().persist()
+  },
+  markTerminalExited(id, message, restoredOutput) {
+    const snapshot = restoredOutput ?? getTerminalRestoreSnapshot(id)
+    set((s) => ({
+      terminals: s.terminals.map((t) =>
+        t.id === id
+          ? {
+              ...t,
+              processRunning: false,
+              agentStatus: t.agent ? 'done' : t.agentStatus,
+              exited: true,
+              exitStatusMessage: message ?? 'Process exited',
+              restoredOutput: snapshot ?? t.restoredOutput,
+            }
+          : t,
+      ),
+      projects: s.projects.map((project) => ({
+        ...project,
+        terminals: (project.terminals ?? []).map((t) =>
+          t.id === id
+            ? {
+                ...t,
+                processRunning: false,
+                agentStatus: t.agent ? 'done' : t.agentStatus,
+                exited: true,
+                exitStatusMessage: message ?? 'Process exited',
+                restoredOutput: snapshot ?? t.restoredOutput,
+              }
+            : t,
+        ),
+      })),
+    }))
+    debouncedPersist(() => get().persist())
+  },
+  restartTerminalSession(id) {
+    const snapshot = getTerminalRestoreSnapshot(id)
+    set((s) => ({
+      terminals: s.terminals.map((t) =>
+        t.id === id
+          ? {
+              ...t,
+              exited: false,
+              exitStatusMessage: null,
+              processRunning: false,
+              restoredOutput: snapshot ?? t.restoredOutput,
+            }
+          : t,
+      ),
+      projects: s.projects.map((project) => ({
+        ...project,
+        terminals: (project.terminals ?? []).map((t) =>
+          t.id === id
+            ? {
+                ...t,
+                exited: false,
+                exitStatusMessage: null,
+                processRunning: false,
+                restoredOutput: snapshot ?? t.restoredOutput,
+              }
+            : t,
+        ),
+      })),
+    }))
+    reloadTerminal(id)
+    get().focusTerminal(id)
+    debouncedPersist(() => get().persist())
   },
   setWindowOpacity(opacity) {
     set({
@@ -662,6 +738,17 @@ export const useStore = create<StoreState>((set, get) => ({
       })
     }
 
+    window.cells.terminal.onExit((termId, details) => {
+      const state = get()
+      const exists =
+        state.terminals.some((terminal) => terminal.id === termId) ||
+        state.projects.some((project) =>
+          (project.terminals ?? []).some((terminal) => terminal.id === termId),
+        )
+      if (!exists) return
+      state.markTerminalExited(termId, formatTerminalExitMessage(details), details?.history ?? null)
+    })
+
     const saved = await window.cells.state.load()
 
     if (saved && (saved as any).version === 2) {
@@ -681,7 +768,7 @@ export const useStore = create<StoreState>((set, get) => ({
       const globalSettings = {
         terminalTheme: ps.terminalTheme || DEFAULT_THEME,
         fontSize: ps.fontSize || 13,
-        fontFamily: ps.fontFamily || DEFAULT_FONT_FAMILY,
+        fontFamily: normalizeTerminalFontFamily(ps.fontFamily),
         terminalScrollbackLines: normalizeTerminalScrollbackLines(ps.terminalScrollbackLines),
         ...normalizeTerminalCursorSettings({
           terminalCursorStyle: ps.terminalCursorStyle,
@@ -775,7 +862,7 @@ export const useStore = create<StoreState>((set, get) => ({
         ...projectToWorkingState(project),
         terminalTheme: (saved as any).terminalTheme || DEFAULT_THEME,
         fontSize: (saved as any).fontSize || 13,
-        fontFamily: (saved as any).fontFamily || DEFAULT_FONT_FAMILY,
+        fontFamily: normalizeTerminalFontFamily((saved as any).fontFamily),
         terminalScrollbackLines: normalizeTerminalScrollbackLines(
           (saved as any).terminalScrollbackLines,
         ),
@@ -996,7 +1083,7 @@ export const useStore = create<StoreState>((set, get) => ({
 
     const updated = projects.map((p) => (p.id === id ? { ...p, lastOpenedAt: Date.now() } : p))
 
-    const workingState = projectToWorkingState(target)
+    const workingState = projectToWorkingState(target, true)
     set({
       projects: updated,
       activeProjectId: id,
@@ -1065,7 +1152,7 @@ export const useStore = create<StoreState>((set, get) => ({
           linkRules: projectLinkSettings.linkRules,
           pendingClosedWindows,
           pendingCloseDialog,
-          ...projectToWorkingState(next),
+          ...projectToWorkingState(next, true),
         })
       } else {
         set({
@@ -1382,7 +1469,12 @@ export const useStore = create<StoreState>((set, get) => ({
   reloadFocused() {
     const { focusedTerminalId, focusedBrowserId } = get()
     if (focusedTerminalId) {
-      reloadTerminal(focusedTerminalId)
+      const terminal = get().terminals.find((candidate) => candidate.id === focusedTerminalId)
+      if (terminal?.exited) {
+        get().restartTerminalSession(focusedTerminalId)
+      } else {
+        reloadTerminal(focusedTerminalId)
+      }
     } else if (focusedBrowserId) {
       window.cells.browser.reload(focusedBrowserId)
     }

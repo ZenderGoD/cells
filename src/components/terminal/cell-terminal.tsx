@@ -755,8 +755,15 @@ export function CellTerminal({
   const scrollbackLines = useStore((s) => s.terminalScrollbackLines)
   const cursorStyle = useStore((s) => s.terminalCursorStyle)
   const cursorBlink = useStore((s) => s.terminalCursorBlink)
+  const terminalExited = useStore(
+    (s) => s.terminals.find((terminal) => terminal.id === termId)?.exited === true,
+  )
+  const terminalExitStatusMessage = useStore(
+    (s) => s.terminals.find((terminal) => terminal.id === termId)?.exitStatusMessage ?? null,
+  )
   const overlayOpen = useStore((s) => s.overlayOpen)
   const focusTerminal = useStore((s) => s.focusTerminal)
+  const restartTerminalSession = useStore((s) => s.restartTerminalSession)
   const terminalFindOpen = useStore((s) => s.terminalFindOpen)
   const terminalFindQuery = useStore((s) => s.terminalFindQuery)
   const themeNameRef = useRef(themeName)
@@ -871,6 +878,10 @@ export function CellTerminal({
     void navigator.clipboard.writeText(selection).catch(() => {})
     return true
   }, [getLiveTerminal])
+
+  const relaunchTerminal = useCallback(() => {
+    restartTerminalSession(termId)
+  }, [restartTerminalSession, termId])
 
   const refreshTerminalSearch = useCallback(() => {
     const term = getLiveTerminal()
@@ -1490,11 +1501,6 @@ export function CellTerminal({
             }
           }
         }),
-        window.cells.terminal.onExit((id) => {
-          if (id === termId) {
-            useStore.getState().removeTerminal(termId)
-          }
-        }),
       )
 
       // Handle paste events from any source (Raycast, right-click, etc.)
@@ -1792,6 +1798,11 @@ export function CellTerminal({
     syncTerminalState()
   }, [isFocused, isVisible, syncTerminalState])
 
+  useEffect(() => {
+    if (!terminalExited) return
+    getLiveTerminal()?.blur()
+  }, [getLiveTerminal, terminalExited])
+
   // Re-focus the terminal when overlays (command palette, etc.) close
   useEffect(() => {
     const handler = () => {
@@ -1853,6 +1864,14 @@ export function CellTerminal({
     <div
       ref={containerRef}
       className="cell-terminal relative w-full h-full"
+      onKeyDownCapture={(event) => {
+        if (!terminalExited) return
+        if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return
+        if (event.key !== 'Enter') return
+        event.preventDefault()
+        event.stopPropagation()
+        relaunchTerminal()
+      }}
       onPasteCapture={(event) => {
         if (overlayOpen) return
         const text = event.clipboardData.getData('text')
@@ -1909,6 +1928,34 @@ export function CellTerminal({
             'border-terminal-active/80 bg-terminal-active/10 shadow-[inset_0_0_0_1px_color-mix(in_oklch,var(--color-terminal-active)_45%,transparent)]',
           )}
         />
+      )}
+      {terminalExited && (
+        <>
+          <div
+            className="absolute inset-0 z-[25]"
+            onMouseDown={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+            }}
+          />
+          <div className="absolute inset-x-3 bottom-3 z-30">
+            <div className="flex items-center gap-3 rounded-lg border border-amber-400/15 bg-background/92 px-3 py-2 shadow-lg backdrop-blur">
+              <div className="min-w-0 flex-1">
+                <div className="text-[11px] text-foreground">{terminalExitStatusMessage}</div>
+                <div className="text-[10px] text-muted-foreground/40">
+                  History is preserved. Relaunch to start a fresh shell in this window.
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={relaunchTerminal}
+                className="shrink-0 rounded-md border border-border/20 bg-background/60 px-2.5 py-1 text-[10px] text-muted-foreground/70 transition-colors hover:bg-muted/40 hover:text-foreground"
+              >
+                Relaunch shell
+              </button>
+            </div>
+          </div>
+        </>
       )}
     </div>
   )

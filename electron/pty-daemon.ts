@@ -334,6 +334,8 @@ function handleMessage(socket: net.Socket, msg: any) {
       sendResponse(socket, id, true, {
         protocolVersion: DAEMON_PROTOCOL_VERSION,
         appVersion: process.env.CELLS_APP_VERSION ?? null,
+        electronVersion: process.versions.electron ?? null,
+        nodeAbi: process.versions.modules ?? null,
         pid: process.pid,
         uptime: Math.floor(process.uptime()),
       })

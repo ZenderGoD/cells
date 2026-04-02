@@ -7,6 +7,18 @@ export interface CanvasTransform {
 }
 
 export type AgentStatus = 'active' | 'unread' | 'done' | null
+export type TerminalExitReason =
+  | 'process-exit'
+  | 'killed'
+  | 'daemon-restart'
+  | 'daemon-update'
+  | 'daemon-disconnect'
+
+export interface TerminalExitDetails {
+  reason?: TerminalExitReason
+  message?: string | null
+  history?: string | null
+}
 
 export interface TerminalNode {
   id: string
@@ -21,6 +33,10 @@ export interface TerminalNode {
   agent?: 'claude' | 'codex' | null
   agentStatus?: AgentStatus
   processRunning?: boolean
+  /** Runtime-only flag for a terminal window whose PTY exited but whose scrollback stays visible. */
+  exited?: boolean
+  /** Runtime-only status line shown when a terminal process is gone. */
+  exitStatusMessage?: string | null
   /** Plain-text terminal snapshot used to restore visible history after reload/restart. */
   restoredOutput?: string
 }
@@ -179,7 +195,7 @@ export interface CellsAPI {
       totalBytes: number
     }>
     onData(callback: (termId: string, data: string) => void): () => void
-    onExit(callback: (termId: string) => void): () => void
+    onExit(callback: (termId: string, details?: TerminalExitDetails) => void): () => void
   }
   git: {
     isRepo(cwd: string): Promise<boolean>
@@ -202,9 +218,15 @@ export interface CellsAPI {
       connected: boolean
       sessionCount: number
       appVersion: string
+      currentElectronVersion: string | null
+      currentNodeAbi: string
+      restartRecommended: boolean
+      restartReason: string | null
       daemonVersion: {
         protocolVersion: number
         appVersion: string | null
+        electronVersion: string | null
+        nodeAbi: string | null
         pid: number
         uptime: number
       } | null

@@ -141,6 +141,8 @@ export class PtyDaemonClient {
   async getDaemonVersion(): Promise<{
     protocolVersion: number
     appVersion: string | null
+    electronVersion: string | null
+    nodeAbi: string | null
     pid: number
     uptime: number
   } | null> {

@@ -45,6 +45,7 @@ import {
   clearBrowserConsoleLogs,
   clearTerminalOutputRing,
 } from './mcp-bridge'
+import type { TerminalExitDetails } from '../src/types'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -150,6 +151,7 @@ const ptyBuffers = new Map<string, string>()
 const fallbackHistories = new Map<string, TerminalHistoryBuffer>()
 const historySnapshots = new Map<string, { buffer: string; termId: string }>()
 const subscribedTerminals = new Set<string>()
+const pendingTerminalExitDetails = new Map<string, TerminalExitDetails>()
 const pinnedWindows = new Map<string, BrowserWindow>()
 
 const STATE_DIR = path.join(app.getPath('home'), '.cells')
@@ -405,15 +407,63 @@ function forwardTerminalData(termId: string, data: string) {
   } catch {}
 }
 
-function forwardTerminalExit(termId: string) {
+function forwardTerminalExit(termId: string, details?: TerminalExitDetails) {
+  const exitDetails = details ?? pendingTerminalExitDetails.get(termId)
+  if (!details) {
+    pendingTerminalExitDetails.delete(termId)
+  }
   subscribedTerminals.delete(termId)
   clearTerminalOutputRing(termId)
   clearHistorySnapshotsForTerm(termId)
   clearFallbackHistory(termId)
   try {
-    const target = getWindowForTerminal(termId)
-    target?.webContents.send('terminal:exit', termId)
+    const targets = new Set<BrowserWindow>()
+    const pinned = pinnedWindows.get(termId)
+    if (pinned && !pinned.isDestroyed()) {
+      targets.add(pinned)
+    }
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      targets.add(mainWindow)
+    }
+    for (const target of targets) {
+      target.webContents.send('terminal:exit', termId, exitDetails)
+    }
   } catch {}
+}
+
+async function captureTerminalExitDetails(
+  termId: string,
+  reason: NonNullable<TerminalExitDetails['reason']>,
+): Promise<TerminalExitDetails> {
+  const history = await readTerminalHistory(termId).catch(() => '')
+  return {
+    reason,
+    history: history || null,
+  }
+}
+
+async function primeTerminalExitDetails(
+  termIds: string[],
+  reason: NonNullable<TerminalExitDetails['reason']>,
+) {
+  await Promise.all(
+    termIds.map(async (termId) => {
+      pendingTerminalExitDetails.set(termId, await captureTerminalExitDetails(termId, reason))
+    }),
+  )
+}
+
+async function handleDaemonTerminalExit(termId: string) {
+  if (pendingTerminalExitDetails.has(termId)) {
+    forwardTerminalExit(termId)
+    return
+  }
+
+  try {
+    forwardTerminalExit(termId, await captureTerminalExitDetails(termId, 'process-exit'))
+  } catch {
+    forwardTerminalExit(termId, { reason: 'process-exit' })
+  }
 }
 
 // --- Fallback (direct PTY) helpers ---
@@ -447,7 +497,7 @@ function setupFallbackPtyHandlers(termId: string, p: ReturnType<PtyManager['spaw
     ptyBuffers.delete(termId)
     clearFallbackHistory(termId)
     clearHistorySnapshotsForTerm(termId)
-    forwardTerminalExit(termId)
+    forwardTerminalExit(termId, { reason: 'process-exit' })
   })
 }
 
@@ -1957,6 +2007,8 @@ ipcMain.handle('daemon:get-status', async () => {
   let daemonVersion: {
     protocolVersion: number
     appVersion: string | null
+    electronVersion: string | null
+    nodeAbi: string | null
     pid: number
     uptime: number
   } | null = null
@@ -1970,11 +2022,21 @@ ipcMain.handle('daemon:get-status', async () => {
         .catch(() => 0),
     ])
   }
+  const currentElectronVersion = process.versions.electron ?? null
+  const currentNodeAbi = process.versions.modules
+  const restartRecommended =
+    Boolean(connected) &&
+    Boolean(daemonVersion?.nodeAbi) &&
+    daemonVersion!.nodeAbi !== currentNodeAbi
   return {
     enabled: useDaemon,
     connected,
     sessionCount,
     appVersion: app.getVersion(),
+    currentElectronVersion,
+    currentNodeAbi,
+    restartRecommended,
+    restartReason: restartRecommended ? 'node-abi-mismatch' : null,
     daemonVersion,
   }
 })
@@ -2001,29 +2063,40 @@ ipcMain.handle('daemon:list-sessions', async () => {
 
 ipcMain.handle('daemon:kill-session', async (_event, termId: string) => {
   if (!useDaemon || !daemonClient?.isConnected()) return
+  pendingTerminalExitDetails.set(termId, await captureTerminalExitDetails(termId, 'killed'))
   await daemonClient.kill(termId).catch(() => {})
-  subscribedTerminals.delete(termId)
-  forwardTerminalExit(termId)
+  if (pendingTerminalExitDetails.has(termId)) {
+    forwardTerminalExit(termId)
+  }
 })
 
 ipcMain.handle('daemon:kill-all', async () => {
   if (!useDaemon || !daemonClient?.isConnected()) return
   try {
     const termIds = await daemonClient.list()
+    await primeTerminalExitDetails(termIds, 'killed')
     await Promise.all(termIds.map((id) => daemonClient!.kill(id).catch(() => {})))
     for (const termId of termIds) {
-      subscribedTerminals.delete(termId)
-      forwardTerminalExit(termId)
+      if (pendingTerminalExitDetails.has(termId)) {
+        forwardTerminalExit(termId)
+      }
     }
   } catch {}
 })
 
 ipcMain.handle('daemon:restart', async () => {
+  const daemonTermIds = daemonClient?.isConnected() ? await daemonClient.list().catch(() => []) : []
   if (daemonClient?.isConnected()) {
+    await primeTerminalExitDetails(daemonTermIds, 'daemon-restart')
     try {
       await daemonClient.shutdown()
     } catch {}
     daemonClient.disconnect()
+    for (const termId of daemonTermIds) {
+      if (pendingTerminalExitDetails.has(termId)) {
+        forwardTerminalExit(termId)
+      }
+    }
   }
   const daemonScript = path.join(__dirname, 'pty-daemon.js')
   useDaemon = await ensureDaemon(STATE_DIR, app.getVersion(), process.execPath, daemonScript)
@@ -2031,15 +2104,19 @@ ipcMain.handle('daemon:restart', async () => {
     daemonClient = new PtyDaemonClient()
     await daemonClient.connect(path.join(STATE_DIR, 'pty-daemon.sock'))
     daemonClient.onData(forwardTerminalData)
-    daemonClient.onExit(forwardTerminalExit)
+    daemonClient.onExit((termId) => {
+      void handleDaemonTerminalExit(termId)
+    })
     daemonClient.onDisconnect(() => {
       console.warn('PTY daemon disconnected, falling back to direct PTY mode')
       useDaemon = false
       if (!fallbackPtys) fallbackPtys = new PtyManager()
       for (const termId of subscribedTerminals) {
-        forwardTerminalExit(termId)
+        forwardTerminalExit(termId, { reason: 'daemon-disconnect' })
       }
     })
+  } else if (!fallbackPtys) {
+    fallbackPtys = new PtyManager()
   }
   return useDaemon
 })
@@ -2057,7 +2134,9 @@ app.whenReady().then(async () => {
       daemonClient = new PtyDaemonClient()
       await daemonClient.connect(path.join(STATE_DIR, 'pty-daemon.sock'))
       daemonClient.onData(forwardTerminalData)
-      daemonClient.onExit(forwardTerminalExit)
+      daemonClient.onExit((termId) => {
+        void handleDaemonTerminalExit(termId)
+      })
       daemonClient.onDisconnect(() => {
         // Daemon crashed — fall back to direct PTY mode
         console.warn('PTY daemon disconnected, falling back to direct PTY mode')
@@ -2065,7 +2144,7 @@ app.whenReady().then(async () => {
         if (!fallbackPtys) fallbackPtys = new PtyManager()
         // Notify renderer that all daemon-managed terminals are gone
         for (const termId of subscribedTerminals) {
-          forwardTerminalExit(termId)
+          forwardTerminalExit(termId, { reason: 'daemon-disconnect' })
         }
       })
     } else {
