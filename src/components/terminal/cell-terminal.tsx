@@ -308,6 +308,14 @@ function shouldPreferSnapshotRestoreForTerminal(terminal: {
   return inferred === 'codex'
 }
 
+function shouldAvoidSyntheticResizeForTerminal(terminal: {
+  agent?: AgentName | null
+  title?: string | null
+  customTitle?: string | null
+}) {
+  return shouldPreferSnapshotRestoreForTerminal(terminal)
+}
+
 interface SearchMatch {
   absoluteRow: number
   length: number
@@ -1372,6 +1380,12 @@ export function CellTerminal({
       // Check cache first — reattach if exists
       const cached = terminalCache.get(termId)
       if (cached) {
+        const terminalState = useStore
+          .getState()
+          .terminals.find((terminal) => terminal.id === termId)
+        const avoidSyntheticResize = Boolean(
+          terminalState && shouldAvoidSyntheticResizeForTerminal(terminalState),
+        )
         patchTerminalViewportPreservation(cached.term)
         patchTerminalFullRenderScheduler(cached.term)
         // Move the existing DOM back into our container
@@ -1414,7 +1428,7 @@ export function CellTerminal({
           }
         })
 
-        if (result?.reattached && dims) {
+        if (result?.reattached && dims && !avoidSyntheticResize) {
           bumpPtySize(dims.cols, dims.rows)
         }
 
@@ -1726,10 +1740,12 @@ export function CellTerminal({
           termCanvas.style.transform = ''
         }
 
-        // ghostty-web's dirty-row tracking can miss lines that shifted due to
-        // scrollback growth. Ask for a full repaint only when scrollback moved,
-        // then let the render loop coalesce and throttle the actual redraws.
-        if (scrollbackDelta > 0) {
+        // ghostty-web's dirty-row tracking is not reliable enough for complex
+        // cursor-addressed redraws such as TUIs and terminal QR renderers. We
+        // still avoid the old "force immediately on every flush" behavior:
+        // instead, mark each flushed write for a full repaint and let the
+        // patched renderer coalesce/throttle the actual work.
+        if (shouldRenderRef.current && (chunk.length > 0 || scrollbackDelta > 0)) {
           requestTerminalFullRender(term)
         }
 
@@ -1959,6 +1975,9 @@ export function CellTerminal({
       const worktreeCwd = consumePendingWorktreePath(termId)
       const projectPath = worktreeCwd ?? useStore.getState().getActiveProjectPath()
       const terminalState = useStore.getState().terminals.find((terminal) => terminal.id === termId)
+      const avoidSyntheticResize = Boolean(
+        terminalState && shouldAvoidSyntheticResizeForTerminal(terminalState),
+      )
       const restoredOutput = terminalState?.restoredOutput ?? ''
       const preferSnapshotRestore =
         restoredOutput.length > 0 &&
@@ -2004,7 +2023,7 @@ export function CellTerminal({
 
       scheduleTerminalSearchRefresh(0)
 
-      if (result?.reattached && dims && !preferSnapshotRestore) {
+      if (result?.reattached && dims && !avoidSyntheticResize) {
         bumpPtySize(dims.cols, dims.rows)
       }
 
