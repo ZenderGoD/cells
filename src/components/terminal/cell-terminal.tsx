@@ -101,6 +101,38 @@ function setTerminalRenderLoopEnabled(term: Terminal | null, enabled: boolean) {
   startRenderLoop.call(term)
 }
 
+function patchTerminalViewportPreservation(term: Terminal) {
+  const marker = Reflect.get(term, '__cellsViewportPatched')
+  if (marker) return
+  Reflect.set(term, '__cellsViewportPatched', true)
+
+  const originalWriteInternal = Reflect.get(term, 'writeInternal')
+  if (typeof originalWriteInternal !== 'function') return
+
+  Reflect.set(term, '__cellsOriginalWriteInternal', originalWriteInternal)
+  Reflect.set(
+    term,
+    'writeInternal',
+    function patchedWriteInternal(
+      this: Terminal,
+      data: string | Uint8Array,
+      callback?: () => void,
+    ) {
+      if (!Reflect.get(this, '__cellsPreserveViewportOnWrite')) {
+        return originalWriteInternal.call(this, data, callback)
+      }
+
+      const originalScrollToBottom = Reflect.get(this, 'scrollToBottom')
+      Reflect.set(this, 'scrollToBottom', () => {})
+      try {
+        return originalWriteInternal.call(this, data, callback)
+      } finally {
+        Reflect.set(this, 'scrollToBottom', originalScrollToBottom)
+      }
+    },
+  )
+}
+
 function buildTheme(themeName: string) {
   const theme = getTerminalTheme(themeName)
   return {
@@ -1270,6 +1302,7 @@ export function CellTerminal({
       // Check cache first — reattach if exists
       const cached = terminalCache.get(termId)
       if (cached) {
+        patchTerminalViewportPreservation(cached.term)
         // Move the existing DOM back into our container
         cached.wrapper.style.backgroundColor = buildTheme(themeNameRef.current).background
         container.appendChild(cached.wrapper)
@@ -1337,6 +1370,7 @@ export function CellTerminal({
         scrollback: scrollbackLinesRef.current || DEFAULT_TERMINAL_SCROLLBACK_LINES,
         smoothScrollDuration: GHOSTTY_SMOOTH_SCROLL_DURATION_MS,
       })
+      patchTerminalViewportPreservation(term)
 
       if (cancelled) {
         term.dispose()
@@ -1601,7 +1635,9 @@ export function CellTerminal({
         const savedTargetY = (term as any).targetViewportY ?? term.viewportY
         const savedLen = scrolledUp ? term.getScrollbackLength() : 0
 
-        term.write(chunk) // internally calls scrollToBottom → viewportY = 0
+        Reflect.set(term, '__cellsPreserveViewportOnWrite', scrolledUp)
+        term.write(chunk)
+        Reflect.set(term, '__cellsPreserveViewportOnWrite', false)
         perfBytes += chunk.length
         perfWriteCalls += 1
 

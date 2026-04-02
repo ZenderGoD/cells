@@ -36,7 +36,11 @@ import {
 } from '@/lib/terminal-scrollback'
 import { TERMINAL_CURSOR_STYLE_OPTIONS } from '@/lib/terminal-cursor'
 import { TERMINAL_FONT_FAMILIES } from '@/lib/terminal-fonts'
-import { terminalThemes } from '@/lib/terminal-themes'
+import {
+  DARK_TERMINAL_THEME_KEYS,
+  LIGHT_TERMINAL_THEME_KEYS,
+  terminalThemes,
+} from '@/lib/terminal-themes'
 import { cn } from '@/lib/utils'
 
 import { SETTINGS_SHEET_CLASSNAMES } from './settings-layout'
@@ -73,6 +77,11 @@ const SETTINGS_SECTIONS: Array<{ id: SettingsSectionId; label: string }> = [
 ]
 
 const CURRENT_PROJECT_VALUE = '__current-project__'
+
+const TERMINAL_THEME_SCHEME_TABS = [
+  { value: 'dark' as const, label: 'Dark' },
+  { value: 'light' as const, label: 'Light' },
+]
 
 const TERMINAL_LINK_TARGET_OPTIONS: SettingsSelectOption[] = [
   { value: 'system', label: 'System Browser', hint: 'Default' },
@@ -164,6 +173,14 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
     () => projects.find((project) => project.id === activeProjectId) ?? null,
     [activeProjectId, projects],
   )
+  const [themeSchemeTab, setThemeSchemeTab] = useState<'dark' | 'light'>(
+    terminalThemes[terminalTheme]?.scheme ?? 'dark',
+  )
+  const visibleThemeKeys = useMemo(
+    () => (themeSchemeTab === 'dark' ? DARK_TERMINAL_THEME_KEYS : LIGHT_TERMINAL_THEME_KEYS),
+    [themeSchemeTab],
+  )
+
   const projectOptions = useMemo<SettingsSelectOption[]>(
     () => [
       {
@@ -495,35 +512,60 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
               {activeSection === 'terminal' ? (
                 <div className="space-y-3.5">
                   <SettingsGroup title="Theme">
-                    <div className="grid grid-cols-3 gap-1">
-                      {Object.entries(terminalThemes).map(([key, theme]) => (
-                        <button
-                          key={key}
-                          onClick={() => setTerminalTheme(key)}
-                          className={cn(
-                            'flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] transition-colors',
-                            key === terminalTheme
-                              ? 'bg-accent text-foreground'
-                              : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
-                          )}
-                        >
-                          <div className="flex shrink-0 gap-0.5">
-                            <div
-                              className="h-1.5 w-1.5 rounded-full"
-                              style={{ background: theme.background }}
-                            />
-                            <div
-                              className="h-1.5 w-1.5 rounded-full"
-                              style={{ background: theme.green }}
-                            />
-                            <div
-                              className="h-1.5 w-1.5 rounded-full"
-                              style={{ background: theme.blue }}
-                            />
-                          </div>
-                          <span className="truncate">{theme.name}</span>
-                        </button>
-                      ))}
+                    <div className="space-y-2">
+                      <div className="inline-flex rounded-md border border-border/20 bg-background/40 p-0.5">
+                        {TERMINAL_THEME_SCHEME_TABS.map((tab) => (
+                          <button
+                            key={tab.value}
+                            onClick={() => setThemeSchemeTab(tab.value)}
+                            className={cn(
+                              'rounded-[6px] px-2.5 py-1 text-[10px] font-medium transition-colors',
+                              themeSchemeTab === tab.value
+                                ? 'bg-accent text-foreground'
+                                : 'text-muted-foreground/60 hover:text-foreground',
+                            )}
+                          >
+                            {tab.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-1">
+                        {visibleThemeKeys.map((key) => {
+                          const theme = terminalThemes[key]
+                          return (
+                            <button
+                              key={key}
+                              onClick={() => {
+                                setThemeSchemeTab(theme.scheme)
+                                setTerminalTheme(key)
+                              }}
+                              className={cn(
+                                'flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] transition-colors',
+                                key === terminalTheme
+                                  ? 'bg-accent text-foreground'
+                                  : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
+                              )}
+                            >
+                              <div className="flex shrink-0 gap-0.5">
+                                <div
+                                  className="h-1.5 w-1.5 rounded-full border border-black/5 dark:border-white/5"
+                                  style={{ background: theme.background }}
+                                />
+                                <div
+                                  className="h-1.5 w-1.5 rounded-full border border-black/5 dark:border-white/5"
+                                  style={{ background: theme.green }}
+                                />
+                                <div
+                                  className="h-1.5 w-1.5 rounded-full border border-black/5 dark:border-white/5"
+                                  style={{ background: theme.blue }}
+                                />
+                              </div>
+                              <span className="truncate">{theme.name}</span>
+                            </button>
+                          )
+                        })}
+                      </div>
                     </div>
                   </SettingsGroup>
 
