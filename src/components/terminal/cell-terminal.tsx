@@ -1069,6 +1069,13 @@ function forceTerminalRepaint(term: Terminal) {
   window.setTimeout(() => requestAnimationFrame(repaint), 32)
 }
 
+function forceFullRenderNow(term: Terminal) {
+  Reflect.set(term, '__cellsPendingFullRender', false)
+  if (!term.renderer || !term.wasmTerm) return false
+  term.renderer.render(term.wasmTerm, true, term.viewportY, term as ScrollbackProvider, 0)
+  return true
+}
+
 export function CellTerminal({
   termId,
   width,
@@ -1806,7 +1813,19 @@ export function CellTerminal({
         // instead, mark each flushed write for a full repaint and let the
         // patched renderer coalesce/throttle the actual work.
         if (shouldRenderRef.current && (chunk.length > 0 || scrollbackDelta > 0)) {
-          requestTerminalFullRender(term)
+          const activeAgent = detectedAgentRef.current ?? inferredAgentRef.current
+
+          // Claude's streaming output is line-oriented and visibly smears if we
+          // defer full repaints. Keep the pre-Codex behavior here: repaint on
+          // every flushed chunk. Codex and fullscreen TUIs stay on the throttled
+          // scheduler introduced for cursor-addressed redraw performance.
+          if (activeAgent === 'claude') {
+            if (forceFullRenderNow(term)) {
+              perfForcedFullRenders += 1
+            }
+          } else {
+            requestTerminalFullRender(term)
+          }
         }
 
         if (terminalFindOpen && focusStateRef.current.isFocused) {
