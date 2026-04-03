@@ -195,6 +195,7 @@ function ProjectTab({
 }
 
 export function StatusBar() {
+  const titleBarPosition = useStore((s) => s.titleBarPosition)
   const addTerminal = useStore((s) => s.addTerminal)
   const addBrowser = useStore((s) => s.addBrowser)
   const requestCloseWindow = useStore((s) => s.requestCloseWindow)
@@ -484,7 +485,10 @@ export function StatusBar() {
   return (
     <>
       <div
-        className="relative z-10 h-10 shrink-0 flex items-stretch overflow-visible border-t border-border/50 text-xs draggable-region transition-colors duration-300"
+        className={cn(
+          'relative z-10 h-10 shrink-0 flex items-stretch overflow-visible text-xs draggable-region transition-colors duration-300',
+          titleBarPosition === 'top' ? 'border-b border-border/50' : 'border-t border-border/50',
+        )}
         style={{
           backgroundColor: themeColor
             ? `color-mix(in oklch, ${themeColor} 15%, var(--background))`

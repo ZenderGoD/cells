@@ -6,6 +6,7 @@ export interface CanvasTransform {
   scale: number
 }
 
+export type TitleBarPosition = 'top' | 'bottom'
 export type AgentStatus = 'active' | 'unread' | 'done' | null
 export type TerminalExitReason =
   | 'process-exit'
@@ -111,6 +112,7 @@ export interface ProjectsState {
   terminalCursorBlink?: boolean
   windowOpacity?: number
   useTransparentWindow?: boolean
+  titleBarPosition?: TitleBarPosition
   snapOnFocus?: boolean
   tabSwitchMode?: 'recent' | 'chronological'
   projectSwitchMode?: 'recent' | 'chronological'

@@ -34,6 +34,7 @@ function MainApp() {
     projects,
     windowOpacity,
     useTransparentWindow,
+    titleBarPosition,
     dimWhenUnfocused,
     requestCloseWindow,
     restoreLastClosedWindow,
@@ -50,6 +51,7 @@ function MainApp() {
       projects: s.projects,
       windowOpacity: s.windowOpacity,
       useTransparentWindow: s.useTransparentWindow,
+      titleBarPosition: s.titleBarPosition,
       dimWhenUnfocused: s.dimWhenUnfocused,
       requestCloseWindow: s.requestCloseWindow,
       restoreLastClosedWindow: s.restoreLastClosedWindow,
@@ -306,8 +308,9 @@ function MainApp() {
       className="app-shell h-full flex flex-col ring-1 ring-terminal-active/30 rounded-lg overflow-hidden"
       style={shellStyle}
     >
+      {titleBarPosition === 'top' ? <StatusBar /> : null}
       <InfiniteCanvas />
-      <StatusBar />
+      {titleBarPosition === 'bottom' ? <StatusBar /> : null}
       <CommandPalette />
       <TerminalSwitcher />
       <ProjectSwitcher />

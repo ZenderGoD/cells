@@ -9,6 +9,7 @@ import type {
   ProjectsState,
   TerminalNode,
   TerminalProcessInfo,
+  TitleBarPosition,
 } from '../types'
 import { inferAgentFromCommand } from './agent-command'
 import { DEFAULT_THEME, DEFAULT_LIGHT_THEME } from './terminal-themes'
@@ -61,6 +62,7 @@ interface StoreState {
   terminalCursorBlink: boolean
   windowOpacity: number
   useTransparentWindow: boolean
+  titleBarPosition: TitleBarPosition
   dimWhenUnfocused: boolean
   hasSeenOnboardingGuide: boolean
   showOnboardingGuide: boolean
@@ -142,6 +144,7 @@ interface StoreState {
   restartTerminalSession(id: string): void
   setWindowOpacity(opacity: number): void
   setUseTransparentWindow(enabled: boolean): void
+  setTitleBarPosition(position: TitleBarPosition): void
   setDimWhenUnfocused(enabled: boolean): void
   openTerminalFind(): void
   closeTerminalFind(): void
@@ -268,6 +271,7 @@ const DEFAULT_SEARCH_ENGINE = 'https://www.google.com/search?q=%s'
 const DEFAULT_HOME_PAGE = ''
 const DEFAULT_CLOSE_UNDO_TIMEOUT_MS = 15000
 const DEFAULT_INPUT_PREFIXES: InputPrefix[] = [{ prefix: '!', target: 'terminal' }]
+const DEFAULT_TITLE_BAR_POSITION: TitleBarPosition = 'bottom'
 const SAVE_STATUS_RESET_MS = 1800
 
 /** Apply color scheme to the document and sync with system preferences. */
@@ -564,6 +568,7 @@ export const useStore = create<StoreState>((set, get) => ({
   terminalCursorBlink: DEFAULT_TERMINAL_CURSOR_SETTINGS.terminalCursorBlink,
   windowOpacity: DEFAULT_WINDOW_APPEARANCE.windowOpacity,
   useTransparentWindow: DEFAULT_WINDOW_APPEARANCE.useTransparentWindow,
+  titleBarPosition: DEFAULT_TITLE_BAR_POSITION,
   dimWhenUnfocused: true,
   hasSeenOnboardingGuide: false,
   showOnboardingGuide: false,
@@ -683,6 +688,11 @@ export const useStore = create<StoreState>((set, get) => ({
     showToast('Window transparency changes apply after restarting Cells', 'info')
     get().persist()
   },
+  setTitleBarPosition(position) {
+    if (position === get().titleBarPosition) return
+    set({ titleBarPosition: position })
+    get().persist()
+  },
   setDimWhenUnfocused(enabled) {
     set({ dimWhenUnfocused: enabled })
     get().persist()
@@ -778,6 +788,7 @@ export const useStore = create<StoreState>((set, get) => ({
           windowOpacity: ps.windowOpacity,
           useTransparentWindow: ps.useTransparentWindow,
         }),
+        titleBarPosition: ps.titleBarPosition ?? DEFAULT_TITLE_BAR_POSITION,
         snapOnFocus: ps.snapOnFocus ?? true,
         tabSwitchMode: ps.tabSwitchMode || 'chronological',
         projectSwitchMode: ps.projectSwitchMode || 'recent',
@@ -874,6 +885,7 @@ export const useStore = create<StoreState>((set, get) => ({
           windowOpacity: (saved as any).windowOpacity,
           useTransparentWindow: (saved as any).useTransparentWindow,
         }),
+        titleBarPosition: (saved as any).titleBarPosition ?? DEFAULT_TITLE_BAR_POSITION,
         initialized: true,
       })
       get().persist()
@@ -956,6 +968,7 @@ export const useStore = create<StoreState>((set, get) => ({
           terminalCursorBlink: freshState.terminalCursorBlink,
           windowOpacity: freshState.windowOpacity,
           useTransparentWindow: freshState.useTransparentWindow,
+          titleBarPosition: freshState.titleBarPosition,
           snapOnFocus: freshState.snapOnFocus,
           tabSwitchMode: freshState.tabSwitchMode,
           projectSwitchMode: freshState.projectSwitchMode,
@@ -1000,6 +1013,7 @@ export const useStore = create<StoreState>((set, get) => ({
           terminalCursorBlink: state.terminalCursorBlink,
           windowOpacity: state.windowOpacity,
           useTransparentWindow: state.useTransparentWindow,
+          titleBarPosition: state.titleBarPosition,
           snapOnFocus: state.snapOnFocus,
           tabSwitchMode: state.tabSwitchMode,
           projectSwitchMode: state.projectSwitchMode,

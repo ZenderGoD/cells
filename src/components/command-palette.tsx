@@ -128,7 +128,7 @@ function launchAgentAction(
   }
 
   // Create a worktree with a generated temp branch, then launch the agent in it
-  const tempBranch = `ghost-${Date.now().toString(36)}`
+  const tempBranch = `cells-${Date.now().toString(36)}`
   useStore
     .getState()
     .createWorktree(tempBranch)

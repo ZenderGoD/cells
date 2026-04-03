@@ -42,6 +42,7 @@ import {
   terminalThemes,
 } from '@/lib/terminal-themes'
 import { cn } from '@/lib/utils'
+import type { TitleBarPosition } from '@/types'
 
 import { SETTINGS_SHEET_CLASSNAMES } from './settings-layout'
 import { Dialog, DialogOverlay, DialogPortal } from '../ui/dialog'
@@ -114,6 +115,15 @@ const CLOSE_UNDO_TIMEOUT_OPTIONS: SettingsSelectOption[] = [
   { value: '60000', label: '1 minute', hint: 'Longest built-in' },
 ]
 
+const TITLE_BAR_POSITION_OPTIONS: Array<{
+  value: TitleBarPosition
+  label: string
+  hint: string
+}> = [
+  { value: 'bottom', label: 'Bottom', hint: 'Current layout' },
+  { value: 'top', label: 'Top', hint: 'macOS-style' },
+]
+
 export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const [activeSection, setActiveSection] = useState<SettingsSectionId>('appearance')
 
@@ -126,6 +136,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const terminalCursorBlink = useStore((s) => s.terminalCursorBlink)
   const windowOpacity = useStore((s) => s.windowOpacity)
   const useTransparentWindow = useStore((s) => s.useTransparentWindow)
+  const titleBarPosition = useStore((s) => s.titleBarPosition)
   const dimWhenUnfocused = useStore((s) => s.dimWhenUnfocused)
   const snapOnFocus = useStore((s) => s.snapOnFocus)
   const tabSwitchMode = useStore((s) => s.tabSwitchMode)
@@ -141,6 +152,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const setTerminalCursorBlink = useStore((s) => s.setTerminalCursorBlink)
   const setWindowOpacity = useStore((s) => s.setWindowOpacity)
   const setUseTransparentWindow = useStore((s) => s.setUseTransparentWindow)
+  const setTitleBarPosition = useStore((s) => s.setTitleBarPosition)
   const setDimWhenUnfocused = useStore((s) => s.setDimWhenUnfocused)
   const setSnapOnFocus = useStore((s) => s.setSnapOnFocus)
   const setTabSwitchMode = useStore((s) => s.setTabSwitchMode)
@@ -375,6 +387,31 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                           Restart now
                         </button>
                       </div>
+                    </div>
+                  </SettingsGroup>
+
+                  <SettingsGroup title="Title Bar">
+                    <div className="space-y-0.5">
+                      {TITLE_BAR_POSITION_OPTIONS.map((option) => (
+                        <button
+                          key={option.value}
+                          onClick={() => setTitleBarPosition(option.value)}
+                          className={cn(
+                            'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
+                            titleBarPosition === option.value
+                              ? 'bg-accent text-foreground'
+                              : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
+                          )}
+                        >
+                          <span className="flex-1">{option.label}</span>
+                          <span className="text-[10px] text-muted-foreground/40">
+                            {option.hint}
+                          </span>
+                          {titleBarPosition === option.value && (
+                            <Check className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
+                          )}
+                        </button>
+                      ))}
                     </div>
                   </SettingsGroup>
 
