@@ -1020,6 +1020,55 @@ function getFilePaths(dataTransfer: DataTransfer) {
   return parseUriList(dataTransfer.getData('text/uri-list'))
 }
 
+function beginTerminalReplay(term: Terminal) {
+  Reflect.set(term, '__cellsReplayPending', true)
+  Reflect.set(term, '__cellsPendingReplayData', [] as string[])
+}
+
+function queueTerminalReplayData(term: Terminal, data: string) {
+  const pending = Reflect.get(term, '__cellsPendingReplayData')
+  if (Array.isArray(pending)) {
+    pending.push(data)
+    return
+  }
+  Reflect.set(term, '__cellsPendingReplayData', [data] as string[])
+}
+
+function finishTerminalReplay(term: Terminal) {
+  Reflect.set(term, '__cellsReplayPending', false)
+  const pending = Reflect.get(term, '__cellsPendingReplayData')
+  Reflect.set(term, '__cellsPendingReplayData', [] as string[])
+  return Array.isArray(pending) && pending.length > 0 ? pending.join('') : ''
+}
+
+function isTerminalReplayPending(term: Terminal) {
+  return Reflect.get(term, '__cellsReplayPending') === true
+}
+
+function focusGhosttyInput(term: Terminal) {
+  const textarea = (term as Terminal & { textarea?: HTMLTextAreaElement | null }).textarea
+  const element = (term as Terminal & { element?: HTMLElement | null }).element
+
+  textarea?.focus({ preventScroll: true })
+  element?.focus({ preventScroll: true })
+
+  requestAnimationFrame(() => {
+    textarea?.focus({ preventScroll: true })
+  })
+}
+
+function forceTerminalRepaint(term: Terminal) {
+  requestTerminalFullRender(term)
+
+  const repaint = () => {
+    if (!term.renderer || !term.wasmTerm) return
+    term.renderer.render(term.wasmTerm, true, term.viewportY, term as ScrollbackProvider, 0)
+  }
+
+  requestAnimationFrame(repaint)
+  window.setTimeout(() => requestAnimationFrame(repaint), 32)
+}
+
 export function CellTerminal({
   termId,
   width,
@@ -1129,7 +1178,7 @@ export function CellTerminal({
 
       requestAnimationFrame(() => {
         if (focused) {
-          term.focus()
+          focusGhosttyInput(term)
         } else {
           term.blur()
         }
@@ -1147,7 +1196,7 @@ export function CellTerminal({
       const term = getLiveTerminal()
       if (!term || !text) return
       focusTerminal(termId)
-      term.focus()
+      focusGhosttyInput(term)
       term.paste(text)
     },
     [focusTerminal, getLiveTerminal, termId],
@@ -1395,6 +1444,7 @@ export function CellTerminal({
         fitAddonRef.current = cached.fitAddon
         cached.setPollingEnabled(true)
         syncTerminalState(cached.term)
+        beginTerminalReplay(cached.term)
 
         // Fit first, then get accurate dimensions for attach
         await new Promise<void>((resolve) => {
@@ -1405,16 +1455,26 @@ export function CellTerminal({
         })
 
         const dims = cached.fitAddon.proposeDimensions()
-        const result = await window.cells.terminal.attach(
-          termId,
-          dims?.cols ?? 80,
-          dims?.rows ?? 24,
-          useStore.getState().getActiveProjectPath(),
-        )
+        let result: Awaited<ReturnType<typeof window.cells.terminal.attach>>
+        try {
+          result = await window.cells.terminal.attach(
+            termId,
+            dims?.cols ?? 80,
+            dims?.rows ?? 24,
+            useStore.getState().getActiveProjectPath(),
+          )
+        } catch (error) {
+          finishTerminalReplay(cached.term)
+          throw error
+        }
 
         // Replay any data buffered while this terminal was in another project
         if (result?.buffer) {
           cached.term.write(result.buffer)
+        }
+        const replayChunk = finishTerminalReplay(cached.term)
+        if (replayChunk) {
+          cached.term.write(replayChunk)
         }
 
         // Force a full redraw after DOM reattachment — the canvas backing
@@ -1427,6 +1487,7 @@ export function CellTerminal({
             t.renderer.render(t.wasmTerm, true, t.viewportY, t as ScrollbackProvider, 0)
           }
         })
+        forceTerminalRepaint(cached.term)
 
         if (result?.reattached && dims && !avoidSyntheticResize) {
           bumpPtySize(dims.cols, dims.rows)
@@ -1673,8 +1734,7 @@ export function CellTerminal({
       // chunk so scroll events and dirty flags are handled atomically.
       let writeBuf = ''
       let writeRaf = 0
-      let initialReplayPending = true
-      const pendingReplayData: string[] = []
+      beginTerminalReplay(term)
       let perfWindowStart = performance.now()
       let perfBytes = 0
       let perfWriteCalls = 0
@@ -1799,8 +1859,8 @@ export function CellTerminal({
         }).dispose,
         window.cells.terminal.onData((id, data) => {
           if (id === termId) {
-            if (initialReplayPending) {
-              pendingReplayData.push(data)
+            if (isTerminalReplayPending(term)) {
+              queueTerminalReplayData(term, data)
               return
             }
 
@@ -1982,12 +2042,18 @@ export function CellTerminal({
       const preferSnapshotRestore =
         restoredOutput.length > 0 &&
         Boolean(terminalState && shouldPreferSnapshotRestoreForTerminal(terminalState))
-      const result = await window.cells.terminal.attach(
-        termId,
-        dims?.cols ?? 80,
-        dims?.rows ?? 24,
-        projectPath,
-      )
+      let result: Awaited<ReturnType<typeof window.cells.terminal.attach>>
+      try {
+        result = await window.cells.terminal.attach(
+          termId,
+          dims?.cols ?? 80,
+          dims?.rows ?? 24,
+          projectPath,
+        )
+      } catch (error) {
+        finishTerminalReplay(term)
+        throw error
+      }
 
       let replayedRawHistory = false
       if (result?.reattached && !preferSnapshotRestore) {
@@ -2014,10 +2080,9 @@ export function CellTerminal({
         term.write(result.buffer)
       }
 
-      initialReplayPending = false
-      if (pendingReplayData.length > 0) {
-        writeBuf += pendingReplayData.join('')
-        pendingReplayData.length = 0
+      const replayChunk = finishTerminalReplay(term)
+      if (replayChunk) {
+        writeBuf += replayChunk
         if (!writeRaf) writeRaf = requestAnimationFrame(flushWrites)
       }
 
@@ -2035,6 +2100,7 @@ export function CellTerminal({
       }
 
       syncTerminalState(term)
+      forceTerminalRepaint(term)
     }
 
     setup()
@@ -2144,7 +2210,8 @@ export function CellTerminal({
     const handler = () => {
       const term = getLiveTerminal()
       if (isFocused && term) {
-        term.focus()
+        focusGhosttyInput(term)
+        forceTerminalRepaint(term)
       }
     }
     window.addEventListener('terminal-refocus', handler)
@@ -2200,6 +2267,11 @@ export function CellTerminal({
     <div
       ref={containerRef}
       className="cell-terminal relative w-full h-full"
+      onMouseDownCapture={() => {
+        if (!isFocused || overlayOpen || terminalExited) return
+        const term = getLiveTerminal()
+        if (term) focusGhosttyInput(term)
+      }}
       onKeyDownCapture={(event) => {
         if (!terminalExited) return
         if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return

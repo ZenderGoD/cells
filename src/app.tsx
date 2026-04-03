@@ -67,7 +67,11 @@ function MainApp() {
     // Use native BrowserWindow focus/blur via IPC so the overlay tracks the
     // actual OS window state.  DOM window blur fires whenever a WebContentsView
     // (browser panel) takes keyboard focus, which is a false positive.
-    return window.cells.app.onWindowFocus(setWindowFocused)
+    return window.cells.app.onWindowFocus((focused) => {
+      setWindowFocused(focused)
+      if (!focused) return
+      requestAnimationFrame(() => window.dispatchEvent(new Event('terminal-refocus')))
+    })
   }, [])
 
   const showDimOverlay = dimWhenUnfocused && !windowFocused

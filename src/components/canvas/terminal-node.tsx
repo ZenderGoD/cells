@@ -94,13 +94,20 @@ export function TerminalNode({
       if ((e.target as HTMLElement).closest('button')) return
       if (!selectionMode) {
         focusTerminal(terminal.id)
+        if (isFocused) {
+          requestAnimationFrame(() => {
+            window.dispatchEvent(
+              new CustomEvent('terminal-refocus', { detail: { termId: terminal.id } }),
+            )
+          })
+        }
         return
       }
       e.preventDefault()
       e.stopPropagation()
       onDragStart(terminal.id, 'terminal', e.clientX, e.clientY)
     },
-    [focusTerminal, terminal.id, onDragStart, selectionMode],
+    [focusTerminal, isFocused, terminal.id, onDragStart, selectionMode],
   )
 
   const startEditingTitle = useCallback(() => {
@@ -206,13 +213,20 @@ export function TerminalNode({
     (e: MouseEvent) => {
       if (!selectionMode) {
         focusTerminal(terminal.id)
+        if (isFocused) {
+          requestAnimationFrame(() => {
+            window.dispatchEvent(
+              new CustomEvent('terminal-refocus', { detail: { termId: terminal.id } }),
+            )
+          })
+        }
         return
       }
       e.preventDefault()
       e.stopPropagation()
       onDragStart(terminal.id, 'terminal', e.clientX, e.clientY)
     },
-    [focusTerminal, selectionMode, terminal.id, onDragStart],
+    [focusTerminal, isFocused, selectionMode, terminal.id, onDragStart],
   )
 
   const zBase = terminal.pinned ? 10000 : 0
