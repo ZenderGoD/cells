@@ -444,6 +444,7 @@ interface CachedTerminal {
   setPollingEnabled(enabled: boolean): void
 }
 const terminalCache = new Map<string, CachedTerminal>()
+const terminalReloadSnapshots = new Map<string, string>()
 
 export function getCachedTerminalCount() {
   return terminalCache.size
@@ -706,9 +707,17 @@ export function destroyCachedTerminal(termId: string) {
 
 /** Repaint a terminal — recreates the renderer while keeping the shell alive. */
 export function reloadTerminal(termId: string) {
-  window.cells.terminal.unsubscribe(termId)
-  destroyCachedTerminal(termId)
-  window.dispatchEvent(new CustomEvent('terminal-reload', { detail: { termId } }))
+  const snapshot = getTerminalRestoreSnapshot(termId)
+  if (snapshot !== null) {
+    terminalReloadSnapshots.set(termId, snapshot)
+  } else {
+    terminalReloadSnapshots.delete(termId)
+  }
+
+  void window.cells.terminal.unsubscribe(termId).finally(() => {
+    destroyCachedTerminal(termId)
+    window.dispatchEvent(new CustomEvent('terminal-reload', { detail: { termId } }))
+  })
 }
 
 export function reloadAllTerminals() {
@@ -1043,6 +1052,12 @@ function finishTerminalReplay(term: Terminal) {
 
 function isTerminalReplayPending(term: Terminal) {
   return Reflect.get(term, '__cellsReplayPending') === true
+}
+
+function consumeTerminalReloadSnapshot(termId: string) {
+  const snapshot = terminalReloadSnapshots.get(termId)
+  terminalReloadSnapshots.delete(termId)
+  return snapshot
 }
 
 function focusGhosttyInput(term: Terminal) {
@@ -2054,6 +2069,7 @@ export function CellTerminal({
       const worktreeCwd = consumePendingWorktreePath(termId)
       const projectPath = worktreeCwd ?? useStore.getState().getActiveProjectPath()
       const terminalState = useStore.getState().terminals.find((terminal) => terminal.id === termId)
+      const reloadSnapshot = consumeTerminalReloadSnapshot(termId)
       const avoidSyntheticResize = Boolean(
         terminalState && shouldAvoidSyntheticResizeForTerminal(terminalState),
       )
@@ -2075,7 +2091,11 @@ export function CellTerminal({
       }
 
       let replayedRawHistory = false
-      if (result?.reattached && !preferSnapshotRestore) {
+      if (reloadSnapshot !== undefined && result?.reattached) {
+        if (reloadSnapshot) {
+          term.write(reloadSnapshot)
+        }
+      } else if (result?.reattached && !preferSnapshotRestore) {
         try {
           await replayPagedTerminalHistory(termId, term)
           replayedRawHistory = true
