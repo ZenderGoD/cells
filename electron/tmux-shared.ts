@@ -178,7 +178,7 @@ export function buildPrivateTmuxConfig(
     'unbind-key C-b',
     'unbind-key C-a',
     `set-option -g default-terminal "${defaultTerminal}"`,
-    'set-option -g default-command ""',
+    `set-option -g default-command "${shell} -l"`,
     `set-option -g default-shell "${shell}"`,
     'set-option -g allow-passthrough on',
     'set-option -g focus-events on',

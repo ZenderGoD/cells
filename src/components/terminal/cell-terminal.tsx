@@ -36,8 +36,6 @@ const CANVAS_MAX_ZOOM = 1.5
 const HISTORY_PAGE_BYTES = 256 * 1024
 const HISTORY_WRITE_BYTES = 64 * 1024
 const TERMINAL_SEARCH_MATCH_LIMIT = 2_000
-const TERMINAL_FULL_RENDER_THROTTLE_MS = 100
-
 function patchGhosttyRenderer() {
   if (ghosttyRendererPatched) return
   ghosttyRendererPatched = true
@@ -246,66 +244,11 @@ function patchTerminalViewportPreservation(term: Terminal) {
   )
 }
 
-function patchTerminalFullRenderScheduler(term: Terminal) {
-  if (Reflect.get(term, '__cellsFullRenderSchedulerPatched')) return
-
-  const renderer = Reflect.get(term, 'renderer')
-  if (!renderer) return
-
-  const originalRender = Reflect.get(renderer, 'render')
-  if (typeof originalRender !== 'function') return
-
-  Reflect.set(term, '__cellsFullRenderSchedulerPatched', true)
-  Reflect.set(term, '__cellsPendingFullRender', false)
-  Reflect.set(term, '__cellsLastForcedFullRenderAt', 0)
-  Reflect.set(term, '__cellsPerfForcedFullRenderCount', 0)
-
-  Reflect.set(
-    renderer,
-    'render',
-    function patchedRender(
-      this: CanvasRenderer,
-      wasmTerm: Renderable,
-      forceFull: boolean,
-      viewportY: number,
-      scrollbackProvider: ScrollbackProvider,
-      scrollbarOpacity: number,
-    ) {
-      let shouldForceFull = forceFull
-
-      if (!shouldForceFull && Reflect.get(term, '__cellsPendingFullRender') === true) {
-        const now = performance.now()
-        const lastForcedFullRenderAt = Number(
-          Reflect.get(term, '__cellsLastForcedFullRenderAt') ?? 0,
-        )
-        if (now - lastForcedFullRenderAt >= TERMINAL_FULL_RENDER_THROTTLE_MS) {
-          shouldForceFull = true
-        }
-      }
-
-      if (shouldForceFull) {
-        Reflect.set(term, '__cellsPendingFullRender', false)
-        Reflect.set(term, '__cellsLastForcedFullRenderAt', performance.now())
-        const forcedFullRenderCount = Number(
-          Reflect.get(term, '__cellsPerfForcedFullRenderCount') ?? 0,
-        )
-        Reflect.set(term, '__cellsPerfForcedFullRenderCount', forcedFullRenderCount + 1)
-      }
-
-      return originalRender.call(
-        this,
-        wasmTerm,
-        shouldForceFull,
-        viewportY,
-        scrollbackProvider,
-        scrollbarOpacity,
-      )
-    },
-  )
-}
-
-function requestTerminalFullRender(term: Terminal) {
-  Reflect.set(term, '__cellsPendingFullRender', true)
+/** Force an immediate full render of the terminal canvas. */
+function forceTerminalFullRender(term: Terminal): boolean {
+  if (!term.renderer || !term.wasmTerm) return false
+  term.renderer.render(term.wasmTerm, true, term.viewportY, term as ScrollbackProvider, 0)
+  return true
 }
 
 function usesServerOwnedTerminalState(term: Terminal | null | undefined) {
@@ -358,12 +301,6 @@ function getMouseWheelSequencePayload(
     steps,
     sequence: Array.from({ length: steps }, () => `\x1b[<${button};${x};${y}M`).join(''),
   }
-}
-
-function consumeTerminalFullRenderCount(term: Terminal) {
-  const forcedFullRenderCount = Number(Reflect.get(term, '__cellsPerfForcedFullRenderCount') ?? 0)
-  Reflect.set(term, '__cellsPerfForcedFullRenderCount', 0)
-  return forcedFullRenderCount
 }
 
 function buildTheme(themeName: string, backend?: 'tmux' | 'zellij' | 'replay' | null) {
@@ -1376,22 +1313,8 @@ function focusGhosttyInput(term: Terminal) {
 }
 
 function forceTerminalRepaint(term: Terminal) {
-  requestTerminalFullRender(term)
-
-  const repaint = () => {
-    if (!term.renderer || !term.wasmTerm) return
-    term.renderer.render(term.wasmTerm, true, term.viewportY, term as ScrollbackProvider, 0)
-  }
-
-  requestAnimationFrame(repaint)
-  window.setTimeout(() => requestAnimationFrame(repaint), 32)
-}
-
-function forceFullRenderNow(term: Terminal) {
-  Reflect.set(term, '__cellsPendingFullRender', false)
-  if (!term.renderer || !term.wasmTerm) return false
-  term.renderer.render(term.wasmTerm, true, term.viewportY, term as ScrollbackProvider, 0)
-  return true
+  requestAnimationFrame(() => forceTerminalFullRender(term))
+  window.setTimeout(() => requestAnimationFrame(() => forceTerminalFullRender(term)), 32)
 }
 
 export function CellTerminal({
@@ -1783,7 +1706,6 @@ export function CellTerminal({
         const avoidSyntheticResize = shouldAvoidSyntheticResizeForTerminal(cached.term)
         const backendAttached = Reflect.get(cached.term, '__cellsBackendAttached') === true
         patchTerminalViewportPreservation(cached.term)
-        patchTerminalFullRenderScheduler(cached.term)
         // Move the existing DOM back into our container
         cached.wrapper.style.backgroundColor = buildTheme(themeNameRef.current).background
         container.appendChild(cached.wrapper)
@@ -1897,7 +1819,6 @@ export function CellTerminal({
       const fitAddon = new FitAddon()
       term.loadAddon(fitAddon)
       term.open(wrapper)
-      patchTerminalFullRenderScheduler(term)
       fitAddon.observeResize()
       setTerminalRenderLoopEnabled(term, shouldRenderRef.current)
 
@@ -2160,7 +2081,6 @@ export function CellTerminal({
       const SCROLL_LOCK_THRESHOLD = 5
       const termCanvas = wrapper.querySelector('canvas') as HTMLCanvasElement | null
       const reportTerminalPerf = () => {
-        perfForcedFullRenders += consumeTerminalFullRenderCount(term)
         const sampleWindowMs = Math.max(1, Math.round(performance.now() - perfWindowStart))
         if (perfBytes <= 0 && perfWriteCalls <= 0 && perfForcedFullRenders <= 0) {
           perfWindowStart = performance.now()
@@ -2220,18 +2140,11 @@ export function CellTerminal({
           termCanvas.style.transform = ''
         }
 
-        // ghostty-web's dirty-row tracking is not reliable enough for complex
-        // cursor-addressed redraws such as TUIs and terminal QR renderers. We
-        // still avoid the old "force immediately on every flush" behavior:
-        // instead, mark each flushed write for a full repaint and let the
-        // patched renderer coalesce/throttle the actual work.
-        if (shouldRenderRef.current && (chunk.length > 0 || scrollbackDelta > 0)) {
-          // ghostty-web still needs an immediate full repaint after flushed
-          // chunks. The throttled scheduler leaves stale rows behind for
-          // cursor-addressed output, which shows up prominently in agent UIs.
-          if (forceFullRenderNow(term)) {
-            perfForcedFullRenders += 1
-          }
+        // ghostty-web's dirty-row tracking misses some rows during complex
+        // redraws (TUIs, streaming gradient animations, etc.). Force a full
+        // render after every write so the display always matches the session.
+        if (shouldRenderRef.current && forceTerminalFullRender(term)) {
+          perfForcedFullRenders += 1
         }
 
         if (terminalFindOpen && focusStateRef.current.isFocused) {

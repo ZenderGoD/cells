@@ -1,6 +1,6 @@
 import fs from 'fs'
 import crypto from 'crypto'
-import { execFileSync } from 'child_process'
+import { execFileSync, spawn } from 'child_process'
 import * as pty from 'node-pty'
 import {
   cleanEnv,
@@ -77,6 +77,11 @@ type AttachedClient = {
   ignoreExit: boolean
 }
 
+type PendingWheelScroll = {
+  delta: number
+  timer: ReturnType<typeof setTimeout> | null
+}
+
 export class ZellijSessionManager implements TerminalSessionManager {
   private readonly zellijBinary = resolveZellijBinary()
   private readonly configDir: string
@@ -88,6 +93,7 @@ export class ZellijSessionManager implements TerminalSessionManager {
   private readonly attachedClients = new Map<string, AttachedClient>()
   private readonly knownSessions = new Set<string>()
   private readonly sessionNames = new Map<string, string>()
+  private readonly pendingWheelScrolls = new Map<string, PendingWheelScroll>()
   private pollTimer: ReturnType<typeof setInterval> | null = null
 
   constructor(
@@ -189,16 +195,43 @@ export class ZellijSessionManager implements TerminalSessionManager {
   }
 
   handleWheel(termId: string, direction: 'up' | 'down', steps: number, sequence: string): void {
-    // Route wheel input through the attached Zellij client instead of shelling
-    // out to `zellij action ...`. The CLI action path can block, and mouse
-    // sequences preserve the "normal terminal" feel for shells and TUIs.
-    if (sequence) {
-      this.write(termId, sequence)
+    const count = Math.max(1, Math.min(8, Math.round(steps) || 1))
+    const signedDelta = direction === 'up' ? count : -count
+    const existing = this.pendingWheelScrolls.get(termId)
+    if (existing) {
+      existing.delta += signedDelta
       return
     }
 
-    const count = Math.max(1, Math.min(12, Math.round(steps) || 1))
-    const fallback = direction === 'up' ? '\x1b[A' : '\x1b[B'
+    const pending: PendingWheelScroll = {
+      delta: signedDelta,
+      timer: setTimeout(() => {
+        this.pendingWheelScrolls.delete(termId)
+        this.flushWheelScroll(termId, pending.delta, sequence)
+      }, 16),
+    }
+    if (pending.timer) pending.timer.unref?.()
+    this.pendingWheelScrolls.set(termId, pending)
+  }
+
+  private flushWheelScroll(termId: string, delta: number, sequence: string) {
+    if (!delta) return
+
+    const count = Math.max(1, Math.min(12, Math.abs(delta)))
+    const action = delta > 0 ? 'scroll-up' : 'scroll-down'
+    for (let index = 0; index < count; index += 1) {
+      this.execZellijSessionDetached(termId, ['action', action])
+    }
+    return
+
+    // Fallback for cases where action-based scrolling is unavailable.
+    if (sequence) {
+      const repeatedSequence = Array.from({ length: count }, () => sequence).join('')
+      this.write(termId, repeatedSequence)
+      return
+    }
+
+    const fallback = delta > 0 ? '\x1b[A' : '\x1b[B'
     this.write(termId, fallback.repeat(count))
   }
 
@@ -294,6 +327,10 @@ export class ZellijSessionManager implements TerminalSessionManager {
     for (const termId of [...this.attachedClients.keys()]) {
       this.disposeAttachedClient(termId)
     }
+    for (const pending of this.pendingWheelScrolls.values()) {
+      if (pending.timer) clearTimeout(pending.timer)
+    }
+    this.pendingWheelScrolls.clear()
     if (this.pollTimer) {
       clearInterval(this.pollTimer)
       this.pollTimer = null
@@ -382,6 +419,7 @@ export class ZellijSessionManager implements TerminalSessionManager {
   private normalizePaneInfo(raw: any): ZellijPaneInfo | null {
     if (!raw || typeof raw !== 'object') return null
     const idValue = raw.pane_id ?? raw.id ?? raw.paneId ?? null
+    const isPlugin = raw.is_plugin === true || raw.isPlugin === true
     const id = typeof idValue === 'string' || typeof idValue === 'number' ? String(idValue) : null
     const pidValue =
       raw.pid ?? raw.process_id ?? raw.processId ?? raw.terminal_pid ?? raw.terminalPid ?? null
@@ -404,7 +442,6 @@ export class ZellijSessionManager implements TerminalSessionManager {
     const cwd =
       typeof raw.pane_cwd === 'string' ? raw.pane_cwd : typeof raw.cwd === 'string' ? raw.cwd : null
     const focused = raw.is_focused === true || raw.focused === true
-    const isPlugin = raw.is_plugin === true || raw.isPlugin === true
     return { id, pid, command, cwd, focused, isPlugin }
   }
 
@@ -449,6 +486,21 @@ export class ZellijSessionManager implements TerminalSessionManager {
       allowFailure,
       timeoutMs: allowFailure ? 500 : 5000,
     })
+  }
+
+  private execZellijSessionDetached(termId: string, args: string[]) {
+    try {
+      const child = spawn(
+        this.zellijBinary,
+        this.zellijArgs(['--session', this.encodeSessionId(termId), ...args]),
+        {
+          cwd: this.stateDir,
+          env: this.buildZellijEnv(),
+          stdio: 'ignore',
+        },
+      )
+      child.unref()
+    } catch {}
   }
 
   private encodeSessionId(termId: string) {
