@@ -51,7 +51,7 @@ import {
   CommandShortcut,
 } from '@/components/ui/command'
 import { useStore } from '@/lib/store'
-import { inferAgentFromTitle } from '@/lib/agent-command'
+import { inferAgentFromTitle, type AgentName } from '@/lib/agent-command'
 import { terminalThemes } from '@/lib/terminal-themes'
 import { AppSettings } from './settings/app-settings'
 import { NewProjectDialog } from './new-project-dialog'
@@ -65,12 +65,58 @@ import { hapticNudge, hapticSuccess } from '@/lib/haptics'
 const AGENT_OPTIONS = [
   { id: 'claude', label: 'Claude Code' },
   { id: 'codex', label: 'Codex' },
+  { id: 'opencode', label: 'OpenCode' },
+  { id: 'pi', label: 'Pi' },
 ] as const
 
 interface Attachment {
   path: string
   name: string
   thumbnailUrl?: string
+}
+
+function shellQuote(value: string) {
+  return `'${value.replace(/'/g, "'\\''")}'`
+}
+
+function buildAgentCommand(
+  id: string,
+  cmd: string,
+  prompt: string,
+  attachments: Attachment[] = [],
+) {
+  const imageAttachments = attachments.filter((a) => isImageFile(a.name))
+  const supportsImageFlags = id === 'codex'
+  const supportsFileArgs = id === 'pi'
+
+  const imageFlags = supportsImageFlags
+    ? imageAttachments.map((a) => `-i ${shellQuote(a.path)}`).join(' ')
+    : ''
+
+  const promptAttachments = supportsImageFlags
+    ? attachments.filter((a) => !isImageFile(a.name))
+    : supportsFileArgs
+      ? []
+      : attachments
+  const filePaths = promptAttachments.map((a) => `[${a.path}]`).join(' ')
+  const fileArgs = supportsFileArgs
+    ? attachments.map((a) => shellQuote(`@${a.path}`)).join(' ')
+    : ''
+
+  let fullPromptText = prompt
+  if (filePaths) {
+    fullPromptText = prompt ? `${prompt}\n\n${filePaths}` : filePaths
+  }
+
+  let fullCommand = cmd
+  if (imageFlags) fullCommand += ` ${imageFlags}`
+  if (fileArgs) fullCommand += ` ${fileArgs}`
+  if (fullPromptText) {
+    const escaped = shellQuote(fullPromptText)
+    fullCommand += id === 'opencode' ? ` --prompt ${escaped}` : ` ${escaped}`
+  }
+
+  return { fullCommand, fullPromptText, imageAttachmentCount: imageAttachments.length }
 }
 
 function launchAgentAction(
@@ -85,43 +131,22 @@ function launchAgentAction(
   useStore.getState().trackCommandAction(`agent-${id}`)
   const cmd = useStore.getState().getAgentCommand(id)
   const prompt = stripPrefix(searchText.trim())
-
-  // Build image/file attachment flags for the CLI
-  const imageAttachments = attachments.filter((a) => isImageFile(a.name))
-  const fileAttachments = attachments.filter((a) => !isImageFile(a.name))
-
-  // Only codex supports -i flag for images
-  const isCodex = id === 'codex'
-  const imageFlags = isCodex
-    ? imageAttachments.map((a) => `-i "${a.path.replace(/"/g, '\\"')}"`).join(' ')
-    : ''
-
-  // Only include file attachments (not images) as text references
-  const filePaths = fileAttachments.map((a) => `[${a.path}]`).join(' ')
-
-  // Build the full prompt with file references (codex images are passed via flags)
-  let fullPromptText = prompt
-  if (filePaths) {
-    fullPromptText = prompt ? `${prompt}\n\n${filePaths}` : filePaths
-  }
+  const initialCommand = buildAgentCommand(id, cmd, prompt, attachments)
 
   if (!inWorktree) {
-    if (!fullPromptText && imageAttachments.length === 0) {
+    if (
+      !initialCommand.fullPromptText &&
+      initialCommand.imageAttachmentCount === 0 &&
+      !attachments.length
+    ) {
       useStore.getState().addTerminalWithCommand(cmd, label)
       return
-    }
-
-    let fullCommand = cmd
-    if (imageFlags) fullCommand += ` ${imageFlags}`
-    if (fullPromptText) {
-      const escaped = fullPromptText.replace(/'/g, "'\\''")
-      fullCommand += ` '${escaped}'`
     }
 
     useStore
       .getState()
       .addTerminalWithCommand(
-        fullCommand,
+        initialCommand.fullCommand,
         `${label}: ${searchText.trim().slice(0, 40) || 'attachments'}`,
       )
     return
@@ -134,19 +159,15 @@ function launchAgentAction(
     .createWorktree(tempBranch)
     .then((wt) => {
       const branchInstruction = `First, create a descriptive git branch name for this task and switch to it with \`git checkout -b <branch-name>\`. Then delete the temporary branch that was used to set up this worktree with \`git branch -D ${tempBranch}\`. Then:\n\n`
-      const finalPrompt = fullPromptText
-        ? branchInstruction + fullPromptText
+      const finalPrompt = initialCommand.fullPromptText
+        ? branchInstruction + initialCommand.fullPromptText
         : branchInstruction + 'Waiting for instructions.'
-
-      let fullCommand = cmd
-      if (imageFlags) fullCommand += ` ${imageFlags}`
-      const escaped = finalPrompt.replace(/'/g, "'\\''")
-      fullCommand += ` '${escaped}'`
+      const worktreeCommand = buildAgentCommand(id, cmd, finalPrompt, attachments)
 
       useStore
         .getState()
         .addTerminalInWorktree(
-          fullCommand,
+          worktreeCommand.fullCommand,
           `${label}: ${searchText.trim() ? searchText.trim().slice(0, 40) : 'worktree'}`,
           wt.path,
         )
@@ -156,19 +177,17 @@ function launchAgentAction(
         `Worktree failed, launching without it: ${err instanceof Error ? err.message : err}`,
       )
       // Fallback: launch without worktree
-      if (!fullPromptText && imageAttachments.length === 0) {
+      if (
+        !initialCommand.fullPromptText &&
+        initialCommand.imageAttachmentCount === 0 &&
+        !attachments.length
+      ) {
         useStore.getState().addTerminalWithCommand(cmd, label)
       } else {
-        let fullCommand = cmd
-        if (imageFlags) fullCommand += ` ${imageFlags}`
-        if (fullPromptText) {
-          const escaped = fullPromptText.replace(/'/g, "'\\''")
-          fullCommand += ` '${escaped}'`
-        }
         useStore
           .getState()
           .addTerminalWithCommand(
-            fullCommand,
+            initialCommand.fullCommand,
             `${label}: ${searchText.trim().slice(0, 40) || 'attachments'}`,
           )
       }
@@ -212,7 +231,7 @@ function DynamicCommandInput({
     } else if (prefix.target === 'agent' && prefix.agentId) {
       icon = (
         <AgentIcon
-          agent={prefix.agentId as 'claude' | 'codex'}
+          agent={prefix.agentId as AgentName}
           className="size-4 shrink-0 opacity-70"
           size={16}
         />

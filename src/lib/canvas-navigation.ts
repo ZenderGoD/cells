@@ -11,7 +11,7 @@ export interface CanvasWindow {
   width: number
   height: number
   zIndex: number
-  agent?: 'claude' | 'codex' | null
+  agent?: 'claude' | 'codex' | 'opencode' | 'pi' | null
   agentStatus?: import('../types').AgentStatus
   processRunning?: boolean
   faviconUrl?: string

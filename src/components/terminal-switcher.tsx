@@ -15,7 +15,7 @@ interface SwitcherItem {
   id: string
   title: string
   type: 'terminal' | 'browser'
-  agent?: 'claude' | 'codex' | null
+  agent?: 'claude' | 'codex' | 'opencode' | 'pi' | null
   agentStatus?: import('@/types').AgentStatus
   processRunning?: boolean
   url?: string

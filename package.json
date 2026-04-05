@@ -179,7 +179,7 @@
       "node-pty"
     ],
     "patchedDependencies": {
-      "ghostty-web@0.4.0": "patches/ghostty-web@0.4.0.patch"
+      "ghostty-web": "patches/ghostty-web.patch"
     }
   }
 }

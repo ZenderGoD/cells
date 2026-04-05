@@ -32,7 +32,7 @@ export interface TerminalNode {
   customTitle?: string | null
   zIndex?: number
   pinned?: boolean
-  agent?: 'claude' | 'codex' | null
+  agent?: 'claude' | 'codex' | 'opencode' | 'pi' | null
   agentStatus?: AgentStatus
   processRunning?: boolean
   /** Runtime-only flag for a terminal window whose PTY exited but whose scrollback stays visible. */
@@ -97,7 +97,7 @@ export interface Project {
   /** Per-window focus counts for usage-based grid arrangement */
   focusCounts?: Record<string, number>
   autoArrangeOnCreate?: boolean
-  /** Per-project usage counts for command palette catch-all actions (search, agent-claude, agent-codex, run) */
+  /** Per-project usage counts for command palette catch-all actions (search, agent-claude, agent-codex, agent-opencode, run) */
   commandActionCounts?: Record<string, number>
 }
 

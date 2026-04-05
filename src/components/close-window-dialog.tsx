@@ -44,7 +44,17 @@ export function CloseWindowDialog({
         if (!nextOpen) onCancel()
       }}
     >
-      <DialogContent className="max-w-md" showCloseButton={false}>
+      <DialogContent
+        className="max-w-md"
+        showCloseButton={false}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault()
+            hapticError()
+            onConfirm(skipFuturePromptsRef.current?.checked ?? false)
+          }
+        }}
+      >
         <DialogHeader>
           <div className="flex items-start gap-2.5">
             <div className="mt-0.5 rounded-md bg-amber-500/12 p-1.5 text-amber-600 dark:text-amber-400">

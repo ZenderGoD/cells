@@ -879,7 +879,7 @@ ipcMain.handle('agent:check-available', (_event, aliases?: Record<string, string
   // won't include Homebrew, ~/.local/bin, nvm, etc.
   const shell = process.env.SHELL || '/bin/zsh'
   const results: Record<string, boolean> = {}
-  for (const name of ['claude', 'codex']) {
+  for (const name of ['claude', 'codex', 'opencode', 'pi']) {
     const cmd = aliases?.[name]?.trim() || name
     const executable = (cmd.match(/^(".*?"|'.*?'|\S+)/)?.[0] ?? name).replace(/^['"]|['"]$/g, '')
     const escapedExecutable = executable.replace(/'/g, "'\\''")

@@ -996,6 +996,8 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                         [
                           { id: 'claude', label: 'Claude Code', placeholder: 'claude' },
                           { id: 'codex', label: 'Codex', placeholder: 'codex' },
+                          { id: 'opencode', label: 'OpenCode', placeholder: 'opencode' },
+                          { id: 'pi', label: 'Pi', placeholder: 'pi' },
                         ] as const
                       ).map(({ id, label, placeholder }) => {
                         const override = enabledAgents[id]
@@ -1114,6 +1116,8 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                             >
                               <option value="claude">Claude</option>
                               <option value="codex">Codex</option>
+                              <option value="opencode">OpenCode</option>
+                              <option value="pi">Pi</option>
                             </select>
                           )}
                           <button

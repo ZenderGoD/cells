@@ -82,7 +82,7 @@ interface StoreState {
   focusedBrowserId: string | null
   focusHistory: string[] // stack of recently focused IDs (most recent last)
   focusCounts: Record<string, number> // per-window focus counts for usage ranking
-  commandActionCounts: Record<string, number> // per-project catch-all action usage (search, agent-claude, run, etc.)
+  commandActionCounts: Record<string, number> // per-project catch-all action usage (search, agent-claude, agent-opencode, run, etc.)
   topZIndex: number
   snapEnabled: boolean
   snapPaused: boolean
@@ -170,7 +170,7 @@ interface StoreState {
     title: string | undefined,
     worktreePath: string,
   ): TerminalNode
-  updateTerminalAgent(id: string, agent: 'claude' | 'codex' | null): void
+  updateTerminalAgent(id: string, agent: 'claude' | 'codex' | 'opencode' | 'pi' | null): void
   updateTerminalAgentStatus(id: string, status: import('../types').AgentStatus): void
   updateTerminalProcessRunning(id: string, running: boolean): void
   removeAllTerminals(): void

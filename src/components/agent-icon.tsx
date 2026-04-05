@@ -1,6 +1,6 @@
 import ClaudeCode from '@lobehub/icons/es/ClaudeCode'
 import OpenAI from '@lobehub/icons/es/OpenAI'
-import { Sparkles } from 'lucide-react'
+import { Bot, Sparkles } from 'lucide-react'
 
 import { getAgentBrand, type AgentName } from '@/lib/agent-brand'
 import { cn } from '@/lib/utils'
@@ -21,6 +21,29 @@ export function AgentIcon({ agent, className, size = 14 }: AgentIconProps) {
 
   if (brand === 'openai') {
     return <OpenAI.Avatar className={cn('shrink-0', className)} size={numericSize} />
+  }
+
+  if (brand === 'opencode') {
+    return <Bot className={cn('shrink-0', className)} style={{ width: size, height: size }} />
+  }
+
+  if (brand === 'pi') {
+    return (
+      <span
+        className={cn(
+          'inline-flex shrink-0 items-center justify-center rounded-full border border-current/15 bg-current/8 font-semibold leading-none',
+          className,
+        )}
+        style={{
+          width: numericSize,
+          height: numericSize,
+          fontSize: Math.max(9, numericSize * 0.75),
+        }}
+        aria-label="Pi"
+      >
+        π
+      </span>
+    )
   }
 
   return <Sparkles className={cn('shrink-0', className)} style={{ width: size, height: size }} />
