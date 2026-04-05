@@ -1,6 +1,6 @@
 {
   "name": "cells",
-  "version": "0.1.55",
+  "version": "0.1.56",
   "private": true,
   "type": "module",
   "author": "Raj Sharma <r@raj.how>",
@@ -29,12 +29,15 @@
   "packageManager": "pnpm@10.6.3",
   "main": "dist-electron/main.js",
   "scripts": {
-    "dev": "node scripts/dev.mjs",
+    "dev": "pnpm prepare:zellij-bundle && node scripts/dev.mjs",
     "dev:raw": "CELLS_DEV_ROOT=\"${CELLS_DEV_ROOT:-$HOME/.cells-dev}\" vite",
-    "build": "pnpm typecheck && vite build",
+    "prepare:zellij-bundle": "node scripts/prepare-zellij-bundle.mjs",
+    "build": "pnpm prepare:zellij-bundle && pnpm typecheck && vite build",
     "typecheck": "pnpm typecheck:app && pnpm typecheck:electron",
     "typecheck:app": "tsc --noEmit --project tsconfig.json",
     "typecheck:electron": "tsc --noEmit --project tsconfig.node.json",
+    "test:tmux-session-manager": "pnpm build && node --test scripts/test-tmux-session-manager.mjs",
+    "test:zellij-session-manager": "pnpm build && node --test scripts/test-zellij-session-manager.mjs",
     "preview": "vite preview",
     "postinstall": "electron-builder install-app-deps",
     "pack": "pnpm build && electron-builder --dir",
@@ -61,12 +64,17 @@
     "files": [
       "dist/**/*",
       "dist-electron/**/*",
-      "resources/**/*"
+      "resources/**/*",
+      "!resources/vendor/zellij/**/*"
     ],
     "extraResources": [
       {
         "from": "mcp-server/dist/index.js",
         "to": "mcp-server/dist/index.js"
+      },
+      {
+        "from": "resources/vendor/zellij",
+        "to": "vendor/zellij"
       }
     ],
     "mac": {

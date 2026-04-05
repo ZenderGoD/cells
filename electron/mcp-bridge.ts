@@ -14,7 +14,7 @@ import fs from 'fs'
 import { Notification } from 'electron'
 import type { BrowserWindow, WebContentsView } from 'electron'
 import type { PtyDaemonClient } from './pty-client'
-import type { PtyManager } from './pty'
+import type { TerminalSessionManager } from './terminal-session-manager'
 import type { Project, ProjectsState } from '../src/types'
 
 // ---------- Console log buffering ----------
@@ -93,7 +93,7 @@ export interface BridgeContext {
   browserViews: Map<string, WebContentsView>
   browserIdToProject: Map<string, string>
   getDaemonClient: () => PtyDaemonClient | null
-  getFallbackPtys: () => PtyManager | null
+  getFallbackSessions: () => TerminalSessionManager | null
   getUseDaemon: () => boolean
   getMainWindow: () => BrowserWindow | null
   stateFile: string
@@ -246,6 +246,15 @@ async function handleRequest(ctx: BridgeContext, method: string, params: any): P
           return { output: buffer }
         } catch {}
       }
+
+      const fallbackBuffer = ctx.getFallbackSessions()?.getBuffer(termId) ?? ''
+      if (params.lines) {
+        const allLines = fallbackBuffer.split('\n')
+        return { output: allLines.slice(-params.lines).join('\n') }
+      }
+      if (fallbackBuffer) {
+        return { output: fallbackBuffer }
+      }
       return { output: '' }
     }
 
@@ -256,7 +265,7 @@ async function handleRequest(ctx: BridgeContext, method: string, params: any): P
       if (ctx.getUseDaemon() && daemon?.isConnected()) {
         daemon.write(termId, data)
       } else {
-        ctx.getFallbackPtys()?.write(termId, data)
+        ctx.getFallbackSessions()?.write(termId, data)
       }
       return null
     }
@@ -267,7 +276,7 @@ async function handleRequest(ctx: BridgeContext, method: string, params: any): P
       if (ctx.getUseDaemon() && daemon?.isConnected()) {
         return await daemon.getProcessInfo(termId)
       }
-      return null
+      return ctx.getFallbackSessions()?.getProcessInfo(termId) ?? null
     }
 
     case 'create-terminal': {

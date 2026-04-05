@@ -16,16 +16,21 @@ import fs from 'fs'
 import { randomUUID } from 'crypto'
 import { execFileSync, spawnSync } from 'child_process'
 import { autoUpdater } from 'electron-updater'
-import { PtyManager } from './pty'
 import { PtyDaemonClient } from './pty-client'
 import { ensureDaemon } from './daemon-lifecycle'
-import {
-  resolveTerminalProcessInfo,
-  resolveCodexProcessPid,
-  resolveCodexThreadTitle,
-} from './pty-shared'
-import { TerminalHistoryBuffer } from './terminal-history'
+import { getDaemonRestartReason } from './pty-daemon-contract'
 import { PerfMonitor, type RendererPerfReport, type TerminalPerfReport } from './perf-monitor'
+import type { TerminalSessionManager } from './terminal-session-manager'
+import type { ProjectsState, TerminalSessionBackend } from '../src/types'
+import {
+  createTerminalSessionManager,
+  describeTerminalBackendRequirement,
+  getTerminalBackendSupportStatus,
+} from './terminal-backend'
+import {
+  DEFAULT_TERMINAL_SESSION_BACKEND,
+  normalizeTerminalSessionBackend,
+} from '../src/lib/terminal-session-backend'
 import {
   ensureExtensionsLoaded,
   installExtension,
@@ -139,18 +144,19 @@ configureDevPaths()
 app.commandLine.appendSwitch('enable-features', 'ElasticOverscroll')
 
 let daemonClient: PtyDaemonClient | null = null
-let fallbackPtys: PtyManager | null = null
+let fallbackSessions: TerminalSessionManager | null = null
 let useDaemon = false
+let daemonRestartInProgress = false
+let daemonRecoveryPromise: Promise<void> | null = null
 let mainWindow: BrowserWindow | null = null
 let perfMonitor: PerfMonitor | null = null
 
 // Per-terminal session isolation:
 // - "subscribed" = renderer component mounted → data forwarded live via IPC
-// - "unsubscribed" = other project → data buffered silently
-// - On re-attach: buffer replayed then cleared, live forwarding resumes
-const MAX_BUFFER = 64 * 1024
-const ptyBuffers = new Map<string, string>()
-const fallbackHistories = new Map<string, TerminalHistoryBuffer>()
+// - "unsubscribed" = session keeps running server-side while Cells stops
+//   forwarding data to that renderer
+// - attach returns the backend contract so the renderer knows whether it is
+//   rejoining a replay-based terminal or a server-owned live screen
 const historySnapshots = new Map<string, { buffer: string; termId: string }>()
 const subscribedTerminals = new Set<string>()
 const pendingTerminalExitDetails = new Map<string, TerminalExitDetails>()
@@ -166,6 +172,48 @@ const PRELOAD_FILE = 'preload.mjs'
 const BROWSER_PRELOAD_FILE = 'browser-preload.cjs'
 let quitConfirmed = false
 let quitDialogOpen = false
+let selectedTerminalBackend: TerminalSessionBackend = DEFAULT_TERMINAL_SESSION_BACKEND
+let terminalBackendSupport = getTerminalBackendSupportStatus(selectedTerminalBackend)
+
+function getSelectedTerminalBackendFromState(state?: Partial<ProjectsState> | null) {
+  return normalizeTerminalSessionBackend(
+    state?.terminalSessionBackend,
+    DEFAULT_TERMINAL_SESSION_BACKEND,
+  )
+}
+
+function refreshTerminalBackendSelection(state?: Partial<ProjectsState> | null) {
+  selectedTerminalBackend = getSelectedTerminalBackendFromState(state ?? readSavedState())
+  terminalBackendSupport = getTerminalBackendSupportStatus(selectedTerminalBackend)
+}
+
+function describeSelectedBackendRequirement() {
+  return describeTerminalBackendRequirement(terminalBackendSupport)
+}
+
+async function showTerminalBackendRequirementDialog() {
+  if (terminalBackendSupport.ok) return
+  const messageBoxOptions = {
+    type: 'warning' as const,
+    buttons: ['Continue', `Install ${terminalBackendSupport.name}`],
+    defaultId: 1,
+    cancelId: 0,
+    noLink: true,
+    message: `${terminalBackendSupport.name} Required`,
+    detail: `${describeSelectedBackendRequirement()}\n\nCells uses a private app-owned ${terminalBackendSupport.name} config and does not load the user's personal ${terminalBackendSupport.name} config.`,
+  }
+  const result =
+    mainWindow && !mainWindow.isDestroyed()
+      ? await dialog.showMessageBox(mainWindow, messageBoxOptions)
+      : await dialog.showMessageBox(messageBoxOptions)
+  if (result.response === 1) {
+    void shell.openExternal(terminalBackendSupport.installUrl)
+  }
+}
+
+function terminalsPersistOnQuit() {
+  return useDaemon || fallbackSessions !== null
+}
 
 function readSavedState() {
   try {
@@ -268,7 +316,7 @@ async function confirmAndQuitApp() {
       cancelId: 0,
       noLink: true,
       message: 'Quit Cells?',
-      detail: useDaemon
+      detail: terminalsPersistOnQuit()
         ? 'Terminal sessions will continue in the background.'
         : 'This will close the app and terminate any running windows and processes.',
     })
@@ -313,6 +361,7 @@ ipcMain.handle('state:save', (_event, state) => {
   try {
     ensureStateDir()
     fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2))
+    refreshTerminalBackendSelection(state)
   } catch (err) {
     console.error('Failed to save state:', err)
   }
@@ -336,18 +385,23 @@ ipcMain.handle('perf:get-recent-events', (_event, limit?: number) => {
 
 // ---------- Terminal IPC ----------
 
-function getFallbackHistory(termId: string) {
-  let history = fallbackHistories.get(termId)
-  if (!history) {
-    history = new TerminalHistoryBuffer()
-    fallbackHistories.set(termId, history)
-  }
-  return history
-}
+function ensureFallbackSessions() {
+  if (fallbackSessions) return fallbackSessions
 
-function clearFallbackHistory(termId: string) {
-  fallbackHistories.get(termId)?.clear()
-  fallbackHistories.delete(termId)
+  // Fallback mode preserves the same server-owned session contract without the
+  // daemon hop, so reload/reattach semantics stay identical if the daemon is
+  // unavailable but the selected backend still works in-process.
+  fallbackSessions = createTerminalSessionManager(selectedTerminalBackend, STATE_DIR, {
+    onData(termId, data) {
+      forwardTerminalData(termId, data)
+    },
+    onExit(termId) {
+      clearHistorySnapshotsForTerm(termId)
+      forwardTerminalExit(termId, { reason: 'process-exit' })
+    },
+  })
+
+  return fallbackSessions
 }
 
 function clearHistorySnapshotsForTerm(termId: string) {
@@ -362,7 +416,7 @@ async function readTerminalHistory(termId: string) {
   if (useDaemon && daemonClient?.isConnected()) {
     return daemonClient.getHistory(termId)
   }
-  return fallbackHistories.get(termId)?.readAll() ?? ''
+  return fallbackSessions?.getHistory(termId) ?? ''
 }
 
 async function getTerminalHistoryPage(
@@ -433,7 +487,7 @@ function forwardTerminalExit(termId: string, details?: TerminalExitDetails) {
   subscribedTerminals.delete(termId)
   clearTerminalOutputRing(termId)
   clearHistorySnapshotsForTerm(termId)
-  clearFallbackHistory(termId)
+  fallbackSessions?.clear(termId)
   try {
     const targets = new Set<BrowserWindow>()
     const pinned = pinnedWindows.get(termId)
@@ -484,39 +538,76 @@ async function handleDaemonTerminalExit(termId: string) {
   }
 }
 
-// --- Fallback (direct PTY) helpers ---
+function handleDaemonDisconnect() {
+  daemonClient = null
+  if (daemonRestartInProgress) {
+    console.info(`PTY daemon disconnected during intentional ${selectedTerminalBackend} restart`)
+    useDaemon = false
+    return
+  }
 
-function appendBuffer(termId: string, data: string) {
-  const existing = ptyBuffers.get(termId) ?? ''
-  const combined = existing + data
-  ptyBuffers.set(termId, combined.length > MAX_BUFFER ? combined.slice(-MAX_BUFFER) : combined)
+  console.warn(
+    `PTY daemon disconnected while ${selectedTerminalBackend} sessions may still be alive`,
+  )
+  useDaemon = false
+  if (!daemonRecoveryPromise) {
+    daemonRecoveryPromise = recoverFromUnexpectedDaemonDisconnect().finally(() => {
+      daemonRecoveryPromise = null
+    })
+  }
 }
 
-function setupFallbackPtyHandlers(termId: string, p: ReturnType<PtyManager['spawn']>) {
-  p.onData((data) => {
-    if (fallbackPtys?.get(termId) !== p) return
-    getFallbackHistory(termId).append(data)
-    bufferTerminalOutput(termId, data)
-    if (subscribedTerminals.has(termId)) {
-      try {
-        const target = getWindowForTerminal(termId)
-        target?.webContents.send('terminal:data', termId, data)
-      } catch {
-        fallbackPtys?.kill(termId)
+async function recoverFromUnexpectedDaemonDisconnect() {
+  const notifyRenderers = () => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) {
+        window.webContents.send('app:daemon-disconnected')
       }
-    } else {
-      appendBuffer(termId, data)
     }
-  })
+  }
 
-  p.onExit(() => {
-    if (fallbackPtys?.get(termId) !== p) return
-    fallbackPtys?.kill(termId)
-    ptyBuffers.delete(termId)
-    clearFallbackHistory(termId)
-    clearHistorySnapshotsForTerm(termId)
-    forwardTerminalExit(termId, { reason: 'process-exit' })
+  try {
+    refreshTerminalBackendSelection()
+    if (!terminalBackendSupport.ok) {
+      notifyRenderers()
+      return
+    }
+
+    const daemonScript = path.join(__dirname, 'pty-daemon.js')
+    const recovered = await ensureDaemon(
+      STATE_DIR,
+      app.getVersion(),
+      process.execPath,
+      daemonScript,
+      selectedTerminalBackend,
+    )
+
+    if (!recovered) {
+      ensureFallbackSessions()
+      notifyRenderers()
+      return
+    }
+
+    await connectDaemonClient()
+    notifyRenderers()
+  } catch (error) {
+    console.warn('Failed to recover PTY daemon after unexpected disconnect', error)
+    if (terminalBackendSupport.ok) {
+      ensureFallbackSessions()
+    }
+    notifyRenderers()
+  }
+}
+
+async function connectDaemonClient() {
+  const client = new PtyDaemonClient()
+  await client.connect(path.join(STATE_DIR, 'pty-daemon.sock'))
+  client.onData(forwardTerminalData)
+  client.onExit((termId) => {
+    void handleDaemonTerminalExit(termId)
   })
+  client.onDisconnect(handleDaemonDisconnect)
+  daemonClient = client
 }
 
 ipcMain.handle(
@@ -524,40 +615,28 @@ ipcMain.handle(
   async (_event, termId: string, cols: number, rows: number, cwd?: string) => {
     clearHistorySnapshotsForTerm(termId)
 
+    if (!terminalBackendSupport.ok && !fallbackSessions) {
+      throw new Error(describeSelectedBackendRequirement())
+    }
+
     if (useDaemon && daemonClient?.isConnected()) {
       try {
-        const result = await daemonClient.spawn(termId, cols, rows, cwd)
-        // Subscribe BEFORE marking as subscribed in the main process.
-        // If we add to subscribedTerminals first, daemon data messages
-        // can reach the renderer before the buffered data is replayed,
-        // causing stale buffer content to overwrite a fresh redraw.
-        const buffer = await daemonClient.subscribe(termId)
+        // Mark subscribed before the daemon attaches so any live data emitted
+        // after the replay boundary is forwarded and queued during renderer replay.
         subscribedTerminals.add(termId)
-        return { reattached: result.reattached, buffer }
+        const result = await daemonClient.attach(termId, cols, rows, cwd)
+        return { reattached: result.reattached, buffer: result.buffer, backend: result.backend }
       } catch {
+        subscribedTerminals.delete(termId)
         // Daemon failed — fall through to fallback below
       }
     }
 
-    // Fallback: direct PTY
-    if (!fallbackPtys) fallbackPtys = new PtyManager()
-    const existing = fallbackPtys.get(termId)
-    if (existing) {
-      const buffer = ptyBuffers.get(termId) ?? ''
-      ptyBuffers.delete(termId)
+    const sessions = ensureFallbackSessions()
+    const result = sessions.attach(termId, cols, rows, cwd, () => {
       subscribedTerminals.add(termId)
-      try {
-        existing.resize(cols, rows)
-      } catch {}
-      return { reattached: true, buffer }
-    }
-
-    subscribedTerminals.add(termId)
-    ptyBuffers.delete(termId)
-    clearFallbackHistory(termId)
-    const p = fallbackPtys.spawn(termId, cols, rows, cwd)
-    setupFallbackPtyHandlers(termId, p)
-    return { reattached: false, buffer: '' }
+    })
+    return { reattached: result.reattached, buffer: result.buffer, backend: result.backend }
   },
 )
 
@@ -566,7 +645,7 @@ ipcMain.handle('terminal:unsubscribe', (_event, termId: string) => {
   if (useDaemon && daemonClient?.isConnected()) {
     daemonClient.unsubscribe(termId)
   } else {
-    ptyBuffers.set(termId, '')
+    fallbackSessions?.unsubscribe(termId)
   }
 })
 
@@ -576,9 +655,7 @@ ipcMain.handle('terminal:detach', (_event, termId: string) => {
   if (useDaemon && daemonClient?.isConnected()) {
     daemonClient.kill(termId).catch(() => {})
   } else {
-    fallbackPtys?.kill(termId)
-    ptyBuffers.delete(termId)
-    clearFallbackHistory(termId)
+    fallbackSessions?.kill(termId)
   }
 })
 
@@ -588,9 +665,7 @@ ipcMain.handle('terminal:get-process', async (_event, termId: string) => {
       const info = await daemonClient.getProcessInfo(termId)
       return info?.command ?? null
     }
-    const pty = fallbackPtys?.get(termId)
-    const info = pty ? resolveTerminalProcessInfo(pty.pid, pty.process) : null
-    return info?.command ?? pty?.process ?? null
+    return fallbackSessions?.getProcessInfo(termId)?.command ?? null
   } catch {
     return null
   }
@@ -601,8 +676,7 @@ ipcMain.handle('terminal:get-process-info', async (_event, termId: string) => {
     if (useDaemon && daemonClient?.isConnected()) {
       return daemonClient.getProcessInfo(termId)
     }
-    const pty = fallbackPtys?.get(termId)
-    return pty ? resolveTerminalProcessInfo(pty.pid, pty.process) : null
+    return fallbackSessions?.getProcessInfo(termId) ?? null
   } catch {
     return null
   }
@@ -613,9 +687,18 @@ ipcMain.handle('terminal:get-codex-title', async (_event, termId: string) => {
     if (useDaemon && daemonClient?.isConnected()) {
       return daemonClient.getCodexTitle(termId)
     }
-    const shellPid = fallbackPtys?.get(termId)?.pid ?? null
-    const codexPid = shellPid ? resolveCodexProcessPid(shellPid) : null
-    return codexPid ? resolveCodexThreadTitle(codexPid) : null
+    return fallbackSessions?.getCodexTitle(termId) ?? null
+  } catch {
+    return null
+  }
+})
+
+ipcMain.handle('terminal:get-scroll-status', async (_event, termId: string) => {
+  try {
+    if (useDaemon && daemonClient?.isConnected()) {
+      return await daemonClient.getScrollStatus(termId)
+    }
+    return fallbackSessions?.getScrollStatus(termId) ?? null
   } catch {
     return null
   }
@@ -1184,18 +1267,29 @@ ipcMain.handle('app:file-thumbnail', async (_event, filePath: string) => {
 ipcMain.on('terminal:write', (_event, termId: string, data: string) => {
   if (useDaemon && daemonClient?.isConnected()) {
     daemonClient.write(termId, data)
-  } else if (fallbackPtys?.has(termId)) {
-    fallbackPtys.write(termId, data)
+  } else if (fallbackSessions?.has(termId)) {
+    fallbackSessions.write(termId, data)
   }
 })
 
 ipcMain.on('terminal:resize', (_event, termId: string, cols: number, rows: number) => {
   if (useDaemon && daemonClient?.isConnected()) {
     daemonClient.resize(termId, cols, rows)
-  } else if (fallbackPtys?.has(termId)) {
-    fallbackPtys.resize(termId, cols, rows)
+  } else if (fallbackSessions?.has(termId)) {
+    fallbackSessions.resize(termId, cols, rows)
   }
 })
+
+ipcMain.handle(
+  'terminal:handle-wheel',
+  async (_event, termId: string, direction: 'up' | 'down', steps: number, sequence: string) => {
+    if (useDaemon && daemonClient?.isConnected()) {
+      daemonClient.handleWheel(termId, direction, steps, sequence)
+    } else if (fallbackSessions?.has(termId)) {
+      fallbackSessions.handleWheel(termId, direction, steps, sequence)
+    }
+  },
+)
 
 // ---------- Browser IPC ----------
 
@@ -1865,7 +1959,7 @@ function cleanupBrowserViews() {
 // ---------- Auto-updater ----------
 
 autoUpdater.autoDownload = true
-autoUpdater.autoInstallOnAppQuit = true
+autoUpdater.autoInstallOnAppQuit = false
 
 function isAutoUpdateEnabled(): boolean {
   try {
@@ -1884,6 +1978,60 @@ type UpdaterSupport = {
 }
 
 let cachedUpdaterSupport: UpdaterSupport | null = null
+// Parsed from release notes for the downloaded update. Publish a line like
+// `Cells-Daemon-Compat: 2` when a release should preserve daemon sessions.
+// Missing metadata is treated as "unknown", which means install will warn if
+// there are live daemon-managed processes.
+let pendingUpdateDaemonCompatVersion: number | null = null
+
+function extractReleaseNotesText(releaseNotes: unknown): string {
+  if (!releaseNotes) return ''
+  if (typeof releaseNotes === 'string') return releaseNotes
+  if (Array.isArray(releaseNotes)) {
+    return releaseNotes
+      .map((note) => {
+        if (typeof note === 'string') return note
+        if (note && typeof note === 'object' && 'note' in note) {
+          return String((note as { note?: unknown }).note ?? '')
+        }
+        return ''
+      })
+      .join('\n')
+  }
+  return String(releaseNotes)
+}
+
+function parsePendingUpdateDaemonCompatVersion(releaseNotes: unknown): number | null {
+  const text = extractReleaseNotesText(releaseNotes)
+  const match = text.match(/cells[-\s]?daemon[-\s]?compat\s*:\s*(\d+)/i)
+  return match ? Number.parseInt(match[1], 10) : null
+}
+
+async function getUpdateInstallImpact() {
+  if (!useDaemon || !daemonClient?.isConnected()) {
+    return { sessionCount: 0, requiresDaemonRestart: false, compatibilityKnown: true }
+  }
+
+  const [daemonVersion, termIds] = await Promise.all([
+    daemonClient.getDaemonVersion().catch(() => null),
+    daemonClient.list().catch(() => []),
+  ])
+  const sessionCount = termIds.length
+  if (sessionCount === 0) {
+    return { sessionCount, requiresDaemonRestart: false, compatibilityKnown: true }
+  }
+
+  if (!daemonVersion || pendingUpdateDaemonCompatVersion == null) {
+    return { sessionCount, requiresDaemonRestart: true, compatibilityKnown: false }
+  }
+
+  return {
+    sessionCount,
+    requiresDaemonRestart:
+      (daemonVersion.compatVersion ?? null) !== pendingUpdateDaemonCompatVersion,
+    compatibilityKnown: true,
+  }
+}
 
 function resolveUpdaterSupport(): UpdaterSupport {
   if (!app.isPackaged) {
@@ -1941,14 +2089,19 @@ function sendUpdateStatus(status: string, info?: any) {
 }
 
 autoUpdater.on('checking-for-update', () => sendUpdateStatus('checking'))
-autoUpdater.on('update-available', (info) =>
+autoUpdater.on('update-available', (info) => {
+  pendingUpdateDaemonCompatVersion = parsePendingUpdateDaemonCompatVersion(info.releaseNotes)
   sendUpdateStatus('available', {
     version: info.version,
     releaseNotes: info.releaseNotes,
     releaseDate: info.releaseDate,
-  }),
-)
-autoUpdater.on('update-not-available', () => sendUpdateStatus('up-to-date'))
+    daemonCompatVersion: pendingUpdateDaemonCompatVersion,
+  })
+})
+autoUpdater.on('update-not-available', () => {
+  pendingUpdateDaemonCompatVersion = null
+  sendUpdateStatus('up-to-date')
+})
 autoUpdater.on('download-progress', (progress) =>
   sendUpdateStatus('downloading', {
     percent: Math.round(progress.percent),
@@ -1957,13 +2110,15 @@ autoUpdater.on('download-progress', (progress) =>
 autoUpdater.on('update-downloaded', (info) =>
   sendUpdateStatus('ready', {
     version: info.version,
+    daemonCompatVersion: pendingUpdateDaemonCompatVersion,
   }),
 )
-autoUpdater.on('error', (err) =>
+autoUpdater.on('error', (err) => {
+  pendingUpdateDaemonCompatVersion = null
   sendUpdateStatus('error', {
     message: err.message,
-  }),
-)
+  })
+})
 
 function checkForAppUpdates() {
   if (!shouldEnableAutoUpdates()) return
@@ -1998,7 +2153,33 @@ ipcMain.handle('updater:download', () => {
 
 ipcMain.handle('updater:install', () => {
   if (!shouldEnableAutoUpdates()) return
-  autoUpdater.quitAndInstall()
+  return (async () => {
+    const impact = await getUpdateInstallImpact()
+    if (impact.requiresDaemonRestart && impact.sessionCount > 0) {
+      const messageBoxOptions = {
+        type: 'warning' as const,
+        buttons: ['Cancel', 'Install update'],
+        defaultId: 1,
+        cancelId: 0,
+        noLink: true,
+        message: 'Install update now?',
+        detail: impact.compatibilityKnown
+          ? `This update requires a PTY daemon restart and will kill ${impact.sessionCount} running process${impact.sessionCount === 1 ? '' : 'es'} managed by Cells.`
+          : `Cells could not verify whether this update is daemon-compatible. Installing now may restart the PTY daemon and kill ${impact.sessionCount} running process${impact.sessionCount === 1 ? '' : 'es'} managed by Cells.`,
+      }
+      const result =
+        mainWindow && !mainWindow.isDestroyed()
+          ? await dialog.showMessageBox(mainWindow, messageBoxOptions)
+          : await dialog.showMessageBox(messageBoxOptions)
+
+      if (result.response !== 1) {
+        return false
+      }
+    }
+
+    autoUpdater.quitAndInstall()
+    return true
+  })()
 })
 
 ipcMain.handle('updater:get-version', () => {
@@ -2024,6 +2205,7 @@ ipcMain.handle('daemon:get-status', async () => {
   const connected = useDaemon && (daemonClient?.isConnected() ?? false)
   let daemonVersion: {
     protocolVersion: number
+    backend?: 'tmux' | 'zellij' | null
     appVersion: string | null
     electronVersion: string | null
     nodeAbi: string | null
@@ -2042,10 +2224,9 @@ ipcMain.handle('daemon:get-status', async () => {
   }
   const currentElectronVersion = process.versions.electron ?? null
   const currentNodeAbi = process.versions.modules
-  const restartRecommended =
-    Boolean(connected) &&
-    Boolean(daemonVersion?.nodeAbi) &&
-    daemonVersion!.nodeAbi !== currentNodeAbi
+  const restartReason = connected
+    ? getDaemonRestartReason(daemonVersion, currentNodeAbi, selectedTerminalBackend)
+    : null
   return {
     enabled: useDaemon,
     connected,
@@ -2053,8 +2234,8 @@ ipcMain.handle('daemon:get-status', async () => {
     appVersion: app.getVersion(),
     currentElectronVersion,
     currentNodeAbi,
-    restartRecommended,
-    restartReason: restartRecommended ? 'node-abi-mismatch' : null,
+    restartRecommended: restartReason !== null,
+    restartReason,
     daemonVersion,
   }
 })
@@ -2103,40 +2284,38 @@ ipcMain.handle('daemon:kill-all', async () => {
 })
 
 ipcMain.handle('daemon:restart', async () => {
-  const daemonTermIds = daemonClient?.isConnected() ? await daemonClient.list().catch(() => []) : []
-  if (daemonClient?.isConnected()) {
-    await primeTerminalExitDetails(daemonTermIds, 'daemon-restart')
-    try {
-      await daemonClient.shutdown()
-    } catch {}
-    daemonClient.disconnect()
-    for (const termId of daemonTermIds) {
-      if (pendingTerminalExitDetails.has(termId)) {
-        forwardTerminalExit(termId)
-      }
+  daemonRestartInProgress = true
+  useDaemon = false
+  try {
+    if (daemonClient?.isConnected()) {
+      try {
+        await daemonClient.shutdown()
+      } catch {}
+      daemonClient.disconnect()
     }
+
+    const daemonScript = path.join(__dirname, 'pty-daemon.js')
+    refreshTerminalBackendSelection()
+    useDaemon = terminalBackendSupport.ok
+      ? await ensureDaemon(
+          STATE_DIR,
+          app.getVersion(),
+          process.execPath,
+          daemonScript,
+          selectedTerminalBackend,
+        )
+      : false
+
+    if (useDaemon) {
+      await connectDaemonClient()
+    } else if (terminalBackendSupport.ok) {
+      ensureFallbackSessions()
+    }
+
+    return useDaemon
+  } finally {
+    daemonRestartInProgress = false
   }
-  const daemonScript = path.join(__dirname, 'pty-daemon.js')
-  useDaemon = await ensureDaemon(STATE_DIR, app.getVersion(), process.execPath, daemonScript)
-  if (useDaemon) {
-    daemonClient = new PtyDaemonClient()
-    await daemonClient.connect(path.join(STATE_DIR, 'pty-daemon.sock'))
-    daemonClient.onData(forwardTerminalData)
-    daemonClient.onExit((termId) => {
-      void handleDaemonTerminalExit(termId)
-    })
-    daemonClient.onDisconnect(() => {
-      console.warn('PTY daemon disconnected, falling back to direct PTY mode')
-      useDaemon = false
-      if (!fallbackPtys) fallbackPtys = new PtyManager()
-      for (const termId of subscribedTerminals) {
-        forwardTerminalExit(termId, { reason: 'daemon-disconnect' })
-      }
-    })
-  } else if (!fallbackPtys) {
-    fallbackPtys = new PtyManager()
-  }
-  return useDaemon
 })
 
 // ---------- App lifecycle ----------
@@ -2148,33 +2327,32 @@ app.whenReady().then(async () => {
   // Start PTY daemon before creating windows
   try {
     console.log('Starting PTY daemon...')
-    const daemonScript = path.join(__dirname, 'pty-daemon.js')
-    useDaemon = await ensureDaemon(STATE_DIR, app.getVersion(), process.execPath, daemonScript)
-    console.log('PTY daemon result:', useDaemon)
-    if (useDaemon) {
-      daemonClient = new PtyDaemonClient()
-      await daemonClient.connect(path.join(STATE_DIR, 'pty-daemon.sock'))
-      daemonClient.onData(forwardTerminalData)
-      daemonClient.onExit((termId) => {
-        void handleDaemonTerminalExit(termId)
-      })
-      daemonClient.onDisconnect(() => {
-        // Daemon crashed — fall back to direct PTY mode
-        console.warn('PTY daemon disconnected, falling back to direct PTY mode')
-        useDaemon = false
-        if (!fallbackPtys) fallbackPtys = new PtyManager()
-        // Notify renderer that all daemon-managed terminals are gone
-        for (const termId of subscribedTerminals) {
-          forwardTerminalExit(termId, { reason: 'daemon-disconnect' })
-        }
-      })
+    refreshTerminalBackendSelection()
+    if (terminalBackendSupport.ok) {
+      const daemonScript = path.join(__dirname, 'pty-daemon.js')
+      useDaemon = await ensureDaemon(
+        STATE_DIR,
+        app.getVersion(),
+        process.execPath,
+        daemonScript,
+        selectedTerminalBackend,
+      )
+      console.log('PTY daemon result:', useDaemon)
+      if (useDaemon) {
+        await connectDaemonClient()
+      } else {
+        ensureFallbackSessions()
+      }
     } else {
-      fallbackPtys = new PtyManager()
+      useDaemon = false
+      console.warn('Skipping PTY daemon startup:', describeSelectedBackendRequirement())
     }
   } catch (err) {
     console.error('PTY daemon setup failed:', err)
     useDaemon = false
-    fallbackPtys = new PtyManager()
+    if (terminalBackendSupport.ok) {
+      ensureFallbackSessions()
+    }
   }
 
   // Set dock icon on macOS (for dev; production uses the bundled .icns)
@@ -2248,13 +2426,18 @@ app.whenReady().then(async () => {
   }
 
   createWindow()
+  if (!terminalBackendSupport.ok) {
+    setTimeout(() => {
+      void showTerminalBackendRequirementDialog()
+    }, 300)
+  }
 
   setTimeout(() => {
     startMcpBridge(MCP_BRIDGE_SOCKET, {
       browserViews,
       browserIdToProject,
       getDaemonClient: () => daemonClient,
-      getFallbackPtys: () => fallbackPtys,
+      getFallbackSessions: () => fallbackSessions,
       getUseDaemon: () => useDaemon,
       getMainWindow: () => mainWindow,
       stateFile: STATE_FILE,
@@ -2290,15 +2473,15 @@ app.on('before-quit', () => {
     daemonClient.disconnect()
     console.log('before-quit: disconnected from daemon, PTYs kept alive')
   } else {
-    console.log('before-quit: killing fallback PTYs')
-    fallbackPtys?.cleanup()
+    console.log(`before-quit: detaching fallback ${selectedTerminalBackend} clients`)
+    fallbackSessions?.cleanup()
   }
 })
 
 app.on('window-all-closed', () => {
   cleanupBrowserViews()
   if (!useDaemon) {
-    fallbackPtys?.cleanup()
+    fallbackSessions?.cleanup()
   }
   app.quit()
 })
@@ -2306,5 +2489,10 @@ app.on('window-all-closed', () => {
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) {
     createWindow()
+    if (!terminalBackendSupport.ok) {
+      setTimeout(() => {
+        void showTerminalBackendRequirementDialog()
+      }, 300)
+    }
   }
 })

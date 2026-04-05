@@ -18,9 +18,12 @@ const api: CellsAPI = {
     write: (termId: string, data: string) => ipcRenderer.send('terminal:write', termId, data),
     resize: (termId: string, cols: number, rows: number) =>
       ipcRenderer.send('terminal:resize', termId, cols, rows),
+    handleWheel: (termId: string, direction: 'up' | 'down', steps: number, sequence: string) =>
+      ipcRenderer.invoke('terminal:handle-wheel', termId, direction, steps, sequence),
     getProcess: (termId: string) => ipcRenderer.invoke('terminal:get-process', termId),
     getProcessInfo: (termId: string) => ipcRenderer.invoke('terminal:get-process-info', termId),
     getCodexTitle: (termId: string) => ipcRenderer.invoke('terminal:get-codex-title', termId),
+    getScrollStatus: (termId: string) => ipcRenderer.invoke('terminal:get-scroll-status', termId),
     getHistory: (termId: string) => ipcRenderer.invoke('terminal:get-history', termId),
     getHistoryPage: (
       termId: string,
@@ -158,6 +161,11 @@ const api: CellsAPI = {
       ipcRenderer.on('app:before-quit', handler)
       return () => ipcRenderer.removeListener('app:before-quit', handler)
     },
+    onDaemonDisconnected: (callback: () => void) => {
+      const handler = () => callback()
+      ipcRenderer.on('app:daemon-disconnected', handler)
+      return () => ipcRenderer.removeListener('app:daemon-disconnected', handler)
+    },
     onNewTerminal: (callback: () => void) => {
       const handler = () => callback()
       ipcRenderer.on('app:new-terminal', handler)
@@ -291,7 +299,7 @@ const api: CellsAPI = {
   updater: {
     check: () => ipcRenderer.invoke('updater:check'),
     download: () => ipcRenderer.invoke('updater:download'),
-    install: () => ipcRenderer.invoke('updater:install'),
+    install: () => ipcRenderer.invoke('updater:install') as Promise<boolean>,
     getVersion: () => ipcRenderer.invoke('updater:get-version') as Promise<string>,
     getSupport: () =>
       ipcRenderer.invoke('updater:get-support') as Promise<{

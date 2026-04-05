@@ -8,6 +8,7 @@ export interface CanvasTransform {
 
 export type TitleBarPosition = 'top' | 'bottom'
 export type AgentStatus = 'active' | 'unread' | 'done' | null
+export type TerminalSessionBackend = 'zellij' | 'tmux'
 export type TerminalExitReason =
   | 'process-exit'
   | 'killed'
@@ -104,6 +105,7 @@ export interface ProjectsState {
   version: 2
   activeProjectId: string | null
   projects: Project[]
+  terminalSessionBackend?: TerminalSessionBackend
   terminalTheme?: string
   fontSize?: number
   fontFamily?: string
@@ -219,14 +221,26 @@ export interface CellsAPI {
       cols: number,
       rows: number,
       cwd?: string,
-    ): Promise<{ reattached: boolean; buffer: string }>
+    ): Promise<{ reattached: boolean; buffer: string; backend: 'replay' | 'tmux' | 'zellij' }>
     unsubscribe(termId: string): Promise<void>
     detach(termId: string): Promise<void>
     write(termId: string, data: string): void
     resize(termId: string, cols: number, rows: number): void
+    handleWheel(
+      termId: string,
+      direction: 'up' | 'down',
+      steps: number,
+      sequence: string,
+    ): Promise<void>
     getProcess(termId: string): Promise<string | null>
     getProcessInfo(termId: string): Promise<TerminalProcessInfo | null>
     getCodexTitle(termId: string): Promise<string | null>
+    getScrollStatus(termId: string): Promise<{
+      backend: 'replay' | 'tmux' | 'zellij'
+      paneInMode: boolean
+      scrollPosition: number
+      historySize: number
+    } | null>
     getHistory(termId: string): Promise<string>
     getHistoryPage(
       termId: string,
@@ -296,7 +310,7 @@ export interface CellsAPI {
     }>
     check(): Promise<void>
     download(): Promise<void>
-    install(): Promise<void>
+    install(): Promise<boolean>
     getVersion(): Promise<string>
     setAutoUpdate(enabled: boolean): Promise<void>
     onStatus(callback: (status: string, info?: any) => void): () => void
@@ -369,6 +383,7 @@ export interface CellsAPI {
   app: {
     onWindowFocus(callback: (focused: boolean) => void): () => void
     onBeforeQuit(callback: () => void): () => void
+    onDaemonDisconnected(callback: () => void): () => void
     onNewTerminal(callback: () => void): () => void
     onCloseTerminal(callback: () => void): () => void
     toggleMaximize(): Promise<void>

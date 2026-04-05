@@ -15,10 +15,15 @@ type Renderable = Parameters<CanvasRenderer['render']>[0]
 type ScrollbackProvider = NonNullable<Parameters<CanvasRenderer['render']>[3]>
 import { useStore, consumePendingCommand, consumePendingWorktreePath } from '@/lib/store'
 import { DEFAULT_TERMINAL_CURSOR_SETTINGS, type TerminalCursorStyle } from '@/lib/terminal-cursor'
+import { isServerOwnedTerminalBackend } from '@/lib/terminal-session-backend'
 import { DEFAULT_TERMINAL_SCROLLBACK_LINES } from '@/lib/terminal-scrollback'
-import { getTerminalTheme } from '@/lib/terminal-themes'
+import {
+  getTerminalIndexedColor,
+  getTerminalTheme,
+  hexToRgb,
+  rgbToXtermQueryColor,
+} from '@/lib/terminal-themes'
 import { cn } from '@/lib/utils'
-import { inferAgentFromTitle } from '@/lib/agent-command'
 import type { TerminalPerfSample } from '@/types'
 
 // Initialize WASM lazily on first terminal mount
@@ -39,6 +44,45 @@ function patchGhosttyRenderer() {
 
   const proto = CanvasRenderer.prototype as any
   const originalRenderCursor = proto.renderCursor
+  const originalRenderCellText = proto.renderCellText
+
+  function colorDistance(
+    left: { r: number; g: number; b: number },
+    right: { r: number; g: number; b: number },
+  ) {
+    return Math.sqrt((left.r - right.r) ** 2 + (left.g - right.g) ** 2 + (left.b - right.b) ** 2)
+  }
+
+  function isDarkThemeBackground(theme: { background?: string }) {
+    const rgb = theme.background ? hexToRgb(theme.background) : null
+    if (!rgb) return false
+    return rgb.r + rgb.g + rgb.b < 3 * 128
+  }
+
+  function clampUnreadableForeground(
+    theme: { background?: string; brightBlack?: string; __cellsBackend?: string | null },
+    color: { r: number; g: number; b: number },
+  ) {
+    const background = theme.background ? hexToRgb(theme.background) : null
+    const fallback = theme.brightBlack ? hexToRgb(theme.brightBlack) : null
+    if (!background || !fallback || !isDarkThemeBackground(theme)) return color
+    if (theme.__cellsBackend !== 'zellij') return color
+
+    // Some apps emit literal black or near-black foregrounds even on dark
+    // themes. Native terminals often keep this legible via palette/contrast
+    // handling; ghostty-web currently paints the raw RGB and the text vanishes.
+    if (colorDistance(color, background) < 84 && color.r + color.g + color.b < 180) {
+      return fallback
+    }
+
+    return color
+  }
+
+  function getFaintAlpha(theme: { __cellsBackend?: string | null }) {
+    // Zellij/Codex uses dim styling more aggressively than tmux/native Ghostty.
+    // ghostty-web's default 0.5 opacity makes those rows look washed out.
+    return theme.__cellsBackend === 'zellij' ? 0.78 : 0.5
+  }
 
   proto.renderCursor = function renderCursorPatched(this: any, x: number, y: number) {
     if (this.cursorStyle !== 'block') {
@@ -60,13 +104,80 @@ function patchGhosttyRenderer() {
     if (cell.flags & CellFlags.BOLD) font += 'bold '
     this.ctx.font = `${font}${this.fontSize}px ${this.fontFamily}`
     this.ctx.fillStyle = this.theme.cursorAccent ?? this.theme.background
-    if (cell.flags & CellFlags.FAINT) this.ctx.globalAlpha = 0.5
+    if (cell.flags & CellFlags.FAINT) this.ctx.globalAlpha = getFaintAlpha(this.theme)
 
     const grapheme = this.currentBuffer?.getGraphemeString?.(y, x)
     const text = grapheme || String.fromCodePoint(cell.codepoint || 32)
     this.ctx.fillText(text, cursorX, cursorY + this.metrics.baseline)
 
     if (cell.flags & CellFlags.FAINT) this.ctx.globalAlpha = 1
+  }
+
+  proto.renderCellText = function renderCellTextPatched(
+    this: any,
+    cell: any,
+    x: number,
+    y: number,
+  ) {
+    if (!cell || cell.flags & CellFlags.INVISIBLE) {
+      return originalRenderCellText.call(this, cell, x, y)
+    }
+
+    const px = x * this.metrics.width
+    const py = y * this.metrics.height
+    const width = this.metrics.width * cell.width
+    const inSelection = this.isInSelection(x, y)
+    let font = ''
+    if (cell.flags & CellFlags.ITALIC) font += 'italic '
+    if (cell.flags & CellFlags.BOLD) font += 'bold '
+    this.ctx.font = `${font}${this.fontSize}px ${this.fontFamily}`
+
+    if (inSelection) {
+      this.ctx.fillStyle = this.theme.selectionForeground
+    } else {
+      let r = cell.fg_r
+      let g = cell.fg_g
+      let b = cell.fg_b
+      if (cell.flags & CellFlags.INVERSE) {
+        r = cell.bg_r
+        g = cell.bg_g
+        b = cell.bg_b
+      }
+      const clamped = clampUnreadableForeground(this.theme, { r, g, b })
+      this.ctx.fillStyle = this.rgbToCSS(clamped.r, clamped.g, clamped.b)
+    }
+
+    if (cell.flags & CellFlags.FAINT) this.ctx.globalAlpha = getFaintAlpha(this.theme)
+
+    let text: string
+    if (cell.grapheme_len > 0 && this.currentBuffer?.getGraphemeString) {
+      text = this.currentBuffer.getGraphemeString(y, x)
+    } else {
+      text = String.fromCodePoint(cell.codepoint || 32)
+    }
+    this.ctx.fillText(text, px, py + this.metrics.baseline)
+
+    if (cell.flags & CellFlags.FAINT) this.ctx.globalAlpha = 1
+
+    if (cell.codepoint && cell.flags & CellFlags.UNDERLINE) {
+      const underlineY = py + this.metrics.baseline + 2
+      this.ctx.strokeStyle = this.ctx.fillStyle
+      this.ctx.lineWidth = 1
+      this.ctx.beginPath()
+      this.ctx.moveTo(px, underlineY)
+      this.ctx.lineTo(px + width, underlineY)
+      this.ctx.stroke()
+    }
+
+    if (cell.codepoint && cell.flags & CellFlags.STRIKETHROUGH) {
+      const strikeY = py + this.metrics.height / 2
+      this.ctx.strokeStyle = this.ctx.fillStyle
+      this.ctx.lineWidth = 1
+      this.ctx.beginPath()
+      this.ctx.moveTo(px, strikeY)
+      this.ctx.lineTo(px + width, strikeY)
+      this.ctx.stroke()
+    }
   }
 }
 
@@ -197,13 +308,65 @@ function requestTerminalFullRender(term: Terminal) {
   Reflect.set(term, '__cellsPendingFullRender', true)
 }
 
+function usesServerOwnedTerminalState(term: Terminal | null | undefined) {
+  return Reflect.get(term as object, '__cellsUsesServerOwnedState') === true
+}
+
+function getTerminalBackend(term: Terminal | null | undefined) {
+  const backend = Reflect.get(term as object, '__cellsTerminalBackend')
+  return backend === 'tmux' || backend === 'zellij' || backend === 'replay' ? backend : null
+}
+
+function getMouseWheelSequencePayload(
+  event: WheelEvent,
+  term: Terminal,
+  element: HTMLElement,
+): { direction: 'up' | 'down'; steps: number; sequence: string } | null {
+  if (!Number.isFinite(event.deltaY) || event.deltaY === 0) return null
+
+  const rect = element.getBoundingClientRect()
+  if (rect.width <= 0 || rect.height <= 0 || term.cols <= 0 || term.rows <= 0) return null
+
+  const cellWidth = rect.width / term.cols
+  const cellHeight = rect.height / term.rows
+  const x = Math.max(
+    1,
+    Math.min(term.cols, Math.floor((event.clientX - rect.left) / cellWidth) + 1),
+  )
+  const y = Math.max(
+    1,
+    Math.min(term.rows, Math.floor((event.clientY - rect.top) / cellHeight) + 1),
+  )
+
+  let modifier = 0
+  if (event.shiftKey) modifier += 4
+  if (event.altKey) modifier += 8
+  if (event.ctrlKey) modifier += 16
+
+  const buttonBase = event.deltaY < 0 ? 64 : 65
+  const button = buttonBase + modifier
+  const stepMagnitude =
+    event.deltaMode === WheelEvent.DOM_DELTA_LINE
+      ? Math.abs(event.deltaY)
+      : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+        ? Math.abs(event.deltaY) * term.rows
+        : Math.abs(event.deltaY / 33)
+  const steps = Math.max(1, Math.min(5, Math.round(stepMagnitude)))
+
+  return {
+    direction: event.deltaY < 0 ? 'up' : 'down',
+    steps,
+    sequence: Array.from({ length: steps }, () => `\x1b[<${button};${x};${y}M`).join(''),
+  }
+}
+
 function consumeTerminalFullRenderCount(term: Terminal) {
   const forcedFullRenderCount = Number(Reflect.get(term, '__cellsPerfForcedFullRenderCount') ?? 0)
   Reflect.set(term, '__cellsPerfForcedFullRenderCount', 0)
   return forcedFullRenderCount
 }
 
-function buildTheme(themeName: string) {
+function buildTheme(themeName: string, backend?: 'tmux' | 'zellij' | 'replay' | null) {
   const theme = getTerminalTheme(themeName)
   return {
     background: theme.background,
@@ -228,6 +391,134 @@ function buildTheme(themeName: string) {
     brightMagenta: theme.brightMagenta,
     brightCyan: theme.brightCyan,
     brightWhite: theme.brightWhite,
+    __cellsBackend: backend ?? null,
+  }
+}
+
+function buildPaletteQueryReply(command: string, payload: string, themeName: string) {
+  const theme = getTerminalTheme(themeName)
+  const wrapOsc = (body: string) => `\x1b]${body}\x1b\\`
+
+  if (command === '10' && payload === '?') {
+    const color = hexToRgb(theme.foreground)
+    return color ? wrapOsc(`10;${rgbToXtermQueryColor(color)}`) : ''
+  }
+
+  if (command === '11' && payload === '?') {
+    const color = hexToRgb(theme.background)
+    return color ? wrapOsc(`11;${rgbToXtermQueryColor(color)}`) : ''
+  }
+
+  if (command === '12' && payload === '?') {
+    const color = hexToRgb(theme.cursor)
+    return color ? wrapOsc(`12;${rgbToXtermQueryColor(color)}`) : ''
+  }
+
+  if (command === '4') {
+    const [indexText, spec] = payload.split(';')
+    if (spec !== '?') return ''
+    const index = Number.parseInt(indexText ?? '', 10)
+    const hex = getTerminalIndexedColor(theme, index)
+    const color = hex ? hexToRgb(hex) : null
+    return color ? wrapOsc(`4;${index};${rgbToXtermQueryColor(color)}`) : ''
+  }
+
+  return ''
+}
+
+function buildWindowQueryReply(query: string, term: Terminal, element: HTMLElement) {
+  const rect = element.getBoundingClientRect()
+  const width = Math.max(0, Math.round(rect.width))
+  const height = Math.max(0, Math.round(rect.height))
+  const cellWidth = term.cols > 0 ? Math.max(1, Math.round(rect.width / term.cols)) : 0
+  const cellHeight = term.rows > 0 ? Math.max(1, Math.round(rect.height / term.rows)) : 0
+
+  switch (query) {
+    case '\x1b[14t':
+      return `\x1b[4;${height};${width}t`
+    case '\x1b[16t':
+      return `\x1b[6;${cellHeight};${cellWidth}t`
+    case '\x1b[18t':
+      return `\x1b[8;${term.rows};${term.cols}t`
+    case '\x1b[?2026$p':
+      // Report synchronized output as reset rather than unsupported so
+      // Zellij can continue without stalling on the query.
+      return '\x1b[?2026;2$y'
+    default:
+      return ''
+  }
+}
+
+function splitZellijHostQueries(
+  chunk: string,
+  term: Terminal,
+  element: HTMLElement,
+  themeName: string,
+) {
+  let display = ''
+  let replies = ''
+  let index = 0
+
+  while (index < chunk.length) {
+    if (chunk[index] !== '\x1b') {
+      display += chunk[index]
+      index += 1
+      continue
+    }
+
+    if (chunk.startsWith('\x1b]', index)) {
+      const belIndex = chunk.indexOf('\x07', index + 2)
+      const stIndex = chunk.indexOf('\x1b\\', index + 2)
+      const terminator =
+        belIndex !== -1 && (stIndex === -1 || belIndex < stIndex)
+          ? { endIndex: belIndex, terminatorLength: 1 }
+          : stIndex !== -1
+            ? { endIndex: stIndex, terminatorLength: 2 }
+            : null
+      if (!terminator) {
+        break
+      }
+
+      const { endIndex, terminatorLength } = terminator
+      const body = chunk.slice(index + 2, endIndex)
+      const separator = body.indexOf(';')
+      if (separator !== -1) {
+        const command = body.slice(0, separator)
+        const payload = body.slice(separator + 1)
+        const reply = buildPaletteQueryReply(command, payload, themeName)
+        if (reply) {
+          replies += reply
+          index = endIndex + terminatorLength
+          continue
+        }
+      }
+
+      display += chunk.slice(index, endIndex + terminatorLength)
+      index = endIndex + terminatorLength
+      continue
+    }
+
+    const knownWindowQueries = ['\x1b[14t', '\x1b[16t', '\x1b[18t', '\x1b[?2026$p']
+    const matchedQuery = knownWindowQueries.find((query) => chunk.startsWith(query, index))
+    if (matchedQuery) {
+      replies += buildWindowQueryReply(matchedQuery, term, element)
+      index += matchedQuery.length
+      continue
+    }
+
+    const maybePartialWindowQuery = knownWindowQueries.find((query) =>
+      query.startsWith(chunk.slice(index)),
+    )
+    if (maybePartialWindowQuery) break
+
+    display += chunk[index]
+    index += 1
+  }
+
+  return {
+    display,
+    replies,
+    remainder: chunk.slice(index),
   }
 }
 
@@ -241,6 +532,11 @@ function applyThemeToTerminal(term: Terminal, theme: ReturnType<typeof buildThem
   if (term.renderer && term.wasmTerm) {
     term.renderer.render(term.wasmTerm, true, term.viewportY, term as ScrollbackProvider, 0)
   }
+}
+
+function refreshTerminalTheme(term: Terminal | null | undefined, themeName: string) {
+  if (!term) return
+  applyThemeToTerminal(term, buildTheme(themeName, getTerminalBackend(term)))
 }
 
 function replaceLinkProviders(term: Terminal, providers: ILinkProvider[]) {
@@ -298,22 +594,15 @@ async function replayPagedTerminalHistory(termId: string, term: Terminal) {
   }
 }
 
-function shouldPreferSnapshotRestoreForTerminal(terminal: {
-  agent?: AgentName | null
-  title?: string | null
-  customTitle?: string | null
-}) {
-  if (terminal.agent === 'codex') return true
-  const inferred = inferAgentFromTitle(terminal.customTitle ?? terminal.title ?? '')
-  return inferred === 'codex'
+function shouldPreferSnapshotRestoreForTerminal(term: Terminal | null | undefined) {
+  // Alternate-screen apps own the visible viewport and often redraw from a
+  // blank frame. Replaying raw shell history into them causes more corruption
+  // than value, so restore only the currently visible snapshot there.
+  return term?.buffer.active.type === 'alternate'
 }
 
-function shouldAvoidSyntheticResizeForTerminal(terminal: {
-  agent?: AgentName | null
-  title?: string | null
-  customTitle?: string | null
-}) {
-  return shouldPreferSnapshotRestoreForTerminal(terminal)
+function shouldAvoidSyntheticResizeForTerminal(term: Terminal | null | undefined) {
+  return shouldPreferSnapshotRestoreForTerminal(term)
 }
 
 interface SearchMatch {
@@ -651,8 +940,7 @@ export function getTerminalRestoreSnapshot(termId: string): string | null {
   const term = cached?.term
   if (!term) return null
 
-  const terminalState = useStore.getState().terminals.find((terminal) => terminal.id === termId)
-  if (terminalState && shouldPreferSnapshotRestoreForTerminal(terminalState)) {
+  if (shouldPreferSnapshotRestoreForTerminal(term)) {
     return serializeVisibleTerminalSnapshot(term, useStore.getState().terminalTheme)
   }
 
@@ -688,9 +976,8 @@ export function getTerminalRestoreSnapshot(termId: string): string | null {
 
 /** Apply a theme to every cached terminal instance (mounted or not). */
 export function applyThemeToAllTerminals(themeName: string) {
-  const theme = buildTheme(themeName)
   for (const [, cached] of terminalCache) {
-    applyThemeToTerminal(cached.term, theme)
+    applyThemeToTerminal(cached.term, buildTheme(themeName, getTerminalBackend(cached.term)))
   }
 }
 
@@ -707,12 +994,13 @@ export function destroyCachedTerminal(termId: string) {
 
 /** Repaint a terminal — recreates the renderer while keeping the shell alive. */
 export function reloadTerminal(termId: string) {
-  const snapshot = getTerminalRestoreSnapshot(termId)
-  if (snapshot !== null) {
-    terminalReloadSnapshots.set(termId, snapshot)
-  } else {
-    terminalReloadSnapshots.delete(termId)
-  }
+  const cached = terminalCache.get(termId)
+  const snapshot =
+    cached?.term && shouldPreferSnapshotRestoreForTerminal(cached.term)
+      ? getTerminalRestoreSnapshot(termId)
+      : null
+  if (snapshot !== null) terminalReloadSnapshots.set(termId, snapshot)
+  else terminalReloadSnapshots.delete(termId)
 
   void window.cells.terminal.unsubscribe(termId).finally(() => {
     destroyCachedTerminal(termId)
@@ -893,8 +1181,23 @@ function summarizeTitle(input: string, maxLength = 60) {
   return `${collapsed.slice(0, maxLength - 1).trimEnd()}…`
 }
 
+function sanitizeBackendLeakedTitle(input: string) {
+  const collapsed = input.replace(/\s+/g, ' ').trim()
+  if (!collapsed) return ''
+
+  // Zellij can leak its hidden session name into pane titles, for example:
+  //   czba1d9888fa56fe2207bc8ce | * Claude Code
+  // Strip the private Cells session prefix and the transient zellij marker.
+  const withoutCellsSessionPrefix = collapsed.replace(
+    /^(?:cz[a-f0-9]{8,}|cells[-_][^\s|]+)\s*\|\s*(?:[*+-]\s*)?/i,
+    '',
+  )
+
+  return withoutCellsSessionPrefix.trim()
+}
+
 function formatAgentWindowTitle(agent: AgentName, title: string, maxLength = 60) {
-  const summary = summarizeTitle(title, maxLength)
+  const summary = summarizeTitle(sanitizeBackendLeakedTitle(title), maxLength)
   return summary ? `${getAgentLabel(agent)}: ${summary}` : getAgentLabel(agent)
 }
 
@@ -1129,6 +1432,7 @@ export function CellTerminal({
   const inferredAgentRef = useRef<AgentName | null>(null)
   const detectedAgentRef = useRef<AgentName | null>(null)
   const inputBufferRef = useRef('')
+  const backendQueryRemainderRef = useRef('')
   const lastInferredTitleRef = useRef<string | null>(null)
   const lastAgentDataRef = useRef<number>(0) // timestamp of last PTY data while agent active
   const lastCodexTitleDataRef = useRef<number>(-1)
@@ -1145,6 +1449,11 @@ export function CellTerminal({
   const searchLimitHitRef = useRef(false)
   const [dropActive, setDropActive] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
+  const [scrollStatus, setScrollStatus] = useState<{
+    paneInMode: boolean
+    scrollPosition: number
+    historySize: number
+  } | null>(null)
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -1155,6 +1464,25 @@ export function CellTerminal({
     window.addEventListener('terminal-reload', handler)
     return () => window.removeEventListener('terminal-reload', handler)
   }, [termId])
+
+  const refitTerminalToLoadedFont = useCallback(
+    (term: Terminal | null, fitAddon: FitAddon | null) => {
+      if (!term || !fitAddon) return
+      requestAnimationFrame(() => {
+        const renderer = Reflect.get(term, 'renderer') as
+          | {
+              remeasureFont?: () => void
+              setFontSize?: (size: number) => void
+              setFontFamily?: (family: string) => void
+            }
+          | undefined
+        renderer?.remeasureFont?.()
+        fitAddon.fit()
+        forceTerminalRepaint(term)
+      })
+    },
+    [],
+  )
 
   const getLiveTerminal = useCallback(
     () => terminalCache.get(termId)?.term ?? terminalRef.current,
@@ -1335,9 +1663,10 @@ export function CellTerminal({
   }, [getLiveTerminal, isFocused, termId, terminalFindOpen, terminalFindQuery])
 
   const setInferredTitle = useCallback((title: string) => {
-    if (!title || title === lastInferredTitleRef.current) return
-    lastInferredTitleRef.current = title
-    onTitleChangeRef.current?.(title)
+    const sanitized = sanitizeBackendLeakedTitle(title)
+    if (!sanitized || sanitized === lastInferredTitleRef.current) return
+    lastInferredTitleRef.current = sanitized
+    onTitleChangeRef.current?.(sanitized)
   }, [])
 
   const handleSubmittedInput = useCallback(
@@ -1451,12 +1780,8 @@ export function CellTerminal({
       // Check cache first — reattach if exists
       const cached = terminalCache.get(termId)
       if (cached) {
-        const terminalState = useStore
-          .getState()
-          .terminals.find((terminal) => terminal.id === termId)
-        const avoidSyntheticResize = Boolean(
-          terminalState && shouldAvoidSyntheticResizeForTerminal(terminalState),
-        )
+        const avoidSyntheticResize = shouldAvoidSyntheticResizeForTerminal(cached.term)
+        const backendAttached = Reflect.get(cached.term, '__cellsBackendAttached') === true
         patchTerminalViewportPreservation(cached.term)
         patchTerminalFullRenderScheduler(cached.term)
         // Move the existing DOM back into our container
@@ -1475,25 +1800,46 @@ export function CellTerminal({
             resolve()
           })
         })
+        void document.fonts?.ready.then(() => {
+          if (cancelled) return
+          refitTerminalToLoadedFont(cached.term, cached.fitAddon)
+        })
 
         const dims = cached.fitAddon.proposeDimensions()
-        let result: Awaited<ReturnType<typeof window.cells.terminal.attach>>
-        try {
-          result = await window.cells.terminal.attach(
-            termId,
-            dims?.cols ?? 80,
-            dims?.rows ?? 24,
-            useStore.getState().getActiveProjectPath(),
-          )
-        } catch (error) {
-          finishTerminalReplay(cached.term)
-          throw error
+        let result: Awaited<ReturnType<typeof window.cells.terminal.attach>> | null = null
+        if (!backendAttached) {
+          try {
+            result = await window.cells.terminal.attach(
+              termId,
+              dims?.cols ?? 80,
+              dims?.rows ?? 24,
+              useStore.getState().getActiveProjectPath(),
+            )
+          } catch (error) {
+            finishTerminalReplay(cached.term)
+            throw error
+          }
+
+          Reflect.set(cached.term, '__cellsBackendAttached', true)
+          Reflect.set(cached.term, '__cellsTerminalBackend', result?.backend ?? null)
+          const usesServerOwnedState = isServerOwnedTerminalBackend(result?.backend)
+          Reflect.set(cached.term, '__cellsUsesServerOwnedState', usesServerOwnedState)
+          refreshTerminalTheme(cached.term, themeNameRef.current)
+          if (usesServerOwnedState) {
+            // A real backend reattach is different from a normal cached remount:
+            // reset local emulator state and let the backend redraw the live pane.
+            cached.term.reset()
+            cached.term.scrollToBottom()
+          }
+
+          // Replay any data buffered while this terminal was in another project.
+          // tmux/Zellij redraw themselves through the attached client PTY instead
+          // of sending a detached replay buffer.
+          if (!usesServerOwnedState && result?.buffer) {
+            cached.term.write(result.buffer)
+          }
         }
 
-        // Replay any data buffered while this terminal was in another project
-        if (result?.buffer) {
-          cached.term.write(result.buffer)
-        }
         const replayChunk = finishTerminalReplay(cached.term)
         if (replayChunk) {
           cached.term.write(replayChunk)
@@ -1511,7 +1857,8 @@ export function CellTerminal({
         })
         forceTerminalRepaint(cached.term)
 
-        if (result?.reattached && dims && !avoidSyntheticResize) {
+        const usesServerOwnedState = usesServerOwnedTerminalState(cached.term)
+        if (result?.reattached && dims && !avoidSyntheticResize && !usesServerOwnedState) {
           bumpPtySize(dims.cols, dims.rows)
         }
 
@@ -1524,6 +1871,7 @@ export function CellTerminal({
       if (cancelled) return
 
       const wrapper = document.createElement('div')
+      wrapper.className = 'cell-terminal-surface'
       wrapper.style.width = '100%'
       wrapper.style.height = '100%'
       wrapper.style.backgroundColor = buildTheme(themeNameRef.current).background
@@ -1619,6 +1967,28 @@ export function CellTerminal({
 
       term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
         const normalizedKey = e.key.length === 1 ? e.key.toLowerCase() : e.key
+        const usesServerOwnedState = usesServerOwnedTerminalState(term)
+
+        if (
+          usesServerOwnedState &&
+          term.viewportY > 0 &&
+          !e.metaKey &&
+          !e.ctrlKey &&
+          !e.altKey &&
+          [
+            'ArrowUp',
+            'ArrowDown',
+            'ArrowLeft',
+            'ArrowRight',
+            'PageUp',
+            'PageDown',
+            'Home',
+            'End',
+          ].includes(e.key)
+        ) {
+          term.scrollToBottom()
+          ;(term as any).targetViewportY = 0
+        }
 
         if (e.metaKey) {
           const metaShortcuts = [
@@ -1732,12 +2102,36 @@ export function CellTerminal({
         return false
       })
 
+      term.attachCustomWheelEventHandler((e: WheelEvent) => {
+        if (!usesServerOwnedTerminalState(term)) return false
+        if (e.metaKey || e.ctrlKey) return false
+
+        const payload = getMouseWheelSequencePayload(e, term, wrapper)
+        if (payload) {
+          void window.cells.terminal.handleWheel(
+            termId,
+            payload.direction,
+            payload.steps,
+            payload.sequence,
+          )
+        }
+        if (term.viewportY > 0) {
+          term.scrollToBottom()
+          ;(term as any).targetViewportY = 0
+        }
+        return true
+      })
+
       // Fit in next frame so the container has layout, then attach with accurate dims
       await new Promise<void>((resolve) => {
         requestAnimationFrame(() => {
           if (!cancelled) fitAddon.fit()
           resolve()
         })
+      })
+      void document.fonts?.ready.then(() => {
+        if (cancelled) return
+        refitTerminalToLoadedFont(term, fitAddon)
       })
       if (cancelled) {
         term.dispose()
@@ -1799,7 +2193,8 @@ export function CellTerminal({
 
         // If the user has scrolled up past the threshold, preserve their
         // viewport position instead of letting writeInternal snap to bottom.
-        const scrolledUp = term.viewportY > SCROLL_LOCK_THRESHOLD
+        const scrolledUp =
+          !usesServerOwnedTerminalState(term) && term.viewportY > SCROLL_LOCK_THRESHOLD
         const savedY = term.viewportY
         const savedTargetY = (term as any).targetViewportY ?? term.viewportY
         const savedLen = term.getScrollbackLength()
@@ -1817,6 +2212,9 @@ export function CellTerminal({
           // the user keeps looking at the same content.
           ;(term as any).viewportY = Math.min(newLen, savedY + scrollbackDelta)
           ;(term as any).targetViewportY = Math.min(newLen, savedTargetY + scrollbackDelta)
+        } else if (usesServerOwnedTerminalState(term)) {
+          term.scrollToBottom()
+          ;(term as any).targetViewportY = 0
         } else if (termCanvas) {
           // At the bottom — clear any sub-pixel scroll transform
           termCanvas.style.transform = ''
@@ -1828,18 +2226,11 @@ export function CellTerminal({
         // instead, mark each flushed write for a full repaint and let the
         // patched renderer coalesce/throttle the actual work.
         if (shouldRenderRef.current && (chunk.length > 0 || scrollbackDelta > 0)) {
-          const activeAgent = detectedAgentRef.current ?? inferredAgentRef.current
-
-          // Claude's streaming output is line-oriented and visibly smears if we
-          // defer full repaints. Keep the pre-Codex behavior here: repaint on
-          // every flushed chunk. Codex and fullscreen TUIs stay on the throttled
-          // scheduler introduced for cursor-addressed redraw performance.
-          if (activeAgent === 'claude') {
-            if (forceFullRenderNow(term)) {
-              perfForcedFullRenders += 1
-            }
-          } else {
-            requestTerminalFullRender(term)
+          // ghostty-web still needs an immediate full repaint after flushed
+          // chunks. The throttled scheduler leaves stale rows behind for
+          // cursor-addressed output, which shows up prominently in agent UIs.
+          if (forceFullRenderNow(term)) {
+            perfForcedFullRenders += 1
           }
         }
 
@@ -1865,8 +2256,9 @@ export function CellTerminal({
           reportTerminalPerf()
         },
         term.onTitleChange((title) => {
-          lastInferredTitleRef.current = title || 'Terminal'
-          onTitleChangeRef.current?.(title || 'Terminal')
+          const sanitizedTitle = sanitizeBackendLeakedTitle(title || 'Terminal') || 'Terminal'
+          lastInferredTitleRef.current = sanitizedTitle
+          onTitleChangeRef.current?.(sanitizedTitle)
           // If an agent is active and the process sets its own title,
           // remember that so we don't overwrite it with inferred titles.
           const agent = detectedAgentRef.current ?? inferredAgentRef.current
@@ -1893,13 +2285,32 @@ export function CellTerminal({
         }).dispose,
         window.cells.terminal.onData((id, data) => {
           if (id === termId) {
+            let nextChunk = data
+            if (getTerminalBackend(term) === 'zellij') {
+              const parsed = splitZellijHostQueries(
+                backendQueryRemainderRef.current + data,
+                term,
+                wrapper,
+                themeNameRef.current,
+              )
+              backendQueryRemainderRef.current = parsed.remainder
+              if (parsed.replies) {
+                window.cells.terminal.write(termId, parsed.replies)
+              }
+              nextChunk = parsed.display
+              if (!nextChunk) return
+            } else if (backendQueryRemainderRef.current) {
+              nextChunk = backendQueryRemainderRef.current + data
+              backendQueryRemainderRef.current = ''
+            }
+
             if (isTerminalReplayPending(term)) {
-              queueTerminalReplayData(term, data)
+              queueTerminalReplayData(term, nextChunk)
               return
             }
 
             // Accumulate data and schedule a single flush per frame
-            writeBuf += data
+            writeBuf += nextChunk
             if (!writeRaf) writeRaf = requestAnimationFrame(flushWrites)
 
             const agent = detectedAgentRef.current ?? inferredAgentRef.current
@@ -1908,7 +2319,7 @@ export function CellTerminal({
 
               // Bell = agent finished its turn. This lets the poll detect
               // idle state immediately instead of waiting the full 3s.
-              if (data.includes(BEL)) {
+              if (nextChunk.includes(BEL)) {
                 agentBellRef.current = true
               }
 
@@ -2068,15 +2479,15 @@ export function CellTerminal({
       const dims = fitAddon.proposeDimensions()
       const worktreeCwd = consumePendingWorktreePath(termId)
       const projectPath = worktreeCwd ?? useStore.getState().getActiveProjectPath()
-      const terminalState = useStore.getState().terminals.find((terminal) => terminal.id === termId)
       const reloadSnapshot = consumeTerminalReloadSnapshot(termId)
-      const avoidSyntheticResize = Boolean(
-        terminalState && shouldAvoidSyntheticResizeForTerminal(terminalState),
-      )
+      const avoidSyntheticResize = shouldAvoidSyntheticResizeForTerminal(term)
+      const terminalState = useStore.getState().terminals.find((terminal) => terminal.id === termId)
       const restoredOutput = terminalState?.restoredOutput ?? ''
+      const shouldRestorePersistedOutput = Boolean(
+        terminalState?.exited && restoredOutput.length > 0,
+      )
       const preferSnapshotRestore =
-        restoredOutput.length > 0 &&
-        Boolean(terminalState && shouldPreferSnapshotRestoreForTerminal(terminalState))
+        shouldRestorePersistedOutput && shouldPreferSnapshotRestoreForTerminal(term)
       let result: Awaited<ReturnType<typeof window.cells.terminal.attach>>
       try {
         result = await window.cells.terminal.attach(
@@ -2090,12 +2501,23 @@ export function CellTerminal({
         throw error
       }
 
+      const usesServerOwnedState = isServerOwnedTerminalBackend(result?.backend)
+      Reflect.set(term, '__cellsBackendAttached', true)
+      Reflect.set(term, '__cellsTerminalBackend', result?.backend ?? null)
+      Reflect.set(term, '__cellsUsesServerOwnedState', usesServerOwnedState)
+      backendQueryRemainderRef.current = ''
+      refreshTerminalTheme(term, themeNameRef.current)
+      if (usesServerOwnedState) {
+        term.reset()
+        term.scrollToBottom()
+      }
+
       let replayedRawHistory = false
-      if (reloadSnapshot !== undefined && result?.reattached) {
+      if (reloadSnapshot !== undefined && result?.reattached && !usesServerOwnedState) {
         if (reloadSnapshot) {
           term.write(reloadSnapshot)
         }
-      } else if (result?.reattached && !preferSnapshotRestore) {
+      } else if (result?.reattached && !preferSnapshotRestore && !usesServerOwnedState) {
         try {
           await replayPagedTerminalHistory(termId, term)
           replayedRawHistory = true
@@ -2108,14 +2530,22 @@ export function CellTerminal({
         }
       }
 
-      if (!replayedRawHistory && restoredOutput && (!result?.reattached || preferSnapshotRestore)) {
+      // Persisted renderer snapshots are only safe to show for exited sessions.
+      // If a live session was not actually reattached, painting stale text above
+      // a fresh shell prompt looks like duplicated output rather than continuity.
+      if (
+        !usesServerOwnedState &&
+        !replayedRawHistory &&
+        shouldRestorePersistedOutput &&
+        (!result?.reattached || preferSnapshotRestore)
+      ) {
         term.write(restoredOutput)
         if (!preferSnapshotRestore && !restoredOutput.endsWith('\r\n')) {
           term.write('\r\n')
         }
       }
 
-      if (!replayedRawHistory && result?.buffer) {
+      if (!usesServerOwnedState && !replayedRawHistory && result?.buffer) {
         term.write(result.buffer)
       }
 
@@ -2127,7 +2557,7 @@ export function CellTerminal({
 
       scheduleTerminalSearchRefresh(0)
 
-      if (result?.reattached && dims && !avoidSyntheticResize) {
+      if (result?.reattached && dims && !avoidSyntheticResize && !usesServerOwnedState) {
         bumpPtySize(dims.cols, dims.rows)
       }
 
@@ -2146,23 +2576,26 @@ export function CellTerminal({
 
     return () => {
       cancelled = true
-      // DON'T dispose — just detach DOM. Terminal stays alive in cache.
       const cached = terminalCache.get(termId)
       cached?.setPollingEnabled(false)
       setTerminalRenderLoopEnabled(cached?.term ?? null, false)
+      if (cached && Reflect.get(cached.term, '__cellsBackendAttached') === true) {
+        Reflect.set(cached.term, '__cellsBackendAttached', false)
+        void window.cells.terminal.unsubscribe(termId).catch(() => {})
+      }
       if (cached && container?.contains(cached.wrapper)) {
         container.removeChild(cached.wrapper)
       }
       terminalRef.current = null
       fitAddonRef.current = null
       inputBufferRef.current = ''
-      // Tell main process to buffer instead of sending live IPC
-      window.cells.terminal.unsubscribe(termId)
+      backendQueryRemainderRef.current = ''
     }
   }, [
     copySelectionToClipboard,
     pasteToTerminal,
     reloadKey,
+    refitTerminalToLoadedFont,
     scheduleTerminalSearchRefresh,
     setInferredTitle,
     syncTerminalState,
@@ -2201,8 +2634,7 @@ export function CellTerminal({
     const term = terminalRef.current
     if (!term) return
 
-    const theme = buildTheme(themeName)
-    applyThemeToTerminal(term, theme)
+    refreshTerminalTheme(term, themeName)
     if (term.options.cursorStyle !== cursorStyle) {
       term.options.cursorStyle = cursorStyle
     }
@@ -2216,7 +2648,7 @@ export function CellTerminal({
     // Keep wrapper background in sync so the sub-cell gap matches the terminal bg
     const cached = terminalCache.get(termId)
     if (cached) {
-      cached.wrapper.style.backgroundColor = theme.background
+      cached.wrapper.style.backgroundColor = buildTheme(themeName).background
     }
 
     const fontChanged = term.options.fontSize !== fontSize || term.options.fontFamily !== fontFamily
@@ -2257,15 +2689,36 @@ export function CellTerminal({
     return () => window.removeEventListener('terminal-refocus', handler)
   }, [getLiveTerminal, isFocused])
 
-  // Let ghostty-web handle normal wheel scrolling. The custom sub-pixel canvas
-  // transform looked smoother on paper, but in practice it fights the terminal's
-  // own repaint cycle and feels less stable than VS Code's native xterm scroll.
-  // Keep only Cmd/Ctrl+wheel interception here so canvas zoom still works.
+  // Intercept server-owned backend wheel events before ghostty-web sees them.
+  // Its alternate-screen wheel fallback synthesizes arrow keys, which breaks
+  // TUIs under tmux/Zellij. For regular terminals we still let ghostty-web own
+  // scrolling, and Cmd/Ctrl+wheel continues to drive canvas zoom.
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
 
     const onWheel = (e: WheelEvent) => {
+      const term = terminalRef.current
+      if (term && usesServerOwnedTerminalState(term) && !e.metaKey && !e.ctrlKey) {
+        const payload = getMouseWheelSequencePayload(e, term, container)
+        if (payload) {
+          e.preventDefault()
+          e.stopPropagation()
+          e.stopImmediatePropagation()
+          void window.cells.terminal.handleWheel(
+            termId,
+            payload.direction,
+            payload.steps,
+            payload.sequence,
+          )
+          if (term.viewportY > 0) {
+            term.scrollToBottom()
+            ;(term as any).targetViewportY = 0
+          }
+          return
+        }
+      }
+
       if (!e.metaKey && !e.ctrlKey) return
 
       e.preventDefault()
@@ -2298,9 +2751,47 @@ export function CellTerminal({
     if (!fitAddonRef.current || !terminalRef.current) return
     const timer = setTimeout(() => {
       fitAddonRef.current?.fit()
+      refitTerminalToLoadedFont(terminalRef.current, fitAddonRef.current)
     }, 100)
     return () => clearTimeout(timer)
-  }, [width, height])
+  }, [width, height, refitTerminalToLoadedFont])
+
+  useEffect(() => {
+    let cancelled = false
+    let timer: number | null = null
+
+    const poll = async () => {
+      const term = terminalRef.current
+      if (!term || !usesServerOwnedTerminalState(term)) {
+        if (!cancelled) setScrollStatus(null)
+        return
+      }
+
+      const status = await window.cells.terminal.getScrollStatus(termId).catch(() => null)
+      if (cancelled) return
+      if (
+        !status ||
+        status.backend !== 'tmux' ||
+        !status.paneInMode ||
+        status.scrollPosition <= 0
+      ) {
+        setScrollStatus(null)
+      } else {
+        setScrollStatus({
+          paneInMode: status.paneInMode,
+          scrollPosition: status.scrollPosition,
+          historySize: status.historySize,
+        })
+      }
+      timer = window.setTimeout(poll, isFocused ? 90 : 180)
+    }
+
+    void poll()
+    return () => {
+      cancelled = true
+      if (timer !== null) window.clearTimeout(timer)
+    }
+  }, [termId, isFocused, reloadKey])
 
   return (
     <div
@@ -2375,6 +2866,14 @@ export function CellTerminal({
             'border-terminal-active/80 bg-terminal-active/10 shadow-[inset_0_0_0_1px_color-mix(in_oklch,var(--color-terminal-active)_45%,transparent)]',
           )}
         />
+      )}
+      {scrollStatus && (
+        <div className="pointer-events-none absolute right-2 top-2 z-20">
+          <div className="rounded-sm border border-amber-300/20 bg-amber-200/95 px-1.5 py-0.5 font-mono text-[10px] leading-none tracking-tight text-black shadow-[0_1px_0_rgba(0,0,0,0.14)]">
+            {scrollStatus.scrollPosition}/
+            {Math.max(scrollStatus.historySize, scrollStatus.scrollPosition)}
+          </div>
+        </div>
       )}
       {terminalExited && (
         <>

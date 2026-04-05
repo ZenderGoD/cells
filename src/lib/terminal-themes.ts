@@ -24,6 +24,12 @@ export interface TerminalTheme {
   brightWhite: string
 }
 
+export interface TerminalRgbColor {
+  r: number
+  g: number
+  b: number
+}
+
 export const terminalThemes: Record<string, TerminalTheme> = {
   ghost: {
     name: 'Ghost',
@@ -561,6 +567,92 @@ export const LIGHT_TERMINAL_THEME_KEYS = Object.keys(terminalThemes).filter(
   (key) => terminalThemes[key]?.scheme === 'light',
 )
 
+export function hexToRgb(hex: string): TerminalRgbColor | null {
+  const normalized = hex.replace('#', '')
+  if (!/^[0-9a-fA-F]{6}$/.test(normalized)) return null
+  return {
+    r: Number.parseInt(normalized.slice(0, 2), 16),
+    g: Number.parseInt(normalized.slice(2, 4), 16),
+    b: Number.parseInt(normalized.slice(4, 6), 16),
+  }
+}
+
+function rgbChannelToHex16(channel: number) {
+  const clamped = Math.max(0, Math.min(255, Math.round(channel)))
+  const byte = clamped.toString(16).padStart(2, '0')
+  return `${byte}${byte}`
+}
+
+export function rgbToXtermQueryColor(color: TerminalRgbColor) {
+  return `rgb:${rgbChannelToHex16(color.r)}/${rgbChannelToHex16(color.g)}/${rgbChannelToHex16(color.b)}`
+}
+
+function buildIndexedColorCube(index: number): string {
+  const value = index - 16
+  const redIndex = Math.floor(value / 36)
+  const greenIndex = Math.floor((value % 36) / 6)
+  const blueIndex = value % 6
+  const ramps = [0, 95, 135, 175, 215, 255]
+  const red = ramps[redIndex] ?? 0
+  const green = ramps[greenIndex] ?? 0
+  const blue = ramps[blueIndex] ?? 0
+  return `#${red.toString(16).padStart(2, '0')}${green.toString(16).padStart(2, '0')}${blue.toString(16).padStart(2, '0')}`
+}
+
+function buildIndexedGray(index: number): string {
+  const gray = 8 + (index - 232) * 10
+  const channel = gray.toString(16).padStart(2, '0')
+  return `#${channel}${channel}${channel}`
+}
+
+export function getTerminalIndexedColor(
+  themeOrName: TerminalTheme | string,
+  index: number,
+): string | null {
+  if (!Number.isInteger(index) || index < 0 || index > 255) return null
+  const theme = typeof themeOrName === 'string' ? getTerminalTheme(themeOrName) : themeOrName
+  const basePalette = [
+    theme.black,
+    theme.red,
+    theme.green,
+    theme.yellow,
+    theme.blue,
+    theme.magenta,
+    theme.cyan,
+    theme.white,
+    theme.brightBlack,
+    theme.brightRed,
+    theme.brightGreen,
+    theme.brightYellow,
+    theme.brightBlue,
+    theme.brightMagenta,
+    theme.brightCyan,
+    theme.brightWhite,
+  ]
+  if (index < basePalette.length) return basePalette[index]
+  if (index <= 231) return buildIndexedColorCube(index)
+  return buildIndexedGray(index)
+}
+
+function colorDistance(left: string, right: string) {
+  const a = hexToRgb(left)
+  const b = hexToRgb(right)
+  if (!a || !b) return Number.POSITIVE_INFINITY
+  return Math.sqrt((a.r - b.r) ** 2 + (a.g - b.g) ** 2 + (a.b - b.b) ** 2)
+}
+
 export function getTerminalTheme(name: string): TerminalTheme {
-  return terminalThemes[name] ?? terminalThemes[DEFAULT_THEME]
+  const theme = terminalThemes[name] ?? terminalThemes[DEFAULT_THEME]
+
+  // Some terminal apps still emit ANSI black on dark themes. If the palette's
+  // black is almost identical to the background, those lines become effectively
+  // invisible. Prefer a readable dark-gray in that case.
+  if (theme.scheme === 'dark' && colorDistance(theme.background, theme.black) < 24) {
+    return {
+      ...theme,
+      black: theme.brightBlack,
+    }
+  }
+
+  return theme
 }

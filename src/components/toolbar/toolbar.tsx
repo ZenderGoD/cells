@@ -1021,7 +1021,7 @@ export function StatusBar() {
                   window.cells.updater.install()
                 }}
                 className="flex shrink-0 items-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] text-primary transition-colors hover:bg-primary/20"
-                title="Your terminal sessions will not be interrupted — they are managed by the background daemon"
+                title="Compatible daemon updates preserve sessions. Incompatible ones will warn before restart."
               >
                 <RotateCw className="w-2.5 h-2.5" />
                 <span className="font-medium">Restart to update</span>

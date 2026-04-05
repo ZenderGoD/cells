@@ -11,7 +11,7 @@ import { ProjectSwitcher } from './components/project-switcher'
 import { CloseWindowDialog } from './components/close-window-dialog'
 import { Toaster } from './components/toast'
 import { PinnedWindow } from './components/pinned-window'
-import { getCachedTerminalCount } from './components/terminal/cell-terminal'
+import { getCachedTerminalCount, reloadAllTerminals } from './components/terminal/cell-terminal'
 import { buildWindowAppearanceStyle } from './lib/window-appearance'
 import { useShallow } from 'zustand/react/shallow'
 
@@ -73,6 +73,12 @@ function MainApp() {
       setWindowFocused(focused)
       if (!focused) return
       requestAnimationFrame(() => window.dispatchEvent(new Event('terminal-refocus')))
+    })
+  }, [])
+
+  useEffect(() => {
+    return window.cells.app.onDaemonDisconnected(() => {
+      reloadAllTerminals()
     })
   }, [])
 

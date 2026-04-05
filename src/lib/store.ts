@@ -7,6 +7,7 @@ import type {
   InputPrefix,
   Project,
   ProjectsState,
+  TerminalSessionBackend,
   TerminalNode,
   TerminalProcessInfo,
   TitleBarPosition,
@@ -43,6 +44,10 @@ import {
   type TerminalCursorStyle,
 } from './terminal-cursor'
 import { DEFAULT_TERMINAL_FONT_FAMILY, normalizeTerminalFontFamily } from './terminal-fonts'
+import {
+  DEFAULT_TERMINAL_SESSION_BACKEND,
+  normalizeTerminalSessionBackend,
+} from './terminal-session-backend'
 
 interface StoreState {
   // Project management
@@ -55,6 +60,7 @@ interface StoreState {
   canvas: CanvasTransform
   initialized: boolean
   terminalTheme: string
+  terminalSessionBackend: TerminalSessionBackend
   fontSize: number
   fontFamily: string
   terminalScrollbackLines: number
@@ -135,6 +141,7 @@ interface StoreState {
   getActiveProjectPath(): string | undefined
 
   setTerminalTheme(name: string): void
+  setTerminalSessionBackend(backend: TerminalSessionBackend): void
   setFontSize(size: number): void
   setFontFamily(family: string): void
   setTerminalScrollbackLines(lines: number): void
@@ -561,6 +568,7 @@ export const useStore = create<StoreState>((set, get) => ({
   worktreesLoading: false,
   isGitRepo: false,
   terminalTheme: DEFAULT_THEME,
+  terminalSessionBackend: DEFAULT_TERMINAL_SESSION_BACKEND,
   fontSize: 13,
   fontFamily: DEFAULT_TERMINAL_FONT_FAMILY,
   terminalScrollbackLines: DEFAULT_TERMINAL_SCROLLBACK_LINES,
@@ -583,6 +591,13 @@ export const useStore = create<StoreState>((set, get) => ({
     set({ terminalTheme: name })
     applyThemeToAllTerminals(name)
     get().persist()
+  },
+  setTerminalSessionBackend(backend) {
+    const next = normalizeTerminalSessionBackend(backend)
+    if (next === get().terminalSessionBackend) return
+    set({ terminalSessionBackend: next })
+    get().persist()
+    showToast(`Terminal backend set to ${next}. Relaunch Cells to switch live sessions.`, 'info')
   },
   setFontSize(size) {
     set({ fontSize: size })
@@ -776,6 +791,7 @@ export const useStore = create<StoreState>((set, get) => ({
       )
 
       const globalSettings = {
+        terminalSessionBackend: normalizeTerminalSessionBackend(ps.terminalSessionBackend),
         terminalTheme: ps.terminalTheme || DEFAULT_THEME,
         fontSize: ps.fontSize || 13,
         fontFamily: normalizeTerminalFontFamily(ps.fontFamily),
@@ -871,6 +887,7 @@ export const useStore = create<StoreState>((set, get) => ({
         projects: [project],
         activeProjectId: project.id,
         ...projectToWorkingState(project),
+        terminalSessionBackend: DEFAULT_TERMINAL_SESSION_BACKEND,
         terminalTheme: (saved as any).terminalTheme || DEFAULT_THEME,
         fontSize: (saved as any).fontSize || 13,
         fontFamily: normalizeTerminalFontFamily((saved as any).fontFamily),
@@ -960,6 +977,7 @@ export const useStore = create<StoreState>((set, get) => ({
           version: 2,
           activeProjectId: freshState.activeProjectId,
           projects,
+          terminalSessionBackend: freshState.terminalSessionBackend,
           terminalTheme: freshState.terminalTheme,
           fontSize: freshState.fontSize,
           fontFamily: freshState.fontFamily,
@@ -1005,6 +1023,7 @@ export const useStore = create<StoreState>((set, get) => ({
           version: 2,
           activeProjectId: state.activeProjectId,
           projects,
+          terminalSessionBackend: state.terminalSessionBackend,
           terminalTheme: state.terminalTheme,
           fontSize: state.fontSize,
           fontFamily: state.fontFamily,

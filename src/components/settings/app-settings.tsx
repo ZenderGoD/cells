@@ -30,6 +30,7 @@ import {
 } from '@/components/ui/combobox'
 import { Kbd, KbdGroup } from '@/components/ui/kbd'
 import { useStore } from '@/lib/store'
+import { TERMINAL_SESSION_BACKEND_OPTIONS } from '@/lib/terminal-session-backend'
 import {
   MAX_TERMINAL_SCROLLBACK_LINES,
   MIN_TERMINAL_SCROLLBACK_LINES,
@@ -47,6 +48,7 @@ import type { TitleBarPosition } from '@/types'
 import { SETTINGS_SHEET_CLASSNAMES } from './settings-layout'
 import { Dialog, DialogOverlay, DialogPortal } from '../ui/dialog'
 import { ScrollArea } from '../ui/scroll-area'
+import { reloadAllTerminals } from '../terminal/cell-terminal'
 
 interface AppSettingsProps {
   open: boolean
@@ -129,6 +131,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
 
   const activeProjectId = useStore((s) => s.activeProjectId)
   const terminalTheme = useStore((s) => s.terminalTheme)
+  const terminalSessionBackend = useStore((s) => s.terminalSessionBackend)
   const fontSize = useStore((s) => s.fontSize)
   const fontFamily = useStore((s) => s.fontFamily)
   const terminalScrollbackLines = useStore((s) => s.terminalScrollbackLines)
@@ -145,6 +148,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const searchEngine = useStore((s) => s.searchEngine)
   const homePage = useStore((s) => s.homePage)
   const setTerminalTheme = useStore((s) => s.setTerminalTheme)
+  const setTerminalSessionBackend = useStore((s) => s.setTerminalSessionBackend)
   const setFontSize = useStore((s) => s.setFontSize)
   const setFontFamily = useStore((s) => s.setFontFamily)
   const setTerminalScrollbackLines = useStore((s) => s.setTerminalScrollbackLines)
@@ -603,6 +607,38 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                           )
                         })}
                       </div>
+                    </div>
+                  </SettingsGroup>
+
+                  <SettingsGroup title="Session Backend">
+                    <div className="space-y-2.5">
+                      <SettingsField
+                        label="Backend"
+                        hint="Applies after relaunch. Existing installs default to Zellij."
+                      >
+                        <div className="space-y-0.5">
+                          {TERMINAL_SESSION_BACKEND_OPTIONS.map((option) => (
+                            <button
+                              key={option.value}
+                              onClick={() => setTerminalSessionBackend(option.value)}
+                              className={cn(
+                                'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
+                                terminalSessionBackend === option.value
+                                  ? 'bg-accent text-foreground'
+                                  : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
+                              )}
+                            >
+                              <span className="flex-1">{option.label}</span>
+                              <span className="text-[10px] text-muted-foreground/40">
+                                {option.hint}
+                              </span>
+                              {terminalSessionBackend === option.value && (
+                                <Check className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
+                              )}
+                            </button>
+                          ))}
+                        </div>
+                      </SettingsField>
                     </div>
                   </SettingsGroup>
 
@@ -1433,8 +1469,8 @@ function UpdateSection() {
           ) : null}
           {status === 'ready' ? (
             <p className="mt-1.5 text-[10px] text-muted-foreground/40">
-              Your running processes will not be killed — terminal sessions are managed by the
-              background daemon and will reconnect after the restart.
+              Compatible daemon updates keep sessions alive. If an update requires a daemon restart,
+              Cells will warn before installing because running processes may be killed.
             </p>
           ) : null}
           {support && !support.enabled ? (
@@ -1551,6 +1587,7 @@ function DaemonSection() {
     setRestarting(true)
     try {
       await window.cells.daemon.restart()
+      reloadAllTerminals()
     } finally {
       setRestarting(false)
       setConfirmRestart(false)
@@ -1641,22 +1678,28 @@ function DaemonSection() {
                 <p className="text-[10px] text-muted-foreground/40">
                   Daemon v{status.daemonVersion.appVersion}
                   {needsUpdate ? (
-                    <span className="text-amber-400/70">
-                      {' '}
-                      (ABI {status.daemonVersion.nodeAbi ?? '?'} does not match current ABI{' '}
-                      {status.currentNodeAbi})
-                    </span>
-                  ) : status.daemonVersion.appVersion !== status.appVersion ? (
-                    <span className="text-muted-foreground/35">
-                      {' '}
-                      (app is v{status.appVersion}, restart not required)
-                    </span>
+                    status.restartReason === 'node-abi-mismatch' ? (
+                      <span className="text-amber-400/70">
+                        {' '}
+                        (ABI {status.daemonVersion.nodeAbi ?? '?'} does not match current ABI{' '}
+                        {status.currentNodeAbi})
+                      </span>
+                    ) : (
+                      <span className="text-amber-400/70">
+                        {' '}
+                        (daemon compatibility mismatch; restart required)
+                      </span>
+                    )
                   ) : null}
                 </p>
               ) : null}
               {status.restartRecommended && status.restartReason === 'node-abi-mismatch' ? (
                 <p className="text-[10px] text-amber-400/70">
                   Restart recommended because the daemon is still running on an older runtime ABI.
+                </p>
+              ) : status.restartRecommended ? (
+                <p className="text-[10px] text-amber-400/70">
+                  Restart required because the daemon is from an incompatible Cells build.
                 </p>
               ) : null}
             </div>
@@ -1705,17 +1748,24 @@ function DaemonSection() {
             {sessions.map((session) => (
               <div
                 key={session.termId}
-                className="flex items-center gap-2 rounded-md px-2.5 py-1.5 text-[11px] transition-colors hover:bg-muted/40"
+                className="flex min-w-0 items-center gap-2 overflow-hidden rounded-md px-2.5 py-1.5 text-[11px] transition-colors hover:bg-muted/40"
               >
                 <Terminal className="h-3 w-3 shrink-0 text-muted-foreground/50" />
-                <div className="flex-1 min-w-0">
-                  <span className="text-foreground truncate block">
+                <div className="min-w-0 flex-1 overflow-hidden">
+                  <span className="block truncate text-foreground">
                     {session.processInfo?.label ?? 'shell'}
                   </span>
-                  <span className="text-[10px] text-muted-foreground/40 truncate block font-mono">
-                    PID {session.processInfo?.pid ?? '?'}
-                    {session.processInfo?.command ? ` \u2022 ${session.processInfo.command}` : ''}
-                  </span>
+                  <div className="flex min-w-0 items-center gap-1 text-[10px] text-muted-foreground/40 font-mono">
+                    <span className="shrink-0">PID {session.processInfo?.pid ?? '?'}</span>
+                    {session.processInfo?.command ? (
+                      <>
+                        <span className="shrink-0">\u2022</span>
+                        <span className="min-w-0 flex-1 truncate">
+                          {session.processInfo.command}
+                        </span>
+                      </>
+                    ) : null}
+                  </div>
                 </div>
                 {session.subscribed ? (
                   <span className="text-[9px] text-emerald-400/50 shrink-0">active</span>

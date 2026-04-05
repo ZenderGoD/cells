@@ -5,33 +5,20 @@
  * Communicates with the Electron app over a Unix domain socket using
  * newline-delimited JSON.
  *
- * BACKWARD COMPATIBILITY CONTRACT:
+ * Cells intentionally version-locks this daemon to the app. On app upgrade we
+ * restart the daemon rather than preserving cross-version sessions. That keeps
+ * the attach contract app-internal and lets the protocol evolve without
+ * carrying compatibility fallbacks forever.
  *
- * This daemon is designed to run independently of the Electron app version.
- * It must survive app updates without killing sessions. To maintain this:
+ * Protocol stability still matters within a single app version:
+ * - requests are newline-delimited JSON
+ * - responses are { type: "response", id, ok, data? }
+ * - push events are stable `data` and `exit` messages
  *
- * 1. The wire protocol is newline-delimited JSON — inherently extensible.
- *    New message types can be added without breaking old clients. Old clients
- *    simply never send the new types, and the daemon ignores unknown types.
- *
- * 2. Response shape: { type: "response", id, ok, data? } is fixed. New fields
- *    may be added to `data` but existing fields must never change meaning.
- *
- * 3. Push events (data, exit) are stable — they only carry termId + payload.
- *    New push event types may be added; old clients ignore unknown types.
- *
- * 4. The daemon should NEVER need restarting for protocol changes. If a new
- *    feature needs daemon support, add it as a new message type that gracefully
- *    degrades when the daemon doesn't understand it (client gets no response →
- *    timeout → fallback).
- *
- * 5. The only reason to restart the daemon is to pick up node-pty native addon
- *    changes (rare, tied to Electron major version bumps) or critical bug fixes.
- *    Users can trigger this manually from Settings > About > Daemon > Restart.
- *
- * DAEMON_PROTOCOL_VERSION tracks the protocol for informational purposes only.
- * Clients should NOT refuse to connect based on this version — it exists so
- * the settings UI can show whether an update is available.
+ * `attach` is the critical session primitive. In tmux mode the daemon creates
+ * a fresh tmux client PTY for the renderer and lets tmux redraw the canonical
+ * server-owned screen state. Cells does not reconstruct live sessions from
+ * replayed shell bytes anymore.
  *
  * Environment variables:
  *   CELLS_HOME_DIR   — directory for socket/pid/version files (default: ~/.cells)
@@ -41,23 +28,10 @@
 import net from 'net'
 import fs from 'fs'
 import path from 'path'
-import * as pty from 'node-pty'
-import {
-  HOME_DIR,
-  resolveShell,
-  resolveCwd,
-  cleanEnv,
-  ensureSpawnHelperExecutable,
-  resolveTerminalProcessInfo,
-  resolveCodexProcessPid,
-  resolveCodexThreadTitle,
-  MAX_BUFFER,
-  MAX_REPLAY_HISTORY_BYTES,
-} from './pty-shared'
-
-// Protocol version — bumped only when the daemon wire format changes in a
-// breaking way. Clients should treat this as informational, not a gate.
-const DAEMON_PROTOCOL_VERSION = 1
+import { HOME_DIR } from './pty-shared'
+import { PTY_DAEMON_COMPAT_VERSION, PTY_DAEMON_PROTOCOL_VERSION } from './pty-daemon-contract'
+import { createTerminalSessionManager, getTerminalBackendSupportStatus } from './terminal-backend'
+import type { TerminalSessionBackend } from '../src/types'
 
 // ---------- Paths ----------
 
@@ -65,57 +39,42 @@ const STATE_DIR = process.env.CELLS_HOME_DIR || path.join(HOME_DIR, '.cells')
 const SOCKET_PATH = path.join(STATE_DIR, 'pty-daemon.sock')
 const PID_FILE = path.join(STATE_DIR, 'pty-daemon.pid')
 const VERSION_FILE = path.join(STATE_DIR, 'pty-daemon.version')
+const BACKEND = (
+  process.env.CELLS_TERMINAL_BACKEND === 'tmux' ? 'tmux' : 'zellij'
+) as TerminalSessionBackend
 
 // ---------- State ----------
 
-const ptys = new Map<string, pty.IPty>()
-const buffers = new Map<string, string>()
-const histories = new Map<string, { chunks: string[]; length: number }>()
 const subscribers = new Map<string, net.Socket>() // termId → subscribed client socket
-const metadata = new Map<string, { shellPid: number }>()
 
 // Track which terminals each client socket owns subscriptions for
 const clientSubscriptions = new Map<net.Socket, Set<string>>()
 
-// ---------- Buffer management ----------
-
-function appendBuffer(termId: string, data: string) {
-  const existing = buffers.get(termId) ?? ''
-  const combined = existing + data
-  buffers.set(termId, combined.length > MAX_BUFFER ? combined.slice(-MAX_BUFFER) : combined)
+const backendSupport = getTerminalBackendSupportStatus(BACKEND)
+if (!backendSupport.ok) {
+  throw new Error(
+    backendSupport.reason === 'too-old'
+      ? `${backendSupport.name} ${backendSupport.minimumVersion}+ required, found ${backendSupport.version ?? 'unknown'}`
+      : `${backendSupport.name} ${backendSupport.minimumVersion}+ is required`,
+  )
 }
 
-function appendHistory(termId: string, data: string) {
-  if (!data) return
-
-  let history = histories.get(termId)
-  if (!history) {
-    history = { chunks: [], length: 0 }
-    histories.set(termId, history)
-  }
-
-  history.chunks.push(data)
-  history.length += data.length
-
-  while (history.length > MAX_REPLAY_HISTORY_BYTES && history.chunks.length > 0) {
-    const excess = history.length - MAX_REPLAY_HISTORY_BYTES
-    const first = history.chunks[0]
-    if (first.length <= excess) {
-      history.chunks.shift()
-      history.length -= first.length
-      continue
+const sessionManager = createTerminalSessionManager(BACKEND, STATE_DIR, {
+  onData(termId, data) {
+    const sub = subscribers.get(termId)
+    if (sub) {
+      sendJson(sub, { type: 'data', termId, data })
     }
-
-    history.chunks[0] = first.slice(excess)
-    history.length -= excess
-    break
-  }
-}
-
-function readHistory(termId: string) {
-  const history = histories.get(termId)
-  return history ? history.chunks.join('') : ''
-}
+  },
+  onExit(termId) {
+    const sub = subscribers.get(termId)
+    if (sub) {
+      sendJson(sub, { type: 'exit', termId })
+      subscribers.delete(termId)
+      clientSubscriptions.get(sub)?.delete(termId)
+    }
+  },
+})
 
 // ---------- Send helpers ----------
 
@@ -141,67 +100,24 @@ function spawnPty(
   rows: number,
   cwd?: string,
 ): { reattached: boolean; shellPid: number } {
-  // If PTY already exists, return it (reattach case)
-  const existing = ptys.get(termId)
-  if (existing) {
-    try {
-      existing.resize(cols, rows)
-    } catch {}
-    return { reattached: true, shellPid: metadata.get(termId)?.shellPid ?? existing.pid }
-  }
+  return sessionManager.spawn(termId, cols, rows, cwd)
+}
 
-  ensureSpawnHelperExecutable()
-
-  const p = pty.spawn(resolveShell(), ['-l'], {
-    name: 'xterm-256color',
-    cols,
-    rows,
-    cwd: resolveCwd(cwd),
-    env: cleanEnv(),
-  })
-
-  ptys.set(termId, p)
-  buffers.set(termId, '')
-  metadata.set(termId, { shellPid: p.pid })
-
-  p.onData((data) => {
-    if (ptys.get(termId) !== p) return
-    appendHistory(termId, data)
-    appendBuffer(termId, data)
-    const sub = subscribers.get(termId)
-    if (sub) {
-      sendJson(sub, { type: 'data', termId, data })
-    }
-  })
-
-  p.onExit(() => {
-    if (ptys.get(termId) !== p) return
-    ptys.delete(termId)
-    buffers.delete(termId)
-    metadata.delete(termId)
-    const sub = subscribers.get(termId)
-    if (sub) {
-      sendJson(sub, { type: 'exit', termId })
-      subscribers.delete(termId)
-      clientSubscriptions.get(sub)?.delete(termId)
-    }
-  })
-
-  return { reattached: false, shellPid: p.pid }
+function attachPty(
+  termId: string,
+  cols: number,
+  rows: number,
+  cwd: string | undefined,
+): { reattached: boolean; shellPid: number; buffer: string } {
+  return sessionManager.attach(termId, cols, rows, cwd)
 }
 
 function killPty(termId: string) {
-  const p = ptys.get(termId)
-  if (p) {
-    try {
-      p.kill()
-    } catch {}
-    ptys.delete(termId)
-  }
-  buffers.delete(termId)
-  histories.delete(termId)
-  metadata.delete(termId)
+  sessionManager.kill(termId)
   subscribers.delete(termId)
+  for (const subscribedTerminals of clientSubscriptions.values()) {
+    subscribedTerminals.delete(termId)
+  }
 }
 
 // ---------- Request handling ----------
@@ -210,6 +126,28 @@ function handleMessage(socket: net.Socket, msg: any) {
   const { type, id } = msg
 
   switch (type) {
+    case 'attach': {
+      const termId = msg.termId
+      const prevSub = subscribers.get(termId)
+      if (prevSub) {
+        clientSubscriptions.get(prevSub)?.delete(termId)
+      }
+      subscribers.set(termId, socket)
+      if (!clientSubscriptions.has(socket)) clientSubscriptions.set(socket, new Set())
+      clientSubscriptions.get(socket)!.add(termId)
+
+      try {
+        sendResponse(socket, id, true, attachPty(termId, msg.cols, msg.rows, msg.cwd))
+      } catch (err: any) {
+        if (subscribers.get(termId) === socket) {
+          subscribers.delete(termId)
+        }
+        clientSubscriptions.get(socket)?.delete(termId)
+        sendError(socket, id, err.message)
+      }
+      break
+    }
+
     case 'spawn': {
       try {
         const result = spawnPty(msg.termId, msg.cols, msg.rows, msg.cwd)
@@ -222,21 +160,19 @@ function handleMessage(socket: net.Socket, msg: any) {
 
     case 'subscribe': {
       const termId = msg.termId
-      if (!ptys.has(termId)) {
+      if (!sessionManager.has(termId)) {
         sendError(socket, id, `No PTY for terminal ${termId}`)
         break
       }
-      // Unsubscribe previous subscriber if any
-      const prevSub = subscribers.get(termId)
-      if (prevSub) {
-        clientSubscriptions.get(prevSub)?.delete(termId)
-      }
-      subscribers.set(termId, socket)
-      if (!clientSubscriptions.has(socket)) clientSubscriptions.set(socket, new Set())
-      clientSubscriptions.get(socket)!.add(termId)
-      // Return buffer and clear
-      const buffer = buffers.get(termId) ?? ''
-      buffers.set(termId, '')
+      const buffer = sessionManager.subscribe(termId, () => {
+        const prevSub = subscribers.get(termId)
+        if (prevSub) {
+          clientSubscriptions.get(prevSub)?.delete(termId)
+        }
+        subscribers.set(termId, socket)
+        if (!clientSubscriptions.has(socket)) clientSubscriptions.set(socket, new Set())
+        clientSubscriptions.get(socket)!.add(termId)
+      })
       sendResponse(socket, id, true, { buffer })
       break
     }
@@ -246,6 +182,7 @@ function handleMessage(socket: net.Socket, msg: any) {
       const termId = msg.termId
       if (subscribers.get(termId) === socket) {
         subscribers.delete(termId)
+        sessionManager.unsubscribe(termId)
       }
       clientSubscriptions.get(socket)?.delete(termId)
       break
@@ -259,69 +196,60 @@ function handleMessage(socket: net.Socket, msg: any) {
 
     case 'write': {
       // Fire-and-forget
-      const p = ptys.get(msg.termId)
-      if (p) {
-        try {
-          p.write(msg.data)
-        } catch {}
-      }
+      sessionManager.write(msg.termId, msg.data)
       break
     }
 
     case 'resize': {
       // Fire-and-forget
-      const p = ptys.get(msg.termId)
-      if (p) {
-        try {
-          p.resize(msg.cols, msg.rows)
-        } catch {}
+      sessionManager.resize(msg.termId, msg.cols, msg.rows)
+      break
+    }
+
+    case 'handle-wheel': {
+      sessionManager.handleWheel(msg.termId, msg.direction, msg.steps, msg.sequence)
+      if (id != null) {
+        sendResponse(socket, id, true)
       }
       break
     }
 
     case 'get-process-info': {
-      const meta = metadata.get(msg.termId)
-      const p = ptys.get(msg.termId)
-      if (!meta && !p) {
+      if (!sessionManager.has(msg.termId)) {
         sendResponse(socket, id, true, null)
         break
       }
-      const shellPid = meta?.shellPid ?? p?.pid ?? 0
-      const info = resolveTerminalProcessInfo(shellPid, p?.process)
-      sendResponse(socket, id, true, info)
+      sendResponse(socket, id, true, sessionManager.getProcessInfo(msg.termId))
       break
     }
 
     case 'get-codex-title': {
-      const meta = metadata.get(msg.termId)
-      const p = ptys.get(msg.termId)
-      const shellPid = meta?.shellPid ?? p?.pid ?? 0
-      const codexPid = shellPid ? resolveCodexProcessPid(shellPid) : null
-      const title = codexPid ? resolveCodexThreadTitle(codexPid) : null
-      sendResponse(socket, id, true, title)
+      sendResponse(socket, id, true, sessionManager.getCodexTitle(msg.termId))
       break
     }
 
     case 'get-shell-pid': {
-      const meta = metadata.get(msg.termId)
-      const p = ptys.get(msg.termId)
-      sendResponse(socket, id, true, meta?.shellPid ?? p?.pid ?? null)
+      sendResponse(socket, id, true, sessionManager.getShellPid(msg.termId))
+      break
+    }
+
+    case 'get-scroll-status': {
+      sendResponse(socket, id, true, sessionManager.getScrollStatus(msg.termId))
       break
     }
 
     case 'get-buffer': {
-      const buffer = buffers.get(msg.termId) ?? ''
-      sendResponse(socket, id, true, { buffer })
+      sendResponse(socket, id, true, { buffer: sessionManager.getBuffer(msg.termId) })
       break
     }
 
     case 'get-history': {
-      sendResponse(socket, id, true, { buffer: readHistory(msg.termId) })
+      sendResponse(socket, id, true, { buffer: sessionManager.getHistory(msg.termId) })
       break
     }
 
     case 'list': {
-      sendResponse(socket, id, true, [...ptys.keys()])
+      sendResponse(socket, id, true, sessionManager.list())
       break
     }
 
@@ -332,7 +260,9 @@ function handleMessage(socket: net.Socket, msg: any) {
 
     case 'get-daemon-version': {
       sendResponse(socket, id, true, {
-        protocolVersion: DAEMON_PROTOCOL_VERSION,
+        protocolVersion: PTY_DAEMON_PROTOCOL_VERSION,
+        compatVersion: PTY_DAEMON_COMPAT_VERSION,
+        backend: BACKEND,
         appVersion: process.env.CELLS_APP_VERSION ?? null,
         electronVersion: process.versions.electron ?? null,
         nodeAbi: process.versions.modules ?? null,
@@ -386,6 +316,7 @@ function handleClient(socket: net.Socket) {
       for (const termId of subs) {
         if (subscribers.get(termId) === socket) {
           subscribers.delete(termId)
+          sessionManager.unsubscribe(termId)
         }
       }
     }
@@ -413,10 +344,10 @@ function cleanup() {
 
 function gracefulShutdown() {
   server.close()
-  // Snapshot keys first — killPty mutates the map
-  for (const termId of [...ptys.keys()]) {
-    killPty(termId)
-  }
+  // The daemon owns attach-side client PTYs, not the canonical backend
+  // sessions themselves. On shutdown we detach clients and leave tmux/Zellij
+  // sessions alive so a restarted daemon can reconnect cleanly.
+  sessionManager.cleanup()
   cleanup()
   process.exit(0)
 }

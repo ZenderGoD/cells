@@ -5,6 +5,7 @@
 
 import net from 'net'
 import type { TerminalProcessInfo } from '../src/types'
+import type { TerminalScrollStatus } from './terminal-session-manager'
 
 const REQUEST_TIMEOUT = 5000
 
@@ -103,6 +104,20 @@ export class PtyDaemonClient {
     return this.request('spawn', { termId, cols, rows, cwd })
   }
 
+  async attach(
+    termId: string,
+    cols: number,
+    rows: number,
+    cwd?: string,
+  ): Promise<{
+    reattached: boolean
+    shellPid: number
+    buffer: string
+    backend: 'replay' | 'tmux' | 'zellij'
+  }> {
+    return this.request('attach', { termId, cols, rows, cwd })
+  }
+
   async subscribe(termId: string): Promise<string> {
     const result = await this.request('subscribe', { termId })
     return result.buffer ?? ''
@@ -138,8 +153,14 @@ export class PtyDaemonClient {
     return this.request('get-shell-pid', { termId })
   }
 
+  async getScrollStatus(termId: string): Promise<TerminalScrollStatus | null> {
+    return this.request('get-scroll-status', { termId })
+  }
+
   async getDaemonVersion(): Promise<{
     protocolVersion: number
+    compatVersion?: number | null
+    backend?: 'tmux' | 'zellij' | null
     appVersion: string | null
     electronVersion: string | null
     nodeAbi: string | null
@@ -149,7 +170,7 @@ export class PtyDaemonClient {
     try {
       return await this.request('get-daemon-version', {})
     } catch {
-      // Old daemons won't have this message — return null gracefully
+      // Keep diagnostics non-fatal if the daemon is mid-restart or unhealthy.
       return null
     }
   }
@@ -179,6 +200,10 @@ export class PtyDaemonClient {
 
   resize(termId: string, cols: number, rows: number): void {
     this.send({ type: 'resize', termId, cols, rows })
+  }
+
+  handleWheel(termId: string, direction: 'up' | 'down', steps: number, sequence: string): void {
+    this.send({ type: 'handle-wheel', termId, direction, steps, sequence })
   }
 
   unsubscribe(termId: string): void {
