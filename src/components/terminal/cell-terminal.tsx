@@ -2140,12 +2140,9 @@ export function CellTerminal({
           termCanvas.style.transform = ''
         }
 
-        // ghostty-web's dirty-row tracking misses some rows during complex
-        // redraws (TUIs, streaming gradient animations, etc.). Force a full
-        // render after every write so the display always matches the session.
-        if (shouldRenderRef.current && forceTerminalFullRender(term)) {
-          perfForcedFullRenders += 1
-        }
+        // Let ghostty-web's own 60 fps render loop pick up dirty rows.
+        // No extra render call here — a second render per frame halves the
+        // frame budget and makes heavyweight TUIs (Codex) visibly laggy.
 
         if (terminalFindOpen && focusStateRef.current.isFocused) {
           scheduleTerminalSearchRefresh()
