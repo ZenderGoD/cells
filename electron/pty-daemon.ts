@@ -59,14 +59,71 @@ if (!backendSupport.ok) {
   )
 }
 
-const sessionManager = createTerminalSessionManager(BACKEND, STATE_DIR, {
-  onData(termId, data) {
+// ---------- Microbatch outgoing terminal data ----------
+// During heavy output (builds, large logs) node-pty fires many small data
+// events. Sending each one as a separate JSON message over the socket is
+// wasteful — the client-side PtyDaemonClient parses each line individually.
+// Instead we accumulate per-terminal data and flush after a short delay or
+// when the buffer exceeds a size threshold, cutting socket message count by
+// 10-50× during bursts while adding at most ~4ms latency.
+
+const MICROBATCH_DELAY_MS = 4
+const MICROBATCH_MAX_BYTES = 64 * 1024
+
+const pendingData = new Map<string, string>()
+let flushTimer: ReturnType<typeof setTimeout> | null = null
+
+function scheduleFlush() {
+  if (flushTimer) return
+  flushTimer = setTimeout(flushPendingData, MICROBATCH_DELAY_MS)
+}
+
+function flushPendingData() {
+  flushTimer = null
+  for (const [termId, data] of pendingData) {
     const sub = subscribers.get(termId)
     if (sub) {
-      sendJson(sub, { type: 'data', termId, data })
+      sendBinaryData(sub, termId, data)
     }
+  }
+  pendingData.clear()
+}
+
+function bufferTerminalData(termId: string, data: string) {
+  const existing = pendingData.get(termId)
+  const merged = existing ? existing + data : data
+  pendingData.set(termId, merged)
+
+  // Flush immediately if accumulated data is large enough —
+  // no point adding latency when there's already a big chunk to send.
+  if (merged.length >= MICROBATCH_MAX_BYTES) {
+    // Flush only this terminal's buffer; leave others to the timer.
+    pendingData.delete(termId)
+    const sub = subscribers.get(termId)
+    if (sub) {
+      sendBinaryData(sub, termId, merged)
+    }
+  } else {
+    scheduleFlush()
+  }
+}
+
+const sessionManager = createTerminalSessionManager(BACKEND, STATE_DIR, {
+  onData(termId, data) {
+    bufferTerminalData(termId, data)
   },
   onExit(termId) {
+    // Flush any buffered data before sending the exit event so the client
+    // sees the final output before the terminal disappears.
+    const buffered = pendingData.get(termId)
+    if (buffered) {
+      pendingData.delete(termId)
+      const sub = subscribers.get(termId)
+      if (sub) {
+        sendBinaryData(sub, termId, buffered)
+      }
+    }
+
     const sub = subscribers.get(termId)
     if (sub) {
       sendJson(sub, { type: 'exit', termId })
@@ -77,6 +134,33 @@ const sessionManager = createTerminalSessionManager(BACKEND, STATE_DIR, {
 })
 
 // ---------- Send helpers ----------
+
+// Binary frame marker for terminal data events. Any byte < 0x20 works since
+// JSON lines always start with '{' (0x7B). The client parser checks the first
+// byte to decide whether to parse a binary frame or a JSON line.
+const BINARY_DATA_MARKER = 0x02
+
+/**
+ * Send terminal data as a compact binary frame, avoiding JSON overhead.
+ * Frame layout: [0x02][uint16 termId len][termId][uint32 data len][data]
+ */
+function sendBinaryData(socket: net.Socket, termId: string, data: string) {
+  try {
+    const termIdBuf = Buffer.from(termId, 'utf-8')
+    const dataBuf = Buffer.from(data, 'utf-8')
+    const frame = Buffer.allocUnsafe(1 + 2 + termIdBuf.length + 4 + dataBuf.length)
+    let off = 0
+    frame[off++] = BINARY_DATA_MARKER
+    frame.writeUInt16BE(termIdBuf.length, off)
+    off += 2
+    termIdBuf.copy(frame, off)
+    off += termIdBuf.length
+    frame.writeUInt32BE(dataBuf.length, off)
+    off += 4
+    dataBuf.copy(frame, off)
+    socket.write(frame)
+  } catch {}
+}
 
 function sendJson(socket: net.Socket, msg: object) {
   try {
@@ -344,6 +428,12 @@ function cleanup() {
 
 function gracefulShutdown() {
   server.close()
+  // Flush any buffered terminal data before tearing down
+  if (flushTimer) {
+    clearTimeout(flushTimer)
+    flushTimer = null
+  }
+  flushPendingData()
   // The daemon owns attach-side client PTYs, not the canonical backend
   // sessions themselves. On shutdown we detach clients and leave tmux/Zellij
   // sessions alive so a restarted daemon can reconnect cleanly.

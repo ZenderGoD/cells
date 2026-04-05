@@ -11,7 +11,10 @@ import { ProjectSwitcher } from './components/project-switcher'
 import { CloseWindowDialog } from './components/close-window-dialog'
 import { Toaster } from './components/toast'
 import { PinnedWindow } from './components/pinned-window'
-import { getCachedTerminalCount, reloadAllTerminals } from './components/terminal/cell-terminal'
+import {
+  getCachedTerminalCount,
+  reloadAllTerminals,
+} from './components/terminal/terminal-cache-api'
 import { buildWindowAppearanceStyle } from './lib/window-appearance'
 import { useShallow } from 'zustand/react/shallow'
 

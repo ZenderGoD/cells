@@ -48,7 +48,7 @@ import type { TitleBarPosition } from '@/types'
 import { SETTINGS_SHEET_CLASSNAMES } from './settings-layout'
 import { Dialog, DialogOverlay, DialogPortal } from '../ui/dialog'
 import { ScrollArea } from '../ui/scroll-area'
-import { reloadAllTerminals } from '../terminal/cell-terminal'
+import { reloadAllTerminals } from '../terminal/terminal-cache-api'
 
 interface AppSettingsProps {
   open: boolean

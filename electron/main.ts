@@ -1,6 +1,7 @@
 import {
   app,
   BrowserWindow,
+  MessageChannelMain,
   WebContentsView,
   ipcMain,
   clipboard,
@@ -162,6 +163,11 @@ const subscribedTerminals = new Set<string>()
 const pendingTerminalExitDetails = new Map<string, TerminalExitDetails>()
 const pinnedWindows = new Map<string, BrowserWindow>()
 
+// MessagePort per BrowserWindow for high-throughput terminal data.
+// Bypasses Electron's main IPC event loop — structured clone over a direct
+// channel is significantly faster than webContents.send for streaming data.
+const terminalDataPorts = new Map<BrowserWindow, Electron.MessagePortMain>()
+
 const STATE_DIR = path.join(app.getPath('home'), '.cells')
 const STATE_FILE = path.join(STATE_DIR, 'state.json')
 const LEGACY_STATE_DIR = path.join(app.getPath('home'), '.vector-ghost')
@@ -257,6 +263,10 @@ function createWindow() {
 
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show()
+  })
+
+  mainWindow.webContents.once('did-finish-load', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) setupTerminalDataPort(mainWindow)
   })
 
   // Relay native window focus/blur to the renderer so the dim overlay
@@ -470,12 +480,32 @@ function getWindowForTerminal(termId: string): BrowserWindow | null {
   return mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
 }
 
+function setupTerminalDataPort(win: BrowserWindow) {
+  const { port1, port2 } = new MessageChannelMain()
+  terminalDataPorts.set(win, port1)
+  port1.start()
+  // Send port2 to the renderer. The preload script listens for this event
+  // and wires incoming messages into the onData callback chain.
+  win.webContents.postMessage('terminal:data-port', null, [port2])
+  win.on('closed', () => {
+    terminalDataPorts.delete(win)
+    port1.close()
+  })
+}
+
 function forwardTerminalData(termId: string, data: string) {
   bufferTerminalOutput(termId, data)
   if (!subscribedTerminals.has(termId)) return
   try {
     const target = getWindowForTerminal(termId)
-    target?.webContents.send('terminal:data', termId, data)
+    if (!target) return
+    const port = terminalDataPorts.get(target)
+    if (port) {
+      port.postMessage({ t: termId, d: data })
+    } else {
+      // Fallback to standard IPC before the port is established
+      target.webContents.send('terminal:data', termId, data)
+    }
   } catch {}
 }
 
@@ -1074,6 +1104,9 @@ ipcMain.handle(
       win.loadURL(browserUrl)
     } else {
       // Terminal pop-out: load the app renderer in pinned mode
+      win.webContents.once('did-finish-load', () => {
+        if (!win.isDestroyed()) setupTerminalDataPort(win)
+      })
       const url = process.env.VITE_DEV_SERVER_URL
         ? `${process.env.VITE_DEV_SERVER_URL}?pinned=${encodeURIComponent(id)}&type=${encodeURIComponent(type)}`
         : undefined

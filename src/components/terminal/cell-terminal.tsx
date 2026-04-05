@@ -24,6 +24,7 @@ import {
   rgbToXtermQueryColor,
 } from '@/lib/terminal-themes'
 import { cn } from '@/lib/utils'
+import { WebGLTerminalRenderer } from '@/lib/webgl-terminal-renderer'
 import type { TerminalPerfSample } from '@/types'
 
 // Initialize WASM lazily on first terminal mount
@@ -1787,15 +1788,13 @@ export function CellTerminal({
           Reflect.set(cached.term, '__cellsUsesServerOwnedState', usesServerOwnedState)
           refreshTerminalTheme(cached.term, themeNameRef.current)
           if (usesServerOwnedState) {
-            // A real backend reattach is different from a normal cached remount:
-            // reset local emulator state and let the backend redraw the live pane.
-            cached.term.reset()
-            cached.term.scrollToBottom()
-            // Enable SGR mouse reporting locally so ghostty-web generates mouse
-            // sequences for clicks/scrolls. The multiplexer has already set up
-            // mouse mode server-side, but ghostty-web missed those escape
-            // sequences because it attached after the TUI was running.
-            cached.term.write('\x1b[?1000h\x1b[?1002h\x1b[?1006h')
+            // Defer the reset() until the first data chunk from the backend
+            // arrives. If we reset() now, the buffer goes blank and the render
+            // loop paints an empty grid (cursor at 0,0, no colors) until
+            // tmux/zellij redraws ~50-200ms later. By deferring, the old
+            // cached content stays visible and the reset+redraw happen in the
+            // same synchronous block — no blank frame.
+            Reflect.set(cached.term, '__cellsPendingReattachReset', true)
           }
 
           // Replay any data buffered while this terminal was in another project.
@@ -1851,6 +1850,9 @@ export function CellTerminal({
         theme: buildTheme(themeNameRef.current),
         scrollback: scrollbackLinesRef.current || DEFAULT_TERMINAL_SCROLLBACK_LINES,
         smoothScrollDuration: GHOSTTY_SMOOTH_SCROLL_DURATION_MS,
+        // Use WebGL renderer instead of Canvas2D (see patches/README.md for
+        // how rendererFactory is injected into ghostty-web).
+        rendererFactory: (canvas, opts) => new WebGLTerminalRenderer(canvas, opts) as any,
       })
       patchTerminalViewportPreservation(term)
 
@@ -2263,6 +2265,20 @@ export function CellTerminal({
               return
             }
 
+            // After a server-owned reattach, reset() was deferred so the
+            // old cached content stays visible instead of flashing a blank
+            // grid. Now that the backend is sending real redraw data, do the
+            // reset + mouse-mode setup and write the first chunk in one go
+            // so the render loop never sees an empty buffer.
+            if (Reflect.get(term, '__cellsPendingReattachReset') === true) {
+              Reflect.set(term, '__cellsPendingReattachReset', false)
+              term.reset()
+              term.scrollToBottom()
+              // Enable SGR mouse reporting — the multiplexer already set up
+              // mouse mode server-side but ghostty-web missed those escapes.
+              term.write('\x1b[?1000h\x1b[?1002h\x1b[?1006h')
+            }
+
             // Accumulate data and schedule a single flush per frame
             writeBuf += nextChunk
             if (!writeRaf) writeRaf = requestAnimationFrame(flushWrites)
@@ -2462,13 +2478,10 @@ export function CellTerminal({
       backendQueryRemainderRef.current = ''
       refreshTerminalTheme(term, themeNameRef.current)
       if (usesServerOwnedState) {
-        term.reset()
-        term.scrollToBottom()
-        // Enable SGR mouse reporting locally so ghostty-web generates mouse
-        // sequences for clicks/scrolls. The multiplexer has already set up
-        // mouse mode server-side, but ghostty-web missed those escape
-        // sequences because it attached after the TUI was running.
-        term.write('\x1b[?1000h\x1b[?1002h\x1b[?1006h')
+        // Suppress rendering while the buffer is in the blank reset() state.
+        // Defer reset() until the first data chunk arrives from the
+        // backend so the render loop never paints a blank buffer.
+        Reflect.set(term, '__cellsPendingReattachReset', true)
       }
 
       let replayedRawHistory = false

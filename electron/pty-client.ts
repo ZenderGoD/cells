@@ -1,6 +1,10 @@
 /**
  * PTY Daemon Client — used by Electron main process to communicate with
  * the standalone PTY daemon over a Unix domain socket.
+ *
+ * The daemon sends terminal data as compact binary frames (marker 0x02) and
+ * everything else as newline-delimited JSON. The parser below handles both
+ * formats transparently.
  */
 
 import net from 'net'
@@ -9,6 +13,9 @@ import type { TerminalScrollStatus } from './terminal-session-manager'
 
 const REQUEST_TIMEOUT = 5000
 
+/** Must match the marker byte used in pty-daemon.ts sendBinaryData(). */
+const BINARY_DATA_MARKER = 0x02
+
 export class PtyDaemonClient {
   private socket: net.Socket | null = null
   private requestId = 0
@@ -16,7 +23,8 @@ export class PtyDaemonClient {
     number,
     { resolve: (v: any) => void; reject: (e: any) => void; timer: ReturnType<typeof setTimeout> }
   >()
-  private lineBuffer = ''
+  /** Buffer for incoming socket data (binary + JSON mix). */
+  private recvBuf: Buffer<ArrayBufferLike> = Buffer.alloc(0)
   private _connected = false
 
   private dataCallback: ((termId: string, data: string) => void) | null = null
@@ -46,21 +54,48 @@ export class PtyDaemonClient {
         this.disconnectCallback?.()
       })
 
-      socket.on('data', (chunk) => {
-        this.lineBuffer += chunk.toString()
-        let idx: number
-        while ((idx = this.lineBuffer.indexOf('\n')) !== -1) {
-          const line = this.lineBuffer.slice(0, idx)
-          this.lineBuffer = this.lineBuffer.slice(idx + 1)
-          if (!line.trim()) continue
-          try {
-            this.handleMessage(JSON.parse(line))
-          } catch {}
-        }
+      socket.on('data', (chunk: Buffer) => {
+        this.recvBuf = this.recvBuf.length === 0 ? chunk : Buffer.concat([this.recvBuf, chunk])
+        this.drainRecvBuffer()
       })
 
       this.socket = socket
     })
+  }
+
+  /**
+   * Drain the receive buffer, dispatching complete binary frames and JSON
+   * lines as they become available.
+   */
+  private drainRecvBuffer() {
+    while (this.recvBuf.length > 0) {
+      if (this.recvBuf[0] === BINARY_DATA_MARKER) {
+        // Binary data frame: [0x02][uint16 termIdLen][termId][uint32 dataLen][data]
+        const MIN_HEADER = 1 + 2 // marker + termId length
+        if (this.recvBuf.length < MIN_HEADER) return // need more bytes
+        const termIdLen = this.recvBuf.readUInt16BE(1)
+        const fullHeader = MIN_HEADER + termIdLen + 4 // + data length field
+        if (this.recvBuf.length < fullHeader) return
+        const dataLen = this.recvBuf.readUInt32BE(MIN_HEADER + termIdLen)
+        const totalLen = fullHeader + dataLen
+        if (this.recvBuf.length < totalLen) return
+
+        const termId = this.recvBuf.toString('utf-8', MIN_HEADER, MIN_HEADER + termIdLen)
+        const data = this.recvBuf.toString('utf-8', fullHeader, totalLen)
+        this.recvBuf = this.recvBuf.subarray(totalLen)
+        this.dataCallback?.(termId, data)
+      } else {
+        // JSON line — scan for newline delimiter
+        const nlIdx = this.recvBuf.indexOf(0x0a) // '\n'
+        if (nlIdx === -1) return // incomplete line, wait for more data
+        const line = this.recvBuf.toString('utf-8', 0, nlIdx)
+        this.recvBuf = this.recvBuf.subarray(nlIdx + 1)
+        if (!line.trim()) continue
+        try {
+          this.handleMessage(JSON.parse(line))
+        } catch {}
+      }
+    }
   }
 
   disconnect(): void {

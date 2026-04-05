@@ -30,7 +30,7 @@ import {
   getTerminalRestoreSnapshot,
   reloadTerminal,
   reloadAllTerminals,
-} from '@/components/terminal/cell-terminal'
+} from '@/components/terminal/terminal-cache-api'
 import { showToast } from '@/components/toast'
 import {
   DEFAULT_TERMINAL_SCROLLBACK_LINES,

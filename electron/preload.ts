@@ -9,6 +9,33 @@ import type {
   TerminalPerfSample,
 } from '../src/types'
 
+// ---------- High-throughput terminal data via MessagePort ----------
+// The main process sends a MessagePort for terminal data, bypassing
+// Electron's standard IPC event loop. We keep a fallback on regular IPC
+// for the brief window before the port arrives (or if it never does).
+
+type TerminalDataListener = (termId: string, data: string) => void
+const terminalDataListeners = new Set<TerminalDataListener>()
+
+function dispatchTerminalData(termId: string, data: string) {
+  for (const cb of terminalDataListeners) cb(termId, data)
+}
+
+// Receive the dedicated MessagePort from the main process
+ipcRenderer.on('terminal:data-port', (event) => {
+  const port = event.ports[0]
+  if (!port) return
+  port.onmessage = (e: MessageEvent) => {
+    dispatchTerminalData(e.data.t, e.data.d)
+  }
+  port.start()
+})
+
+// Fallback: standard IPC for data sent before the port is established
+ipcRenderer.on('terminal:data', (_event, termId: string, data: string) => {
+  dispatchTerminalData(termId, data)
+})
+
 const api: CellsAPI = {
   terminal: {
     attach: (termId: string, cols: number, rows: number, cwd?: string) =>
@@ -32,10 +59,10 @@ const api: CellsAPI = {
       maxBytes?: number,
     ) => ipcRenderer.invoke('terminal:get-history-page', termId, token, offset, maxBytes),
     onData: (callback: (termId: string, data: string) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, termId: string, data: string) =>
-        callback(termId, data)
-      ipcRenderer.on('terminal:data', handler)
-      return () => ipcRenderer.removeListener('terminal:data', handler)
+      terminalDataListeners.add(callback)
+      return () => {
+        terminalDataListeners.delete(callback)
+      }
     },
     onExit: (callback: (termId: string, details?: TerminalExitDetails) => void) => {
       const handler = (
