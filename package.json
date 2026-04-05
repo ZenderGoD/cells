@@ -1,6 +1,6 @@
 {
   "name": "cells",
-  "version": "0.1.56",
+  "version": "0.1.57",
   "private": true,
   "type": "module",
   "author": "Raj Sharma <r@raj.how>",
@@ -94,7 +94,7 @@
       ],
       "icon": "resources/icon.icns",
       "category": "public.app-category.developer-tools",
-      "x64ArchFiles": "Contents/Resources/app.asar.unpacked/node_modules/node-pty/prebuilds/darwin-{arm64,x64}/{pty.node,spawn-helper}",
+      "x64ArchFiles": "Contents/Resources/{app.asar.unpacked/node_modules/node-pty/prebuilds/darwin-{arm64,x64}/{pty.node,spawn-helper},vendor/zellij/darwin-{arm64,x64}/zellij}",
       "darkModeSupport": true,
       "hardenedRuntime": true,
       "gatekeeperAssess": false
