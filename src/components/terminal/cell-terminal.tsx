@@ -960,7 +960,7 @@ interface CellTerminalProps {
   onTitleChange?: (title: string) => void
 }
 
-type AgentName = 'claude' | 'codex'
+type AgentName = 'claude' | 'codex' | 'opencode'
 
 const COMMON_SHELL_COMMANDS = new Set([
   'awk',
@@ -1039,8 +1039,30 @@ const CLAUDE_SUBCOMMANDS = new Set([
   'upgrade',
 ])
 
+const OPENCODE_SUBCOMMANDS = new Set([
+  'acp',
+  'agent',
+  'attach',
+  'auth',
+  'export',
+  'github',
+  'help',
+  'import',
+  'mcp',
+  'models',
+  'run',
+  'serve',
+  'session',
+  'stats',
+  'uninstall',
+  'upgrade',
+  'web',
+])
+
 function getAgentLabel(agent: AgentName) {
-  return agent === 'claude' ? 'Claude' : 'Codex'
+  if (agent === 'claude') return 'Claude'
+  if (agent === 'codex') return 'Codex'
+  return 'OpenCode'
 }
 
 const ESCAPE_CHAR = String.fromCharCode(27)
@@ -1145,6 +1167,7 @@ function normalizeAgentProcess(proc: string | null): AgentName | null {
   if (normalized === 'codex' || normalized === 'codex-cli' || normalized.startsWith('codex-')) {
     return 'codex'
   }
+  if (normalized === 'opencode' || normalized.startsWith('opencode-')) return 'opencode'
   // Check user-configured aliases
   const aliases = useStore.getState().agentAliases
   for (const [agent, alias] of Object.entries(aliases)) {
@@ -1160,7 +1183,7 @@ function inferAgentLaunch(line: string): { agent: AgentName; title: string } | n
 
   // Build regex that matches canonical names + any user-configured aliases
   const aliases = useStore.getState().agentAliases
-  const names = new Set(['claude', 'codex'])
+  const names = new Set(['claude', 'codex', 'opencode'])
   for (const alias of Object.values(aliases)) {
     if (alias?.trim()) names.add(alias.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
   }
@@ -1177,7 +1200,12 @@ function inferAgentLaunch(line: string): { agent: AgentName; title: string } | n
 
   const rest = (match.groups.rest ?? '').trim()
   const firstToken = rest.split(/\s+/, 1)[0]?.toLowerCase()
-  const knownSubcommands = agent === 'claude' ? CLAUDE_SUBCOMMANDS : CODEX_SUBCOMMANDS
+  const knownSubcommands =
+    agent === 'claude'
+      ? CLAUDE_SUBCOMMANDS
+      : agent === 'opencode'
+        ? OPENCODE_SUBCOMMANDS
+        : CODEX_SUBCOMMANDS
   const prompt =
     rest && !rest.startsWith('-') && firstToken && !knownSubcommands.has(firstToken)
       ? summarizeTitle(rest)
@@ -1709,6 +1737,10 @@ export function CellTerminal({
         // Move the existing DOM back into our container
         cached.wrapper.style.backgroundColor = buildTheme(themeNameRef.current).background
         container.appendChild(cached.wrapper)
+        // Immediate synchronous render so the user never sees a blank canvas.
+        // The browser discards the canvas backing store while the wrapper is
+        // detached; painting before the next frame prevents the colorless flash.
+        forceTerminalFullRender(cached.term)
         terminalRef.current = cached.term
         fitAddonRef.current = cached.fitAddon
         cached.setPollingEnabled(true)
@@ -1752,6 +1784,11 @@ export function CellTerminal({
             // reset local emulator state and let the backend redraw the live pane.
             cached.term.reset()
             cached.term.scrollToBottom()
+            // Enable SGR mouse reporting locally so ghostty-web generates mouse
+            // sequences for clicks/scrolls. The multiplexer has already set up
+            // mouse mode server-side, but ghostty-web missed those escape
+            // sequences because it attached after the TUI was running.
+            cached.term.write('\x1b[?1000h\x1b[?1002h\x1b[?1006h')
           }
 
           // Replay any data buffered while this terminal was in another project.
@@ -2420,6 +2457,11 @@ export function CellTerminal({
       if (usesServerOwnedState) {
         term.reset()
         term.scrollToBottom()
+        // Enable SGR mouse reporting locally so ghostty-web generates mouse
+        // sequences for clicks/scrolls. The multiplexer has already set up
+        // mouse mode server-side, but ghostty-web missed those escape
+        // sequences because it attached after the TUI was running.
+        term.write('\x1b[?1000h\x1b[?1002h\x1b[?1006h')
       }
 
       let replayedRawHistory = false

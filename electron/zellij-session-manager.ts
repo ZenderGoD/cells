@@ -1,6 +1,6 @@
 import fs from 'fs'
 import crypto from 'crypto'
-import { execFileSync, spawn } from 'child_process'
+import { execFileSync } from 'child_process'
 import * as pty from 'node-pty'
 import {
   cleanEnv,
@@ -217,20 +217,15 @@ export class ZellijSessionManager implements TerminalSessionManager {
   private flushWheelScroll(termId: string, delta: number, sequence: string) {
     if (!delta) return
 
-    const count = Math.max(1, Math.min(12, Math.abs(delta)))
-    const action = delta > 0 ? 'scroll-up' : 'scroll-down'
-    for (let index = 0; index < count; index += 1) {
-      this.execZellijSessionDetached(termId, ['action', action])
-    }
-    return
-
-    // Fallback for cases where action-based scrolling is unavailable.
+    // Write mouse sequences to the PTY so TUIs with mouse reporting (e.g.
+    // opencode) receive scroll events through the normal input channel.
+    // Zellij forwards them to the active pane when mouse mode is enabled.
     if (sequence) {
-      const repeatedSequence = Array.from({ length: count }, () => sequence).join('')
-      this.write(termId, repeatedSequence)
+      this.write(termId, sequence)
       return
     }
 
+    const count = Math.max(1, Math.min(12, Math.abs(delta)))
     const fallback = delta > 0 ? '\x1b[A' : '\x1b[B'
     this.write(termId, fallback.repeat(count))
   }
@@ -486,21 +481,6 @@ export class ZellijSessionManager implements TerminalSessionManager {
       allowFailure,
       timeoutMs: allowFailure ? 500 : 5000,
     })
-  }
-
-  private execZellijSessionDetached(termId: string, args: string[]) {
-    try {
-      const child = spawn(
-        this.zellijBinary,
-        this.zellijArgs(['--session', this.encodeSessionId(termId), ...args]),
-        {
-          cwd: this.stateDir,
-          env: this.buildZellijEnv(),
-          stdio: 'ignore',
-        },
-      )
-      child.unref()
-    } catch {}
   }
 
   private encodeSessionId(termId: string) {
