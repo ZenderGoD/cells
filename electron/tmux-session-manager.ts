@@ -229,23 +229,7 @@ export class TmuxSessionManager implements TerminalSessionManager {
   handleWheel(termId: string, direction: 'up' | 'down', steps: number, sequence: string): void {
     const clampedSteps = Math.max(1, Math.min(24, Math.round(steps) || 1))
     const signedDelta = direction === 'up' ? clampedSteps : -clampedSteps
-    const existing = this.pendingWheelScrolls.get(termId)
-    if (existing) {
-      existing.delta += signedDelta
-      if (sequence) existing.sequence += sequence
-      return
-    }
-
-    const pending: PendingWheelScroll = {
-      delta: signedDelta,
-      sequence,
-      timer: setTimeout(() => {
-        this.pendingWheelScrolls.delete(termId)
-        this.flushWheelScroll(termId, pending.delta, pending.sequence)
-      }, 20),
-    }
-    if (pending.timer) pending.timer.unref?.()
-    this.pendingWheelScrolls.set(termId, pending)
+    this.flushWheelScroll(termId, signedDelta, sequence)
   }
 
   getScrollStatus(termId: string): TerminalScrollStatus | null {
