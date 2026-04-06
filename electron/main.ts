@@ -58,6 +58,7 @@ import type { TerminalExitDetails } from '../src/types'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
+const RENDERER_CACHE_VERSION_FILE = '.renderer-cache-version'
 
 // Catch async EIO errors from dead PTYs
 process.on('uncaughtException', (err: NodeJS.ErrnoException) => {
@@ -148,6 +149,47 @@ function configureDevPaths() {
   app.setPath('userData', devUserDataDir)
   app.setPath('sessionData', devSessionDataDir)
   app.setPath('logs', devLogsDir)
+}
+
+async function clearRendererCachesOnVersionChange() {
+  if (!app.isPackaged) return
+
+  const userDataDir = app.getPath('userData')
+  const versionFile = path.join(userDataDir, RENDERER_CACHE_VERSION_FILE)
+  const currentVersion = app.getVersion()
+  let previousVersion: string | null = null
+
+  try {
+    previousVersion = fs.readFileSync(versionFile, 'utf8').trim() || null
+  } catch {}
+
+  if (previousVersion === currentVersion) return
+
+  const cacheEntries = [
+    'Cache',
+    'Code Cache',
+    'GPUCache',
+    'DawnGraphiteCache',
+    'DawnWebGPUCache',
+    'blob_storage',
+    'Session Storage',
+    'Shared Dictionary',
+    'Network Persistent State',
+  ]
+
+  for (const entry of cacheEntries) {
+    try {
+      fs.rmSync(path.join(userDataDir, entry), { recursive: true, force: true })
+    } catch {}
+  }
+
+  try {
+    await session.defaultSession.clearCache()
+  } catch {}
+
+  try {
+    fs.writeFileSync(versionFile, `${currentVersion}\n`, 'utf8')
+  } catch {}
 }
 
 configureDevPaths()
@@ -1377,9 +1419,12 @@ ipcMain.handle('app:file-thumbnail', async (_event, filePath: string) => {
 })
 
 ipcMain.handle('app:get-terminal-font-resources', () => {
-  const fontDir = app.isPackaged
-    ? path.join(process.resourcesPath, 'vendor', 'fonts')
-    : path.join(__dirname, '..', 'src', 'fonts')
+  const overrideFontDir = process.env.CELLS_TERMINAL_FONT_DIR?.trim()
+  const fontDir = overrideFontDir
+    ? overrideFontDir
+    : app.isPackaged
+      ? path.join(process.resourcesPath, 'vendor', 'fonts')
+      : path.join(__dirname, '..', 'src', 'fonts')
 
   const fonts = [
     'GeistMonoNerdFontMono-Regular.otf',
@@ -2458,6 +2503,8 @@ ipcMain.handle('daemon:restart', async () => {
 app.whenReady().then(async () => {
   perfMonitor = new PerfMonitor(app.getPath('logs'))
   perfMonitor.start()
+
+  await clearRendererCachesOnVersionChange()
 
   // Start PTY daemon before creating windows
   try {

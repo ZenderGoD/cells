@@ -21,7 +21,7 @@ type BundledFontFace = {
 const TERMINAL_FONT_FACES: BundledFontFace[] = [
   {
     filename: 'GeistMonoNerdFontMono-Regular.otf',
-    family: 'GeistMono NF',
+    family: 'GeistMono NFM',
     weight: '400',
     style: 'normal',
     url: geistMonoRegularUrl,
@@ -29,7 +29,7 @@ const TERMINAL_FONT_FACES: BundledFontFace[] = [
   },
   {
     filename: 'GeistMonoNerdFontMono-Bold.otf',
-    family: 'GeistMono NF',
+    family: 'GeistMono NFM',
     weight: '700',
     style: 'normal',
     url: geistMonoBoldUrl,
@@ -37,7 +37,7 @@ const TERMINAL_FONT_FACES: BundledFontFace[] = [
   },
   {
     filename: 'JetBrainsMonoNerdFontMono-Regular.ttf',
-    family: 'JetBrainsMono NF',
+    family: 'JetBrainsMono NFM',
     weight: '400',
     style: 'normal',
     url: jetBrainsMonoRegularUrl,
@@ -45,7 +45,7 @@ const TERMINAL_FONT_FACES: BundledFontFace[] = [
   },
   {
     filename: 'JetBrainsMonoNerdFontMono-Bold.ttf',
-    family: 'JetBrainsMono NF',
+    family: 'JetBrainsMono NFM',
     weight: '700',
     style: 'normal',
     url: jetBrainsMonoBoldUrl,
@@ -53,7 +53,7 @@ const TERMINAL_FONT_FACES: BundledFontFace[] = [
   },
   {
     filename: 'FiraCodeNerdFontMono-Regular.ttf',
-    family: 'FiraCode NF',
+    family: 'FiraCode Nerd Font Mono',
     weight: '400',
     style: 'normal',
     url: firaCodeRegularUrl,
@@ -61,7 +61,7 @@ const TERMINAL_FONT_FACES: BundledFontFace[] = [
   },
   {
     filename: 'FiraCodeNerdFontMono-Bold.ttf',
-    family: 'FiraCode NF',
+    family: 'FiraCode Nerd Font Mono',
     weight: '700',
     style: 'normal',
     url: firaCodeBoldUrl,
@@ -69,7 +69,7 @@ const TERMINAL_FONT_FACES: BundledFontFace[] = [
   },
   {
     filename: 'MesloLGSNerdFontMono-Regular.ttf',
-    family: 'Meslo NF',
+    family: 'MesloLGS Nerd Font Mono',
     weight: '400',
     style: 'normal',
     url: mesloRegularUrl,
@@ -77,7 +77,7 @@ const TERMINAL_FONT_FACES: BundledFontFace[] = [
   },
   {
     filename: 'MesloLGSNerdFontMono-Bold.ttf',
-    family: 'Meslo NF',
+    family: 'MesloLGS Nerd Font Mono',
     weight: '700',
     style: 'normal',
     url: mesloBoldUrl,
@@ -85,7 +85,7 @@ const TERMINAL_FONT_FACES: BundledFontFace[] = [
   },
   {
     filename: 'HackNerdFontMono-Regular.ttf',
-    family: 'Hack NF',
+    family: 'Hack Nerd Font Mono',
     weight: '400',
     style: 'normal',
     url: hackRegularUrl,
@@ -93,7 +93,7 @@ const TERMINAL_FONT_FACES: BundledFontFace[] = [
   },
   {
     filename: 'HackNerdFontMono-Bold.ttf',
-    family: 'Hack NF',
+    family: 'Hack Nerd Font Mono',
     weight: '700',
     style: 'normal',
     url: hackBoldUrl,
@@ -130,6 +130,8 @@ export function loadBundledTerminalFonts() {
         document.fonts.add(loaded)
       }),
     )
+
+    await document.fonts.ready
   })()
   return loadPromise
 }
