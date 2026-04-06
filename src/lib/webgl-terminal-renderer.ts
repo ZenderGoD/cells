@@ -141,6 +141,24 @@ void main() {
 // the entire atlas is cleared and rebuilt on demand.
 const ATLAS_SIZE = 2048
 
+function isDoubleWidthGlyph(char: string) {
+  const codePoint = char.codePointAt(0)
+  if (codePoint === undefined) return false
+
+  // Nerd Font and powerline glyphs live in the Unicode private-use ranges.
+  // They render as single-cell terminal symbols, so treating them as wide
+  // corrupts atlas layout and prompt spacing inside tmux.
+  if (
+    (codePoint >= 0xe000 && codePoint <= 0xf8ff) ||
+    (codePoint >= 0xf0000 && codePoint <= 0xffffd) ||
+    (codePoint >= 0x100000 && codePoint <= 0x10fffd)
+  ) {
+    return false
+  }
+
+  return codePoint > 0x2e7f
+}
+
 class GlyphAtlas {
   private canvas: OffscreenCanvas
   private ctx: OffscreenCanvasRenderingContext2D
@@ -187,7 +205,7 @@ class GlyphAtlas {
 
     const cellW = Math.ceil(this.metrics.width * this.dpr)
     // Allow wide chars up to 2× cell width, regular chars get 1× cell width
-    const isWide = char.length > 0 && char.codePointAt(0)! > 0x2e7f
+    const isWide = isDoubleWidthGlyph(char)
     const glyphW = isWide ? cellW * 2 : cellW
     const glyphH = Math.ceil(this.metrics.height * this.dpr)
 
