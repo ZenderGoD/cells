@@ -10,8 +10,6 @@ import {
 } from 'ghostty-web'
 import type { ILinkProvider } from 'ghostty-web'
 
-/** The 4th param of CanvasRenderer.render — not exported by ghostty-web. */
-type Renderable = Parameters<CanvasRenderer['render']>[0]
 type ScrollbackProvider = NonNullable<Parameters<CanvasRenderer['render']>[3]>
 import { useStore, consumePendingCommand, consumePendingWorktreePath } from '@/lib/store'
 import { DEFAULT_TERMINAL_CURSOR_SETTINGS, type TerminalCursorStyle } from '@/lib/terminal-cursor'
@@ -39,6 +37,8 @@ const HISTORY_WRITE_BYTES = 64 * 1024
 const TERMINAL_SEARCH_MATCH_LIMIT = 2_000
 const TERMINAL_ATTACH_RETRY_DELAYS_MS = [0, 250, 1000] as const
 const SERVER_OWNED_ATTACH_RECOVERY_DELAYS_MS = [800, 1600] as const
+const SERVER_OWNED_WHEEL_FLUSH_MS = 16
+const SERVER_OWNED_WHEEL_HANDLED_KEY = '__cellsServerOwnedWheelHandled'
 
 type TerminalAttachResponse = {
   reattached: boolean
@@ -1034,6 +1034,12 @@ interface CellTerminalProps {
 
 type AgentName = 'claude' | 'codex' | 'opencode' | 'pi'
 
+type QueuedWheelPayload = {
+  direction: 'up' | 'down'
+  steps: number
+  sequence: string
+}
+
 const COMMON_SHELL_COMMANDS = new Set([
   'awk',
   'bash',
@@ -1233,7 +1239,7 @@ function sanitizeBackendLeakedTitle(input: string) {
 
 function formatAgentWindowTitle(agent: AgentName, title: string, maxLength = 60) {
   const summary = summarizeTitle(sanitizeBackendLeakedTitle(title), maxLength)
-  return summary ? `${getAgentLabel(agent)}: ${summary}` : getAgentLabel(agent)
+  return summary || getAgentLabel(agent)
 }
 
 function normalizeAgentProcess(proc: string | null): AgentName | null {
@@ -1524,6 +1530,8 @@ export function CellTerminal({
   const shouldRenderRef = useRef(isFocused || isVisible)
   const focusStateRef = useRef({ isFocused, isVisible })
   const suppressAutoFocusRef = useRef(false)
+  const queuedWheelPayloadsRef = useRef<QueuedWheelPayload[]>([])
+  const queuedWheelTimerRef = useRef<number | null>(null)
   const searchMatchesRef = useRef<SearchMatch[]>([])
   const searchDebounceRef = useRef<number | null>(null)
   const searchLimitHitRef = useRef(false)
@@ -1644,6 +1652,41 @@ export function CellTerminal({
   const relaunchTerminal = useCallback(() => {
     restartTerminalSession(termId)
   }, [restartTerminalSession, termId])
+
+  const flushQueuedWheelPayloads = useCallback(() => {
+    queuedWheelTimerRef.current = null
+    const payloads = queuedWheelPayloadsRef.current
+    queuedWheelPayloadsRef.current = []
+    for (const payload of payloads) {
+      void window.cells.terminal.handleWheel(
+        termId,
+        payload.direction,
+        Math.max(1, payload.steps),
+        payload.sequence,
+      )
+    }
+  }, [termId])
+
+  const queueServerOwnedWheelPayload = useCallback(
+    (event: WheelEvent, payload: QueuedWheelPayload) => {
+      Reflect.set(event, SERVER_OWNED_WHEEL_HANDLED_KEY, true)
+      const queue = queuedWheelPayloadsRef.current
+      const last = queue[queue.length - 1]
+      if (last && last.direction === payload.direction) {
+        last.steps += payload.steps
+        last.sequence += payload.sequence
+      } else {
+        queue.push({ ...payload })
+      }
+      if (queuedWheelTimerRef.current === null) {
+        queuedWheelTimerRef.current = window.setTimeout(
+          flushQueuedWheelPayloads,
+          SERVER_OWNED_WHEEL_FLUSH_MS,
+        )
+      }
+    },
+    [flushQueuedWheelPayloads],
+  )
 
   const scheduleServerOwnedAttachRecovery = useCallback(
     (term: Terminal, cols: number, rows: number, cwd: string | undefined, attempt = 0) => {
@@ -2257,15 +2300,11 @@ export function CellTerminal({
       term.attachCustomWheelEventHandler((e: WheelEvent) => {
         if (!usesServerOwnedTerminalState(term)) return false
         if (e.metaKey || e.ctrlKey) return false
+        if (Reflect.get(e, SERVER_OWNED_WHEEL_HANDLED_KEY) === true) return true
 
         const payload = getMouseWheelSequencePayload(e, term, wrapper)
         if (payload) {
-          void window.cells.terminal.handleWheel(
-            termId,
-            payload.direction,
-            payload.steps,
-            payload.sequence,
-          )
+          queueServerOwnedWheelPayload(e, payload)
         }
         if (term.viewportY > 0) {
           term.scrollToBottom()
@@ -2761,6 +2800,7 @@ export function CellTerminal({
   }, [
     copySelectionToClipboard,
     pasteToTerminal,
+    queueServerOwnedWheelPayload,
     reloadKey,
     refitTerminalToLoadedFont,
     scheduleServerOwnedAttachRecovery,
@@ -2891,17 +2931,13 @@ export function CellTerminal({
     const onWheel = (e: WheelEvent) => {
       const term = terminalRef.current
       if (term && usesServerOwnedTerminalState(term) && !e.metaKey && !e.ctrlKey) {
+        if (Reflect.get(e, SERVER_OWNED_WHEEL_HANDLED_KEY) === true) return
         const payload = getMouseWheelSequencePayload(e, term, container)
         if (payload) {
           e.preventDefault()
           e.stopPropagation()
           e.stopImmediatePropagation()
-          void window.cells.terminal.handleWheel(
-            termId,
-            payload.direction,
-            payload.steps,
-            payload.sequence,
-          )
+          queueServerOwnedWheelPayload(e, payload)
           if (term.viewportY > 0) {
             term.scrollToBottom()
             ;(term as any).targetViewportY = 0
@@ -2935,7 +2971,17 @@ export function CellTerminal({
 
     container.addEventListener('wheel', onWheel, { capture: true, passive: false })
     return () => container.removeEventListener('wheel', onWheel, { capture: true })
-  }, [termId])
+  }, [queueServerOwnedWheelPayload, termId])
+
+  useEffect(() => {
+    return () => {
+      if (queuedWheelTimerRef.current !== null) {
+        window.clearTimeout(queuedWheelTimerRef.current)
+      }
+      queuedWheelTimerRef.current = null
+      queuedWheelPayloadsRef.current = []
+    }
+  }, [])
 
   // Handle resize
   useEffect(() => {
@@ -2966,15 +3012,25 @@ export function CellTerminal({
         !status.paneInMode ||
         status.scrollPosition <= 0
       ) {
-        setScrollStatus(null)
+        setScrollStatus((previous) => (previous === null ? previous : null))
       } else {
-        setScrollStatus({
-          paneInMode: status.paneInMode,
-          scrollPosition: status.scrollPosition,
-          historySize: status.historySize,
+        setScrollStatus((previous) => {
+          if (
+            previous &&
+            previous.paneInMode === status.paneInMode &&
+            previous.scrollPosition === status.scrollPosition &&
+            previous.historySize === status.historySize
+          ) {
+            return previous
+          }
+          return {
+            paneInMode: status.paneInMode,
+            scrollPosition: status.scrollPosition,
+            historySize: status.historySize,
+          }
         })
       }
-      timer = window.setTimeout(poll, isFocused ? 90 : 180)
+      timer = window.setTimeout(poll, isFocused ? 120 : 220)
     }
 
     void poll()
@@ -3059,7 +3115,7 @@ export function CellTerminal({
         />
       )}
       {scrollStatus && (
-        <div className="pointer-events-none absolute right-2 top-2 z-20">
+        <div className="pointer-events-none absolute right-2 top-11 z-20">
           <div className="rounded-sm border border-amber-300/20 bg-amber-200/95 px-1.5 py-0.5 font-mono text-[10px] leading-none tracking-tight text-black shadow-[0_1px_0_rgba(0,0,0,0.14)]">
             {scrollStatus.scrollPosition}/
             {Math.max(scrollStatus.historySize, scrollStatus.scrollPosition)}

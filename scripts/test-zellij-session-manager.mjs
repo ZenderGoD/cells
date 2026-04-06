@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { Buffer } from 'node:buffer'
 import fs from 'node:fs/promises'
 import fsSync from 'node:fs'
 import net from 'node:net'

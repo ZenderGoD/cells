@@ -43,8 +43,6 @@
  */
 
 import type {
-  CanvasRenderer,
-  CellFlags as CellFlagsType,
   FontMetrics,
   GhosttyCell,
   IRenderable,
@@ -461,7 +459,7 @@ export class WebGLTerminalRenderer {
     forceAll = false,
     viewportY = 0,
     scrollbackProvider?: IScrollbackProvider,
-    scrollbarOpacity = 0,
+    _scrollbarOpacity = 0,
   ) {
     this.currentBuffer = buffer
     const gl = this.gl
@@ -552,7 +550,7 @@ export class WebGLTerminalRenderer {
     // Build set of rows to render
     const dirtyRows = new Set<number>()
     for (let r = 0; r < dims.rows; r++) {
-      if (viewportY > 0 || forceAll || buffer.isRowDirty(r) || selRows.has(r) || linkRows.has(r)) {
+      if (forceAll || buffer.isRowDirty(r) || selRows.has(r) || linkRows.has(r)) {
         dirtyRows.add(r)
         if (r > 0) dirtyRows.add(r - 1)
         if (r < dims.rows - 1) dirtyRows.add(r + 1)

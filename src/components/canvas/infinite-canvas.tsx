@@ -193,7 +193,9 @@ export function InfiniteCanvas() {
 
   useEffect(() => {
     if (isUserDriving || reducedMotion) {
-      setIsSnapAnimating(false)
+      window.requestAnimationFrame(() => {
+        setIsSnapAnimating(false)
+      })
       return
     }
 

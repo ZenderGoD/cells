@@ -95,6 +95,10 @@ type TmuxPaneFlags = {
   alternateOn: boolean
 }
 
+type CachedPaneFlags = TmuxPaneFlags & {
+  expiresAt: number
+}
+
 type PendingWheelScroll = {
   delta: number
   sequence: string
@@ -117,6 +121,7 @@ export class TmuxSessionManager implements TerminalSessionManager {
   private readonly terminfoDir: string | null
   private readonly attachedClients = new Map<string, AttachedClient>()
   private readonly pendingWheelScrolls = new Map<string, PendingWheelScroll>()
+  private readonly paneFlagsCache = new Map<string, CachedPaneFlags>()
   private readonly knownTerminals = new Set<string>()
   private readonly termProjectIds = new Map<string, string>()
   private pollTimer: ReturnType<typeof setInterval> | null = null
@@ -222,7 +227,7 @@ export class TmuxSessionManager implements TerminalSessionManager {
   }
 
   handleWheel(termId: string, direction: 'up' | 'down', steps: number, sequence: string): void {
-    const clampedSteps = Math.max(1, Math.min(16, Math.round(steps) || 1))
+    const clampedSteps = Math.max(1, Math.min(24, Math.round(steps) || 1))
     const signedDelta = direction === 'up' ? clampedSteps : -clampedSteps
     const existing = this.pendingWheelScrolls.get(termId)
     if (existing) {
@@ -237,7 +242,7 @@ export class TmuxSessionManager implements TerminalSessionManager {
       timer: setTimeout(() => {
         this.pendingWheelScrolls.delete(termId)
         this.flushWheelScroll(termId, pending.delta, pending.sequence)
-      }, 12),
+      }, 20),
     }
     if (pending.timer) pending.timer.unref?.()
     this.pendingWheelScrolls.set(termId, pending)
@@ -320,6 +325,7 @@ export class TmuxSessionManager implements TerminalSessionManager {
       if (pending.timer) clearTimeout(pending.timer)
     }
     this.pendingWheelScrolls.clear()
+    this.paneFlagsCache.clear()
     for (const termId of [...this.attachedClients.keys()]) {
       this.disposeAttachedClient(termId)
     }
@@ -350,6 +356,7 @@ export class TmuxSessionManager implements TerminalSessionManager {
     if (delta > 0) {
       if (!flags.paneInMode) {
         this.execTmux(['copy-mode', '-eH', '-t', paneTarget], true)
+        this.setPaneFlagsCache(termId, { ...flags, paneInMode: true })
       } else {
         this.execTmux(['copy-mode', '-H', '-t', paneTarget], true)
       }
@@ -366,6 +373,7 @@ export class TmuxSessionManager implements TerminalSessionManager {
       ['send-keys', '-X', '-N', String(scrollAmount), '-t', paneTarget, 'scroll-down'],
       true,
     )
+    this.clearPaneFlagsCache(termId)
   }
 
   private replaceAttachedClient(
@@ -475,6 +483,7 @@ export class TmuxSessionManager implements TerminalSessionManager {
   private forgetTerminal(termId: string) {
     this.knownTerminals.delete(termId)
     this.termProjectIds.delete(termId)
+    this.clearPaneFlagsCache(termId)
   }
 
   private getKnownLocation(termId: string): TerminalLocation | null {
@@ -628,6 +637,11 @@ export class TmuxSessionManager implements TerminalSessionManager {
   }
 
   private getPaneFlags(termId: string): TmuxPaneFlags | null {
+    const cached = this.paneFlagsCache.get(termId)
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached
+    }
+
     const paneTarget = this.getPaneTarget(termId)
     if (!paneTarget) return null
     const output = this.execTmux(
@@ -642,11 +656,21 @@ export class TmuxSessionManager implements TerminalSessionManager {
     )
     if (!output) return null
     const [paneInMode, mouseAnyFlag, alternateOn] = output.trim().split(/\s+/)
-    return {
+    const flags = {
       paneInMode: paneInMode === '1',
       mouseAnyFlag: mouseAnyFlag === '1',
       alternateOn: alternateOn === '1',
     }
+    this.setPaneFlagsCache(termId, flags)
+    return flags
+  }
+
+  private setPaneFlagsCache(termId: string, flags: TmuxPaneFlags) {
+    this.paneFlagsCache.set(termId, { ...flags, expiresAt: Date.now() + 80 })
+  }
+
+  private clearPaneFlagsCache(termId: string) {
+    this.paneFlagsCache.delete(termId)
   }
 
   private execTmux(args: string[], allowFailure = false): string | null {

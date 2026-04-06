@@ -247,7 +247,7 @@ export function buildPrivateZellijLayout(): string {
   return ['// Cells single-pane layout', 'layout {', '    pane borderless=true', '}', ''].join('\n')
 }
 
-export function ensurePrivateZellijConfig(stateDir: string, defaultShell: string) {
+export function ensurePrivateZellijConfig(stateDir: string, _defaultShell: string) {
   const configDir = getPrivateZellijConfigDir(stateDir)
   const dataDir = getPrivateZellijDataDir(stateDir)
   const layoutDir = getPrivateZellijLayoutDir(stateDir)

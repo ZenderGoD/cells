@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { Buffer } from 'node:buffer'
 import fs from 'node:fs/promises'
 import fsSync from 'node:fs'
 import net from 'node:net'
@@ -65,10 +66,6 @@ function getExpectedXdgDataHome(stateDir) {
 
 function encodeTmuxProjectSessionId(projectId) {
   return `cp_${Buffer.from(projectId, 'utf8').toString('base64url')}`
-}
-
-function encodeTmuxViewerSessionId(termId) {
-  return `cv_${Buffer.from(termId, 'utf8').toString('base64url')}`
 }
 
 function encodeTmuxWindowName(termId) {
@@ -239,8 +236,6 @@ test('tmux daemon preserves a session across detach and reattach', async () => {
   const markerOne = `CELLS_TMUX_ONE_${Date.now()}`
   const markerTwo = `CELLS_TMUX_TWO_${Date.now()}`
   const shellMarker = `CELLS_SHELL_${Date.now()}`
-  const xdgConfigMarker = `CELLS_XDG_CONFIG_${Date.now()}`
-  const xdgDataMarker = `CELLS_XDG_DATA_${Date.now()}`
   const expectedShell = getExpectedUserShell()
 
   try {
@@ -308,7 +303,7 @@ test('tmux daemon preserves a session across detach and reattach', async () => {
     assert.match(
       tmuxConfig,
       new RegExp(
-        `^set-option -ga terminal-features \",${escapeRegex(configuredTerm)}:RGB,clipboard,ccolour,cstyle,extkeys,focus,hyperlinks,osc7,title,usstyle,strikethrough,overline,sync\"$`,
+        `^set-option -ga terminal-features ",${escapeRegex(configuredTerm)}:RGB,clipboard,ccolour,cstyle,extkeys,focus,hyperlinks,osc7,title,usstyle,strikethrough,overline,sync"$`,
         'm',
       ),
     )

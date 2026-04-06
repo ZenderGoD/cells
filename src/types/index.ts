@@ -106,6 +106,7 @@ export interface ProjectsState {
   activeProjectId: string | null
   projects: Project[]
   terminalSessionBackend?: TerminalSessionBackend
+  terminalSessionBackendExplicitlySet?: boolean
   terminalTheme?: string
   fontSize?: number
   fontFamily?: string
