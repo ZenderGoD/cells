@@ -11,6 +11,7 @@ const VERSION = zellijBundle.version
 const REPO_BASE = `https://github.com/zellij-org/zellij/releases/download/v${VERSION}`
 const ROOT = process.cwd()
 const VENDOR_ROOT = path.join(ROOT, 'resources', 'vendor', 'zellij')
+const FETCH_RETRY_DELAYS_MS = [0, 500, 1500]
 
 const TARGETS = {
   'darwin-arm64': {
@@ -53,19 +54,39 @@ function resolveRequestedTargets() {
   return []
 }
 
-async function fetchText(url) {
-  const response = await globalThis.fetch(url)
-  if (!response.ok) {
-    throw new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`)
+function shouldRetryStatus(status) {
+  return status === 429 || status === 502 || status === 503 || status === 504
+}
+
+function delay(ms) {
+  return new Promise((resolve) => globalThis.setTimeout(resolve, ms))
+}
+
+async function fetchWithRetry(url) {
+  let lastError = null
+  for (const retryDelay of FETCH_RETRY_DELAYS_MS) {
+    if (retryDelay > 0) await delay(retryDelay)
+    try {
+      const response = await globalThis.fetch(url)
+      if (response.ok) return response
+      if (!shouldRetryStatus(response.status)) {
+        throw new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`)
+      }
+      lastError = new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`)
+    } catch (error) {
+      lastError = error
+    }
   }
+  throw lastError instanceof Error ? lastError : new Error(`Failed to fetch ${url}`)
+}
+
+async function fetchText(url) {
+  const response = await fetchWithRetry(url)
   return await response.text()
 }
 
 async function fetchBuffer(url) {
-  const response = await globalThis.fetch(url)
-  if (!response.ok) {
-    throw new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`)
-  }
+  const response = await fetchWithRetry(url)
   return Buffer.from(await response.arrayBuffer())
 }
 
