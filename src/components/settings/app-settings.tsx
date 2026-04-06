@@ -222,14 +222,6 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
     [terminalThemeSchemeTab],
   )
 
-  useEffect(() => {
-    setAppearanceThemeSchemeTab(terminalThemes[activeAppThemeKey]?.scheme ?? resolvedAppColorScheme)
-  }, [activeAppThemeKey, resolvedAppColorScheme])
-
-  useEffect(() => {
-    setTerminalThemeSchemeTab(terminalThemes[terminalTheme]?.scheme ?? 'dark')
-  }, [terminalTheme])
-
   const projectOptions = useMemo<SettingsSelectOption[]>(
     () => [
       {
@@ -279,7 +271,13 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   }, [saveStatus])
 
   const handleOpenChange = (nextOpen: boolean) => {
-    if (nextOpen) setActiveSection('appearance')
+    if (nextOpen) {
+      setActiveSection('appearance')
+      setAppearanceThemeSchemeTab(
+        terminalThemes[activeAppThemeKey]?.scheme ?? resolvedAppColorScheme,
+      )
+      setTerminalThemeSchemeTab(terminalThemes[terminalTheme]?.scheme ?? 'dark')
+    }
     onOpenChange(nextOpen)
   }
 
