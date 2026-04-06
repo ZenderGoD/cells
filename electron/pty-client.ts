@@ -168,7 +168,14 @@ export class PtyDaemonClient {
   }
 
   async getProcessInfo(termId: string): Promise<TerminalProcessInfo | null> {
-    return this.request('get-process-info', { termId })
+    try {
+      return await this.request('get-process-info', { termId })
+    } catch {
+      // Process info is best-effort metadata used for UI hints and agent
+      // detection. If the daemon is busy or mid-restart, degrade to null
+      // instead of surfacing noisy IPC errors to Electron.
+      return null
+    }
   }
 
   async getCodexTitle(termId: string): Promise<string | null> {
