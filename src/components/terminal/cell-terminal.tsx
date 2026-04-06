@@ -298,10 +298,10 @@ function getMouseWheelSequencePayload(
   const modifier = getMouseModifierMask(event)
   const delta =
     event.deltaMode === WheelEvent.DOM_DELTA_LINE
-      ? Math.abs(event.deltaY) * 0.3
+      ? Math.abs(event.deltaY) * 0.45
       : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
-        ? Math.abs(event.deltaY) * Math.max(1, term.rows / 8)
-        : Math.abs(event.deltaY / 120)
+        ? Math.abs(event.deltaY) * Math.max(1, term.rows / 6)
+        : Math.abs(event.deltaY / 36)
 
   return {
     direction: event.deltaY < 0 ? 'up' : 'down',
@@ -1111,6 +1111,8 @@ interface CellTerminalProps {
   height: number
   isVisible: boolean
   isFocused: boolean
+  projectId?: string | null
+  projectPath?: string | null
   onTitleChange?: (title: string) => void
 }
 
@@ -1501,6 +1503,13 @@ function focusGhosttyInput(term: Terminal) {
   })
 }
 
+function reportTerminalSizeIfChanged(termId: string, fitAddon: FitAddon | null) {
+  if (!fitAddon) return
+  const dims = fitAddon.proposeDimensions()
+  if (!dims) return
+  window.cells.terminal.resize(termId, dims.cols, dims.rows)
+}
+
 function forceTerminalRepaint(term: Terminal) {
   requestAnimationFrame(() => forceTerminalFullRender(term))
   window.setTimeout(() => requestAnimationFrame(() => forceTerminalFullRender(term)), 32)
@@ -1561,6 +1570,8 @@ export function CellTerminal({
   height,
   isVisible,
   isFocused,
+  projectId,
+  projectPath,
   onTitleChange,
 }: CellTerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -1606,6 +1617,8 @@ export function CellTerminal({
   const shouldRenderRef = useRef(isFocused || isVisible)
   const focusStateRef = useRef({ isFocused, isVisible })
   const suppressAutoFocusRef = useRef(false)
+  const projectIdRef = useRef<string | null | undefined>(projectId)
+  const projectPathRef = useRef<string | null | undefined>(projectPath)
   const queuedMouseSequencesRef = useRef<string[]>([])
   const queuedMouseTimerRef = useRef<number | null>(null)
   const serverOwnedMouseModeRef = useRef(false)
@@ -1616,7 +1629,7 @@ export function CellTerminal({
   const searchLimitHitRef = useRef(false)
   const [dropActive, setDropActive] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
-  const [scrollStatus, setScrollStatus] = useState<{
+  const [, setScrollStatus] = useState<{
     paneInMode: boolean
     scrollPosition: number
     historySize: number
@@ -1656,9 +1669,24 @@ export function CellTerminal({
     [termId],
   )
 
+  const getAttachProjectId = useCallback(
+    () => projectIdRef.current ?? useStore.getState().activeProjectId,
+    [],
+  )
+
+  const getAttachProjectPath = useCallback(
+    () => projectPathRef.current ?? useStore.getState().getActiveProjectPath(),
+    [],
+  )
+
   useEffect(() => {
     focusStateRef.current = { isFocused, isVisible }
   }, [isFocused, isVisible])
+
+  useEffect(() => {
+    projectIdRef.current = projectId
+    projectPathRef.current = projectPath
+  }, [projectId, projectPath])
 
   useEffect(() => {
     themeNameRef.current = themeName
@@ -1735,13 +1763,14 @@ export function CellTerminal({
   const queueServerOwnedWheelPayload = useCallback(
     (event: WheelEvent, payload: QueuedWheelPayload) => {
       Reflect.set(event, SERVER_OWNED_WHEEL_HANDLED_KEY, true)
+      const term = getLiveTerminal()
       const directionSign = payload.direction === 'up' ? -1 : 1
       const combinedDelta =
         Math.sign(wheelDeltaCarryRef.current) === directionSign || wheelDeltaCarryRef.current === 0
           ? wheelDeltaCarryRef.current + directionSign * payload.delta
           : directionSign * payload.delta
-      const threshold = 1
-      const steps = Math.max(0, Math.min(3, Math.floor(Math.abs(combinedDelta) / threshold)))
+      const threshold = 0.75
+      const steps = Math.max(0, Math.min(4, Math.floor(Math.abs(combinedDelta) / threshold)))
       wheelDeltaCarryRef.current =
         steps > 0 ? directionSign * (Math.abs(combinedDelta) - steps * threshold) : combinedDelta
       if (steps <= 0) return
@@ -1752,9 +1781,13 @@ export function CellTerminal({
         { length: steps },
         () => `\x1b[<${button};${payload.x};${payload.y}M`,
       ).join('')
+      if (term && getTerminalBackend(term) === 'tmux') {
+        window.cells.terminal.write(termId, sequence)
+        return
+      }
       void window.cells.terminal.handleWheel(termId, payload.direction, steps, sequence)
     },
-    [termId],
+    [getLiveTerminal, termId],
   )
 
   const flushQueuedMouseSequences = useCallback(() => {
@@ -1797,7 +1830,7 @@ export function CellTerminal({
               cols,
               rows,
               cwd,
-              useStore.getState().activeProjectId,
+              getAttachProjectId(),
               () => {
                 return terminalRef.current === term
               },
@@ -1831,7 +1864,7 @@ export function CellTerminal({
         })()
       }, delay)
     },
-    [termId],
+    [getAttachProjectId, termId],
   )
 
   const refreshTerminalSearch = useCallback(() => {
@@ -2086,8 +2119,8 @@ export function CellTerminal({
               termId,
               dims?.cols ?? 80,
               dims?.rows ?? 24,
-              useStore.getState().getActiveProjectPath(),
-              useStore.getState().activeProjectId,
+              getAttachProjectPath(),
+              getAttachProjectId(),
               () => !cancelled,
             )
           } catch (error) {
@@ -2112,7 +2145,7 @@ export function CellTerminal({
               cached.term,
               dims?.cols ?? 80,
               dims?.rows ?? 24,
-              useStore.getState().getActiveProjectPath(),
+              getAttachProjectPath(),
             )
           }
 
@@ -2145,6 +2178,8 @@ export function CellTerminal({
         if (result?.reattached && dims && !avoidSyntheticResize && !usesServerOwnedState) {
           bumpPtySize(dims.cols, dims.rows)
         }
+
+        reportTerminalSizeIfChanged(termId, cached.fitAddon)
 
         syncTerminalState(cached.term)
         return
@@ -2396,10 +2431,6 @@ export function CellTerminal({
         const payload = getMouseWheelSequencePayload(e, term, wrapper)
         if (payload) {
           queueServerOwnedWheelPayload(e, payload)
-        }
-        if (term.viewportY > 0) {
-          term.scrollToBottom()
-          ;(term as any).targetViewportY = 0
         }
         return true
       })
@@ -2764,7 +2795,7 @@ export function CellTerminal({
 
       const dims = fitAddon.proposeDimensions()
       const worktreeCwd = consumePendingWorktreePath(termId)
-      const projectPath = worktreeCwd ?? useStore.getState().getActiveProjectPath()
+      const projectPath = worktreeCwd ?? getAttachProjectPath()
       const reloadSnapshot = consumeTerminalReloadSnapshot(termId)
       const avoidSyntheticResize = shouldAvoidSyntheticResizeForTerminal(term)
       const terminalState = useStore.getState().terminals.find((terminal) => terminal.id === termId)
@@ -2781,7 +2812,7 @@ export function CellTerminal({
           dims?.cols ?? 80,
           dims?.rows ?? 24,
           projectPath,
-          useStore.getState().activeProjectId,
+          getAttachProjectId(),
           () => !cancelled,
         )
       } catch (error) {
@@ -2798,7 +2829,6 @@ export function CellTerminal({
       if (usesServerOwnedState) {
         if (result?.reattached && shouldRestorePersistedOutput && restoredOutput) {
           term.write(restoredOutput)
-          forceTerminalRepaint(term)
         }
 
         // Suppress rendering while the buffer is in the blank reset() state.
@@ -2806,6 +2836,7 @@ export function CellTerminal({
         // backend so the render loop never paints a blank buffer.
         Reflect.set(term, '__cellsPendingReattachReset', true)
         scheduleServerOwnedAttachRecovery(term, dims?.cols ?? 80, dims?.rows ?? 24, projectPath)
+        reportTerminalSizeIfChanged(termId, fitAddon)
       }
 
       let replayedRawHistory = false
@@ -2898,6 +2929,8 @@ export function CellTerminal({
     scheduleServerOwnedAttachRecovery,
     scheduleTerminalSearchRefresh,
     setInferredTitle,
+    getAttachProjectId,
+    getAttachProjectPath,
     syncTerminalState,
     terminalFindOpen,
     termId,
@@ -3030,10 +3063,6 @@ export function CellTerminal({
           e.stopPropagation()
           e.stopImmediatePropagation()
           queueServerOwnedWheelPayload(e, payload)
-          if (term.viewportY > 0) {
-            term.scrollToBottom()
-            ;(term as any).targetViewportY = 0
-          }
           return
         }
       }
@@ -3065,7 +3094,6 @@ export function CellTerminal({
       const term = terminalRef.current
       if (!term || !usesServerOwnedTerminalState(term)) return null
       if (getTerminalBackend(term) !== 'tmux') return null
-      if (!serverOwnedMouseModeRef.current && term.buffer.active.type !== 'alternate') return null
       if (Reflect.get(e, SERVER_OWNED_MOUSE_HANDLED_KEY) === true) return null
       return term
     }
@@ -3103,13 +3131,17 @@ export function CellTerminal({
     const onMouseMove = (e: MouseEvent) => {
       const term = shouldHandleServerOwnedMouse(e)
       if (!term) return
-      if (e.buttons !== 0) return
       const sequence = getMouseSequencePayload(e, term, container, 'move')
       if (!sequence) return
       e.preventDefault()
       e.stopPropagation()
       e.stopImmediatePropagation()
-      queueServerOwnedMouseSequence(e, sequence)
+      if (e.buttons !== 0) {
+        Reflect.set(e, SERVER_OWNED_MOUSE_HANDLED_KEY, true)
+        window.cells.terminal.write(termId, sequence)
+      } else {
+        queueServerOwnedMouseSequence(e, sequence)
+      }
     }
 
     const onContextMenu = (e: MouseEvent) => {
@@ -3152,12 +3184,22 @@ export function CellTerminal({
   // Handle resize
   useEffect(() => {
     if (!fitAddonRef.current || !terminalRef.current) return
-    const timer = setTimeout(() => {
-      fitAddonRef.current?.fit()
-      refitTerminalToLoadedFont(terminalRef.current, fitAddonRef.current)
-    }, 100)
-    return () => clearTimeout(timer)
-  }, [width, height, refitTerminalToLoadedFont])
+    const frame = requestAnimationFrame(() => {
+      const fitAddon = fitAddonRef.current
+      const term = terminalRef.current
+      if (!fitAddon || !term) return
+      fitAddon.fit()
+      refitTerminalToLoadedFont(term, fitAddon)
+      const dims = fitAddon.proposeDimensions()
+      if (!dims) return
+      const last = lastReportedSizeRef.current
+      if (!last || last.cols !== dims.cols || last.rows !== dims.rows) {
+        lastReportedSizeRef.current = { cols: dims.cols, rows: dims.rows }
+        window.cells.terminal.resize(termId, dims.cols, dims.rows)
+      }
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [height, refitTerminalToLoadedFont, termId, width])
 
   useEffect(() => {
     const container = containerRef.current
@@ -3319,14 +3361,6 @@ export function CellTerminal({
             'border-terminal-active/80 bg-terminal-active/10 shadow-[inset_0_0_0_1px_color-mix(in_oklch,var(--color-terminal-active)_45%,transparent)]',
           )}
         />
-      )}
-      {scrollStatus && (
-        <div className="pointer-events-none absolute right-2 top-11 z-20">
-          <div className="rounded-sm border border-amber-300/20 bg-amber-200/95 px-1.5 py-0.5 font-mono text-[10px] leading-none tracking-tight text-black shadow-[0_1px_0_rgba(0,0,0,0.14)]">
-            {scrollStatus.scrollPosition}/
-            {Math.max(scrollStatus.historySize, scrollStatus.scrollPosition)}
-          </div>
-        </div>
       )}
       {terminalExited && (
         <>

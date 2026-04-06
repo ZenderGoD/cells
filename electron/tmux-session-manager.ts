@@ -221,9 +221,24 @@ export class TmuxSessionManager implements TerminalSessionManager {
   }
 
   resize(termId: string, cols: number, rows: number): void {
+    const location = this.getKnownLocation(termId)
     try {
       this.attachedClients.get(termId)?.pty.resize(cols, rows)
     } catch {}
+    if (!location) return
+
+    this.execTmux(
+      [
+        'resize-window',
+        '-t',
+        this.getWindowTarget(location),
+        '-x',
+        String(cols),
+        '-y',
+        String(rows),
+      ],
+      true,
+    )
   }
 
   handleWheel(termId: string, direction: 'up' | 'down', steps: number, sequence: string): void {

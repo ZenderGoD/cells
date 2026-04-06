@@ -724,7 +724,9 @@ export function StatusBar() {
                 ) : (
                   <span
                     className="text-[11px] font-medium truncate min-w-0 text-muted-foreground cursor-text"
-                    onDoubleClick={() => {
+                    onDoubleClick={(event) => {
+                      event.preventDefault()
+                      event.stopPropagation()
                       setEditTitleValue(ftTitle)
                       setEditingTitleForTermId(focusedTerminalId)
                       requestAnimationFrame(() => {

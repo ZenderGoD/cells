@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ArrowDownLeft } from 'lucide-react'
 import { CellTerminal } from './terminal/cell-terminal'
 import { useStore } from '@/lib/store'
@@ -11,7 +11,12 @@ export function PinnedWindow({ termId, type }: { termId: string; type: 'terminal
   const init = useStore((s) => s.init)
   const initialized = useStore((s) => s.initialized)
   const themeName = useStore((s) => s.terminalTheme)
-  const [size, setSize] = useState({ width: window.innerWidth, height: window.innerHeight })
+  const projects = useStore((s) => s.projects)
+  const contentRef = useRef<HTMLDivElement | null>(null)
+  const [size, setSize] = useState({
+    width: window.innerWidth,
+    height: Math.max(0, window.innerHeight - TITLE_BAR_HEIGHT),
+  })
   const customTitle = useStore((s) => s.terminals.find((t) => t.id === termId)?.customTitle)
   const [inferredTitle, setInferredTitle] = useState('Terminal')
   const title = customTitle || inferredTitle
@@ -25,14 +30,22 @@ export function PinnedWindow({ termId, type }: { termId: string; type: 'terminal
   }, [title])
 
   useEffect(() => {
-    const onResize = () => setSize({ width: window.innerWidth, height: window.innerHeight })
-    window.addEventListener('resize', onResize)
-    return () => window.removeEventListener('resize', onResize)
-  }, [])
+    const off = window.cells.app.onWindowResized((id, _type, width, height) => {
+      if (id !== termId) return
+      setSize({
+        width: Math.max(0, Math.round(width)),
+        height: Math.max(0, Math.round(height)),
+      })
+    })
+    return () => off()
+  }, [termId])
 
   if (!initialized) return null
 
   const theme = getTerminalTheme(themeName)
+  const terminalProject = projects.find((project) =>
+    project.terminals.some((terminal) => terminal.id === termId),
+  )
 
   // Browser pop-outs are handled by the main process (loads URL directly),
   // so this component only renders for terminal pop-outs.
@@ -89,13 +102,19 @@ export function PinnedWindow({ termId, type }: { termId: string; type: 'terminal
       </div>
 
       {/* Terminal content */}
-      <div className="flex-1 min-h-0" style={{ background: theme.background }}>
+      <div
+        ref={contentRef}
+        className="flex-1 min-h-0 min-w-0"
+        style={{ background: theme.background }}
+      >
         <CellTerminal
           termId={termId}
           width={size.width}
-          height={size.height - TITLE_BAR_HEIGHT}
+          height={size.height}
           isVisible={true}
           isFocused={true}
+          projectId={terminalProject?.id ?? null}
+          projectPath={terminalProject?.path ?? null}
           onTitleChange={(newTitle) => {
             setInferredTitle(newTitle)
             document.title = customTitle || newTitle

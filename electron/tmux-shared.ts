@@ -255,6 +255,8 @@ export function buildPrivateTmuxConfig(
     'set-option -g focus-events on',
     'set-option -g extended-keys on',
     'set-option -g extended-keys-format xterm',
+    'set-option -s set-clipboard on',
+    'set-option -s copy-command "pbcopy"',
     'set-option -g history-limit 50000',
     'set-environment -g COLORTERM "truecolor"',
     'set-environment -g TERM_PROGRAM "ghostty"',
@@ -263,6 +265,7 @@ export function buildPrivateTmuxConfig(
     'set-option -ga terminal-features ",tmux-256color:RGB,clipboard,ccolour,cstyle,extkeys,focus,hyperlinks,osc7,title,usstyle,strikethrough,overline,sync"',
     `set-option -ga terminal-overrides ",${defaultTerminal}:Tc"`,
     'set-option -ga terminal-overrides ",xterm-256color:Tc,tmux-256color:Tc"',
+    'bind-key -T root WheelUpPane if-shell -F "#{||:#{pane_in_mode},#{mouse_any_flag}}" { send-keys -M } { copy-mode -eH ; send-keys -M }',
     '',
   ].join('\n')
 }

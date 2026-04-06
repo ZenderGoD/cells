@@ -13,7 +13,15 @@ import type {
   TitleBarPosition,
 } from '../types'
 import { inferAgentFromCommand } from './agent-command'
-import { DEFAULT_THEME, DEFAULT_LIGHT_THEME } from './terminal-themes'
+import { DEFAULT_THEME, terminalThemes } from './terminal-themes'
+import {
+  DEFAULT_APP_DARK_THEME,
+  DEFAULT_APP_LIGHT_THEME,
+  buildAppThemeVariables,
+  getActiveAppThemeKey,
+  normalizeAppThemeKey,
+  resolveAppColorScheme,
+} from './app-themes'
 import { DEFAULT_WINDOW_APPEARANCE, normalizeWindowAppearance } from './window-appearance'
 import {
   STATUS_BAR_HEIGHT,
@@ -67,6 +75,7 @@ interface StoreState {
   terminalScrollbackLines: number
   terminalCursorStyle: TerminalCursorStyle
   terminalCursorBlink: boolean
+  showTerminalHeaderOverlay: boolean
   windowOpacity: number
   useTransparentWindow: boolean
   titleBarPosition: TitleBarPosition
@@ -148,6 +157,7 @@ interface StoreState {
   setTerminalScrollbackLines(lines: number): void
   setTerminalCursorStyle(style: TerminalCursorStyle): void
   setTerminalCursorBlink(enabled: boolean): void
+  setShowTerminalHeaderOverlay(enabled: boolean): void
   markTerminalExited(id: string, message?: string | null, restoredOutput?: string | null): void
   restartTerminalSession(id: string): void
   setWindowOpacity(opacity: number): void
@@ -226,6 +236,9 @@ interface StoreState {
   setLastUsedAgent(agent: string): void
   setLastCommandAction(action: 'search' | 'agent' | 'run'): void
   trackCommandAction(key: string): void
+  appDarkTheme: string
+  appLightTheme: string
+  setAppTheme(name: string): void
   setColorScheme(scheme: 'light' | 'dark' | 'system'): void
   setCloseUndoTimeoutMs(timeoutMs: number): void
   setCloseProcessSuppressions(processes: string[]): void
@@ -287,29 +300,52 @@ const SAVE_STATUS_RESET_MS = 1800
 
 /** Apply color scheme to the document and sync with system preferences. */
 let systemThemeCleanup: (() => void) | null = null
-function applyColorScheme(scheme: 'light' | 'dark' | 'system') {
+function applyColorScheme(
+  scheme: 'light' | 'dark' | 'system',
+  options: { syncTerminalTheme?: boolean } = {},
+) {
   // Clean up previous system listener
   if (systemThemeCleanup) {
     systemThemeCleanup()
     systemThemeCleanup = null
   }
 
-  const apply = () => {
-    const prefersDark =
-      scheme === 'system'
-        ? window.matchMedia('(prefers-color-scheme: dark)').matches
-        : scheme === 'dark'
+  const apply = (persistSyncedTerminalTheme = false) => {
+    const state = useStore.getState()
+    const activeThemeKey = getActiveAppThemeKey({
+      colorScheme: scheme,
+      appDarkTheme: state.appDarkTheme,
+      appLightTheme: state.appLightTheme,
+    })
+    const prefersDark = resolveAppColorScheme(scheme) === 'dark'
+
     document.documentElement.classList.toggle('dark', prefersDark)
     document.documentElement.classList.toggle('light', !prefersDark)
     document.documentElement.style.colorScheme = prefersDark ? 'dark' : 'light'
+
+    for (const [key, value] of Object.entries(buildAppThemeVariables(activeThemeKey))) {
+      document.documentElement.style.setProperty(key, value)
+    }
+
+    if (options.syncTerminalTheme && state.terminalTheme !== activeThemeKey) {
+      useStore.setState({ terminalTheme: activeThemeKey })
+      applyThemeToAllTerminals(activeThemeKey)
+      if (persistSyncedTerminalTheme) {
+        useStore.getState().persist()
+      }
+    }
   }
 
   apply()
 
   // Listen for system theme changes when in 'system' mode
-  if (scheme === 'system') {
+  if (
+    scheme === 'system' &&
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function'
+  ) {
     const mq = window.matchMedia('(prefers-color-scheme: dark)')
-    const handler = () => apply()
+    const handler = () => apply(options.syncTerminalTheme === true)
     mq.addEventListener('change', handler)
     systemThemeCleanup = () => mq.removeEventListener('change', handler)
   }
@@ -557,6 +593,8 @@ export const useStore = create<StoreState>((set, get) => ({
   inputPrefixes: DEFAULT_INPUT_PREFIXES,
   lastUsedAgent: null,
   lastCommandAction: null,
+  appDarkTheme: DEFAULT_APP_DARK_THEME,
+  appLightTheme: DEFAULT_APP_LIGHT_THEME,
   colorScheme: 'dark' as const,
   saveStatus: 'idle',
   updateStatus: 'idle',
@@ -579,6 +617,7 @@ export const useStore = create<StoreState>((set, get) => ({
   terminalScrollbackLines: DEFAULT_TERMINAL_SCROLLBACK_LINES,
   terminalCursorStyle: DEFAULT_TERMINAL_CURSOR_SETTINGS.terminalCursorStyle,
   terminalCursorBlink: DEFAULT_TERMINAL_CURSOR_SETTINGS.terminalCursorBlink,
+  showTerminalHeaderOverlay: true,
   windowOpacity: DEFAULT_WINDOW_APPEARANCE.windowOpacity,
   useTransparentWindow: DEFAULT_WINDOW_APPEARANCE.useTransparentWindow,
   titleBarPosition: DEFAULT_TITLE_BAR_POSITION,
@@ -593,8 +632,33 @@ export const useStore = create<StoreState>((set, get) => ({
   terminalFindResultLimitHit: false,
 
   setTerminalTheme(name) {
-    set({ terminalTheme: name })
-    applyThemeToAllTerminals(name)
+    const normalizedName = terminalThemes[name] ? name : DEFAULT_THEME
+    set({ terminalTheme: normalizedName })
+    applyThemeToAllTerminals(normalizedName)
+    get().persist()
+  },
+  setAppTheme(name) {
+    const scheme = terminalThemes[name]?.scheme ?? 'dark'
+    const normalizedName = normalizeAppThemeKey(name, scheme)
+
+    if (scheme === 'dark') {
+      set({
+        appDarkTheme: normalizedName,
+        colorScheme: 'dark',
+        terminalTheme: normalizedName,
+      })
+      applyThemeToAllTerminals(normalizedName)
+      applyColorScheme('dark')
+    } else {
+      set({
+        appLightTheme: normalizedName,
+        colorScheme: 'light',
+        terminalTheme: normalizedName,
+      })
+      applyThemeToAllTerminals(normalizedName)
+      applyColorScheme('light')
+    }
+
     get().persist()
   },
   setTerminalSessionBackend(backend) {
@@ -636,6 +700,11 @@ export const useStore = create<StoreState>((set, get) => ({
   setTerminalCursorBlink(enabled) {
     if (enabled === get().terminalCursorBlink) return
     set({ terminalCursorBlink: enabled })
+    get().persist()
+  },
+  setShowTerminalHeaderOverlay(enabled) {
+    if (enabled === get().showTerminalHeaderOverlay) return
+    set({ showTerminalHeaderOverlay: enabled })
     get().persist()
   },
   markTerminalExited(id, message, restoredOutput) {
@@ -773,6 +842,27 @@ export const useStore = create<StoreState>((set, get) => ({
         }
         get().persist()
       })
+
+      window.cells.app.onWindowResized((id, type, width, height) => {
+        if (type === 'terminal') {
+          set((s) => ({
+            terminals: s.terminals.map((t) =>
+              t.id === id
+                ? { ...t, width: Math.max(320, width), height: Math.max(200, height) }
+                : t,
+            ),
+          }))
+        } else {
+          set((s) => ({
+            browsers: s.browsers.map((b) =>
+              b.id === id
+                ? { ...b, width: Math.max(320, width), height: Math.max(200, height) }
+                : b,
+            ),
+          }))
+        }
+        debouncedPersist(() => get().persist())
+      })
     }
 
     window.cells.terminal.onExit((termId, details) => {
@@ -807,9 +897,11 @@ export const useStore = create<StoreState>((set, get) => ({
         : DEFAULT_TERMINAL_SESSION_BACKEND
 
       const globalSettings = {
+        appDarkTheme: normalizeAppThemeKey(ps.appDarkTheme, 'dark'),
+        appLightTheme: normalizeAppThemeKey(ps.appLightTheme, 'light'),
         terminalSessionBackend,
         terminalSessionBackendExplicitlySet,
-        terminalTheme: ps.terminalTheme || DEFAULT_THEME,
+        terminalTheme: terminalThemes[ps.terminalTheme ?? ''] ? ps.terminalTheme! : DEFAULT_THEME,
         fontSize: ps.fontSize || 13,
         fontFamily: normalizeTerminalFontFamily(ps.fontFamily),
         terminalScrollbackLines: normalizeTerminalScrollbackLines(ps.terminalScrollbackLines),
@@ -817,6 +909,7 @@ export const useStore = create<StoreState>((set, get) => ({
           terminalCursorStyle: ps.terminalCursorStyle,
           terminalCursorBlink: ps.terminalCursorBlink,
         }),
+        showTerminalHeaderOverlay: ps.showTerminalHeaderOverlay ?? true,
         ...normalizeWindowAppearance({
           windowOpacity: ps.windowOpacity,
           useTransparentWindow: ps.useTransparentWindow,
@@ -904,9 +997,13 @@ export const useStore = create<StoreState>((set, get) => ({
         projects: [project],
         activeProjectId: project.id,
         ...projectToWorkingState(project),
+        appDarkTheme: DEFAULT_APP_DARK_THEME,
+        appLightTheme: DEFAULT_APP_LIGHT_THEME,
         terminalSessionBackend: DEFAULT_TERMINAL_SESSION_BACKEND,
         terminalSessionBackendExplicitlySet: false,
-        terminalTheme: (saved as any).terminalTheme || DEFAULT_THEME,
+        terminalTheme: terminalThemes[(saved as any).terminalTheme ?? '']
+          ? (saved as any).terminalTheme
+          : DEFAULT_THEME,
         fontSize: (saved as any).fontSize || 13,
         fontFamily: normalizeTerminalFontFamily((saved as any).fontFamily),
         terminalScrollbackLines: normalizeTerminalScrollbackLines(
@@ -923,6 +1020,7 @@ export const useStore = create<StoreState>((set, get) => ({
         titleBarPosition: (saved as any).titleBarPosition ?? DEFAULT_TITLE_BAR_POSITION,
         initialized: true,
       })
+      applyColorScheme(get().colorScheme)
       get().persist()
       return
     }
@@ -995,6 +1093,8 @@ export const useStore = create<StoreState>((set, get) => ({
           version: 2,
           activeProjectId: freshState.activeProjectId,
           projects,
+          appDarkTheme: freshState.appDarkTheme,
+          appLightTheme: freshState.appLightTheme,
           terminalSessionBackend: freshState.terminalSessionBackend,
           terminalSessionBackendExplicitlySet: freshState.terminalSessionBackendExplicitlySet,
           terminalTheme: freshState.terminalTheme,
@@ -1003,6 +1103,7 @@ export const useStore = create<StoreState>((set, get) => ({
           terminalScrollbackLines: freshState.terminalScrollbackLines,
           terminalCursorStyle: freshState.terminalCursorStyle,
           terminalCursorBlink: freshState.terminalCursorBlink,
+          showTerminalHeaderOverlay: freshState.showTerminalHeaderOverlay,
           windowOpacity: freshState.windowOpacity,
           useTransparentWindow: freshState.useTransparentWindow,
           titleBarPosition: freshState.titleBarPosition,
@@ -1042,6 +1143,8 @@ export const useStore = create<StoreState>((set, get) => ({
           version: 2,
           activeProjectId: state.activeProjectId,
           projects,
+          appDarkTheme: state.appDarkTheme,
+          appLightTheme: state.appLightTheme,
           terminalSessionBackend: state.terminalSessionBackend,
           terminalSessionBackendExplicitlySet: state.terminalSessionBackendExplicitlySet,
           terminalTheme: state.terminalTheme,
@@ -1050,6 +1153,7 @@ export const useStore = create<StoreState>((set, get) => ({
           terminalScrollbackLines: state.terminalScrollbackLines,
           terminalCursorStyle: state.terminalCursorStyle,
           terminalCursorBlink: state.terminalCursorBlink,
+          showTerminalHeaderOverlay: state.showTerminalHeaderOverlay,
           windowOpacity: state.windowOpacity,
           useTransparentWindow: state.useTransparentWindow,
           titleBarPosition: state.titleBarPosition,
@@ -2004,22 +2108,8 @@ export const useStore = create<StoreState>((set, get) => ({
     get().persist()
   },
   setColorScheme(scheme) {
-    const isDark =
-      scheme === 'system'
-        ? window.matchMedia('(prefers-color-scheme: dark)').matches
-        : scheme === 'dark'
-    // Auto-switch terminal theme to match
-    const currentTheme = get().terminalTheme
-    if (isDark && currentTheme === DEFAULT_LIGHT_THEME) {
-      set({ colorScheme: scheme, terminalTheme: DEFAULT_THEME })
-      applyThemeToAllTerminals(DEFAULT_THEME)
-    } else if (!isDark && currentTheme === DEFAULT_THEME) {
-      set({ colorScheme: scheme, terminalTheme: DEFAULT_LIGHT_THEME })
-      applyThemeToAllTerminals(DEFAULT_LIGHT_THEME)
-    } else {
-      set({ colorScheme: scheme })
-    }
-    applyColorScheme(scheme)
+    set({ colorScheme: scheme })
+    applyColorScheme(scheme, { syncTerminalTheme: true })
     get().persist()
   },
   setCloseUndoTimeoutMs(timeoutMs) {

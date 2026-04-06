@@ -10,6 +10,16 @@ import {
 import { motion, useMotionValue, useSpring } from 'motion/react'
 import { useHotkey } from '@tanstack/react-hotkeys'
 import { cn } from '@/lib/utils'
+
+function isEditableTarget(target: EventTarget | null) {
+  return (
+    target instanceof HTMLElement &&
+    (target.isContentEditable ||
+      target.tagName === 'INPUT' ||
+      target.tagName === 'TEXTAREA' ||
+      target.tagName === 'SELECT')
+  )
+}
 import { useStore } from '@/lib/store'
 import { STATUS_BAR_HEIGHT, getCanvasWindows, getViewportRect } from '@/lib/canvas-navigation'
 import {
@@ -533,10 +543,12 @@ export function InfiniteCanvas() {
     }
   })
   useHotkey('Mod+ArrowLeft', () => {
+    if (isEditableTarget(document.activeElement)) return
     setIsUserDriving(false)
     snapToNearest('left')
   })
   useHotkey('Mod+ArrowRight', () => {
+    if (isEditableTarget(document.activeElement)) return
     setIsUserDriving(false)
     snapToNearest('right')
   })
@@ -589,22 +601,20 @@ export function InfiniteCanvas() {
           willChange: canvasWillChange,
         }}
       >
-        {terminals
-          .filter((t) => !t.pinned)
-          .map((terminal) => (
-            <TerminalNode
-              key={terminal.id}
-              terminal={terminal}
-              scale={transform.scale}
-              isVisible={isTerminalVisible(terminal)}
-              pauseLiveRender={isSnapAnimating && focusedTerminalId !== terminal.id}
-              selectionMode={selectionMode}
-              isSelected={selectedNodeIds.includes(terminal.id)}
-              isFocused={focusedTerminalId === terminal.id}
-              showFocusRing={focusedTerminalId === terminal.id && showFocusedTerminalRing}
-              onDragStart={handleNodeDragStart}
-            />
-          ))}
+        {terminals.map((terminal) => (
+          <TerminalNode
+            key={terminal.id}
+            terminal={terminal}
+            scale={transform.scale}
+            isVisible={isTerminalVisible(terminal)}
+            pauseLiveRender={isSnapAnimating && focusedTerminalId !== terminal.id}
+            selectionMode={selectionMode}
+            isSelected={selectedNodeIds.includes(terminal.id)}
+            isFocused={focusedTerminalId === terminal.id}
+            showFocusRing={focusedTerminalId === terminal.id && showFocusedTerminalRing}
+            onDragStart={handleNodeDragStart}
+          />
+        ))}
         {browsers
           .filter((b) => !b.pinned)
           .map((browser) => (

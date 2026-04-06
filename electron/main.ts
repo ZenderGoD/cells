@@ -170,6 +170,7 @@ let perfMonitor: PerfMonitor | null = null
 // - attach returns the backend contract so the renderer knows whether it is
 //   rejoining a replay-based terminal or a server-owned live screen
 const historySnapshots = new Map<string, { buffer: string; termId: string }>()
+const terminalSubscriptionCounts = new Map<string, number>()
 const subscribedTerminals = new Set<string>()
 const pendingTerminalExitDetails = new Map<string, TerminalExitDetails>()
 const pinnedWindows = new Map<string, BrowserWindow>()
@@ -491,6 +492,30 @@ function getWindowForTerminal(termId: string): BrowserWindow | null {
   return mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
 }
 
+function addTerminalSubscription(termId: string) {
+  terminalSubscriptionCounts.set(termId, (terminalSubscriptionCounts.get(termId) ?? 0) + 1)
+  subscribedTerminals.add(termId)
+}
+
+function removeTerminalSubscription(termId: string) {
+  const next = (terminalSubscriptionCounts.get(termId) ?? 0) - 1
+  if (next > 0) {
+    terminalSubscriptionCounts.set(termId, next)
+  } else {
+    terminalSubscriptionCounts.delete(termId)
+    subscribedTerminals.delete(termId)
+  }
+}
+
+function clearTerminalSubscriptions(termId: string) {
+  terminalSubscriptionCounts.delete(termId)
+  subscribedTerminals.delete(termId)
+}
+
+function isTerminalSubscribed(termId: string) {
+  return (terminalSubscriptionCounts.get(termId) ?? 0) > 0
+}
+
 function setupTerminalDataPort(win: BrowserWindow) {
   const { port1, port2 } = new MessageChannelMain()
   terminalDataPorts.set(win, port1)
@@ -506,7 +531,7 @@ function setupTerminalDataPort(win: BrowserWindow) {
 
 function forwardTerminalData(termId: string, data: string) {
   bufferTerminalOutput(termId, data)
-  if (!subscribedTerminals.has(termId)) return
+  if (!isTerminalSubscribed(termId)) return
   try {
     const target = getWindowForTerminal(termId)
     if (!target) return
@@ -525,7 +550,7 @@ function forwardTerminalExit(termId: string, details?: TerminalExitDetails) {
   if (!details) {
     pendingTerminalExitDetails.delete(termId)
   }
-  subscribedTerminals.delete(termId)
+  clearTerminalSubscriptions(termId)
   clearTerminalOutputRing(termId)
   clearHistorySnapshotsForTerm(termId)
   fallbackSessions?.clear(termId)
@@ -671,25 +696,29 @@ ipcMain.handle(
       try {
         // Mark subscribed before the daemon attaches so any live data emitted
         // after the replay boundary is forwarded and queued during renderer replay.
-        subscribedTerminals.add(termId)
+        addTerminalSubscription(termId)
         const result = await daemonClient.attach(termId, cols, rows, cwd, projectId)
         return { reattached: result.reattached, buffer: result.buffer, backend: result.backend }
       } catch {
-        subscribedTerminals.delete(termId)
+        removeTerminalSubscription(termId)
         // Daemon failed — fall through to fallback below
       }
     }
 
     const sessions = ensureFallbackSessions()
     const result = sessions.attach(termId, cols, rows, cwd, projectId, () => {
-      subscribedTerminals.add(termId)
+      addTerminalSubscription(termId)
     })
     return { reattached: result.reattached, buffer: result.buffer, backend: result.backend }
   },
 )
 
 ipcMain.handle('terminal:unsubscribe', (_event, termId: string) => {
-  subscribedTerminals.delete(termId)
+  removeTerminalSubscription(termId)
+  const pinned = pinnedWindows.get(termId)
+  if (isTerminalSubscribed(termId) || (pinned && !pinned.isDestroyed())) {
+    return
+  }
   if (useDaemon && daemonClient?.isConnected()) {
     daemonClient.unsubscribe(termId)
   } else {
@@ -698,7 +727,7 @@ ipcMain.handle('terminal:unsubscribe', (_event, termId: string) => {
 })
 
 ipcMain.handle('terminal:detach', (_event, termId: string) => {
-  subscribedTerminals.delete(termId)
+  clearTerminalSubscriptions(termId)
   clearHistorySnapshotsForTerm(termId)
   if (useDaemon && daemonClient?.isConnected()) {
     daemonClient.kill(termId).catch(() => {})
@@ -1116,12 +1145,28 @@ ipcMain.handle(
     })
 
     pinnedWindows.set(id, win)
+    let unpinNotified = false
 
     if (isBrowser) {
       // Browser pop-out: load the URL directly as a web page
       win.loadURL(browserUrl)
     } else {
       // Terminal pop-out: load the app renderer in pinned mode
+      win.webContents.on('before-input-event', (event, input) => {
+        if ((input.meta || input.control) && input.key.toLowerCase() === 'w') {
+          event.preventDefault()
+          if (!unpinNotified) {
+            unpinNotified = true
+            try {
+              if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send('app:window-unpinned', id, type)
+                mainWindow.focus()
+              }
+            } catch {}
+          }
+          if (!win.isDestroyed()) win.close()
+        }
+      })
       win.webContents.once('did-finish-load', () => {
         if (!win.isDestroyed()) setupTerminalDataPort(win)
       })
@@ -1137,11 +1182,27 @@ ipcMain.handle(
       }
     }
 
-    win.on('closed', () => {
-      pinnedWindows.delete(id)
+    win.on('close', () => {
+      if (unpinNotified) return
+      unpinNotified = true
       try {
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('app:window-unpinned', id, type)
+          mainWindow.focus()
+        }
+      } catch {}
+    })
+
+    win.on('closed', () => {
+      pinnedWindows.delete(id)
+    })
+
+    win.on('resize', () => {
+      try {
+        const bounds = win.getContentBounds()
+        win.webContents.send('app:window-resized', id, type, bounds.width, bounds.height)
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('app:window-resized', id, type, bounds.width, bounds.height)
         }
       } catch {}
     })
@@ -2324,7 +2385,7 @@ ipcMain.handle('daemon:list-sessions', async () => {
         return {
           termId,
           processInfo,
-          subscribed: subscribedTerminals.has(termId),
+          subscribed: isTerminalSubscribed(termId),
         }
       }),
     )
@@ -2479,7 +2540,20 @@ app.whenReady().then(async () => {
             {
               label: 'Close Window',
               accelerator: 'CmdOrCtrl+W',
-              click: () => mainWindow?.webContents.send('app:close-terminal'),
+              click: () => {
+                const focused = BrowserWindow.getFocusedWindow()
+                if (focused) {
+                  for (const [id, win] of pinnedWindows.entries()) {
+                    if (win === focused && !win.isDestroyed()) {
+                      mainWindow?.webContents.send('app:window-unpinned', id, 'terminal')
+                      mainWindow?.focus()
+                      win.close()
+                      return
+                    }
+                  }
+                }
+                mainWindow?.webContents.send('app:close-terminal')
+              },
             },
           ],
         },
@@ -2537,11 +2611,11 @@ app.on('before-quit', () => {
   } catch {}
   cleanupBrowserViews()
   console.log(
-    `before-quit: useDaemon=${useDaemon}, connected=${daemonClient?.isConnected()}, subscribed=[${[...subscribedTerminals].join(',')}]`,
+    `before-quit: useDaemon=${useDaemon}, connected=${daemonClient?.isConnected()}, subscribed=[${[...terminalSubscriptionCounts.keys()].join(',')}]`,
   )
   if (useDaemon && daemonClient?.isConnected()) {
     // Unsubscribe all — daemon keeps PTYs alive and buffers output
-    for (const termId of subscribedTerminals) {
+    for (const termId of terminalSubscriptionCounts.keys()) {
       daemonClient.unsubscribe(termId)
     }
     daemonClient.disconnect()

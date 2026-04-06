@@ -149,6 +149,9 @@
   --font-title: 'Urbanist', 'Avenir Next', 'Inter', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
   --font-geist-mono: 'GeistMono NF', 'Geist Mono', 'JetBrainsMono NF', 'Meslo NF', monospace;
   --radius: 0.45rem;
+  --app-shell-background: rgb(16 16 20 / var(--window-surface-opacity));
+  --scrollbar-thumb: oklch(0.3 0.005 286);
+  --scrollbar-thumb-hover: oklch(0.4 0.005 286);
   --window-surface-opacity: 0.82;
   --canvas-surface-opacity: 0.33;
   --canvas-grid-opacity: 0.25;
@@ -187,6 +190,9 @@
 
 /* Light theme */
 :root.light {
+  --app-shell-background: rgb(247 247 250 / var(--window-surface-opacity));
+  --scrollbar-thumb: oklch(0.75 0.005 286);
+  --scrollbar-thumb-hover: oklch(0.65 0.005 286);
   --window-surface-opacity: 0.88;
   --canvas-surface-opacity: 0.4;
   --canvas-grid-opacity: 0.2;
@@ -245,28 +251,12 @@ body {
 }
 
 .app-shell {
-  background: oklch(0.12 0.004 285.9 / var(--window-surface-opacity));
-}
-.light .app-shell {
-  background: oklch(0.97 0.002 286 / var(--window-surface-opacity));
+  background: var(--app-shell-background);
 }
 
 .canvas-stage {
-  background: oklch(0.09 0.003 285.9 / var(--canvas-surface-opacity));
-  background-image: radial-gradient(
-    circle,
-    oklch(0.15 0.004 285.9 / var(--canvas-grid-opacity)) 1px,
-    transparent 1px
-  );
-  background-size: 24px 24px;
-}
-.light .canvas-stage {
-  background: oklch(0.95 0.002 286 / var(--canvas-surface-opacity));
-  background-image: radial-gradient(
-    circle,
-    oklch(0.8 0.004 286 / var(--canvas-grid-opacity)) 1px,
-    transparent 1px
-  );
+  background: var(--color-canvas);
+  background-image: radial-gradient(circle, var(--color-canvas-grid) 1px, transparent 1px);
   background-size: 24px 24px;
 }
 
@@ -319,17 +309,11 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: oklch(0.3 0.005 286);
+  background: var(--scrollbar-thumb);
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: oklch(0.4 0.005 286);
-}
-.light ::-webkit-scrollbar-thumb {
-  background: oklch(0.75 0.005 286);
-}
-.light ::-webkit-scrollbar-thumb:hover {
-  background: oklch(0.65 0.005 286);
+  background: var(--scrollbar-thumb-hover);
 }
 
 /* Terminal focus/unfocus states */

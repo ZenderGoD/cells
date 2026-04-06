@@ -59,6 +59,7 @@ export function TerminalNode({
     setCustomTitle,
     focusTerminal,
     togglePin,
+    showTerminalHeaderOverlay,
   } = useStore(
     useShallow((s) => ({
       requestCloseWindow: s.requestCloseWindow,
@@ -68,6 +69,7 @@ export function TerminalNode({
       setCustomTitle: s.setCustomTitle,
       focusTerminal: s.focusTerminal,
       togglePin: s.togglePin,
+      showTerminalHeaderOverlay: s.showTerminalHeaderOverlay,
     })),
   )
   const arrangeAnimating = useStore((s) => s.arrangeAnimating)
@@ -292,7 +294,25 @@ export function TerminalNode({
         )}
         style={ringStyle}
       >
-        {shouldMountLiveTerminal ? (
+        {terminal.pinned ? (
+          <div className="flex h-full w-full flex-col items-center justify-center gap-3 bg-background/92 px-6 text-center">
+            <div className="text-xs font-medium text-foreground/80">Popped out terminal</div>
+            <div className="max-w-52 text-[11px] leading-5 text-muted-foreground/60">
+              {displayTitle}
+            </div>
+            <button
+              className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-background/70 px-2.5 py-1.5 text-[11px] text-foreground transition-colors hover:bg-muted/40"
+              onClick={(e) => {
+                e.stopPropagation()
+                hapticBuzz()
+                togglePin(terminal.id, 'terminal')
+              }}
+            >
+              <ArrowUpRight className="h-3 w-3 rotate-180" />
+              Pop back in
+            </button>
+          </div>
+        ) : shouldMountLiveTerminal ? (
           <CellTerminal
             termId={terminal.id}
             width={terminal.width}
@@ -330,70 +350,72 @@ export function TerminalNode({
         )}
 
         {/* Title bar — top right, inside terminal */}
-        <div
-          className="absolute top-0 right-0 z-20 flex items-center cursor-grab active:cursor-grabbing select-none"
-          onMouseDown={(e) => {
-            e.preventDefault()
-            handleDragMouseDown(e)
-          }}
-        >
+        {showTerminalHeaderOverlay && (
           <div
-            className={cn(
-              'flex items-center gap-2 px-3 py-2 rounded-bl-lg rounded-tr-[7px] transition-all',
-              isFocused ? 'bg-card/70 opacity-100' : 'bg-card/40 opacity-0 hover:opacity-100',
-            )}
+            className="absolute top-0 right-0 z-20 flex items-center cursor-grab active:cursor-grabbing select-none"
+            onMouseDown={(e) => {
+              e.preventDefault()
+              handleDragMouseDown(e)
+            }}
           >
-            {displayAgent ? (
-              <AgentIcon agent={displayAgent} className="h-3 w-3" size={12} />
-            ) : (
-              <Logo className="h-3 w-3 text-primary/60 shrink-0" />
-            )}
-            {isEditingTitle ? (
-              <input
-                ref={titleInputRef}
-                className="text-[11px] font-medium text-muted-foreground bg-transparent border-b border-muted-foreground/40 outline-none max-w-40 w-full"
-                value={editValue}
-                onChange={(e) => setEditValue(e.target.value)}
-                onBlur={commitTitle}
-                onKeyDown={handleTitleKeyDown}
-                onMouseDown={(e) => e.stopPropagation()}
-              />
-            ) : (
-              <span
-                className="text-[11px] font-medium truncate max-w-40 text-muted-foreground cursor-text"
-                onDoubleClick={(e) => {
+            <div
+              className={cn(
+                'flex items-center gap-2 px-3 py-2 rounded-bl-lg rounded-tr-[7px] transition-all',
+                isFocused ? 'bg-card/70 opacity-100' : 'bg-card/40 opacity-0 hover:opacity-100',
+              )}
+            >
+              {displayAgent ? (
+                <AgentIcon agent={displayAgent} className="h-3 w-3" size={12} />
+              ) : (
+                <Logo className="h-3 w-3 text-primary/60 shrink-0" />
+              )}
+              {isEditingTitle ? (
+                <input
+                  ref={titleInputRef}
+                  className="text-[11px] font-medium text-muted-foreground bg-transparent border-b border-muted-foreground/40 outline-none max-w-40 w-full"
+                  value={editValue}
+                  onChange={(e) => setEditValue(e.target.value)}
+                  onBlur={commitTitle}
+                  onKeyDown={handleTitleKeyDown}
+                  onMouseDown={(e) => e.stopPropagation()}
+                />
+              ) : (
+                <span
+                  className="text-[11px] font-medium truncate max-w-40 text-muted-foreground cursor-text"
+                  onDoubleClick={(e) => {
+                    e.stopPropagation()
+                    startEditingTitle()
+                  }}
+                  title="Double-click to rename"
+                >
+                  {displayTitle}
+                </span>
+              )}
+              <WorktreeSwitcher termId={terminal.id} />
+              <button
+                className="p-1 rounded-md transition-colors text-muted-foreground/40 hover:text-foreground hover:bg-muted/40"
+                onClick={(e) => {
                   e.stopPropagation()
-                  startEditingTitle()
+                  hapticBuzz()
+                  togglePin(terminal.id, 'terminal')
                 }}
-                title="Double-click to rename"
+                title="Pop out to separate window"
               >
-                {displayTitle}
-              </span>
-            )}
-            <WorktreeSwitcher termId={terminal.id} />
-            <button
-              className="p-1 rounded-md transition-colors text-muted-foreground/40 hover:text-foreground hover:bg-muted/40"
-              onClick={(e) => {
-                e.stopPropagation()
-                hapticBuzz()
-                togglePin(terminal.id, 'terminal')
-              }}
-              title="Pop out to separate window"
-            >
-              <ArrowUpRight className="w-3 h-3" />
-            </button>
-            <button
-              className="p-1 rounded-md text-muted-foreground/40 hover:text-foreground hover:bg-muted/40 transition-colors"
-              onClick={(e) => {
-                e.stopPropagation()
-                hapticNudge()
-                void requestCloseWindow({ id: terminal.id, type: 'terminal' })
-              }}
-            >
-              <X className="w-3 h-3" />
-            </button>
+                <ArrowUpRight className="w-3 h-3" />
+              </button>
+              <button
+                className="p-1 rounded-md text-muted-foreground/40 hover:text-foreground hover:bg-muted/40 transition-colors"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  hapticNudge()
+                  void requestCloseWindow({ id: terminal.id, type: 'terminal' })
+                }}
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
       {/* Resize handles — edges */}

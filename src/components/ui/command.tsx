@@ -138,10 +138,12 @@ function CommandInput({
           onChange={(e) => onValueChange?.(e.target.value)}
           placeholder={placeholder}
           rows={1}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && e.altKey) {
-              // Option+Enter: insert newline (textarea doesn't do this natively)
+          onKeyDownCapture={(e) => {
+            if (e.key === 'Enter' && e.shiftKey) {
+              // Shift+Enter: insert newline without submitting.
               e.preventDefault()
+              e.stopPropagation()
+              ;(e.nativeEvent as KeyboardEvent).stopImmediatePropagation?.()
               const ta = textareaRef.current
               if (ta) {
                 const start = ta.selectionStart
@@ -152,7 +154,11 @@ function CommandInput({
                   ta.selectionStart = ta.selectionEnd = start + 1
                 })
               }
-            } else if (e.key === 'Enter' && !e.shiftKey) {
+              return
+            }
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault()
               _lastSelectMetaKey = e.metaKey
               // Find and click the selected cmdk item, or let parent handle fallback

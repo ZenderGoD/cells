@@ -30,6 +30,7 @@ import {
 } from '@/components/ui/combobox'
 import { Kbd, KbdGroup } from '@/components/ui/kbd'
 import { useStore } from '@/lib/store'
+import { getActiveAppThemeKey, resolveAppColorScheme } from '@/lib/app-themes'
 import { TERMINAL_SESSION_BACKEND_OPTIONS } from '@/lib/terminal-session-backend'
 import {
   MAX_TERMINAL_SCROLLBACK_LINES,
@@ -130,6 +131,8 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const [activeSection, setActiveSection] = useState<SettingsSectionId>('appearance')
 
   const activeProjectId = useStore((s) => s.activeProjectId)
+  const appDarkTheme = useStore((s) => s.appDarkTheme)
+  const appLightTheme = useStore((s) => s.appLightTheme)
   const terminalTheme = useStore((s) => s.terminalTheme)
   const terminalSessionBackend = useStore((s) => s.terminalSessionBackend)
   const fontSize = useStore((s) => s.fontSize)
@@ -137,6 +140,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const terminalScrollbackLines = useStore((s) => s.terminalScrollbackLines)
   const terminalCursorStyle = useStore((s) => s.terminalCursorStyle)
   const terminalCursorBlink = useStore((s) => s.terminalCursorBlink)
+  const showTerminalHeaderOverlay = useStore((s) => s.showTerminalHeaderOverlay)
   const windowOpacity = useStore((s) => s.windowOpacity)
   const useTransparentWindow = useStore((s) => s.useTransparentWindow)
   const titleBarPosition = useStore((s) => s.titleBarPosition)
@@ -148,12 +152,14 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const searchEngine = useStore((s) => s.searchEngine)
   const homePage = useStore((s) => s.homePage)
   const setTerminalTheme = useStore((s) => s.setTerminalTheme)
+  const setAppTheme = useStore((s) => s.setAppTheme)
   const setTerminalSessionBackend = useStore((s) => s.setTerminalSessionBackend)
   const setFontSize = useStore((s) => s.setFontSize)
   const setFontFamily = useStore((s) => s.setFontFamily)
   const setTerminalScrollbackLines = useStore((s) => s.setTerminalScrollbackLines)
   const setTerminalCursorStyle = useStore((s) => s.setTerminalCursorStyle)
   const setTerminalCursorBlink = useStore((s) => s.setTerminalCursorBlink)
+  const setShowTerminalHeaderOverlay = useStore((s) => s.setShowTerminalHeaderOverlay)
   const setWindowOpacity = useStore((s) => s.setWindowOpacity)
   const setUseTransparentWindow = useStore((s) => s.setUseTransparentWindow)
   const setTitleBarPosition = useStore((s) => s.setTitleBarPosition)
@@ -185,17 +191,44 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const setCloseUndoTimeoutMs = useStore((s) => s.setCloseUndoTimeoutMs)
   const setCloseProcessSuppressions = useStore((s) => s.setCloseProcessSuppressions)
   const projects = useStore((s) => s.projects)
+  const activeAppThemeKey = useMemo(
+    () =>
+      getActiveAppThemeKey({
+        colorScheme,
+        appDarkTheme,
+        appLightTheme,
+      }),
+    [appDarkTheme, appLightTheme, colorScheme],
+  )
+  const resolvedAppColorScheme = useMemo(() => resolveAppColorScheme(colorScheme), [colorScheme])
   const activeProject = useMemo(
     () => projects.find((project) => project.id === activeProjectId) ?? null,
     [activeProjectId, projects],
   )
-  const [themeSchemeTab, setThemeSchemeTab] = useState<'dark' | 'light'>(
+  const [appearanceThemeSchemeTab, setAppearanceThemeSchemeTab] = useState<'dark' | 'light'>(
+    terminalThemes[activeAppThemeKey]?.scheme ?? resolvedAppColorScheme,
+  )
+  const [terminalThemeSchemeTab, setTerminalThemeSchemeTab] = useState<'dark' | 'light'>(
     terminalThemes[terminalTheme]?.scheme ?? 'dark',
   )
-  const visibleThemeKeys = useMemo(
-    () => (themeSchemeTab === 'dark' ? DARK_TERMINAL_THEME_KEYS : LIGHT_TERMINAL_THEME_KEYS),
-    [themeSchemeTab],
+  const appearanceVisibleThemeKeys = useMemo(
+    () =>
+      appearanceThemeSchemeTab === 'dark' ? DARK_TERMINAL_THEME_KEYS : LIGHT_TERMINAL_THEME_KEYS,
+    [appearanceThemeSchemeTab],
   )
+  const terminalVisibleThemeKeys = useMemo(
+    () =>
+      terminalThemeSchemeTab === 'dark' ? DARK_TERMINAL_THEME_KEYS : LIGHT_TERMINAL_THEME_KEYS,
+    [terminalThemeSchemeTab],
+  )
+
+  useEffect(() => {
+    setAppearanceThemeSchemeTab(terminalThemes[activeAppThemeKey]?.scheme ?? resolvedAppColorScheme)
+  }, [activeAppThemeKey, resolvedAppColorScheme])
+
+  useEffect(() => {
+    setTerminalThemeSchemeTab(terminalThemes[terminalTheme]?.scheme ?? 'dark')
+  }, [terminalTheme])
 
   const projectOptions = useMemo<SettingsSelectOption[]>(
     () => [
@@ -307,7 +340,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
             >
               {activeSection === 'appearance' ? (
                 <div className="space-y-3.5">
-                  <SettingsGroup title="Theme">
+                  <SettingsGroup title="Mode">
                     <div className="space-y-0.5">
                       {(
                         [
@@ -332,6 +365,62 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                           )}
                         </button>
                       ))}
+                    </div>
+                  </SettingsGroup>
+
+                  <SettingsGroup title="Cells Theme">
+                    <div className="space-y-2">
+                      <p className="px-0.5 text-[10px] text-muted-foreground/40">
+                        Changing the Cells theme also updates Terminal. You can override Terminal
+                        separately in Terminal settings afterward.
+                      </p>
+
+                      <div className="inline-flex rounded-md border border-border/20 bg-background/40 p-0.5">
+                        {TERMINAL_THEME_SCHEME_TABS.map((tab) => (
+                          <button
+                            key={tab.value}
+                            onClick={() => setAppearanceThemeSchemeTab(tab.value)}
+                            className={cn(
+                              'rounded-[6px] px-2.5 py-1 text-[10px] font-medium transition-colors',
+                              appearanceThemeSchemeTab === tab.value
+                                ? 'bg-accent text-foreground'
+                                : 'text-muted-foreground/60 hover:text-foreground',
+                            )}
+                          >
+                            {tab.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-1">
+                        {appearanceVisibleThemeKeys.map((key) => {
+                          const theme = terminalThemes[key]
+                          const selectedTheme =
+                            appearanceThemeSchemeTab === 'dark' ? appDarkTheme : appLightTheme
+
+                          return (
+                            <button
+                              key={key}
+                              onClick={() => {
+                                setAppearanceThemeSchemeTab(theme.scheme)
+                                setAppTheme(key)
+                              }}
+                              className={cn(
+                                'flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] transition-colors',
+                                key === selectedTheme
+                                  ? 'bg-accent text-foreground'
+                                  : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
+                              )}
+                            >
+                              <ThemePreviewDots themeKey={key} />
+                              <span className="truncate">{theme.name}</span>
+                              {key === activeAppThemeKey ? (
+                                <Check className="ml-auto h-2.5 w-2.5 shrink-0 text-muted-foreground" />
+                              ) : null}
+                            </button>
+                          )
+                        })}
+                      </div>
                     </div>
                   </SettingsGroup>
 
@@ -558,10 +647,10 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                         {TERMINAL_THEME_SCHEME_TABS.map((tab) => (
                           <button
                             key={tab.value}
-                            onClick={() => setThemeSchemeTab(tab.value)}
+                            onClick={() => setTerminalThemeSchemeTab(tab.value)}
                             className={cn(
                               'rounded-[6px] px-2.5 py-1 text-[10px] font-medium transition-colors',
-                              themeSchemeTab === tab.value
+                              terminalThemeSchemeTab === tab.value
                                 ? 'bg-accent text-foreground'
                                 : 'text-muted-foreground/60 hover:text-foreground',
                             )}
@@ -572,13 +661,13 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                       </div>
 
                       <div className="grid grid-cols-3 gap-1">
-                        {visibleThemeKeys.map((key) => {
+                        {terminalVisibleThemeKeys.map((key) => {
                           const theme = terminalThemes[key]
                           return (
                             <button
                               key={key}
                               onClick={() => {
-                                setThemeSchemeTab(theme.scheme)
+                                setTerminalThemeSchemeTab(theme.scheme)
                                 setTerminalTheme(key)
                               }}
                               className={cn(
@@ -588,20 +677,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                                   : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
                               )}
                             >
-                              <div className="flex shrink-0 gap-0.5">
-                                <div
-                                  className="h-1.5 w-1.5 rounded-full border border-black/5 dark:border-white/5"
-                                  style={{ background: theme.background }}
-                                />
-                                <div
-                                  className="h-1.5 w-1.5 rounded-full border border-black/5 dark:border-white/5"
-                                  style={{ background: theme.green }}
-                                />
-                                <div
-                                  className="h-1.5 w-1.5 rounded-full border border-black/5 dark:border-white/5"
-                                  style={{ background: theme.blue }}
-                                />
-                              </div>
+                              <ThemePreviewDots themeKey={key} />
                               <span className="truncate">{theme.name}</span>
                             </button>
                           )
@@ -730,6 +806,31 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                               className={cn(
                                 'absolute top-0.5 h-2.5 w-2.5 rounded-full bg-background transition-transform',
                                 terminalCursorBlink ? 'translate-x-3' : 'translate-x-0.5',
+                              )}
+                            />
+                          </div>
+                        </button>
+                      </SettingsField>
+
+                      <SettingsField
+                        label="Window overlay"
+                        hint={showTerminalHeaderOverlay ? 'Visible' : 'Hidden'}
+                      >
+                        <button
+                          onClick={() => setShowTerminalHeaderOverlay(!showTerminalHeaderOverlay)}
+                          className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-[11px] transition-colors hover:bg-muted/40"
+                        >
+                          <span className="text-foreground">Show terminal top-right controls</span>
+                          <div
+                            className={cn(
+                              'relative h-3.5 w-6 rounded-full transition-colors',
+                              showTerminalHeaderOverlay ? 'bg-primary' : 'bg-muted-foreground/25',
+                            )}
+                          >
+                            <div
+                              className={cn(
+                                'absolute top-0.5 h-2.5 w-2.5 rounded-full bg-background transition-transform',
+                                showTerminalHeaderOverlay ? 'translate-x-3' : 'translate-x-0.5',
                               )}
                             />
                           </div>
@@ -1169,6 +1270,29 @@ interface SettingsFieldProps {
   label: string
   hint?: string
   children: React.ReactNode
+}
+
+function ThemePreviewDots({ themeKey }: { themeKey: string }) {
+  const theme = terminalThemes[themeKey]
+
+  if (!theme) return null
+
+  return (
+    <div className="flex shrink-0 gap-0.5">
+      <div
+        className="h-1.5 w-1.5 rounded-full border border-black/5 dark:border-white/5"
+        style={{ background: theme.background }}
+      />
+      <div
+        className="h-1.5 w-1.5 rounded-full border border-black/5 dark:border-white/5"
+        style={{ background: theme.green }}
+      />
+      <div
+        className="h-1.5 w-1.5 rounded-full border border-black/5 dark:border-white/5"
+        style={{ background: theme.blue }}
+      />
+    </div>
+  )
 }
 
 function SettingsGroup({ title, children }: SettingsGroupProps) {

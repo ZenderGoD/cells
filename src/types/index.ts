@@ -105,6 +105,8 @@ export interface ProjectsState {
   version: 2
   activeProjectId: string | null
   projects: Project[]
+  appDarkTheme?: string
+  appLightTheme?: string
   terminalSessionBackend?: TerminalSessionBackend
   terminalSessionBackendExplicitlySet?: boolean
   terminalTheme?: string
@@ -113,6 +115,7 @@ export interface ProjectsState {
   terminalScrollbackLines?: number
   terminalCursorStyle?: TerminalCursorStyle
   terminalCursorBlink?: boolean
+  showTerminalHeaderOverlay?: boolean
   windowOpacity?: number
   useTransparentWindow?: boolean
   titleBarPosition?: TitleBarPosition
@@ -400,6 +403,9 @@ export interface CellsAPI {
     ): Promise<void>
     unpinWindow(id: string): Promise<void>
     onWindowUnpinned(callback: (id: string, type: string) => void): () => void
+    onWindowResized(
+      callback: (id: string, type: string, width: number, height: number) => void,
+    ): () => void
     getPinnedId(): string | null
     getPinnedType(): 'terminal' | 'browser' | null
     pickFolder(): Promise<string | null>

@@ -239,6 +239,19 @@ const api: CellsAPI = {
       ipcRenderer.on('app:window-unpinned', handler)
       return () => ipcRenderer.removeListener('app:window-unpinned', handler)
     },
+    onWindowResized: (
+      callback: (id: string, type: string, width: number, height: number) => void,
+    ) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        id: string,
+        type: string,
+        width: number,
+        height: number,
+      ) => callback(id, type, width, height)
+      ipcRenderer.on('app:window-resized', handler)
+      return () => ipcRenderer.removeListener('app:window-resized', handler)
+    },
     getPinnedId: () => {
       const params = new URLSearchParams(window.location.search)
       return params.get('pinned')
