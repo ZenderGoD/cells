@@ -13,6 +13,7 @@ import {
 } from 'electron'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import { pathToFileURL } from 'url'
 import fs from 'fs'
 import os from 'os'
 import { randomUUID } from 'crypto'
@@ -1312,6 +1313,29 @@ ipcMain.handle('app:file-thumbnail', async (_event, filePath: string) => {
   } catch {
     return null
   }
+})
+
+ipcMain.handle('app:get-terminal-font-resources', () => {
+  const fontDir = app.isPackaged
+    ? path.join(process.resourcesPath, 'vendor', 'fonts')
+    : path.join(__dirname, '..', 'src', 'fonts')
+
+  const fonts = [
+    'GeistMonoNerdFontMono-Regular.otf',
+    'GeistMonoNerdFontMono-Bold.otf',
+    'JetBrainsMonoNerdFontMono-Regular.ttf',
+    'JetBrainsMonoNerdFontMono-Bold.ttf',
+    'FiraCodeNerdFontMono-Regular.ttf',
+    'FiraCodeNerdFontMono-Bold.ttf',
+    'MesloLGSNerdFontMono-Regular.ttf',
+    'MesloLGSNerdFontMono-Bold.ttf',
+    'HackNerdFontMono-Regular.ttf',
+    'HackNerdFontMono-Bold.ttf',
+  ]
+
+  return Object.fromEntries(
+    fonts.map((filename) => [filename, pathToFileURL(path.join(fontDir, filename)).href]),
+  )
 })
 
 ipcMain.on('terminal:write', (_event, termId: string, data: string) => {

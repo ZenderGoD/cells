@@ -224,6 +224,8 @@ const api: CellsAPI = {
     getShellHistory: () => ipcRenderer.invoke('app:get-shell-history') as Promise<string[]>,
     fileThumbnail: (filePath: string) =>
       ipcRenderer.invoke('app:file-thumbnail', filePath) as Promise<string | null>,
+    getTerminalFontResources: () =>
+      ipcRenderer.invoke('app:get-terminal-font-resources') as Promise<Record<string, string>>,
     pinWindow: (
       id: string,
       type: string,

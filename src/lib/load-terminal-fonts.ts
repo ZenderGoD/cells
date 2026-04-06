@@ -10,6 +10,7 @@ import hackRegularUrl from '@/fonts/HackNerdFontMono-Regular.ttf'
 import hackBoldUrl from '@/fonts/HackNerdFontMono-Bold.ttf'
 
 type BundledFontFace = {
+  filename: string
   family: string
   weight: string
   style: 'normal'
@@ -19,6 +20,7 @@ type BundledFontFace = {
 
 const TERMINAL_FONT_FACES: BundledFontFace[] = [
   {
+    filename: 'GeistMonoNerdFontMono-Regular.otf',
     family: 'GeistMono NF',
     weight: '400',
     style: 'normal',
@@ -26,6 +28,7 @@ const TERMINAL_FONT_FACES: BundledFontFace[] = [
     format: 'opentype',
   },
   {
+    filename: 'GeistMonoNerdFontMono-Bold.otf',
     family: 'GeistMono NF',
     weight: '700',
     style: 'normal',
@@ -33,6 +36,7 @@ const TERMINAL_FONT_FACES: BundledFontFace[] = [
     format: 'opentype',
   },
   {
+    filename: 'JetBrainsMonoNerdFontMono-Regular.ttf',
     family: 'JetBrainsMono NF',
     weight: '400',
     style: 'normal',
@@ -40,6 +44,7 @@ const TERMINAL_FONT_FACES: BundledFontFace[] = [
     format: 'truetype',
   },
   {
+    filename: 'JetBrainsMonoNerdFontMono-Bold.ttf',
     family: 'JetBrainsMono NF',
     weight: '700',
     style: 'normal',
@@ -47,6 +52,7 @@ const TERMINAL_FONT_FACES: BundledFontFace[] = [
     format: 'truetype',
   },
   {
+    filename: 'FiraCodeNerdFontMono-Regular.ttf',
     family: 'FiraCode NF',
     weight: '400',
     style: 'normal',
@@ -54,16 +60,45 @@ const TERMINAL_FONT_FACES: BundledFontFace[] = [
     format: 'truetype',
   },
   {
+    filename: 'FiraCodeNerdFontMono-Bold.ttf',
     family: 'FiraCode NF',
     weight: '700',
     style: 'normal',
     url: firaCodeBoldUrl,
     format: 'truetype',
   },
-  { family: 'Meslo NF', weight: '400', style: 'normal', url: mesloRegularUrl, format: 'truetype' },
-  { family: 'Meslo NF', weight: '700', style: 'normal', url: mesloBoldUrl, format: 'truetype' },
-  { family: 'Hack NF', weight: '400', style: 'normal', url: hackRegularUrl, format: 'truetype' },
-  { family: 'Hack NF', weight: '700', style: 'normal', url: hackBoldUrl, format: 'truetype' },
+  {
+    filename: 'MesloLGSNerdFontMono-Regular.ttf',
+    family: 'Meslo NF',
+    weight: '400',
+    style: 'normal',
+    url: mesloRegularUrl,
+    format: 'truetype',
+  },
+  {
+    filename: 'MesloLGSNerdFontMono-Bold.ttf',
+    family: 'Meslo NF',
+    weight: '700',
+    style: 'normal',
+    url: mesloBoldUrl,
+    format: 'truetype',
+  },
+  {
+    filename: 'HackNerdFontMono-Regular.ttf',
+    family: 'Hack NF',
+    weight: '400',
+    style: 'normal',
+    url: hackRegularUrl,
+    format: 'truetype',
+  },
+  {
+    filename: 'HackNerdFontMono-Bold.ttf',
+    family: 'Hack NF',
+    weight: '700',
+    style: 'normal',
+    url: hackBoldUrl,
+    format: 'truetype',
+  },
 ]
 
 let loadPromise: Promise<void> | null = null
@@ -75,11 +110,17 @@ export function loadBundledTerminalFonts() {
       return
     }
 
+    let resourceUrls: Record<string, string> = {}
+    try {
+      resourceUrls = (await window.cells.app.getTerminalFontResources()) || {}
+    } catch {}
+
     await Promise.allSettled(
       TERMINAL_FONT_FACES.map(async (font) => {
+        const resolvedUrl = resourceUrls[font.filename] || font.url
         const face = new FontFace(
           font.family,
-          `url(${JSON.stringify(font.url)}) format(${JSON.stringify(font.format)})`,
+          `url(${JSON.stringify(resolvedUrl)}) format(${JSON.stringify(font.format)})`,
           {
             weight: font.weight,
             style: font.style,
