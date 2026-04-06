@@ -22,12 +22,14 @@ export interface TerminalSessionManager {
     cols: number,
     rows: number,
     cwd?: string,
+    projectId?: string | null,
   ): { reattached: boolean; shellPid: number }
   attach(
     termId: string,
     cols: number,
     rows: number,
     cwd?: string,
+    projectId?: string | null,
     onAttached?: () => void,
   ): TerminalAttachResult
   subscribe(termId: string, onSubscribed?: () => void): string

@@ -144,13 +144,14 @@ export class PtyDaemonClient {
     cols: number,
     rows: number,
     cwd?: string,
+    projectId?: string | null,
   ): Promise<{
     reattached: boolean
     shellPid: number
     buffer: string
     backend: 'replay' | 'tmux' | 'zellij'
   }> {
-    return this.request('attach', { termId, cols, rows, cwd })
+    return this.request('attach', { termId, cols, rows, cwd, projectId })
   }
 
   async subscribe(termId: string): Promise<string> {

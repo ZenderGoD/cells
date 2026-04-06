@@ -14,6 +14,7 @@ import {
 import path from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'fs'
+import os from 'os'
 import { randomUUID } from 'crypto'
 import { execFileSync, spawnSync } from 'child_process'
 import { autoUpdater } from 'electron-updater'
@@ -126,6 +127,15 @@ function configureDevPaths() {
     ensureDir(dir)
   }
 
+  const realHomeDir = os.userInfo().homedir
+  process.env.CELLS_REAL_XDG_CONFIG_HOME =
+    process.env.XDG_CONFIG_HOME || path.join(realHomeDir, '.config')
+  process.env.CELLS_REAL_XDG_DATA_HOME =
+    process.env.XDG_DATA_HOME || path.join(realHomeDir, '.local', 'share')
+  process.env.CELLS_REAL_XDG_CACHE_HOME =
+    process.env.XDG_CACHE_HOME || path.join(realHomeDir, '.cache')
+  process.env.CELLS_REAL_XDG_STATE_HOME =
+    process.env.XDG_STATE_HOME || path.join(realHomeDir, '.local', 'state')
   process.env.CELLS_HOME_DIR = devHomeDir
   process.env.CELLS_DATA_DIR = devDataDir
   process.env.HOME = devHomeDir
@@ -642,7 +652,14 @@ async function connectDaemonClient() {
 
 ipcMain.handle(
   'terminal:attach',
-  async (_event, termId: string, cols: number, rows: number, cwd?: string) => {
+  async (
+    _event,
+    termId: string,
+    cols: number,
+    rows: number,
+    cwd?: string,
+    projectId?: string | null,
+  ) => {
     clearHistorySnapshotsForTerm(termId)
 
     if (!terminalBackendSupport.ok && !fallbackSessions) {
@@ -654,7 +671,7 @@ ipcMain.handle(
         // Mark subscribed before the daemon attaches so any live data emitted
         // after the replay boundary is forwarded and queued during renderer replay.
         subscribedTerminals.add(termId)
-        const result = await daemonClient.attach(termId, cols, rows, cwd)
+        const result = await daemonClient.attach(termId, cols, rows, cwd, projectId)
         return { reattached: result.reattached, buffer: result.buffer, backend: result.backend }
       } catch {
         subscribedTerminals.delete(termId)
@@ -663,7 +680,7 @@ ipcMain.handle(
     }
 
     const sessions = ensureFallbackSessions()
-    const result = sessions.attach(termId, cols, rows, cwd, () => {
+    const result = sessions.attach(termId, cols, rows, cwd, projectId, () => {
       subscribedTerminals.add(termId)
     })
     return { reattached: result.reattached, buffer: result.buffer, backend: result.backend }

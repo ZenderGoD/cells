@@ -1,6 +1,6 @@
 import type { TerminalSessionBackend } from '../types'
 
-export const DEFAULT_TERMINAL_SESSION_BACKEND: TerminalSessionBackend = 'zellij'
+export const DEFAULT_TERMINAL_SESSION_BACKEND: TerminalSessionBackend = 'tmux'
 
 export const TERMINAL_SESSION_BACKEND_OPTIONS: Array<{
   value: TerminalSessionBackend
@@ -8,14 +8,14 @@ export const TERMINAL_SESSION_BACKEND_OPTIONS: Array<{
   hint: string
 }> = [
   {
-    value: 'zellij',
-    label: 'Zellij',
-    hint: 'Modern session backend with app-scoped config',
-  },
-  {
     value: 'tmux',
     label: 'tmux',
-    hint: 'Battle-tested fallback with private socket + config',
+    hint: 'Default private server with the best Cells compatibility',
+  },
+  {
+    value: 'zellij',
+    label: 'Zellij',
+    hint: 'Optional app-scoped backend with separate server/client sessions',
   },
 ]
 

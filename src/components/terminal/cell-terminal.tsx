@@ -37,6 +37,15 @@ const CANVAS_MAX_ZOOM = 1.5
 const HISTORY_PAGE_BYTES = 256 * 1024
 const HISTORY_WRITE_BYTES = 64 * 1024
 const TERMINAL_SEARCH_MATCH_LIMIT = 2_000
+const TERMINAL_ATTACH_RETRY_DELAYS_MS = [0, 250, 1000] as const
+const SERVER_OWNED_ATTACH_RECOVERY_DELAYS_MS = [800, 1600] as const
+
+type TerminalAttachResponse = {
+  reattached: boolean
+  buffer: string
+  backend: 'replay' | 'tmux' | 'zellij'
+}
+
 function patchGhosttyRenderer() {
   if (ghosttyRendererPatched) return
   ghosttyRendererPatched = true
@@ -672,6 +681,67 @@ interface CachedTerminal {
 }
 const terminalCache = new Map<string, CachedTerminal>()
 const terminalReloadSnapshots = new Map<string, string>()
+const retainedAttachmentTimers = new Map<string, number>()
+const retainedAttachmentOrder = new Map<string, number>()
+const RETAINED_ATTACHMENT_TTL_MS = 3_000
+const RETAINED_ATTACHMENT_MAX = 6
+
+function clearRetainedAttachment(termId: string) {
+  const timer = retainedAttachmentTimers.get(termId)
+  if (timer != null) {
+    window.clearTimeout(timer)
+    retainedAttachmentTimers.delete(termId)
+  }
+  retainedAttachmentOrder.delete(termId)
+}
+
+function releaseRetainedAttachment(termId: string) {
+  clearRetainedAttachment(termId)
+
+  const cached = terminalCache.get(termId)
+  if (!cached) return
+
+  cached.setPollingEnabled(false)
+  setTerminalRenderLoopEnabled(cached.term, false)
+
+  if (Reflect.get(cached.term, '__cellsBackendAttached') === true) {
+    Reflect.set(cached.term, '__cellsBackendAttached', false)
+    void window.cells.terminal.unsubscribe(termId).catch(() => {})
+  }
+}
+
+function trimRetainedAttachments() {
+  while (retainedAttachmentOrder.size > RETAINED_ATTACHMENT_MAX) {
+    let oldestTermId: string | null = null
+    let oldestAt = Infinity
+
+    for (const [termId, retainedAt] of retainedAttachmentOrder) {
+      if (retainedAt < oldestAt) {
+        oldestAt = retainedAt
+        oldestTermId = termId
+      }
+    }
+
+    if (!oldestTermId) return
+    releaseRetainedAttachment(oldestTermId)
+  }
+}
+
+function retainTerminalAttachment(termId: string) {
+  const cached = terminalCache.get(termId)
+  if (!cached || !usesServerOwnedTerminalState(cached.term)) {
+    releaseRetainedAttachment(termId)
+    return
+  }
+
+  clearRetainedAttachment(termId)
+  retainedAttachmentOrder.set(termId, Date.now())
+  retainedAttachmentTimers.set(
+    termId,
+    window.setTimeout(() => releaseRetainedAttachment(termId), RETAINED_ATTACHMENT_TTL_MS),
+  )
+  trimRetainedAttachments()
+}
 
 export function getCachedTerminalCount() {
   return terminalCache.size
@@ -921,6 +991,7 @@ export function applyThemeToAllTerminals(themeName: string) {
 
 /** Call when a terminal is permanently removed (not just hidden). */
 export function destroyCachedTerminal(termId: string) {
+  clearRetainedAttachment(termId)
   const cached = terminalCache.get(termId)
   if (cached) {
     for (const fn of cached.cleanups) fn()
@@ -1353,6 +1424,55 @@ function forceTerminalRepaint(term: Terminal) {
   window.setTimeout(() => requestAnimationFrame(() => forceTerminalFullRender(term)), 32)
 }
 
+function shouldRetryTerminalAttach(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error)
+  return /timed out|not connected|connection (?:lost|closed)|econn|epipe|pty daemon/i.test(message)
+}
+
+function sleep(ms: number) {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, ms)
+  })
+}
+
+async function attachTerminalWithRetry(
+  termId: string,
+  cols: number,
+  rows: number,
+  cwd: string | undefined,
+  projectId: string | null | undefined,
+  shouldContinue: () => boolean,
+): Promise<TerminalAttachResponse> {
+  let lastError: unknown = null
+
+  for (let attempt = 0; attempt < TERMINAL_ATTACH_RETRY_DELAYS_MS.length; attempt += 1) {
+    const delay = TERMINAL_ATTACH_RETRY_DELAYS_MS[attempt]
+    if (delay > 0) {
+      await sleep(delay)
+      if (!shouldContinue()) {
+        throw lastError instanceof Error ? lastError : new Error('Terminal attach cancelled')
+      }
+    }
+
+    try {
+      return await window.cells.terminal.attach(termId, cols, rows, cwd, projectId)
+    } catch (error) {
+      lastError = error
+      const lastAttempt = attempt === TERMINAL_ATTACH_RETRY_DELAYS_MS.length - 1
+      if (lastAttempt || !shouldRetryTerminalAttach(error) || !shouldContinue()) {
+        throw error
+      }
+
+      console.warn(
+        `Terminal attach failed for ${termId}; retrying (${attempt + 1}/${TERMINAL_ATTACH_RETRY_DELAYS_MS.length})`,
+        error,
+      )
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error('Terminal attach failed')
+}
+
 export function CellTerminal({
   termId,
   width,
@@ -1403,6 +1523,7 @@ export function CellTerminal({
   const dragDepthRef = useRef(0)
   const shouldRenderRef = useRef(isFocused || isVisible)
   const focusStateRef = useRef({ isFocused, isVisible })
+  const suppressAutoFocusRef = useRef(false)
   const searchMatchesRef = useRef<SearchMatch[]>([])
   const searchDebounceRef = useRef<number | null>(null)
   const searchLimitHitRef = useRef(false)
@@ -1486,7 +1607,7 @@ export function CellTerminal({
       setTerminalRenderLoopEnabled(term, shouldRender)
 
       requestAnimationFrame(() => {
-        if (focused) {
+        if (focused && !suppressAutoFocusRef.current) {
           focusGhosttyInput(term)
         } else {
           term.blur()
@@ -1523,6 +1644,61 @@ export function CellTerminal({
   const relaunchTerminal = useCallback(() => {
     restartTerminalSession(termId)
   }, [restartTerminalSession, termId])
+
+  const scheduleServerOwnedAttachRecovery = useCallback(
+    (term: Terminal, cols: number, rows: number, cwd: string | undefined, attempt = 0) => {
+      const delay = SERVER_OWNED_ATTACH_RECOVERY_DELAYS_MS[attempt]
+      if (delay == null) return
+
+      window.setTimeout(() => {
+        if (Reflect.get(term, '__cellsPendingReattachReset') !== true) return
+
+        void (async () => {
+          try {
+            console.warn(
+              `Terminal ${termId} did not receive an initial ${getTerminalBackend(term) ?? 'server-owned'} redraw; retrying attach`,
+            )
+            const result = await attachTerminalWithRetry(
+              termId,
+              cols,
+              rows,
+              cwd,
+              useStore.getState().activeProjectId,
+              () => {
+                return terminalRef.current === term
+              },
+            )
+
+            if (terminalRef.current !== term) return
+
+            Reflect.set(term, '__cellsBackendAttached', true)
+            Reflect.set(term, '__cellsTerminalBackend', result.backend ?? null)
+            const usesServerOwnedState = isServerOwnedTerminalBackend(result.backend)
+            Reflect.set(term, '__cellsUsesServerOwnedState', usesServerOwnedState)
+            refreshTerminalTheme(term, themeNameRef.current)
+
+            if (usesServerOwnedState) {
+              Reflect.set(term, '__cellsPendingReattachReset', true)
+              scheduleServerOwnedAttachRecovery(term, cols, rows, cwd, attempt + 1)
+              return
+            }
+
+            Reflect.set(term, '__cellsPendingReattachReset', false)
+            if (result.buffer) {
+              term.write(result.buffer)
+            }
+            forceTerminalRepaint(term)
+          } catch (error) {
+            console.warn(`Terminal ${termId} attach recovery failed`, error)
+            if (terminalRef.current === term) {
+              scheduleServerOwnedAttachRecovery(term, cols, rows, cwd, attempt + 1)
+            }
+          }
+        })()
+      }, delay)
+    },
+    [termId],
+  )
 
   const refreshTerminalSearch = useCallback(() => {
     const term = getLiveTerminal()
@@ -1739,6 +1915,7 @@ export function CellTerminal({
       // Check cache first — reattach if exists
       const cached = terminalCache.get(termId)
       if (cached) {
+        clearRetainedAttachment(termId)
         const avoidSyntheticResize = shouldAvoidSyntheticResizeForTerminal(cached.term)
         const backendAttached = Reflect.get(cached.term, '__cellsBackendAttached') === true
         patchTerminalViewportPreservation(cached.term)
@@ -1771,11 +1948,13 @@ export function CellTerminal({
         let result: Awaited<ReturnType<typeof window.cells.terminal.attach>> | null = null
         if (!backendAttached) {
           try {
-            result = await window.cells.terminal.attach(
+            result = await attachTerminalWithRetry(
               termId,
               dims?.cols ?? 80,
               dims?.rows ?? 24,
               useStore.getState().getActiveProjectPath(),
+              useStore.getState().activeProjectId,
+              () => !cancelled,
             )
           } catch (error) {
             finishTerminalReplay(cached.term)
@@ -1795,6 +1974,12 @@ export function CellTerminal({
             // cached content stays visible and the reset+redraw happen in the
             // same synchronous block — no blank frame.
             Reflect.set(cached.term, '__cellsPendingReattachReset', true)
+            scheduleServerOwnedAttachRecovery(
+              cached.term,
+              dims?.cols ?? 80,
+              dims?.rows ?? 24,
+              useStore.getState().getActiveProjectPath(),
+            )
           }
 
           // Replay any data buffered while this terminal was in another project.
@@ -2460,11 +2645,13 @@ export function CellTerminal({
         shouldRestorePersistedOutput && shouldPreferSnapshotRestoreForTerminal(term)
       let result: Awaited<ReturnType<typeof window.cells.terminal.attach>>
       try {
-        result = await window.cells.terminal.attach(
+        result = await attachTerminalWithRetry(
           termId,
           dims?.cols ?? 80,
           dims?.rows ?? 24,
           projectPath,
+          useStore.getState().activeProjectId,
+          () => !cancelled,
         )
       } catch (error) {
         finishTerminalReplay(term)
@@ -2478,10 +2665,16 @@ export function CellTerminal({
       backendQueryRemainderRef.current = ''
       refreshTerminalTheme(term, themeNameRef.current)
       if (usesServerOwnedState) {
+        if (result?.reattached && shouldRestorePersistedOutput && restoredOutput) {
+          term.write(restoredOutput)
+          forceTerminalRepaint(term)
+        }
+
         // Suppress rendering while the buffer is in the blank reset() state.
         // Defer reset() until the first data chunk arrives from the
         // backend so the render loop never paints a blank buffer.
         Reflect.set(term, '__cellsPendingReattachReset', true)
+        scheduleServerOwnedAttachRecovery(term, dims?.cols ?? 80, dims?.rows ?? 24, projectPath)
       }
 
       let replayedRawHistory = false
@@ -2549,11 +2742,13 @@ export function CellTerminal({
     return () => {
       cancelled = true
       const cached = terminalCache.get(termId)
-      cached?.setPollingEnabled(false)
-      setTerminalRenderLoopEnabled(cached?.term ?? null, false)
-      if (cached && Reflect.get(cached.term, '__cellsBackendAttached') === true) {
-        Reflect.set(cached.term, '__cellsBackendAttached', false)
-        void window.cells.terminal.unsubscribe(termId).catch(() => {})
+      if (cached) {
+        setTerminalRenderLoopEnabled(cached.term, false)
+        if (Reflect.get(cached.term, '__cellsBackendAttached') === true) {
+          retainTerminalAttachment(termId)
+        } else {
+          cached.setPollingEnabled(false)
+        }
       }
       if (cached && container?.contains(cached.wrapper)) {
         container.removeChild(cached.wrapper)
@@ -2568,6 +2763,7 @@ export function CellTerminal({
     pasteToTerminal,
     reloadKey,
     refitTerminalToLoadedFont,
+    scheduleServerOwnedAttachRecovery,
     scheduleTerminalSearchRefresh,
     setInferredTitle,
     syncTerminalState,
@@ -2648,11 +2844,34 @@ export function CellTerminal({
     getLiveTerminal()?.blur()
   }, [getLiveTerminal, terminalExited])
 
+  useEffect(() => {
+    const handleStart = () => {
+      suppressAutoFocusRef.current = true
+      if (isFocused) getLiveTerminal()?.blur()
+    }
+
+    const handleEnd = () => {
+      suppressAutoFocusRef.current = false
+      const term = getLiveTerminal()
+      if (isFocused && term) {
+        focusGhosttyInput(term)
+        forceTerminalRepaint(term)
+      }
+    }
+
+    window.addEventListener('terminal-navigation-start', handleStart)
+    window.addEventListener('terminal-navigation-end', handleEnd)
+    return () => {
+      window.removeEventListener('terminal-navigation-start', handleStart)
+      window.removeEventListener('terminal-navigation-end', handleEnd)
+    }
+  }, [getLiveTerminal, isFocused])
+
   // Re-focus the terminal when overlays (command palette, etc.) close
   useEffect(() => {
     const handler = () => {
       const term = getLiveTerminal()
-      if (isFocused && term) {
+      if (isFocused && term && !suppressAutoFocusRef.current) {
         focusGhosttyInput(term)
         forceTerminalRepaint(term)
       }

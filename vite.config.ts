@@ -44,7 +44,7 @@ function buildPtyDaemon(): Plugin {
         platform: 'node',
         format: 'esm',
         outfile: out,
-        external: ['node-pty'],
+        external: ['node-pty', 'execa'],
       })
     },
   }
@@ -84,7 +84,7 @@ export default defineConfig({
           build: {
             outDir: 'dist-electron',
             rollupOptions: {
-              external: ['node-pty', 'adm-zip'],
+              external: ['node-pty', 'adm-zip', 'execa'],
             },
           },
         },

@@ -29,6 +29,8 @@ const SNAP_DELAY_MIN = 80 // snap almost instantly when terminal fills view
 const SNAP_DELAY_MAX = 400 // slow snap when terminal is barely visible
 const SNAP_DISABLE_ZOOM = 0.5
 const TERMINAL_VISIBILITY_OVERSCAN_PX = 240
+const SNAP_POSITION_EPSILON = 0.5
+const SNAP_SCALE_EPSILON = 0.002
 
 const SPRING_NORMAL = { stiffness: 300, damping: 30 }
 const SPRING_FAST = { stiffness: 800, damping: 50 }
@@ -85,6 +87,7 @@ export function InfiniteCanvas() {
   const [isPanning, setIsPanning] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
   const [isUserDriving, setIsUserDriving] = useState(false) // true while user is actively panning/scrolling
+  const [isSnapAnimating, setIsSnapAnimating] = useState(false)
   const [metaHeld, setMetaHeld] = useState(false)
   const [marqueeBox, setMarqueeBox] = useState<{
     x: number
@@ -186,6 +189,47 @@ export function InfiniteCanvas() {
     motionX,
     motionY,
     motionScale,
+  ])
+
+  useEffect(() => {
+    if (isUserDriving || reducedMotion) {
+      setIsSnapAnimating(false)
+      return
+    }
+
+    let frame = 0
+    let cancelled = false
+
+    const updateAnimationState = () => {
+      if (cancelled) return
+
+      const animating =
+        Math.abs(animatedX.get() - transform.x) > SNAP_POSITION_EPSILON ||
+        Math.abs(animatedY.get() - transform.y) > SNAP_POSITION_EPSILON ||
+        Math.abs(animatedScale.get() - transform.scale) > SNAP_SCALE_EPSILON
+
+      setIsSnapAnimating((previous) => (previous === animating ? previous : animating))
+
+      if (animating) {
+        frame = window.requestAnimationFrame(updateAnimationState)
+      }
+    }
+
+    updateAnimationState()
+
+    return () => {
+      cancelled = true
+      if (frame) window.cancelAnimationFrame(frame)
+    }
+  }, [
+    animatedScale,
+    animatedX,
+    animatedY,
+    isUserDriving,
+    reducedMotion,
+    transform.scale,
+    transform.x,
+    transform.y,
   ])
 
   // Schedule a snap — delay scales with how much the closest terminal fills the viewport
@@ -551,6 +595,7 @@ export function InfiniteCanvas() {
               terminal={terminal}
               scale={transform.scale}
               isVisible={isTerminalVisible(terminal)}
+              pauseLiveRender={isSnapAnimating && focusedTerminalId !== terminal.id}
               selectionMode={selectionMode}
               isSelected={selectedNodeIds.includes(terminal.id)}
               isFocused={focusedTerminalId === terminal.id}

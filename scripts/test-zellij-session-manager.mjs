@@ -7,6 +7,8 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import test from 'node:test'
 
+const BINARY_DATA_MARKER = 0x02
+
 function delay(ms) {
   return new Promise((resolve) => globalThis.setTimeout(resolve, ms))
 }
@@ -45,7 +47,7 @@ class DaemonClient {
   constructor(socketPath) {
     this.socketPath = socketPath
     this.socket = null
-    this.lineBuffer = ''
+    this.recvBuf = Buffer.alloc(0)
     this.nextId = 1
     this.pending = new Map()
     this.events = []
@@ -59,25 +61,47 @@ class DaemonClient {
       })
       socket.on('error', reject)
       socket.on('data', (chunk) => {
-        this.lineBuffer += chunk.toString()
-        let newlineIdx
-        while ((newlineIdx = this.lineBuffer.indexOf('\n')) !== -1) {
-          const line = this.lineBuffer.slice(0, newlineIdx)
-          this.lineBuffer = this.lineBuffer.slice(newlineIdx + 1)
-          if (!line.trim()) continue
-          const msg = JSON.parse(line)
-          if (msg.type === 'response') {
-            const pending = this.pending.get(msg.id)
-            if (!pending) continue
-            this.pending.delete(msg.id)
-            if (msg.ok) pending.resolve(msg.data)
-            else pending.reject(new Error(msg.error || 'Daemon request failed'))
-          } else {
-            this.events.push(msg)
-          }
-        }
+        this.recvBuf = this.recvBuf.length === 0 ? chunk : Buffer.concat([this.recvBuf, chunk])
+        this.drainRecvBuffer()
       })
     })
+  }
+
+  drainRecvBuffer() {
+    while (this.recvBuf.length > 0) {
+      if (this.recvBuf[0] === BINARY_DATA_MARKER) {
+        const minHeader = 1 + 2
+        if (this.recvBuf.length < minHeader) return
+        const termIdLen = this.recvBuf.readUInt16BE(1)
+        const fullHeader = minHeader + termIdLen + 4
+        if (this.recvBuf.length < fullHeader) return
+        const dataLen = this.recvBuf.readUInt32BE(minHeader + termIdLen)
+        const totalLen = fullHeader + dataLen
+        if (this.recvBuf.length < totalLen) return
+
+        const termId = this.recvBuf.toString('utf8', minHeader, minHeader + termIdLen)
+        const data = this.recvBuf.toString('utf8', fullHeader, totalLen)
+        this.recvBuf = this.recvBuf.subarray(totalLen)
+        this.events.push({ type: 'data', termId, data })
+        continue
+      }
+
+      const newlineIdx = this.recvBuf.indexOf(0x0a)
+      if (newlineIdx === -1) return
+      const line = this.recvBuf.toString('utf8', 0, newlineIdx)
+      this.recvBuf = this.recvBuf.subarray(newlineIdx + 1)
+      if (!line.trim()) continue
+      const msg = JSON.parse(line)
+      if (msg.type === 'response') {
+        const pending = this.pending.get(msg.id)
+        if (!pending) continue
+        this.pending.delete(msg.id)
+        if (msg.ok) pending.resolve(msg.data)
+        else pending.reject(new Error(msg.error || 'Daemon request failed'))
+      } else {
+        this.events.push(msg)
+      }
+    }
   }
 
   request(type, fields = {}) {
@@ -110,7 +134,9 @@ function hasBundledZellij() {
           : 'linux-x64'
         : null
   if (!platformDir) return false
-  return fsSync.existsSync(path.join(process.cwd(), 'resources', 'vendor', 'zellij', platformDir, 'zellij'))
+  return fsSync.existsSync(
+    path.join(process.cwd(), 'resources', 'vendor', 'zellij', platformDir, 'zellij'),
+  )
 }
 
 test('zellij daemon preserves a session across detach and reattach', async (t) => {
@@ -147,7 +173,7 @@ test('zellij daemon preserves a session across detach and reattach', async (t) =
     await waitForDaemonClient(client, socketPath)
 
     const version = await client.request('get-daemon-version')
-    assert.equal(version.compatVersion, 8)
+    assert.equal(version.compatVersion, 10)
     assert.equal(version.backend, 'zellij')
 
     const firstAttach = await client.request('attach', {
@@ -161,7 +187,10 @@ test('zellij daemon preserves a session across detach and reattach', async (t) =
 
     client.send('write', { termId, data: `printf '${markerOne}\\n'\r` })
     await waitFor(() =>
-      client.events.some((event) => event.type === 'data' && event.termId === termId && event.data.includes(markerOne)),
+      client.events.some(
+        (event) =>
+          event.type === 'data' && event.termId === termId && event.data.includes(markerOne),
+      ),
     )
 
     client.send('unsubscribe', { termId })
@@ -181,7 +210,10 @@ test('zellij daemon preserves a session across detach and reattach', async (t) =
 
     client.send('write', { termId, data: `printf '${markerTwo}\\n'\r` })
     await waitFor(() =>
-      client.events.some((event) => event.type === 'data' && event.termId === termId && event.data.includes(markerTwo)),
+      client.events.some(
+        (event) =>
+          event.type === 'data' && event.termId === termId && event.data.includes(markerTwo),
+      ),
     )
 
     await client.request('kill', { termId })
@@ -254,7 +286,9 @@ test('zellij daemon reattaches after daemon restart using persisted session mapp
 
     client.send('write', { termId, data: `printf '${marker}\\n'\r` })
     await waitFor(() =>
-      client.events.some((event) => event.type === 'data' && event.termId === termId && event.data.includes(marker)),
+      client.events.some(
+        (event) => event.type === 'data' && event.termId === termId && event.data.includes(marker),
+      ),
     )
 
     client.send('unsubscribe', { termId })

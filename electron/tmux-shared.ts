@@ -1,10 +1,15 @@
 import fs from 'fs'
 import path from 'path'
-import { execFileSync } from 'child_process'
+import { fileURLToPath } from 'url'
+import { execaSync } from 'execa'
+import tmuxBundle from '../config/tmux-bundle.json'
 
 export const TMUX_INSTALL_URL = 'https://github.com/tmux/tmux/wiki/Installing'
-export const TMUX_MIN_VERSION = '3.5a'
+export const TMUX_MIN_VERSION = tmuxBundle.minimumVersion
 export const CELLS_TMUX_TERM = 'cells-tmux-256color'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
 
 export type TmuxSupportStatus = {
   ok: boolean
@@ -45,24 +50,74 @@ export function compareTmuxVersions(left: string, right: string): number {
 export function resolveTmuxBinary(): string {
   const configured = process.env.CELLS_TMUX_BINARY?.trim()
   if (configured) return configured
+
+  const bundled = resolveBundledTmuxBinary()
+  if (bundled) return bundled
+
   try {
-    return execFileSync('/bin/sh', ['-lc', 'command -v tmux'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
+    const result = execaSync('/bin/sh', ['-lc', 'command -v tmux'], {
+      reject: false,
+      stdin: 'ignore',
       timeout: 1500,
-    }).trim()
+    })
+    if (result.exitCode === 0) return result.stdout.trim()
   } catch {
-    return 'tmux'
+    // Fall through to the bare command name.
   }
+  return 'tmux'
+}
+
+function getBundledTmuxExecutableName() {
+  return process.platform === 'win32' ? 'tmux.exe' : 'tmux'
+}
+
+function getBundledTmuxPlatformArchDir() {
+  if (process.platform === 'darwin') {
+    return process.arch === 'arm64' ? 'darwin-arm64' : 'darwin-x64'
+  }
+  if (process.platform === 'linux') {
+    return process.arch === 'arm64' ? 'linux-arm64' : 'linux-x64'
+  }
+  if (process.platform === 'win32') {
+    return process.arch === 'arm64' ? 'windows-arm64' : 'windows-x64'
+  }
+  return `${process.platform}-${process.arch}`
+}
+
+function getBundledTmuxCandidates() {
+  const relative = path.join(
+    'vendor',
+    'tmux',
+    getBundledTmuxPlatformArchDir(),
+    getBundledTmuxExecutableName(),
+  )
+  const candidates = [
+    process.resourcesPath ? path.join(process.resourcesPath, relative) : null,
+    path.resolve(__dirname, '../resources', relative),
+    path.resolve(__dirname, '../../resources', relative),
+  ]
+  return [...new Set(candidates.filter(Boolean) as string[])]
+}
+
+export function resolveBundledTmuxBinary(): string | null {
+  for (const candidate of getBundledTmuxCandidates()) {
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK)
+      return candidate
+    } catch {}
+  }
+  return null
 }
 
 export function readTmuxVersion(binaryPath = resolveTmuxBinary()): string | null {
   try {
-    const output = execFileSync(binaryPath, ['-V'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
+    const result = execaSync(binaryPath, ['-V'], {
+      reject: false,
+      stdin: 'ignore',
       timeout: 1500,
-    }).trim()
+    })
+    if (result.exitCode !== 0) return null
+    const output = result.stdout.trim()
     const match = output.match(/^tmux\s+(.+)$/i)
     return match?.[1]?.trim() ?? null
   } catch {
@@ -145,11 +200,12 @@ export function ensurePrivateTmuxTerminfo(
   try {
     fs.mkdirSync(terminfoDir, { recursive: true })
     fs.writeFileSync(sourcePath, buildPrivateTmuxTerminfoSource(termName), 'utf8')
-    execFileSync('tic', ['-x', '-o', terminfoDir, sourcePath], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
+    const result = execaSync('tic', ['-x', '-o', terminfoDir, sourcePath], {
+      reject: false,
+      stdin: 'ignore',
       timeout: 5000,
     })
+    if (result.exitCode !== 0) throw new Error(result.stderr || result.shortMessage)
     return {
       termName,
       terminfoDir,
@@ -172,9 +228,22 @@ export function buildPrivateTmuxConfig(
   return [
     '# Cells private tmux config',
     '# This file is app-owned and intentionally ignores user tmux.conf.',
+    'set-option -sg display-time 0',
+    'set-option -sg message-style "bg=default,fg=default"',
+    'set-option -sg message-command-style "bg=default,fg=default"',
+    'set-option -sg bell-action none',
     'set-option -g status off',
     'set-option -g mouse on',
     'set-option -g prefix None',
+    'set-option -g visual-activity off',
+    'set-option -g visual-bell off',
+    'set-option -g monitor-activity off',
+    'set-option -g allow-rename off',
+    'set-window-option -g automatic-rename off',
+    'set-window-option -g pane-border-status off',
+    'set-window-option -g pane-active-border-style "fg=default"',
+    'set-window-option -g pane-border-style "fg=default"',
+    'set-window-option -g remain-on-exit off',
     'unbind-key C-b',
     'unbind-key C-a',
     `set-option -g default-terminal "${defaultTerminal}"`,
@@ -187,8 +256,10 @@ export function buildPrivateTmuxConfig(
     'set-option -g history-limit 50000',
     'set-environment -g COLORTERM "truecolor"',
     'set-environment -g TERM_PROGRAM "ghostty"',
+    `set-option -ga terminal-features ",${defaultTerminal}:RGB,clipboard,ccolour,cstyle,extkeys,focus,hyperlinks,osc7,title,usstyle,strikethrough,overline,sync"`,
     'set-option -ga terminal-features ",xterm-256color:RGB,focus,clipboard,ccolour,cstyle,extkeys,hyperlinks,osc7,title,usstyle,strikethrough,overline,sync"',
     'set-option -ga terminal-features ",tmux-256color:RGB,clipboard,ccolour,cstyle,extkeys,focus,hyperlinks,osc7,title,usstyle,strikethrough,overline,sync"',
+    `set-option -ga terminal-overrides ",${defaultTerminal}:Tc"`,
     'set-option -ga terminal-overrides ",xterm-256color:Tc,tmux-256color:Tc"',
     '',
   ].join('\n')

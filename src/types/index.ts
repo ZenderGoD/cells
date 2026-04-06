@@ -221,6 +221,7 @@ export interface CellsAPI {
       cols: number,
       rows: number,
       cwd?: string,
+      projectId?: string | null,
     ): Promise<{ reattached: boolean; buffer: string; backend: 'replay' | 'tmux' | 'zellij' }>
     unsubscribe(termId: string): Promise<void>
     detach(termId: string): Promise<void>

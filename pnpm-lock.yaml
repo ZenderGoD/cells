@@ -43,6 +43,9 @@ importers:
       electron-updater:
         specifier: ^6.8.3
         version: 6.8.3
+      execa:
+        specifier: ^9.6.1
+        version: 9.6.1
       ghostty-web:
         specifier: ^0.4.0
         version: 0.4.0(patch_hash=1e1649b57b0a4b3bb7ed3604bfa9c574b63956e3872af174d1f8e7e8b5f39a33)

@@ -132,6 +132,7 @@ export class ZellijSessionManager implements TerminalSessionManager {
     _cols: number,
     _rows: number,
     cwd?: string,
+    _projectId?: string | null,
   ): { reattached: boolean; shellPid: number } {
     // Zellij sessions can outlive the in-process manager across app/daemon
     // restarts. `knownSessions` only reflects this manager instance, so attach
@@ -155,9 +156,10 @@ export class ZellijSessionManager implements TerminalSessionManager {
     cols: number,
     rows: number,
     cwd?: string,
+    projectId?: string | null,
     onAttached?: () => void,
   ): TerminalAttachResult {
-    const result = this.spawn(termId, cols, rows, cwd)
+    const result = this.spawn(termId, cols, rows, cwd, projectId)
     this.replaceAttachedClient(termId, cols, rows, cwd, false)
     onAttached?.()
     return {

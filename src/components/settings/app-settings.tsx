@@ -614,7 +614,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                     <div className="space-y-2.5">
                       <SettingsField
                         label="Backend"
-                        hint="Applies after relaunch. Existing installs default to Zellij."
+                        hint="Applies after relaunch. New installs default to tmux."
                       >
                         <div className="space-y-0.5">
                           {TERMINAL_SESSION_BACKEND_OPTIONS.map((option) => (

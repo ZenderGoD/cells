@@ -108,6 +108,21 @@ function MainApp() {
   })
 
   useEffect(() => {
+    let keyboardNavigationActive = false
+
+    const beginKeyboardNavigation = () => {
+      if (keyboardNavigationActive) return
+      keyboardNavigationActive = true
+      window.dispatchEvent(new Event('terminal-navigation-start'))
+    }
+
+    const endKeyboardNavigation = () => {
+      if (!keyboardNavigationActive) return
+      keyboardNavigationActive = false
+      window.dispatchEvent(new Event('terminal-navigation-end'))
+      requestAnimationFrame(() => window.dispatchEvent(new Event('terminal-refocus')))
+    }
+
     const handleKeyDown = (event: KeyboardEvent) => {
       const state = useStore.getState()
       const key = event.key.toLowerCase()
@@ -138,7 +153,9 @@ function MainApp() {
       if (direction) {
         event.preventDefault()
         event.stopPropagation()
-        state.snapToNearest(direction)
+        const keepScale = keyboardNavigationActive || event.repeat
+        beginKeyboardNavigation()
+        state.snapToNearest(direction, { keepScale })
         return
       }
 
@@ -177,8 +194,24 @@ function MainApp() {
       }
     }
 
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.key === 'Meta') {
+        endKeyboardNavigation()
+      }
+    }
+
+    const handleBlur = () => {
+      endKeyboardNavigation()
+    }
+
     window.addEventListener('keydown', handleKeyDown, true)
-    return () => window.removeEventListener('keydown', handleKeyDown, true)
+    window.addEventListener('keyup', handleKeyUp, true)
+    window.addEventListener('blur', handleBlur)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown, true)
+      window.removeEventListener('keyup', handleKeyUp, true)
+      window.removeEventListener('blur', handleBlur)
+    }
   }, [])
 
   useEffect(() => {

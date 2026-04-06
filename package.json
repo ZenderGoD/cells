@@ -29,10 +29,14 @@
   "packageManager": "pnpm@10.6.3",
   "main": "dist-electron/main.js",
   "scripts": {
-    "dev": "pnpm prepare:zellij-bundle && node scripts/dev.mjs",
+    "dev": "pnpm prepare:terminal-bundles && node scripts/dev.mjs",
     "dev:raw": "CELLS_DEV_ROOT=\"${CELLS_DEV_ROOT:-$HOME/.cells-dev}\" vite",
+    "prepare:terminal-bundles": "pnpm prepare:zellij-bundle && pnpm prepare:tmux-bundle",
+    "prepare:terminal-bundles:release": "pnpm prepare:zellij-bundle && pnpm prepare:tmux-bundle:release",
     "prepare:zellij-bundle": "node scripts/prepare-zellij-bundle.mjs",
-    "build": "pnpm prepare:zellij-bundle && pnpm typecheck && vite build",
+    "prepare:tmux-bundle": "node scripts/prepare-tmux-bundle.mjs",
+    "prepare:tmux-bundle:release": "CELLS_TMUX_TARGETS=darwin-arm64,darwin-x64 CELLS_TMUX_REQUIRE_TARGETS=1 node scripts/prepare-tmux-bundle.mjs",
+    "build": "pnpm prepare:terminal-bundles && pnpm typecheck && vite build",
     "typecheck": "pnpm typecheck:app && pnpm typecheck:electron",
     "typecheck:app": "tsc --noEmit --project tsconfig.json",
     "typecheck:electron": "tsc --noEmit --project tsconfig.node.json",
@@ -40,9 +44,9 @@
     "test:zellij-session-manager": "pnpm build && node --test scripts/test-zellij-session-manager.mjs",
     "preview": "vite preview",
     "postinstall": "electron-builder install-app-deps",
-    "pack": "pnpm build && electron-builder --dir",
-    "release": "pnpm build && electron-builder --publish always",
-    "release:local": "pnpm build && electron-builder",
+    "pack": "pnpm prepare:terminal-bundles:release && pnpm typecheck && vite build && electron-builder --dir",
+    "release": "pnpm prepare:terminal-bundles:release && pnpm typecheck && vite build && electron-builder --publish always",
+    "release:local": "pnpm prepare:terminal-bundles:release && pnpm typecheck && vite build && electron-builder",
     "changeset": "changeset",
     "version": "changeset version",
     "lint": "eslint .",
@@ -65,7 +69,8 @@
       "dist/**/*",
       "dist-electron/**/*",
       "resources/**/*",
-      "!resources/vendor/zellij/**/*"
+      "!resources/vendor/zellij/**/*",
+      "!resources/vendor/tmux/**/*"
     ],
     "extraResources": [
       {
@@ -75,6 +80,10 @@
       {
         "from": "resources/vendor/zellij",
         "to": "vendor/zellij"
+      },
+      {
+        "from": "resources/vendor/tmux",
+        "to": "vendor/tmux"
       }
     ],
     "mac": {
@@ -94,7 +103,7 @@
       ],
       "icon": "resources/icon.icns",
       "category": "public.app-category.developer-tools",
-      "x64ArchFiles": "Contents/Resources/{app.asar.unpacked/node_modules/node-pty/prebuilds/darwin-{arm64,x64}/{pty.node,spawn-helper},vendor/zellij/darwin-{arm64,x64}/zellij}",
+      "x64ArchFiles": "Contents/Resources/{app.asar.unpacked/node_modules/node-pty/prebuilds/darwin-{arm64,x64}/{pty.node,spawn-helper},vendor/zellij/darwin-{arm64,x64}/zellij,vendor/tmux/darwin-{arm64,x64}/tmux}",
       "darkModeSupport": true,
       "hardenedRuntime": true,
       "gatekeeperAssess": false
@@ -132,6 +141,7 @@
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
     "electron-updater": "^6.8.3",
+    "execa": "^9.6.1",
     "ghostty-web": "^0.4.0",
     "lucide-react": "^0.460.0",
     "motion": "^12.38.0",

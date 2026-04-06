@@ -56,6 +56,7 @@ export class PtySessionManager implements TerminalSessionManager {
     cols: number,
     rows: number,
     cwd?: string,
+    _projectId?: string | null,
     options: SpawnOptions = {},
   ): { reattached: boolean; shellPid: number } {
     ensureSpawnHelperExecutable()
@@ -110,6 +111,7 @@ export class PtySessionManager implements TerminalSessionManager {
     cols: number,
     rows: number,
     cwd?: string,
+    projectId?: string | null,
     onAttached?: () => void,
   ): TerminalAttachResult {
     // Atomic renderer attach boundary:
@@ -119,7 +121,7 @@ export class PtySessionManager implements TerminalSessionManager {
     //
     // The callback lets the caller mark its subscription live in the same
     // synchronous boundary, which prevents replay/live overlap in fallback mode.
-    const result = this.spawn(termId, cols, rows, cwd, { replayBuffering: false })
+    const result = this.spawn(termId, cols, rows, cwd, projectId, { replayBuffering: false })
     const buffer = result.reattached ? this.drainBuffer(termId) : ''
     onAttached?.()
     return {

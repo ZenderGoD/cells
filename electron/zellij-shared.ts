@@ -255,9 +255,8 @@ export function ensurePrivateZellijConfig(stateDir: string, defaultShell: string
   fs.mkdirSync(dataDir, { recursive: true })
 
   // Zellij's default_shell doesn't accept arguments, so we write a tiny
-  // wrapper that execs the user's shell as a login shell.  This ensures
-  // login profiles (~/.zprofile, /etc/zprofile, etc.) are sourced and PATH
-  // is fully set up — matching the behaviour of the direct-PTY backend.
+  // wrapper that execs the user's shell as a login shell. This matches the
+  // direct PTY behavior Cells previously used successfully.
   const loginWrapperPath = path.join(configDir, 'login-shell')
   fs.writeFileSync(loginWrapperPath, '#!/bin/sh\nexec "$SHELL" -l\n', { mode: 0o755 })
 

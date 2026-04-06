@@ -1,7 +1,7 @@
 import fs from 'fs'
 import path from 'path'
-import { execFileSync } from 'child_process'
 import * as pty from 'node-pty'
+import { execaSync } from 'execa'
 import {
   cleanEnv,
   ensureSpawnHelperExecutable,
@@ -30,25 +30,50 @@ import type {
 /**
  * Private tmux-backed terminal session owner.
  *
- * Cells uses tmux as the canonical session server:
- * - the shell/process tree lives inside tmux, not inside the browser terminal
- * - detach drops only the current tmux client PTY
- * - reattach spawns a fresh tmux client PTY and lets tmux redraw the current
- *   screen exactly as a native tmux attach would
- *
- * This is intentionally isolated from user tmux state:
- * - private socket path under Cells state
- * - private app-owned tmux.conf so personal tmux.conf is ignored
+ * Cells uses one tmux server per app state dir. Each project owns a primary
+ * tmux session whose windows act as the project's terminal tabs. Individual
+ * Cells terminals attach through lightweight viewer sessions grouped to the
+ * same project window set so multiple terminals from one project can stay
+ * visible independently without fighting over a shared current window.
  */
 
-function encodeSessionId(termId: string): string {
-  return `cells_${Buffer.from(termId, 'utf8').toString('base64url')}`
+const PROJECT_SESSION_PREFIX = 'cp_'
+const VIEWER_SESSION_PREFIX = 'cv_'
+const WINDOW_NAME_PREFIX = 'cw_'
+
+function encodeBase64Url(value: string) {
+  return Buffer.from(value, 'utf8').toString('base64url')
 }
 
-function decodeSessionId(sessionName: string): string | null {
-  if (!sessionName.startsWith('cells_')) return null
+function decodeBase64Url(value: string) {
+  return Buffer.from(value, 'base64url').toString('utf8')
+}
+
+function encodeProjectSessionId(projectId: string): string {
+  return `${PROJECT_SESSION_PREFIX}${encodeBase64Url(projectId)}`
+}
+
+function decodeProjectSessionId(sessionName: string): string | null {
+  if (!sessionName.startsWith(PROJECT_SESSION_PREFIX)) return null
   try {
-    return Buffer.from(sessionName.slice('cells_'.length), 'base64url').toString('utf8')
+    return decodeBase64Url(sessionName.slice(PROJECT_SESSION_PREFIX.length))
+  } catch {
+    return null
+  }
+}
+
+function encodeViewerSessionId(termId: string): string {
+  return `${VIEWER_SESSION_PREFIX}${encodeBase64Url(termId)}`
+}
+
+function encodeWindowName(termId: string): string {
+  return `${WINDOW_NAME_PREFIX}${encodeBase64Url(termId)}`
+}
+
+function decodeWindowName(windowName: string): string | null {
+  if (!windowName.startsWith(WINDOW_NAME_PREFIX)) return null
+  try {
+    return decodeBase64Url(windowName.slice(WINDOW_NAME_PREFIX.length))
   } catch {
     return null
   }
@@ -70,6 +95,20 @@ type TmuxPaneFlags = {
   alternateOn: boolean
 }
 
+type PendingWheelScroll = {
+  delta: number
+  sequence: string
+  timer: ReturnType<typeof setTimeout> | null
+}
+
+type TerminalLocation = {
+  termId: string
+  projectId: string
+  projectSession: string
+  viewerSession: string
+  windowName: string
+}
+
 export class TmuxSessionManager implements TerminalSessionManager {
   private readonly tmuxBinary = resolveTmuxBinary()
   private readonly tmuxConfigPath: string
@@ -77,7 +116,9 @@ export class TmuxSessionManager implements TerminalSessionManager {
   private readonly tmuxTerm: string
   private readonly terminfoDir: string | null
   private readonly attachedClients = new Map<string, AttachedClient>()
-  private readonly knownSessions = new Set<string>()
+  private readonly pendingWheelScrolls = new Map<string, PendingWheelScroll>()
+  private readonly knownTerminals = new Set<string>()
+  private readonly termProjectIds = new Map<string, string>()
   private pollTimer: ReturnType<typeof setInterval> | null = null
 
   constructor(
@@ -112,23 +153,15 @@ export class TmuxSessionManager implements TerminalSessionManager {
     cols: number,
     rows: number,
     cwd?: string,
+    projectId?: string | null,
   ): { reattached: boolean; shellPid: number } {
-    const reattached = this.has(termId)
+    const normalizedProjectId = this.resolveProjectIdForAttach(termId, projectId, cwd)
+    const location = this.buildLocation(termId, normalizedProjectId)
+    const reattached = this.windowExists(location)
     if (!reattached) {
-      this.execTmux([
-        'new-session',
-        '-d',
-        '-s',
-        encodeSessionId(termId),
-        '-c',
-        resolveCwd(cwd),
-        '-x',
-        String(cols),
-        '-y',
-        String(rows),
-      ])
+      this.ensureProjectWindow(location, cols, rows, cwd)
     }
-    this.knownSessions.add(termId)
+    this.rememberTerminal(location)
     return {
       reattached,
       shellPid: this.getShellPid(termId) ?? 0,
@@ -140,10 +173,12 @@ export class TmuxSessionManager implements TerminalSessionManager {
     cols: number,
     rows: number,
     cwd?: string,
+    projectId?: string | null,
     onAttached?: () => void,
   ): TerminalAttachResult {
-    const result = this.spawn(termId, cols, rows, cwd)
-    this.replaceAttachedClient(termId, cols, rows, cwd)
+    const normalizedProjectId = this.resolveProjectIdForAttach(termId, projectId, cwd)
+    const result = this.spawn(termId, cols, rows, cwd, normalizedProjectId)
+    this.replaceAttachedClient(termId, cols, rows, cwd, normalizedProjectId)
     onAttached?.()
     return {
       ...result,
@@ -163,8 +198,17 @@ export class TmuxSessionManager implements TerminalSessionManager {
 
   kill(termId: string): void {
     this.disposeAttachedClient(termId)
-    this.execTmux(['kill-session', '-t', encodeSessionId(termId)], true)
-    this.knownSessions.delete(termId)
+    const location = this.getKnownLocation(termId)
+    if (!location) {
+      this.forgetTerminal(termId)
+      return
+    }
+
+    this.execTmux(['kill-window', '-t', this.getWindowTarget(location)], true)
+    if (this.getWindowCount(location.projectSession) === 0) {
+      this.execTmux(['kill-session', '-t', location.projectSession], true)
+    }
+    this.forgetTerminal(termId)
   }
 
   write(termId: string, data: string): void {
@@ -178,50 +222,36 @@ export class TmuxSessionManager implements TerminalSessionManager {
   }
 
   handleWheel(termId: string, direction: 'up' | 'down', steps: number, sequence: string): void {
-    const clampedSteps = Math.max(1, Math.min(12, Math.round(steps) || 1))
-    const flags = this.getPaneFlags(termId)
-    if (!flags) {
-      if (sequence) this.write(termId, sequence)
+    const clampedSteps = Math.max(1, Math.min(16, Math.round(steps) || 1))
+    const signedDelta = direction === 'up' ? clampedSteps : -clampedSteps
+    const existing = this.pendingWheelScrolls.get(termId)
+    if (existing) {
+      existing.delta += signedDelta
+      if (sequence) existing.sequence += sequence
       return
     }
 
-    if (flags.mouseAnyFlag) {
-      if (sequence) this.write(termId, sequence)
-      return
+    const pending: PendingWheelScroll = {
+      delta: signedDelta,
+      sequence,
+      timer: setTimeout(() => {
+        this.pendingWheelScrolls.delete(termId)
+        this.flushWheelScroll(termId, pending.delta, pending.sequence)
+      }, 12),
     }
-
-    const target = `${encodeSessionId(termId)}:0.0`
-    const scrollAmount = clampedSteps
-
-    if (direction === 'up') {
-      if (!flags.paneInMode) {
-        this.execTmux(['copy-mode', '-eH', '-t', target], true)
-      } else {
-        this.execTmux(['copy-mode', '-H', '-t', target], true)
-      }
-      this.execTmux(
-        ['send-keys', '-X', '-N', String(scrollAmount), '-t', target, 'scroll-up'],
-        true,
-      )
-      return
-    }
-
-    if (!flags.paneInMode) return
-    this.execTmux(['copy-mode', '-H', '-t', target], true)
-    this.execTmux(
-      ['send-keys', '-X', '-N', String(scrollAmount), '-t', target, 'scroll-down'],
-      true,
-    )
+    if (pending.timer) pending.timer.unref?.()
+    this.pendingWheelScrolls.set(termId, pending)
   }
 
   getScrollStatus(termId: string): TerminalScrollStatus | null {
-    if (!this.has(termId)) return null
+    const paneTarget = this.getPaneTarget(termId)
+    if (!paneTarget) return null
     const output = this.execTmux(
       [
         'display-message',
         '-p',
         '-t',
-        `${encodeSessionId(termId)}:0.0`,
+        paneTarget,
         '#{pane_in_mode} #{scroll_position} #{history_size}',
       ],
       true,
@@ -237,23 +267,23 @@ export class TmuxSessionManager implements TerminalSessionManager {
   }
 
   has(termId: string): boolean {
-    return this.execTmux(['has-session', '-t', encodeSessionId(termId)], true) !== null
+    const location = this.getKnownLocation(termId)
+    return location ? this.windowExists(location) : false
   }
 
   list(): string[] {
-    const output = this.execTmux(['list-sessions', '-F', '#{session_name}'], true)
-    if (!output) return []
-    return output
-      .split('\n')
-      .map((line) => decodeSessionId(line.trim()))
-      .filter((value): value is string => Boolean(value))
+    const mappings = this.listProjectWindows()
+    for (const mapping of mappings) {
+      this.termProjectIds.set(mapping.termId, mapping.projectId)
+      this.knownTerminals.add(mapping.termId)
+    }
+    return mappings.map((mapping) => mapping.termId)
   }
 
   getShellPid(termId: string): number | null {
-    const output = this.execTmux(
-      ['display-message', '-p', '-t', `${encodeSessionId(termId)}:0.0`, '#{pane_pid}'],
-      true,
-    )
+    const paneTarget = this.getPaneTarget(termId)
+    if (!paneTarget) return null
+    const output = this.execTmux(['display-message', '-p', '-t', paneTarget, '#{pane_pid}'], true)
     const value = output ? Number.parseInt(output.trim(), 10) : NaN
     return Number.isFinite(value) && value > 0 ? value : null
   }
@@ -276,19 +306,20 @@ export class TmuxSessionManager implements TerminalSessionManager {
   }
 
   getHistory(termId: string): string {
-    return (
-      this.execTmux(
-        ['capture-pane', '-p', '-J', '-S', '-', '-t', `${encodeSessionId(termId)}:0.0`],
-        true,
-      ) ?? ''
-    )
+    const paneTarget = this.getPaneTarget(termId)
+    if (!paneTarget) return ''
+    return this.execTmux(['capture-pane', '-p', '-J', '-S', '-', '-t', paneTarget], true) ?? ''
   }
 
   clear(termId: string): void {
-    this.knownSessions.delete(termId)
+    this.forgetTerminal(termId)
   }
 
   cleanup(): void {
+    for (const pending of this.pendingWheelScrolls.values()) {
+      if (pending.timer) clearTimeout(pending.timer)
+    }
+    this.pendingWheelScrolls.clear()
     for (const termId of [...this.attachedClients.keys()]) {
       this.disposeAttachedClient(termId)
     }
@@ -298,13 +329,62 @@ export class TmuxSessionManager implements TerminalSessionManager {
     }
   }
 
-  private replaceAttachedClient(termId: string, cols: number, rows: number, cwd?: string) {
+  private flushWheelScroll(termId: string, delta: number, sequence: string): void {
+    if (!delta && !sequence) return
+
+    const flags = this.getPaneFlags(termId)
+    if (!flags) {
+      if (sequence) this.write(termId, sequence)
+      return
+    }
+
+    if (flags.mouseAnyFlag || flags.alternateOn) {
+      if (sequence) this.write(termId, sequence)
+      return
+    }
+
+    const paneTarget = this.getPaneTarget(termId)
+    if (!paneTarget) return
+    const scrollAmount = Math.max(1, Math.min(24, Math.abs(delta)))
+
+    if (delta > 0) {
+      if (!flags.paneInMode) {
+        this.execTmux(['copy-mode', '-eH', '-t', paneTarget], true)
+      } else {
+        this.execTmux(['copy-mode', '-H', '-t', paneTarget], true)
+      }
+      this.execTmux(
+        ['send-keys', '-X', '-N', String(scrollAmount), '-t', paneTarget, 'scroll-up'],
+        true,
+      )
+      return
+    }
+
+    if (!flags.paneInMode) return
+    this.execTmux(['copy-mode', '-H', '-t', paneTarget], true)
+    this.execTmux(
+      ['send-keys', '-X', '-N', String(scrollAmount), '-t', paneTarget, 'scroll-down'],
+      true,
+    )
+  }
+
+  private replaceAttachedClient(
+    termId: string,
+    cols: number,
+    rows: number,
+    cwd: string | undefined,
+    projectId: string,
+  ) {
     this.disposeAttachedClient(termId)
+
+    const location = this.buildLocation(termId, projectId)
+    this.ensureProjectWindow(location, cols, rows, cwd)
+    this.ensureViewerSession(location)
     ensureSpawnHelperExecutable()
 
     const client = pty.spawn(
       this.tmuxBinary,
-      this.tmuxArgs(['attach-session', '-t', encodeSessionId(termId)]),
+      this.tmuxArgs(['attach-session', '-t', location.viewerSession]),
       {
         name: 'xterm-256color',
         cols,
@@ -328,33 +408,214 @@ export class TmuxSessionManager implements TerminalSessionManager {
       if (!active || active.pty !== client) return
       this.attachedClients.delete(termId)
       if (active.ignoreExit) return
+      this.destroyViewerSession(termId)
       if (this.has(termId)) return
-      this.knownSessions.delete(termId)
+      this.forgetTerminal(termId)
       this.hooks.onExit?.(termId)
     })
   }
 
   private disposeAttachedClient(termId: string) {
     const existing = this.attachedClients.get(termId)
-    if (!existing) return
+    if (!existing) {
+      this.destroyViewerSession(termId)
+      return
+    }
     existing.ignoreExit = true
     this.attachedClients.delete(termId)
     try {
       existing.pty.kill()
     } catch {}
+    this.destroyViewerSession(termId)
   }
 
   private startDetachedSessionPoller() {
     this.pollTimer = setInterval(() => {
-      const liveSessions = new Set(this.list())
-      for (const termId of [...this.knownSessions]) {
-        if (liveSessions.has(termId)) continue
+      const liveTerminals = new Set(this.list())
+      for (const termId of [...this.knownTerminals]) {
+        if (liveTerminals.has(termId)) continue
         if (this.attachedClients.has(termId)) continue
-        this.knownSessions.delete(termId)
+        this.forgetTerminal(termId)
         this.hooks.onExit?.(termId)
       }
     }, 2000)
     this.pollTimer.unref?.()
+  }
+
+  private normalizeProjectId(projectId?: string | null, cwd?: string) {
+    const trimmed = projectId?.trim()
+    if (trimmed) return trimmed
+    return `cwd:${resolveCwd(cwd)}`
+  }
+
+  private resolveProjectIdForAttach(termId: string, projectId?: string | null, cwd?: string) {
+    return (
+      projectId?.trim() ||
+      this.termProjectIds.get(termId) ||
+      this.discoverProjectIdForTerminal(termId) ||
+      this.normalizeProjectId(projectId, cwd)
+    )
+  }
+
+  private buildLocation(termId: string, projectId: string): TerminalLocation {
+    return {
+      termId,
+      projectId,
+      projectSession: encodeProjectSessionId(projectId),
+      viewerSession: encodeViewerSessionId(termId),
+      windowName: encodeWindowName(termId),
+    }
+  }
+
+  private rememberTerminal(location: TerminalLocation) {
+    this.knownTerminals.add(location.termId)
+    this.termProjectIds.set(location.termId, location.projectId)
+  }
+
+  private forgetTerminal(termId: string) {
+    this.knownTerminals.delete(termId)
+    this.termProjectIds.delete(termId)
+  }
+
+  private getKnownLocation(termId: string): TerminalLocation | null {
+    const projectId = this.termProjectIds.get(termId) || this.discoverProjectIdForTerminal(termId)
+    if (!projectId) return null
+    return this.buildLocation(termId, projectId)
+  }
+
+  private discoverProjectIdForTerminal(termId: string): string | null {
+    const mapping = this.listProjectWindows().find((entry) => entry.termId === termId)
+    if (!mapping) return null
+    this.termProjectIds.set(termId, mapping.projectId)
+    this.knownTerminals.add(termId)
+    return mapping.projectId
+  }
+
+  private listProjectWindows() {
+    const output = this.execTmux(
+      ['list-windows', '-a', '-F', '#{session_name}\t#{window_name}'],
+      true,
+    )
+    if (!output) return [] as Array<{ projectId: string; termId: string }>
+    const mappings: Array<{ projectId: string; termId: string }> = []
+    for (const line of output.split('\n')) {
+      const [sessionNameRaw, windowNameRaw] = line.split('\t')
+      const sessionName = sessionNameRaw?.trim()
+      const windowName = windowNameRaw?.trim()
+      if (!sessionName || !windowName) continue
+      const projectId = decodeProjectSessionId(sessionName)
+      const termId = decodeWindowName(windowName)
+      if (!projectId || !termId) continue
+      mappings.push({ projectId, termId })
+    }
+    return mappings
+  }
+
+  private ensureProjectWindow(
+    location: TerminalLocation,
+    cols: number,
+    rows: number,
+    cwd?: string,
+  ) {
+    const resolvedCwd = resolveCwd(cwd)
+    if (!this.sessionExists(location.projectSession)) {
+      this.execTmux([
+        'new-session',
+        '-d',
+        '-s',
+        location.projectSession,
+        '-n',
+        location.windowName,
+        '-c',
+        resolvedCwd,
+        '-x',
+        String(cols),
+        '-y',
+        String(rows),
+      ])
+      return
+    }
+
+    if (this.windowExists(location)) return
+
+    this.execTmux([
+      'new-window',
+      '-d',
+      '-t',
+      `${location.projectSession}:`,
+      '-n',
+      location.windowName,
+      '-c',
+      resolvedCwd,
+    ])
+    this.execTmux(
+      [
+        'resize-window',
+        '-t',
+        this.getWindowTarget(location),
+        '-x',
+        String(cols),
+        '-y',
+        String(rows),
+      ],
+      true,
+    )
+  }
+
+  private ensureViewerSession(location: TerminalLocation) {
+    if (!this.sessionExists(location.viewerSession)) {
+      this.execTmux([
+        'new-session',
+        '-d',
+        '-t',
+        location.projectSession,
+        '-s',
+        location.viewerSession,
+      ])
+    }
+    this.execTmux(['select-window', '-t', `${location.viewerSession}:${location.windowName}`], true)
+  }
+
+  private destroyViewerSession(termId: string) {
+    const location = this.getKnownLocation(termId)
+    if (!location) return
+    this.execTmux(['kill-session', '-t', location.viewerSession], true)
+  }
+
+  private sessionExists(sessionName: string) {
+    return this.execTmux(['has-session', '-t', sessionName], true) !== null
+  }
+
+  private windowExists(location: TerminalLocation) {
+    const output = this.execTmux(
+      ['list-windows', '-t', location.projectSession, '-F', '#{window_name}'],
+      true,
+    )
+    if (!output) return false
+    return output
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .includes(location.windowName)
+  }
+
+  private getWindowCount(sessionName: string) {
+    const output = this.execTmux(['list-windows', '-t', sessionName, '-F', '#{window_name}'], true)
+    if (!output) return 0
+    return output
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean).length
+  }
+
+  private getWindowTarget(location: TerminalLocation) {
+    return `${location.projectSession}:${location.windowName}`
+  }
+
+  private getPaneTarget(termId: string) {
+    const location = this.getKnownLocation(termId)
+    if (!location || !this.windowExists(location)) return null
+    return `${this.getWindowTarget(location)}.0`
   }
 
   private tmuxArgs(args: string[]): string[] {
@@ -367,12 +628,14 @@ export class TmuxSessionManager implements TerminalSessionManager {
   }
 
   private getPaneFlags(termId: string): TmuxPaneFlags | null {
+    const paneTarget = this.getPaneTarget(termId)
+    if (!paneTarget) return null
     const output = this.execTmux(
       [
         'display-message',
         '-p',
         '-t',
-        `${encodeSessionId(termId)}:0.0`,
+        paneTarget,
         '#{pane_in_mode} #{mouse_any_flag} #{alternate_on}',
       ],
       true,
@@ -387,24 +650,18 @@ export class TmuxSessionManager implements TerminalSessionManager {
   }
 
   private execTmux(args: string[], allowFailure = false): string | null {
-    try {
-      return execFileSync(this.tmuxBinary, this.tmuxArgs(args), {
-        cwd: this.stateDir,
-        encoding: 'utf8',
-        env: this.buildTmuxEnv(),
-        stdio: ['ignore', 'pipe', 'pipe'],
-        timeout: 5000,
-      }).trim()
-    } catch (error) {
-      if (allowFailure) return null
-      const message =
-        error instanceof Error && 'stderr' in error && typeof error.stderr === 'string'
-          ? error.stderr.trim() || error.message
-          : error instanceof Error
-            ? error.message
-            : 'Unknown tmux error'
-      throw error instanceof Error ? new Error(message, { cause: error }) : new Error(message)
-    }
+    const result = execaSync(this.tmuxBinary, this.tmuxArgs(args), {
+      cwd: this.stateDir,
+      env: this.buildTmuxEnv(),
+      reject: false,
+      stdin: 'ignore',
+      timeout: 5000,
+    })
+    if (result.exitCode === 0) return result.stdout.trim()
+    if (allowFailure) return null
+
+    const message = result.stderr.trim() || result.shortMessage || 'Unknown tmux error'
+    throw new Error(message)
   }
 
   private buildTmuxEnv() {
@@ -420,10 +677,14 @@ export class TmuxSessionManager implements TerminalSessionManager {
   }
 }
 
-export function getTmuxSessionNameForTest(termId: string): string {
-  return encodeSessionId(termId)
+export function getTmuxProjectSessionNameForTest(projectId: string): string {
+  return encodeProjectSessionId(projectId)
 }
 
-export function decodeTmuxSessionNameForTest(sessionName: string): string | null {
-  return decodeSessionId(sessionName)
+export function getTmuxViewerSessionNameForTest(termId: string): string {
+  return encodeViewerSessionId(termId)
+}
+
+export function getTmuxWindowNameForTest(termId: string): string {
+  return encodeWindowName(termId)
 }

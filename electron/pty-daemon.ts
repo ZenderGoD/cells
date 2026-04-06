@@ -183,8 +183,9 @@ function spawnPty(
   cols: number,
   rows: number,
   cwd?: string,
+  projectId?: string | null,
 ): { reattached: boolean; shellPid: number } {
-  return sessionManager.spawn(termId, cols, rows, cwd)
+  return sessionManager.spawn(termId, cols, rows, cwd, projectId)
 }
 
 function attachPty(
@@ -192,8 +193,9 @@ function attachPty(
   cols: number,
   rows: number,
   cwd: string | undefined,
+  projectId?: string | null,
 ): { reattached: boolean; shellPid: number; buffer: string } {
-  return sessionManager.attach(termId, cols, rows, cwd)
+  return sessionManager.attach(termId, cols, rows, cwd, projectId)
 }
 
 function killPty(termId: string) {
@@ -221,7 +223,12 @@ function handleMessage(socket: net.Socket, msg: any) {
       clientSubscriptions.get(socket)!.add(termId)
 
       try {
-        sendResponse(socket, id, true, attachPty(termId, msg.cols, msg.rows, msg.cwd))
+        sendResponse(
+          socket,
+          id,
+          true,
+          attachPty(termId, msg.cols, msg.rows, msg.cwd, msg.projectId),
+        )
       } catch (err: any) {
         if (subscribers.get(termId) === socket) {
           subscribers.delete(termId)
@@ -234,7 +241,7 @@ function handleMessage(socket: net.Socket, msg: any) {
 
     case 'spawn': {
       try {
-        const result = spawnPty(msg.termId, msg.cols, msg.rows, msg.cwd)
+        const result = spawnPty(msg.termId, msg.cols, msg.rows, msg.cwd, msg.projectId)
         sendResponse(socket, id, true, result)
       } catch (err: any) {
         sendError(socket, id, err.message)

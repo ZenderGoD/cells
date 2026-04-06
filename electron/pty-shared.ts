@@ -30,8 +30,45 @@ export function isExecutable(filePath: string | undefined): filePath is string {
   }
 }
 
+function readLoginShellFromSystem(): string | null {
+  const envShell = process.env.SHELL?.trim()
+  const username = os.userInfo().username
+
+  if (process.platform === 'darwin' && username) {
+    try {
+      const output = execFileSync('dscl', ['.', '-read', `/Users/${username}`, 'UserShell'], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 1500,
+      }).trim()
+      const match = output.match(/^UserShell:\s+(.+)$/m)
+      const shell = match?.[1]?.trim()
+      if (isExecutable(shell)) return shell
+    } catch {}
+  }
+
+  try {
+    const output = execFileSync('getent', ['passwd', username], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 1500,
+    }).trim()
+    const shell = output.split(':').at(-1)?.trim()
+    if (isExecutable(shell)) return shell
+  } catch {}
+
+  if (isExecutable(envShell)) return envShell
+  return null
+}
+
 export function resolveShell(): string {
-  const candidates = [process.env.SHELL, '/bin/zsh', '/bin/bash', '/bin/sh']
+  const candidates = [
+    readLoginShellFromSystem() ?? undefined,
+    process.env.SHELL,
+    '/bin/zsh',
+    '/bin/bash',
+    '/bin/sh',
+  ]
   for (const candidate of candidates) {
     if (isExecutable(candidate)) return candidate
   }
@@ -77,6 +114,10 @@ export function ensureSpawnHelperExecutable(): void {
 export function cleanEnv(): Record<string, string> {
   const env = { ...process.env } as Record<string, string>
   const appVersion = env.CELLS_APP_VERSION
+  const realXdgConfigHome = env.CELLS_REAL_XDG_CONFIG_HOME?.trim() || env.XDG_CONFIG_HOME?.trim()
+  const realXdgDataHome = env.CELLS_REAL_XDG_DATA_HOME?.trim() || env.XDG_DATA_HOME?.trim()
+  const realXdgCacheHome = env.CELLS_REAL_XDG_CACHE_HOME?.trim() || env.XDG_CACHE_HOME?.trim()
+  const realXdgStateHome = env.CELLS_REAL_XDG_STATE_HOME?.trim() || env.XDG_STATE_HOME?.trim()
   for (const key of Object.keys(env)) {
     if (
       key.startsWith('ELECTRON') ||
@@ -91,8 +132,10 @@ export function cleanEnv(): Record<string, string> {
   delete env['NODE_OPTIONS']
   // Restore real user paths — don't leak dev sandbox into terminal sessions
   env.HOME = HOME_DIR
-  delete env['XDG_CONFIG_HOME']
-  delete env['XDG_DATA_HOME']
+  env.XDG_CONFIG_HOME = realXdgConfigHome || path.join(HOME_DIR, '.config')
+  env.XDG_DATA_HOME = realXdgDataHome || path.join(HOME_DIR, '.local', 'share')
+  env.XDG_CACHE_HOME = realXdgCacheHome || path.join(HOME_DIR, '.cache')
+  env.XDG_STATE_HOME = realXdgStateHome || path.join(HOME_DIR, '.local', 'state')
   // Ensure full color support
   env.COLORTERM = 'truecolor'
   // Expose a stable modern terminal identity so TUIs can avoid falling back

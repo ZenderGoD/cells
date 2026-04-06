@@ -38,8 +38,8 @@ ipcRenderer.on('terminal:data', (_event, termId: string, data: string) => {
 
 const api: CellsAPI = {
   terminal: {
-    attach: (termId: string, cols: number, rows: number, cwd?: string) =>
-      ipcRenderer.invoke('terminal:attach', termId, cols, rows, cwd),
+    attach: (termId: string, cols: number, rows: number, cwd?: string, projectId?: string | null) =>
+      ipcRenderer.invoke('terminal:attach', termId, cols, rows, cwd, projectId),
     unsubscribe: (termId: string) => ipcRenderer.invoke('terminal:unsubscribe', termId),
     detach: (termId: string) => ipcRenderer.invoke('terminal:detach', termId),
     write: (termId: string, data: string) => ipcRenderer.send('terminal:write', termId, data),

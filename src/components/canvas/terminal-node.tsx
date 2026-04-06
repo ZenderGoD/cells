@@ -32,6 +32,7 @@ interface TerminalNodeProps {
   terminal: TerminalNodeType
   scale: number
   isVisible: boolean
+  pauseLiveRender: boolean
   selectionMode: boolean
   isSelected: boolean
   isFocused: boolean
@@ -43,6 +44,7 @@ export function TerminalNode({
   terminal,
   scale,
   isVisible,
+  pauseLiveRender,
   selectionMode,
   isSelected,
   isFocused,
@@ -295,7 +297,7 @@ export function TerminalNode({
             termId={terminal.id}
             width={terminal.width}
             height={terminal.height}
-            isVisible={isVisible}
+            isVisible={isVisible && !pauseLiveRender}
             isFocused={isFocused}
             onTitleChange={(title) => updateTerminalTitle(terminal.id, title)}
           />

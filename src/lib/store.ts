@@ -185,9 +185,12 @@ interface StoreState {
   togglePinFocused(): void
   panToTerminal(id: string): void
   panToBrowser(id: string): void
-  snapToTerminal(id: string): void
+  snapToTerminal(id: string, options?: { keepScale?: boolean }): void
   zoomToFit(id: string): void
-  snapToNearest(direction: 'left' | 'right' | 'up' | 'down'): void
+  snapToNearest(
+    direction: 'left' | 'right' | 'up' | 'down',
+    options?: { keepScale?: boolean },
+  ): void
   snapToClosest(): void
   toggleSnap(): void
   setSnapPaused(paused: boolean): void
@@ -248,7 +251,7 @@ interface StoreState {
   addBrowser(): BrowserNode
   addBrowserWithUrl(url: string, projectId?: string | null): BrowserNode
   removeBrowser(id: string): void
-  snapToBrowser(id: string): void
+  snapToBrowser(id: string, options?: { keepScale?: boolean }): void
   moveBrowser(id: string, x: number, y: number): void
   resizeBrowser(id: string, width: number, height: number): void
   updateBrowserUrl(id: string, url: string): void
@@ -1572,31 +1575,41 @@ export const useStore = create<StoreState>((set, get) => ({
     })
   },
 
-  snapToTerminal(id) {
-    const { terminals } = get()
-    const terminal = terminals.find((t) => t.id === id)
+  snapToTerminal(id, options) {
+    const state = get()
+    const terminal = state.terminals.find((t) => t.id === id)
     if (!terminal) return
-    if (id !== get().focusedTerminalId) get().bringToFront(id)
-    const focusHistory = pushFocusHistory(get().focusHistory, id)
+
+    const shouldBringToFront = id !== state.focusedTerminalId
+    const nextTopZIndex = shouldBringToFront ? state.topZIndex + 1 : state.topZIndex
+    const focusHistory = pushFocusHistory(state.focusHistory, id)
+    const viewW = window.innerWidth
+    const viewH = window.innerHeight - STATUS_BAR_HEIGHT
+    const scale = options?.keepScale
+      ? state.canvas.scale
+      : Math.min(
+          viewW / (terminal.width + TERMINAL_PAD * 2),
+          viewH / (terminal.height + TERMINAL_PAD * 2),
+          1,
+        )
+
     set({
+      terminals: shouldBringToFront
+        ? state.terminals.map((t) => (t.id === id ? { ...t, zIndex: nextTopZIndex } : t))
+        : state.terminals,
       focusedTerminalId: id,
       focusedBrowserId: null,
       snapPaused: false,
       snapFast: true,
       focusHistory,
+      topZIndex: nextTopZIndex,
+      canvas: {
+        x: viewW / 2 - (terminal.x + terminal.width / 2) * scale,
+        y: viewH / 2 - (terminal.y + terminal.height / 2) * scale,
+        scale,
+      },
     })
-    const viewW = window.innerWidth
-    const viewH = window.innerHeight - STATUS_BAR_HEIGHT
-    const scale = Math.min(
-      viewW / (terminal.width + TERMINAL_PAD * 2),
-      viewH / (terminal.height + TERMINAL_PAD * 2),
-      1,
-    )
-    get().setCanvasTransform({
-      x: viewW / 2 - (terminal.x + terminal.width / 2) * scale,
-      y: viewH / 2 - (terminal.y + terminal.height / 2) * scale,
-      scale,
-    })
+    debouncedPersist(() => get().persist())
   },
 
   zoomToFit(id) {
@@ -1619,7 +1632,7 @@ export const useStore = create<StoreState>((set, get) => ({
     })
   },
 
-  snapToNearest(direction) {
+  snapToNearest(direction, options) {
     const { terminals, browsers, focusedTerminalId, focusedBrowserId, canvas } = get()
     const windows = getCanvasWindows(terminals, browsers)
     if (windows.length === 0) return
@@ -1634,9 +1647,9 @@ export const useStore = create<StoreState>((set, get) => ({
     }
 
     if (next.type === 'terminal') {
-      get().snapToTerminal(next.id)
+      get().snapToTerminal(next.id, options)
     } else {
-      get().snapToBrowser(next.id)
+      get().snapToBrowser(next.id, options)
     }
   },
 
@@ -2594,31 +2607,41 @@ export const useStore = create<StoreState>((set, get) => ({
     }
   },
 
-  snapToBrowser(id) {
-    const { browsers } = get()
-    const browser = browsers.find((b) => b.id === id)
+  snapToBrowser(id: string, options?: { keepScale?: boolean }) {
+    const state = get()
+    const browser = state.browsers.find((b) => b.id === id)
     if (!browser) return
-    if (id !== get().focusedBrowserId) get().bringBrowserToFront(id)
-    const focusHistory = pushFocusHistory(get().focusHistory, id)
+
+    const shouldBringToFront = id !== state.focusedBrowserId
+    const nextTopZIndex = shouldBringToFront ? state.topZIndex + 1 : state.topZIndex
+    const focusHistory = pushFocusHistory(state.focusHistory, id)
+    const viewW = window.innerWidth
+    const viewH = window.innerHeight - STATUS_BAR_HEIGHT
+    const scale = options?.keepScale
+      ? state.canvas.scale
+      : Math.min(
+          viewW / (browser.width + TERMINAL_PAD * 2),
+          viewH / (browser.height + TERMINAL_PAD * 2),
+          1,
+        )
+
     set({
+      browsers: shouldBringToFront
+        ? state.browsers.map((b) => (b.id === id ? { ...b, zIndex: nextTopZIndex } : b))
+        : state.browsers,
       focusedTerminalId: null,
       focusedBrowserId: id,
       snapPaused: false,
       snapFast: true,
       focusHistory,
+      topZIndex: nextTopZIndex,
+      canvas: {
+        x: viewW / 2 - (browser.x + browser.width / 2) * scale,
+        y: viewH / 2 - (browser.y + browser.height / 2) * scale,
+        scale,
+      },
     })
-    const viewW = window.innerWidth
-    const viewH = window.innerHeight - STATUS_BAR_HEIGHT
-    const scale = Math.min(
-      viewW / (browser.width + TERMINAL_PAD * 2),
-      viewH / (browser.height + TERMINAL_PAD * 2),
-      1,
-    )
-    get().setCanvasTransform({
-      x: viewW / 2 - (browser.x + browser.width / 2) * scale,
-      y: viewH / 2 - (browser.y + browser.height / 2) * scale,
-      scale,
-    })
+    debouncedPersist(() => get().persist())
   },
 
   bringBrowserToFront(id) {
