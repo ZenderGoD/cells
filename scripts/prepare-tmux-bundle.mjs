@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises'
 import fsSync from 'node:fs'
 import path from 'node:path'
+import { Buffer } from 'node:buffer'
 import { execaSync } from 'execa'
 import tmuxBundle from '../config/tmux-bundle.json' with { type: 'json' }
 
@@ -8,12 +9,20 @@ const ROOT = process.cwd()
 const VENDOR_ROOT = path.join(ROOT, 'resources', 'vendor', 'tmux')
 const MINIMUM_VERSION = tmuxBundle.minimumVersion
 const REQUIRE_TARGETS = process.env.CELLS_TMUX_REQUIRE_TARGETS === '1'
+const DOWNLOADS_ROOT = path.join(ROOT, '.tmp', 'tmux-bottles')
 
 const TARGETS = {
   'darwin-arm64': { binary: 'tmux' },
   'darwin-x64': { binary: 'tmux' },
   'linux-arm64': { binary: 'tmux' },
   'linux-x64': { binary: 'tmux' },
+}
+
+const HOMEBREW_BOTTLE_TAGS = {
+  'darwin-arm64': ['arm64_tahoe', 'arm64_sequoia', 'arm64_sonoma'],
+  'darwin-x64': ['sonoma'],
+  'linux-arm64': ['arm64_linux'],
+  'linux-x64': ['x86_64_linux'],
 }
 
 function parseTmuxVersion(version) {
@@ -120,6 +129,106 @@ function readTmuxVersion(binaryPath) {
   return match?.[1]?.trim() ?? null
 }
 
+let homebrewFormulaCache = null
+
+async function fetchText(url) {
+  const response = await globalThis.fetch(url)
+  if (!response.ok) {
+    throw new Error(`Request failed for ${url}: ${response.status} ${response.statusText}`)
+  }
+  return response.text()
+}
+
+async function getGhcrToken(scope) {
+  const tokenUrl = `https://ghcr.io/token?service=ghcr.io&scope=${encodeURIComponent(scope)}`
+  const response = await globalThis.fetch(tokenUrl)
+  if (!response.ok) {
+    throw new Error(`Failed to fetch GHCR token: ${response.status} ${response.statusText}`)
+  }
+  const payload = await response.json()
+  return payload.token
+}
+
+async function fetchBuffer(url, options = {}) {
+  const response = await globalThis.fetch(url, options)
+  if (!response.ok) {
+    throw new Error(`Request failed for ${url}: ${response.status} ${response.statusText}`)
+  }
+  return Buffer.from(await response.arrayBuffer())
+}
+
+async function getHomebrewFormula() {
+  if (homebrewFormulaCache) return homebrewFormulaCache
+  homebrewFormulaCache = JSON.parse(
+    await fetchText('https://formulae.brew.sh/api/formula/tmux.json'),
+  )
+  return homebrewFormulaCache
+}
+
+async function resolveBottleAsset(targetKey) {
+  const formula = await getHomebrewFormula()
+  const files = formula?.bottle?.stable?.files ?? {}
+  const tags = HOMEBREW_BOTTLE_TAGS[targetKey] ?? []
+  for (const tag of tags) {
+    const file = files[tag]
+    if (file?.url) {
+      return { url: file.url, version: formula?.versions?.stable ?? null }
+    }
+  }
+  return null
+}
+
+async function extractBottleBinary(archivePath, destinationDir) {
+  await fs.mkdir(destinationDir, { recursive: true })
+  execaSync('tar', ['-xzf', archivePath, '-C', destinationDir], {
+    reject: true,
+    stdin: 'ignore',
+    timeout: 30000,
+  })
+
+  const candidate = execaSync(
+    '/bin/sh',
+    ['-lc', `find "${destinationDir}" -path '*/bin/tmux' -type f | head -n 1`],
+    {
+      reject: false,
+      stdin: 'ignore',
+      timeout: 5000,
+    },
+  ).stdout.trim()
+
+  if (!candidate) {
+    throw new Error(`Unable to locate tmux binary in extracted bottle ${archivePath}`)
+  }
+  return candidate
+}
+
+async function fetchBottleBinary(targetKey) {
+  const asset = await resolveBottleAsset(targetKey)
+  if (!asset?.url) return null
+
+  const downloadDir = path.join(DOWNLOADS_ROOT, targetKey)
+  const archivePath = path.join(downloadDir, 'tmux-bottle.tar.gz')
+  const extractDir = path.join(downloadDir, 'extract')
+  await fs.mkdir(downloadDir, { recursive: true })
+
+  if (!fsSync.existsSync(archivePath)) {
+    const token = await getGhcrToken('repository:homebrew/core/tmux:pull')
+    const archive = await fetchBuffer(asset.url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+    await fs.writeFile(archivePath, archive)
+  }
+
+  const binaryPath = await extractBottleBinary(archivePath, extractDir)
+  await fs.chmod(binaryPath, 0o755)
+  return {
+    binaryPath,
+    version: asset.version,
+  }
+}
+
 async function readBundledVersion(targetKey, binaryPath, versionPath) {
   try {
     const existingVersion = (await fs.readFile(versionPath, 'utf8')).trim()
@@ -147,7 +256,9 @@ async function ensureTarget(targetKey) {
   }
 
   const sourceBinary = resolveSourceBinary(targetKey)
-  if (!sourceBinary) {
+  const downloadedBottle = sourceBinary ? null : await fetchBottleBinary(targetKey)
+  const resolvedSourceBinary = sourceBinary || downloadedBottle?.binaryPath || null
+  if (!resolvedSourceBinary) {
     if (REQUIRE_TARGETS) {
       throw new Error(
         `No tmux binary found for required target ${targetKey}. Set ${getEnvBinaryKey(targetKey)} or install a matching tmux binary before building release artifacts.`,
@@ -156,24 +267,26 @@ async function ensureTarget(targetKey) {
     console.log(`[prepare-tmux] no source binary found for ${targetKey}; skipping`)
     return
   }
-  if (!commandExists(sourceBinary)) {
-    throw new Error(`Configured tmux binary is not executable for ${targetKey}: ${sourceBinary}`)
+  if (!commandExists(resolvedSourceBinary)) {
+    throw new Error(
+      `Configured tmux binary is not executable for ${targetKey}: ${resolvedSourceBinary}`,
+    )
   }
 
-  const version = readTmuxVersion(sourceBinary)
+  const version = downloadedBottle?.version || readTmuxVersion(resolvedSourceBinary)
   if (!version) {
-    throw new Error(`Failed to read tmux version from ${sourceBinary}`)
+    throw new Error(`Failed to read tmux version from ${resolvedSourceBinary}`)
   }
   if (compareTmuxVersions(version, MINIMUM_VERSION) < 0) {
     throw new Error(
-      `tmux ${MINIMUM_VERSION}+ is required for ${targetKey}; found ${version} at ${sourceBinary}`,
+      `tmux ${MINIMUM_VERSION}+ is required for ${targetKey}; found ${version} at ${resolvedSourceBinary}`,
     )
   }
   await fs.mkdir(targetDir, { recursive: true })
-  await fs.copyFile(sourceBinary, binaryPath)
+  await fs.copyFile(resolvedSourceBinary, binaryPath)
   await fs.chmod(binaryPath, 0o755)
   await fs.writeFile(versionPath, `${version}\n`, 'utf8')
-  console.log(`[prepare-tmux] bundled ${targetKey} from ${sourceBinary} (${version})`)
+  console.log(`[prepare-tmux] bundled ${targetKey} from ${resolvedSourceBinary} (${version})`)
 }
 
 async function main() {
