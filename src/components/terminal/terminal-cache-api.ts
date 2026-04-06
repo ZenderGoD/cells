@@ -1,19 +1,65 @@
-/**
- * Re-exports non-component functions from cell-terminal.tsx.
- *
- * Vite's React Fast Refresh requires that .tsx files only export React
- * components/hooks. Exporting plain functions like applyThemeToAllTerminals
- * from cell-terminal.tsx causes HMR to fall back to a full page reload.
- *
- * Consumers that only need the utility functions (e.g. store.ts) should
- * import from here instead of cell-terminal.tsx directly.
- */
-export {
-  applyThemeToAllTerminals,
-  destroyCachedTerminal,
-  getCachedTerminalCount,
-  getTerminalPreviewSnapshot,
-  getTerminalRestoreSnapshot,
-  reloadAllTerminals,
-  reloadTerminal,
-} from './cell-terminal'
+type TerminalCacheApi = {
+  applyThemeToAllTerminals(themeName: string): void
+  destroyCachedTerminal(termId: string): void
+  getCachedTerminalCount(): number
+  getTerminalPreviewSnapshot(
+    termId: string,
+    options?: { lines?: number; columns?: number },
+  ): string[]
+  getTerminalRestoreSnapshot(termId: string): string | null
+  reloadAllTerminals(): void
+  reloadTerminal(termId: string): void
+}
+
+const noopApi: TerminalCacheApi = {
+  applyThemeToAllTerminals() {},
+  destroyCachedTerminal() {},
+  getCachedTerminalCount() {
+    return 0
+  },
+  getTerminalPreviewSnapshot() {
+    return []
+  },
+  getTerminalRestoreSnapshot() {
+    return null
+  },
+  reloadAllTerminals() {},
+  reloadTerminal() {},
+}
+
+let terminalCacheApi: TerminalCacheApi = noopApi
+
+export function registerTerminalCacheApi(api: TerminalCacheApi) {
+  terminalCacheApi = api
+}
+
+export function applyThemeToAllTerminals(themeName: string) {
+  terminalCacheApi.applyThemeToAllTerminals(themeName)
+}
+
+export function destroyCachedTerminal(termId: string) {
+  terminalCacheApi.destroyCachedTerminal(termId)
+}
+
+export function getCachedTerminalCount() {
+  return terminalCacheApi.getCachedTerminalCount()
+}
+
+export function getTerminalPreviewSnapshot(
+  termId: string,
+  options?: { lines?: number; columns?: number },
+) {
+  return terminalCacheApi.getTerminalPreviewSnapshot(termId, options)
+}
+
+export function getTerminalRestoreSnapshot(termId: string) {
+  return terminalCacheApi.getTerminalRestoreSnapshot(termId)
+}
+
+export function reloadTerminal(termId: string) {
+  terminalCacheApi.reloadTerminal(termId)
+}
+
+export function reloadAllTerminals() {
+  terminalCacheApi.reloadAllTerminals()
+}

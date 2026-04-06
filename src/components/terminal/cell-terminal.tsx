@@ -24,6 +24,7 @@ import {
 import { cn } from '@/lib/utils'
 import { WebGLTerminalRenderer } from '@/lib/webgl-terminal-renderer'
 import type { TerminalPerfSample } from '@/types'
+import { registerTerminalCacheApi } from './terminal-cache-api'
 
 // Initialize WASM lazily on first terminal mount
 let ghosttyReady: Promise<void> | null = null
@@ -808,7 +809,7 @@ function retainTerminalAttachment(termId: string) {
   trimRetainedAttachments()
 }
 
-export function getCachedTerminalCount() {
+function getCachedTerminalCount() {
   return terminalCache.size
 }
 
@@ -971,7 +972,7 @@ function serializeVisibleTerminalSnapshot(term: Terminal, themeName: string) {
   return snapshot.length > TERMINAL_RESTORE_SNAPSHOT_LIMIT ? null : snapshot
 }
 
-export function getTerminalPreviewSnapshot(
+function getTerminalPreviewSnapshot(
   termId: string,
   options: TerminalPreviewOptions = {},
 ): string[] {
@@ -1008,7 +1009,7 @@ export function getTerminalPreviewSnapshot(
   return previewLines
 }
 
-export function getTerminalRestoreSnapshot(termId: string): string | null {
+function getTerminalRestoreSnapshot(termId: string): string | null {
   const cached = terminalCache.get(termId)
   const term = cached?.term
   if (!term) return null
@@ -1048,14 +1049,14 @@ export function getTerminalRestoreSnapshot(termId: string): string | null {
 }
 
 /** Apply a theme to every cached terminal instance (mounted or not). */
-export function applyThemeToAllTerminals(themeName: string) {
+function applyThemeToAllTerminals(themeName: string) {
   for (const [, cached] of terminalCache) {
     applyThemeToTerminal(cached.term, buildTheme(themeName, getTerminalBackend(cached.term)))
   }
 }
 
 /** Call when a terminal is permanently removed (not just hidden). */
-export function destroyCachedTerminal(termId: string) {
+function destroyCachedTerminal(termId: string) {
   clearRetainedAttachment(termId)
   const cached = terminalCache.get(termId)
   if (cached) {
@@ -1067,7 +1068,7 @@ export function destroyCachedTerminal(termId: string) {
 }
 
 /** Repaint a terminal — recreates the renderer while keeping the shell alive. */
-export function reloadTerminal(termId: string) {
+function reloadTerminal(termId: string) {
   const cached = terminalCache.get(termId)
   const snapshot =
     cached?.term && shouldPreferSnapshotRestoreForTerminal(cached.term)
@@ -1082,11 +1083,21 @@ export function reloadTerminal(termId: string) {
   })
 }
 
-export function reloadAllTerminals() {
+function reloadAllTerminals() {
   for (const termId of [...terminalCache.keys()]) {
     reloadTerminal(termId)
   }
 }
+
+registerTerminalCacheApi({
+  applyThemeToAllTerminals,
+  destroyCachedTerminal,
+  getCachedTerminalCount,
+  getTerminalPreviewSnapshot,
+  getTerminalRestoreSnapshot,
+  reloadAllTerminals,
+  reloadTerminal,
+})
 
 interface CellTerminalProps {
   termId: string
@@ -3137,6 +3148,32 @@ export function CellTerminal({
   }, [width, height, refitTerminalToLoadedFont])
 
   useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+
+    let frame = 0
+    const scheduleFit = () => {
+      if (frame) window.cancelAnimationFrame(frame)
+      frame = window.requestAnimationFrame(() => {
+        frame = 0
+        const fitAddon = fitAddonRef.current
+        const term = terminalRef.current
+        if (!fitAddon || !term) return
+        fitAddon.fit()
+        refitTerminalToLoadedFont(term, fitAddon)
+      })
+    }
+
+    const observer = new ResizeObserver(() => scheduleFit())
+    observer.observe(container)
+
+    return () => {
+      observer.disconnect()
+      if (frame) window.cancelAnimationFrame(frame)
+    }
+  }, [refitTerminalToLoadedFont, reloadKey])
+
+  useEffect(() => {
     let cancelled = false
     let timer: number | null = null
 
@@ -3156,10 +3193,13 @@ export function CellTerminal({
         !status.paneInMode ||
         status.scrollPosition <= 0
       ) {
-        serverOwnedMouseModeRef.current = status?.backend === 'tmux' && status.mouseAnyFlag === true
+        serverOwnedMouseModeRef.current =
+          status?.backend === 'tmux' &&
+          (status.mouseAnyFlag === true || status.alternateOn === true)
         setScrollStatus((previous) => (previous === null ? previous : null))
       } else {
-        serverOwnedMouseModeRef.current = status.mouseAnyFlag === true
+        serverOwnedMouseModeRef.current =
+          status.mouseAnyFlag === true || status.alternateOn === true
         setScrollStatus((previous) => {
           if (
             previous &&
