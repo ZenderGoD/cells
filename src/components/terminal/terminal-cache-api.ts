@@ -1,7 +1,6 @@
 type TerminalCacheApi = {
   applyThemeToAllTerminals(themeName: string): void
   destroyCachedTerminal(termId: string): void
-  refreshAllTerminalFonts(): void
   getCachedTerminalCount(): number
   getTerminalPreviewSnapshot(
     termId: string,
@@ -15,7 +14,6 @@ type TerminalCacheApi = {
 const noopApi: TerminalCacheApi = {
   applyThemeToAllTerminals() {},
   destroyCachedTerminal() {},
-  refreshAllTerminalFonts() {},
   getCachedTerminalCount() {
     return 0
   },
@@ -45,10 +43,6 @@ export function destroyCachedTerminal(termId: string) {
 
 export function getCachedTerminalCount() {
   return terminalCacheApi.getCachedTerminalCount()
-}
-
-export function refreshAllTerminalFonts() {
-  terminalCacheApi.refreshAllTerminalFonts()
 }
 
 export function getTerminalPreviewSnapshot(

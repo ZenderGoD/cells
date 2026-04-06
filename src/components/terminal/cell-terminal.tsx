@@ -21,7 +21,6 @@ import {
   hexToRgb,
   rgbToXtermQueryColor,
 } from '@/lib/terminal-themes'
-import { loadBundledTerminalFonts } from '@/lib/load-terminal-fonts'
 import { cn } from '@/lib/utils'
 import { WebGLTerminalRenderer } from '@/lib/webgl-terminal-renderer'
 import type { TerminalPerfSample } from '@/types'
@@ -1053,21 +1052,6 @@ function applyThemeToAllTerminals(themeName: string) {
   }
 }
 
-/** Re-apply the current font settings to every cached terminal instance. */
-function refreshAllTerminalFonts() {
-  const state = useStore.getState()
-  for (const [, cached] of terminalCache) {
-    if (cached.term.options.fontSize !== state.fontSize) {
-      cached.term.options.fontSize = state.fontSize
-    }
-    if (cached.term.options.fontFamily !== state.fontFamily) {
-      cached.term.options.fontFamily = state.fontFamily
-    }
-    cached.fitAddon.fit()
-    forceTerminalRepaint(cached.term)
-  }
-}
-
 /** Call when a terminal is permanently removed (not just hidden). */
 function destroyCachedTerminal(termId: string) {
   clearRetainedAttachment(termId)
@@ -1114,7 +1098,6 @@ function reloadAllTerminals() {
 registerTerminalCacheApi({
   applyThemeToAllTerminals,
   destroyCachedTerminal,
-  refreshAllTerminalFonts,
   getCachedTerminalCount,
   getTerminalPreviewSnapshot,
   getTerminalRestoreSnapshot,
@@ -2204,10 +2187,6 @@ export function CellTerminal({
 
       // First time — create new terminal
       await ensureInit()
-      await loadBundledTerminalFonts()
-      if (typeof document !== 'undefined' && document.fonts) {
-        await document.fonts.ready
-      }
       if (cancelled) return
 
       const wrapper = document.createElement('div')

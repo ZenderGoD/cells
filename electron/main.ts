@@ -152,7 +152,7 @@ function configureDevPaths() {
 }
 
 async function clearRendererCachesOnVersionChange() {
-  if (!app.isPackaged) return
+  if (!app.isPackaged) return false
 
   const userDataDir = app.getPath('userData')
   const versionFile = path.join(userDataDir, RENDERER_CACHE_VERSION_FILE)
@@ -163,7 +163,7 @@ async function clearRendererCachesOnVersionChange() {
     previousVersion = fs.readFileSync(versionFile, 'utf8').trim() || null
   } catch {}
 
-  if (previousVersion === currentVersion) return
+  if (previousVersion === currentVersion) return false
 
   const cacheEntries = [
     'Cache',
@@ -190,6 +190,8 @@ async function clearRendererCachesOnVersionChange() {
   try {
     fs.writeFileSync(versionFile, `${currentVersion}\n`, 'utf8')
   } catch {}
+
+  return true
 }
 
 configureDevPaths()
@@ -293,6 +295,8 @@ function isTransparentWindowModeEnabled() {
 
 function createWindow() {
   const transparentWindow = isTransparentWindowModeEnabled()
+  const needsWarmReload = !process.env.VITE_DEV_SERVER_URL
+  let warmReloadDone = !needsWarmReload
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -315,12 +319,23 @@ function createWindow() {
     },
   })
 
-  mainWindow.once('ready-to-show', () => {
-    mainWindow?.show()
+  mainWindow.on('ready-to-show', () => {
+    if (warmReloadDone) {
+      mainWindow?.show()
+    }
   })
 
-  mainWindow.webContents.once('did-finish-load', () => {
-    if (mainWindow && !mainWindow.isDestroyed()) setupTerminalDataPort(mainWindow)
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    if (!warmReloadDone) {
+      warmReloadDone = true
+      mainWindow.webContents.reload()
+      return
+    }
+    setupTerminalDataPort(mainWindow)
+    if (!mainWindow.isVisible()) {
+      mainWindow.show()
+    }
   })
 
   // Relay native window focus/blur to the renderer so the dim overlay
@@ -1160,6 +1175,8 @@ ipcMain.handle(
 
     const isBrowser = type === 'browser' && browserUrl
     const transparentWindow = isTransparentWindowModeEnabled()
+    const needsWarmReload = !process.env.VITE_DEV_SERVER_URL && !isBrowser
+    let warmReloadDone = !needsWarmReload
 
     const win = new BrowserWindow({
       width: Math.round(bounds.width),
@@ -1172,6 +1189,7 @@ ipcMain.handle(
       titleBarStyle: isBrowser ? 'hiddenInset' : 'hidden',
       trafficLightPosition: isBrowser ? { x: 12, y: 16 } : { x: 12, y: 11 },
       roundedCorners: true,
+      show: false,
       transparent: isBrowser ? false : transparentWindow,
       backgroundColor: isBrowser ? '#1e1e1e' : transparentWindow ? '#00000000' : '#15171a',
       vibrancy: isBrowser || !transparentWindow ? undefined : 'under-window',
@@ -1209,8 +1227,17 @@ ipcMain.handle(
           if (!win.isDestroyed()) win.close()
         }
       })
-      win.webContents.once('did-finish-load', () => {
-        if (!win.isDestroyed()) setupTerminalDataPort(win)
+      win.webContents.on('did-finish-load', () => {
+        if (win.isDestroyed()) return
+        if (!warmReloadDone) {
+          warmReloadDone = true
+          win.webContents.reload()
+          return
+        }
+        setupTerminalDataPort(win)
+        if (!win.isVisible()) {
+          win.show()
+        }
       })
       const url = process.env.VITE_DEV_SERVER_URL
         ? `${process.env.VITE_DEV_SERVER_URL}?pinned=${encodeURIComponent(id)}&type=${encodeURIComponent(type)}`
@@ -1223,6 +1250,12 @@ ipcMain.handle(
         })
       }
     }
+
+    win.on('ready-to-show', () => {
+      if (warmReloadDone) {
+        win.show()
+      }
+    })
 
     win.on('close', () => {
       if (unpinNotified) return
@@ -2492,6 +2525,19 @@ ipcMain.handle('daemon:restart', async () => {
       ensureFallbackSessions()
     }
 
+    setTimeout(() => {
+      try {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.reload()
+        }
+        for (const win of pinnedWindows.values()) {
+          if (!win.isDestroyed()) {
+            win.webContents.reload()
+          }
+        }
+      } catch {}
+    }, 50)
+
     return useDaemon
   } finally {
     daemonRestartInProgress = false
@@ -2504,7 +2550,12 @@ app.whenReady().then(async () => {
   perfMonitor = new PerfMonitor(app.getPath('logs'))
   perfMonitor.start()
 
-  await clearRendererCachesOnVersionChange()
+  const clearedRendererCaches = await clearRendererCachesOnVersionChange()
+  if (clearedRendererCaches) {
+    app.relaunch()
+    app.exit(0)
+    return
+  }
 
   // Start PTY daemon before creating windows
   try {

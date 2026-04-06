@@ -7,32 +7,28 @@ export interface TerminalFontOption {
 export const TERMINAL_FONT_FAMILIES: TerminalFontOption[] = [
   {
     label: 'GeistMono Nerd Font',
-    value: '"GeistMono NFM"',
-    aliases: [
-      '"GeistMono NF"',
-      '"GeistMono NF", monospace',
-      '"GeistMono NF", "Geist Mono", monospace',
-    ],
+    value: '"GeistMono NF", "Geist Mono", monospace',
+    aliases: ['"GeistMono NF", monospace', '"GeistMono NFM"'],
   },
   {
     label: 'JetBrainsMono Nerd Font',
-    value: '"JetBrainsMono NFM"',
-    aliases: ['"JetBrainsMono NF"', '"JetBrainsMono NF", monospace'],
+    value: '"JetBrainsMono NF", monospace',
+    aliases: ['"JetBrainsMono NFM"'],
   },
   {
     label: 'FiraCode Nerd Font',
-    value: '"FiraCode Nerd Font Mono"',
-    aliases: ['"FiraCode NF"', '"FiraCode NF", monospace'],
+    value: '"FiraCode NF", monospace',
+    aliases: ['"FiraCode Nerd Font Mono"'],
   },
   {
     label: 'Meslo Nerd Font',
-    value: '"MesloLGS Nerd Font Mono"',
-    aliases: ['"Meslo NF"', '"Meslo NF", monospace'],
+    value: '"Meslo NF", monospace',
+    aliases: ['"MesloLGS Nerd Font Mono"'],
   },
   {
     label: 'Hack Nerd Font',
-    value: '"Hack Nerd Font Mono"',
-    aliases: ['"Hack NF"', '"Hack NF", monospace'],
+    value: '"Hack NF", monospace',
+    aliases: ['"Hack Nerd Font Mono"'],
   },
 ]
 
