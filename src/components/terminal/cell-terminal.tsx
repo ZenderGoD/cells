@@ -1067,15 +1067,24 @@ function destroyCachedTerminal(termId: string) {
 /** Repaint a terminal — recreates the renderer while keeping the shell alive. */
 function reloadTerminal(termId: string) {
   const cached = terminalCache.get(termId)
+  const usesServerOwnedState = cached?.term ? usesServerOwnedTerminalState(cached.term) : false
   const snapshot =
-    cached?.term && shouldPreferSnapshotRestoreForTerminal(cached.term)
+    cached?.term && !usesServerOwnedState && shouldPreferSnapshotRestoreForTerminal(cached.term)
       ? getTerminalRestoreSnapshot(termId)
       : null
   if (snapshot !== null) terminalReloadSnapshots.set(termId, snapshot)
   else terminalReloadSnapshots.delete(termId)
 
   void window.cells.terminal.unsubscribe(termId).finally(() => {
-    destroyCachedTerminal(termId)
+    if (cached && usesServerOwnedState) {
+      clearRetainedAttachment(termId)
+      cached.setPollingEnabled(false)
+      setTerminalRenderLoopEnabled(cached.term, false)
+      Reflect.set(cached.term, '__cellsBackendAttached', false)
+      Reflect.set(cached.term, '__cellsPendingReattachReset', false)
+    } else {
+      destroyCachedTerminal(termId)
+    }
     window.dispatchEvent(new CustomEvent('terminal-reload', { detail: { termId } }))
   })
 }
