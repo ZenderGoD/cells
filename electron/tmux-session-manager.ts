@@ -251,6 +251,7 @@ export class TmuxSessionManager implements TerminalSessionManager {
   getScrollStatus(termId: string): TerminalScrollStatus | null {
     const paneTarget = this.getPaneTarget(termId)
     if (!paneTarget) return null
+    const paneFlags = this.getPaneFlags(termId)
     const output = this.execTmux(
       [
         'display-message',
@@ -268,6 +269,8 @@ export class TmuxSessionManager implements TerminalSessionManager {
       paneInMode: paneInModeRaw === '1',
       scrollPosition: Number.parseInt(scrollPositionRaw ?? '0', 10) || 0,
       historySize: Number.parseInt(historySizeRaw ?? '0', 10) || 0,
+      mouseAnyFlag: paneFlags?.mouseAnyFlag ?? false,
+      alternateOn: paneFlags?.alternateOn ?? false,
     }
   }
 

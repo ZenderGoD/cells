@@ -39,11 +39,24 @@ const TERMINAL_ATTACH_RETRY_DELAYS_MS = [0, 250, 1000] as const
 const SERVER_OWNED_ATTACH_RECOVERY_DELAYS_MS = [800, 1600] as const
 const SERVER_OWNED_WHEEL_FLUSH_MS = 16
 const SERVER_OWNED_WHEEL_HANDLED_KEY = '__cellsServerOwnedWheelHandled'
+const SERVER_OWNED_MOUSE_FLUSH_MS = 16
+const SERVER_OWNED_MOUSE_HANDLED_KEY = '__cellsServerOwnedMouseHandled'
 
 type TerminalAttachResponse = {
   reattached: boolean
   buffer: string
   backend: 'replay' | 'tmux' | 'zellij'
+}
+
+type QueuedWheelPayload = {
+  direction: 'up' | 'down'
+  steps: number
+  sequence: string
+}
+
+type MouseCellPosition = {
+  x: number
+  y: number
 }
 
 function patchGhosttyRenderer() {
@@ -277,25 +290,10 @@ function getMouseWheelSequencePayload(
 ): { direction: 'up' | 'down'; steps: number; sequence: string } | null {
   if (!Number.isFinite(event.deltaY) || event.deltaY === 0) return null
 
-  const rect = element.getBoundingClientRect()
-  if (rect.width <= 0 || rect.height <= 0 || term.cols <= 0 || term.rows <= 0) return null
+  const position = getMouseCellPosition(event, term, element)
+  if (!position) return null
 
-  const cellWidth = rect.width / term.cols
-  const cellHeight = rect.height / term.rows
-  const x = Math.max(
-    1,
-    Math.min(term.cols, Math.floor((event.clientX - rect.left) / cellWidth) + 1),
-  )
-  const y = Math.max(
-    1,
-    Math.min(term.rows, Math.floor((event.clientY - rect.top) / cellHeight) + 1),
-  )
-
-  let modifier = 0
-  if (event.shiftKey) modifier += 4
-  if (event.altKey) modifier += 8
-  if (event.ctrlKey) modifier += 16
-
+  const modifier = getMouseModifierMask(event)
   const buttonBase = event.deltaY < 0 ? 64 : 65
   const button = buttonBase + modifier
   const stepMagnitude =
@@ -309,8 +307,75 @@ function getMouseWheelSequencePayload(
   return {
     direction: event.deltaY < 0 ? 'up' : 'down',
     steps,
-    sequence: Array.from({ length: steps }, () => `\x1b[<${button};${x};${y}M`).join(''),
+    sequence: Array.from(
+      { length: steps },
+      () => `\x1b[<${button};${position.x};${position.y}M`,
+    ).join(''),
   }
+}
+
+function getMouseCellPosition(
+  event: MouseEvent,
+  term: Terminal,
+  element: HTMLElement,
+): MouseCellPosition | null {
+  const rect = element.getBoundingClientRect()
+  if (rect.width <= 0 || rect.height <= 0 || term.cols <= 0 || term.rows <= 0) return null
+
+  const cellWidth = rect.width / term.cols
+  const cellHeight = rect.height / term.rows
+  return {
+    x: Math.max(1, Math.min(term.cols, Math.floor((event.clientX - rect.left) / cellWidth) + 1)),
+    y: Math.max(1, Math.min(term.rows, Math.floor((event.clientY - rect.top) / cellHeight) + 1)),
+  }
+}
+
+function getMouseModifierMask(event: MouseEvent) {
+  let modifier = 0
+  if (event.shiftKey) modifier += 4
+  if (event.altKey) modifier += 8
+  if (event.ctrlKey) modifier += 16
+  return modifier
+}
+
+function getMouseButtonBase(button: number) {
+  if (button === 1) return 1
+  if (button === 2) return 2
+  return 0
+}
+
+function getMouseMoveButtonBase(buttons: number) {
+  if (buttons & 1) return 0
+  if (buttons & 4) return 1
+  if (buttons & 2) return 2
+  return 3
+}
+
+function getMouseSequencePayload(
+  event: MouseEvent,
+  term: Terminal,
+  element: HTMLElement,
+  kind: 'press' | 'release' | 'move',
+): string | null {
+  const position = getMouseCellPosition(event, term, element)
+  if (!position) return null
+
+  const modifier = getMouseModifierMask(event)
+  if (kind === 'press' && event.button > 2) return null
+
+  let button: number
+  let suffix: 'M' | 'm' = 'M'
+
+  if (kind === 'press') {
+    button = getMouseButtonBase(event.button) + modifier
+  } else if (kind === 'release') {
+    button = 3 + modifier
+    suffix = 'm'
+  } else {
+    button = getMouseMoveButtonBase(event.buttons) + 32 + modifier
+  }
+
+  return `\x1b[<${button};${position.x};${position.y}${suffix}`
 }
 
 function buildTheme(themeName: string, backend?: 'tmux' | 'zellij' | 'replay' | null) {
@@ -1034,12 +1099,6 @@ interface CellTerminalProps {
 
 type AgentName = 'claude' | 'codex' | 'opencode' | 'pi'
 
-type QueuedWheelPayload = {
-  direction: 'up' | 'down'
-  steps: number
-  sequence: string
-}
-
 const COMMON_SHELL_COMMANDS = new Set([
   'awk',
   'bash',
@@ -1532,6 +1591,9 @@ export function CellTerminal({
   const suppressAutoFocusRef = useRef(false)
   const queuedWheelPayloadsRef = useRef<QueuedWheelPayload[]>([])
   const queuedWheelTimerRef = useRef<number | null>(null)
+  const queuedMouseSequencesRef = useRef<string[]>([])
+  const queuedMouseTimerRef = useRef<number | null>(null)
+  const serverOwnedMouseModeRef = useRef(false)
   const searchMatchesRef = useRef<SearchMatch[]>([])
   const searchDebounceRef = useRef<number | null>(null)
   const searchLimitHitRef = useRef(false)
@@ -1686,6 +1748,28 @@ export function CellTerminal({
       }
     },
     [flushQueuedWheelPayloads],
+  )
+
+  const flushQueuedMouseSequences = useCallback(() => {
+    queuedMouseTimerRef.current = null
+    const sequences = queuedMouseSequencesRef.current
+    queuedMouseSequencesRef.current = []
+    if (sequences.length === 0) return
+    window.cells.terminal.write(termId, sequences.join(''))
+  }, [termId])
+
+  const queueServerOwnedMouseSequence = useCallback(
+    (event: MouseEvent, sequence: string) => {
+      Reflect.set(event, SERVER_OWNED_MOUSE_HANDLED_KEY, true)
+      queuedMouseSequencesRef.current.push(sequence)
+      if (queuedMouseTimerRef.current === null) {
+        queuedMouseTimerRef.current = window.setTimeout(
+          flushQueuedMouseSequences,
+          SERVER_OWNED_MOUSE_FLUSH_MS,
+        )
+      }
+    },
+    [flushQueuedMouseSequences],
   )
 
   const scheduleServerOwnedAttachRecovery = useCallback(
@@ -2500,7 +2584,7 @@ export function CellTerminal({
               term.scrollToBottom()
               // Enable SGR mouse reporting — the multiplexer already set up
               // mouse mode server-side but ghostty-web missed those escapes.
-              term.write('\x1b[?1000h\x1b[?1002h\x1b[?1006h')
+              term.write('\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h')
             }
 
             // Accumulate data and schedule a single flush per frame
@@ -2969,9 +3053,63 @@ export function CellTerminal({
       })
     }
 
+    const shouldHandleServerOwnedMouse = (e: MouseEvent) => {
+      const term = terminalRef.current
+      if (!term || !usesServerOwnedTerminalState(term)) return null
+      if (getTerminalBackend(term) !== 'tmux') return null
+      if (!serverOwnedMouseModeRef.current) return null
+      if (Reflect.get(e, SERVER_OWNED_MOUSE_HANDLED_KEY) === true) return null
+      return term
+    }
+
+    const onMouseDown = (e: MouseEvent) => {
+      const term = shouldHandleServerOwnedMouse(e)
+      if (!term) return
+      const sequence = getMouseSequencePayload(e, term, container, 'press')
+      if (!sequence) return
+      e.preventDefault()
+      e.stopPropagation()
+      queueServerOwnedMouseSequence(e, sequence)
+    }
+
+    const onMouseUp = (e: MouseEvent) => {
+      const term = shouldHandleServerOwnedMouse(e)
+      if (!term) return
+      const sequence = getMouseSequencePayload(e, term, container, 'release')
+      if (!sequence) return
+      e.preventDefault()
+      e.stopPropagation()
+      queueServerOwnedMouseSequence(e, sequence)
+    }
+
+    const onMouseMove = (e: MouseEvent) => {
+      const term = shouldHandleServerOwnedMouse(e)
+      if (!term) return
+      const sequence = getMouseSequencePayload(e, term, container, 'move')
+      if (!sequence) return
+      e.preventDefault()
+      queueServerOwnedMouseSequence(e, sequence)
+    }
+
+    const onContextMenu = (e: MouseEvent) => {
+      if (!shouldHandleServerOwnedMouse(e)) return
+      e.preventDefault()
+      e.stopPropagation()
+    }
+
     container.addEventListener('wheel', onWheel, { capture: true, passive: false })
-    return () => container.removeEventListener('wheel', onWheel, { capture: true })
-  }, [queueServerOwnedWheelPayload, termId])
+    container.addEventListener('mousedown', onMouseDown, { capture: true })
+    container.addEventListener('mouseup', onMouseUp, { capture: true })
+    container.addEventListener('mousemove', onMouseMove, { capture: true })
+    container.addEventListener('contextmenu', onContextMenu, { capture: true })
+    return () => {
+      container.removeEventListener('wheel', onWheel, { capture: true })
+      container.removeEventListener('mousedown', onMouseDown, { capture: true })
+      container.removeEventListener('mouseup', onMouseUp, { capture: true })
+      container.removeEventListener('mousemove', onMouseMove, { capture: true })
+      container.removeEventListener('contextmenu', onContextMenu, { capture: true })
+    }
+  }, [queueServerOwnedMouseSequence, queueServerOwnedWheelPayload, termId])
 
   useEffect(() => {
     return () => {
@@ -2980,6 +3118,11 @@ export function CellTerminal({
       }
       queuedWheelTimerRef.current = null
       queuedWheelPayloadsRef.current = []
+      if (queuedMouseTimerRef.current !== null) {
+        window.clearTimeout(queuedMouseTimerRef.current)
+      }
+      queuedMouseTimerRef.current = null
+      queuedMouseSequencesRef.current = []
     }
   }, [])
 
@@ -3000,6 +3143,7 @@ export function CellTerminal({
     const poll = async () => {
       const term = terminalRef.current
       if (!term || !usesServerOwnedTerminalState(term)) {
+        serverOwnedMouseModeRef.current = false
         if (!cancelled) setScrollStatus(null)
         return
       }
@@ -3012,8 +3156,10 @@ export function CellTerminal({
         !status.paneInMode ||
         status.scrollPosition <= 0
       ) {
+        serverOwnedMouseModeRef.current = status?.backend === 'tmux' && status.mouseAnyFlag === true
         setScrollStatus((previous) => (previous === null ? previous : null))
       } else {
+        serverOwnedMouseModeRef.current = status.mouseAnyFlag === true
         setScrollStatus((previous) => {
           if (
             previous &&

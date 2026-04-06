@@ -242,6 +242,8 @@ export interface CellsAPI {
       paneInMode: boolean
       scrollPosition: number
       historySize: number
+      mouseAnyFlag?: boolean
+      alternateOn?: boolean
     } | null>
     getHistory(termId: string): Promise<string>
     getHistoryPage(

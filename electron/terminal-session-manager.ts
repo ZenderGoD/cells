@@ -14,6 +14,8 @@ export type TerminalScrollStatus = {
   paneInMode: boolean
   scrollPosition: number
   historySize: number
+  mouseAnyFlag?: boolean
+  alternateOn?: boolean
 }
 
 export interface TerminalSessionManager {
