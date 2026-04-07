@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { HotkeysProvider } from '@tanstack/react-hotkeys'
 import { App } from './app'
+import { loadBundledTerminalFonts } from './lib/load-terminal-fonts'
 import './globals.css'
 
 async function bootstrap() {
@@ -14,6 +15,8 @@ async function bootstrap() {
     window.location.reload()
     return
   }
+
+  await loadBundledTerminalFonts()
 
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
