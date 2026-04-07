@@ -28,6 +28,21 @@ const backupPath = `${statePath}.bak-repair-${Date.now()}`
 fs.copyFileSync(statePath, backupPath)
 fs.writeFileSync(statePath, JSON.stringify(state, null, 2))
 
+try {
+  execFileSync('osascript', ['-e', 'quit app "Cells"'], { stdio: 'ignore' })
+} catch {}
+
+for (const args of [
+  ['-x', 'Cells'],
+  ['-f', '/Applications/Cells.app/Contents/Resources/app.asar/dist-electron/pty-daemon.js'],
+  ['-f', '/Applications/Cells.app/Contents/Resources/vendor/tmux/darwin-arm64/tmux'],
+  ['-f', '/Applications/Cells.app/Contents/Resources/vendor/zellij/darwin-arm64/zellij'],
+]) {
+  try {
+    execFileSync('pkill', args, { stdio: 'ignore' })
+  } catch {}
+}
+
 for (const entry of [
   'Cache',
   'Code Cache',
@@ -41,10 +56,6 @@ for (const entry of [
 ]) {
   fs.rmSync(path.join(userDataDir, entry), { recursive: true, force: true })
 }
-
-try {
-  execFileSync('osascript', ['-e', 'quit app "Cells"'], { stdio: 'ignore' })
-} catch {}
 
 console.log(`Backed up state to ${backupPath}`)
 console.log('Repaired terminal font settings and cleared installed app caches.')

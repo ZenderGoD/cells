@@ -421,7 +421,6 @@ export interface CellsAPI {
     beep(): void
     getShellHistory(): Promise<string[]>
     fileThumbnail(filePath: string): Promise<string | null>
-    getTerminalFontData(): Promise<Record<string, string>>
   }
   mcp: {
     install(projectPath: string): Promise<{

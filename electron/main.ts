@@ -1541,35 +1541,6 @@ ipcMain.handle('app:file-thumbnail', async (_event, filePath: string) => {
   }
 })
 
-ipcMain.handle('app:get-terminal-font-data', () => {
-  const overrideFontDir = process.env.CELLS_TERMINAL_FONT_DIR?.trim()
-  const fontDir = overrideFontDir
-    ? overrideFontDir
-    : app.isPackaged
-      ? path.join(process.resourcesPath, 'vendor', 'fonts')
-      : path.join(__dirname, '..', 'src', 'fonts')
-
-  const fonts = [
-    'GeistMonoNerdFontMono-Regular.otf',
-    'GeistMonoNerdFontMono-Bold.otf',
-    'JetBrainsMonoNerdFontMono-Regular.ttf',
-    'JetBrainsMonoNerdFontMono-Bold.ttf',
-    'FiraCodeNerdFontMono-Regular.ttf',
-    'FiraCodeNerdFontMono-Bold.ttf',
-    'MesloLGSNerdFontMono-Regular.ttf',
-    'MesloLGSNerdFontMono-Bold.ttf',
-    'HackNerdFontMono-Regular.ttf',
-    'HackNerdFontMono-Bold.ttf',
-  ]
-
-  return Object.fromEntries(
-    fonts.map((filename) => {
-      const fontPath = path.join(fontDir, filename)
-      return [filename, fs.readFileSync(fontPath).toString('base64')]
-    }),
-  )
-})
-
 ipcMain.on('terminal:write', (_event, termId: string, data: string) => {
   if (useDaemon && daemonClient?.isConnected()) {
     daemonClient.write(termId, data)
