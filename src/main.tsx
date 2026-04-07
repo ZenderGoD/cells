@@ -10,13 +10,13 @@ async function bootstrap() {
     window.location.protocol === 'file:' &&
     sessionStorage.getItem('cells-renderer-bootstrap-reloaded') !== '1'
 
+  await loadBundledTerminalFonts()
+
   if (shouldBootstrapReload) {
     sessionStorage.setItem('cells-renderer-bootstrap-reloaded', '1')
     window.location.reload()
     return
   }
-
-  await loadBundledTerminalFonts()
 
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
