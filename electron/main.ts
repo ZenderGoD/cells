@@ -54,6 +54,7 @@ import {
   clearTerminalOutputRing,
 } from './mcp-bridge'
 import type { TerminalExitDetails } from '../src/types'
+import { normalizeTerminalFontFamily } from '../src/lib/terminal-fonts'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -234,6 +235,52 @@ let quitConfirmed = false
 let quitDialogOpen = false
 let selectedTerminalBackend: TerminalSessionBackend = DEFAULT_TERMINAL_SESSION_BACKEND
 let terminalBackendSupport = getTerminalBackendSupportStatus(selectedTerminalBackend)
+
+function repairLegacyTerminalFontStateEarly() {
+  const statePath = STATE_FILE
+  try {
+    if (!fs.existsSync(statePath)) return false
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8')) as {
+      fontFamily?: string
+      projects?: Array<Record<string, unknown>>
+    }
+
+    let changed = false
+    const normalizedFontFamily = normalizeTerminalFontFamily(state.fontFamily)
+    if (normalizedFontFamily !== state.fontFamily) {
+      state.fontFamily = normalizedFontFamily
+      changed = true
+    }
+
+    if (Array.isArray(state.projects)) {
+      state.projects = state.projects.map((project) => {
+        const next = { ...project }
+        if ('fontFamily' in next) {
+          delete next.fontFamily
+          changed = true
+        }
+        if ('fontSize' in next) {
+          delete next.fontSize
+          changed = true
+        }
+        if ('terminalTheme' in next) {
+          delete next.terminalTheme
+          changed = true
+        }
+        return next
+      })
+    }
+
+    if (changed) {
+      fs.writeFileSync(statePath, JSON.stringify(state, null, 2))
+    }
+    return changed
+  } catch {
+    return false
+  }
+}
+
+repairLegacyTerminalFontStateEarly()
 
 function getSelectedTerminalBackendFromState(state?: Partial<ProjectsState> | null) {
   return normalizeTerminalSessionBackend(
