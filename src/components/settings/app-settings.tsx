@@ -49,7 +49,6 @@ import type { TitleBarPosition } from '@/types'
 import { SETTINGS_SHEET_CLASSNAMES } from './settings-layout'
 import { Dialog, DialogOverlay, DialogPortal } from '../ui/dialog'
 import { ScrollArea } from '../ui/scroll-area'
-import { reloadAllTerminals } from '../terminal/terminal-cache-api'
 
 interface AppSettingsProps {
   open: boolean
@@ -1727,7 +1726,6 @@ function DaemonSection() {
     setRestarting(true)
     try {
       await window.cells.daemon.restart()
-      reloadAllTerminals()
     } finally {
       setRestarting(false)
       setConfirmRestart(false)
