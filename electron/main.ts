@@ -213,6 +213,20 @@ function clearRendererCaches() {
   }
 }
 
+function stopCellsOwnedBackgroundProcesses() {
+  const processMatchers = [
+    ['-f', path.join(process.resourcesPath, 'app.asar/dist-electron/pty-daemon.js')],
+    ['-f', path.join(process.resourcesPath, 'vendor/tmux')],
+    ['-f', path.join(process.resourcesPath, 'vendor/zellij')],
+  ]
+
+  for (const args of processMatchers) {
+    try {
+      execFileSync('pkill', args, { stdio: 'ignore' })
+    } catch {}
+  }
+}
+
 function consumeTerminalFontRepairRequestEarly() {
   if (!app.isPackaged) return false
   const markerFile = path.join(app.getPath('userData'), REPAIR_TERMINAL_FONTS_FILE)
@@ -292,6 +306,16 @@ function repairLegacyTerminalFontStateEarly() {
     if (Array.isArray(state.projects)) {
       state.projects = state.projects.map((project) => {
         const next = { ...project }
+        if (Array.isArray(next.terminals)) {
+          next.terminals = next.terminals.map((terminal) => {
+            const repaired = { ...terminal }
+            if ('restoredOutput' in repaired) {
+              delete repaired.restoredOutput
+              changed = true
+            }
+            return repaired
+          })
+        }
         if ('fontFamily' in next) {
           delete next.fontFamily
           changed = true
@@ -968,6 +992,7 @@ ipcMain.handle('app:relaunch', () => {
 ipcMain.handle('app:repair-terminal-fonts', () => {
   const markerFile = path.join(app.getPath('userData'), REPAIR_TERMINAL_FONTS_FILE)
   fs.writeFileSync(markerFile, '1\n', 'utf8')
+  stopCellsOwnedBackgroundProcesses()
   app.relaunch()
   quitConfirmed = true
   app.quit()
@@ -2615,6 +2640,7 @@ app.whenReady().then(async () => {
   perfMonitor.start()
 
   if (shouldRelaunchAfterEarlyCacheClear) {
+    stopCellsOwnedBackgroundProcesses()
     app.relaunch()
     app.exit(0)
     return

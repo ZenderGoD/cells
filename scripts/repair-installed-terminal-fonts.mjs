@@ -17,6 +17,13 @@ state.fontFamily = nextFont
 if (Array.isArray(state.projects)) {
   state.projects = state.projects.map((project) => {
     const next = { ...project }
+    if (Array.isArray(next.terminals)) {
+      next.terminals = next.terminals.map((terminal) => {
+        const repaired = { ...terminal }
+        delete repaired.restoredOutput
+        return repaired
+      })
+    }
     delete next.fontFamily
     delete next.fontSize
     delete next.terminalTheme
