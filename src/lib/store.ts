@@ -881,11 +881,30 @@ export const useStore = create<StoreState>((set, get) => ({
     if (saved && (saved as any).version === 2) {
       const ps = saved as ProjectsState
       // Migrate old global autoArrangeOnCreate into per-project field
-      const projects = (ps.projects ?? []).map((p) =>
-        p.autoArrangeOnCreate == null && ps.autoArrangeOnCreate != null
-          ? { ...p, autoArrangeOnCreate: ps.autoArrangeOnCreate }
-          : p,
-      )
+      let didStripLegacyProjectSettings = false
+      const projects = (ps.projects ?? []).map((p) => {
+        const legacyProject = p as Project & {
+          fontFamily?: string
+          fontSize?: number
+          terminalTheme?: string
+        }
+        const {
+          fontFamily: _legacyFontFamily,
+          fontSize: _legacyFontSize,
+          terminalTheme: _legacyTheme,
+          ...rest
+        } = legacyProject
+        if (
+          _legacyFontFamily !== undefined ||
+          _legacyFontSize !== undefined ||
+          _legacyTheme !== undefined
+        ) {
+          didStripLegacyProjectSettings = true
+        }
+        return rest.autoArrangeOnCreate == null && ps.autoArrangeOnCreate != null
+          ? { ...rest, autoArrangeOnCreate: ps.autoArrangeOnCreate }
+          : rest
+      })
       const projectLinkSettings = sanitizeProjectLinkSettings(
         projects,
         ps.terminalLinkProjectId,
@@ -896,6 +915,7 @@ export const useStore = create<StoreState>((set, get) => ({
         ? normalizeTerminalSessionBackend(ps.terminalSessionBackend)
         : DEFAULT_TERMINAL_SESSION_BACKEND
 
+      const normalizedFontFamily = normalizeTerminalFontFamily(ps.fontFamily)
       const globalSettings = {
         appDarkTheme: normalizeAppThemeKey(ps.appDarkTheme, 'dark'),
         appLightTheme: normalizeAppThemeKey(ps.appLightTheme, 'light'),
@@ -903,7 +923,7 @@ export const useStore = create<StoreState>((set, get) => ({
         terminalSessionBackendExplicitlySet,
         terminalTheme: terminalThemes[ps.terminalTheme ?? ''] ? ps.terminalTheme! : DEFAULT_THEME,
         fontSize: ps.fontSize || 13,
-        fontFamily: normalizeTerminalFontFamily(ps.fontFamily),
+        fontFamily: normalizedFontFamily,
         terminalScrollbackLines: normalizeTerminalScrollbackLines(ps.terminalScrollbackLines),
         ...normalizeTerminalCursorSettings({
           terminalCursorStyle: ps.terminalCursorStyle,
@@ -955,6 +975,14 @@ export const useStore = create<StoreState>((set, get) => ({
         initialized: true,
       })
       applyColorScheme(globalSettings.colorScheme)
+      if (
+        didStripLegacyProjectSettings ||
+        normalizedFontFamily !== (ps.fontFamily ?? DEFAULT_TERMINAL_FONT_FAMILY)
+      ) {
+        setTimeout(() => {
+          get().persist()
+        }, 0)
+      }
       setTimeout(() => {
         void get().refreshWorktrees()
       }, 0)

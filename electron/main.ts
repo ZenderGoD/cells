@@ -13,7 +13,6 @@ import {
 } from 'electron'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { pathToFileURL } from 'url'
 import fs from 'fs'
 import os from 'os'
 import { randomUUID } from 'crypto'
