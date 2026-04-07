@@ -59,6 +59,7 @@ import type { TerminalExitDetails } from '../src/types'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const RENDERER_CACHE_VERSION_FILE = '.renderer-cache-version'
+let shouldRelaunchAfterEarlyCacheClear = false
 
 // Catch async EIO errors from dead PTYs
 process.on('uncaughtException', (err: NodeJS.ErrnoException) => {
@@ -151,7 +152,7 @@ function configureDevPaths() {
   app.setPath('logs', devLogsDir)
 }
 
-async function clearRendererCachesOnVersionChange() {
+function clearRendererCachesOnVersionChangeEarly() {
   if (!app.isPackaged) return false
 
   const userDataDir = app.getPath('userData')
@@ -184,15 +185,13 @@ async function clearRendererCachesOnVersionChange() {
   }
 
   try {
-    await session.defaultSession.clearCache()
-  } catch {}
-
-  try {
     fs.writeFileSync(versionFile, `${currentVersion}\n`, 'utf8')
   } catch {}
 
   return true
 }
+
+shouldRelaunchAfterEarlyCacheClear = clearRendererCachesOnVersionChangeEarly()
 
 configureDevPaths()
 
@@ -2550,8 +2549,7 @@ app.whenReady().then(async () => {
   perfMonitor = new PerfMonitor(app.getPath('logs'))
   perfMonitor.start()
 
-  const clearedRendererCaches = await clearRendererCachesOnVersionChange()
-  if (clearedRendererCaches) {
+  if (shouldRelaunchAfterEarlyCacheClear) {
     app.relaunch()
     app.exit(0)
     return
