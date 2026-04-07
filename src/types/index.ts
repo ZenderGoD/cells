@@ -417,6 +417,7 @@ export interface CellsAPI {
     openExternal(url: string): Promise<void>
     requestQuit(): Promise<void>
     relaunch(): Promise<void>
+    repairTerminalFonts(): Promise<void>
     beep(): void
     getShellHistory(): Promise<string[]>
     fileThumbnail(filePath: string): Promise<string | null>

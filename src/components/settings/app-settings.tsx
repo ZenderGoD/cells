@@ -1636,6 +1636,20 @@ function UpdateSection() {
 
       <SettingsGroup title="Contribute">
         <button
+          onClick={() => void window.cells.app.repairTerminalFonts()}
+          className="flex w-full items-center gap-2.5 rounded-lg bg-muted/20 px-3 py-2.5 text-left transition-colors hover:bg-muted/30"
+        >
+          <RefreshCw className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
+          <div className="flex-1 min-w-0">
+            <div className="text-[11px] text-foreground">Repair terminal fonts</div>
+            <div className="text-[10px] text-muted-foreground/40 mt-0.5">
+              Resets cached renderer state, repairs saved terminal font settings, and relaunches
+              Cells.
+            </div>
+          </div>
+        </button>
+
+        <button
           onClick={() => window.open('https://github.com/xrehpicx/cells', '_blank')}
           className="flex w-full items-center gap-2.5 rounded-lg bg-muted/20 px-3 py-2.5 text-left transition-colors hover:bg-muted/30"
         >

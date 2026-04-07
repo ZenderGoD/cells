@@ -220,6 +220,7 @@ const api: CellsAPI = {
     openExternal: (url: string) => ipcRenderer.invoke('app:open-external', url),
     requestQuit: () => ipcRenderer.invoke('app:request-quit'),
     relaunch: () => ipcRenderer.invoke('app:relaunch'),
+    repairTerminalFonts: () => ipcRenderer.invoke('app:repair-terminal-fonts'),
     beep: () => ipcRenderer.send('app:beep'),
     getShellHistory: () => ipcRenderer.invoke('app:get-shell-history') as Promise<string[]>,
     fileThumbnail: (filePath: string) =>

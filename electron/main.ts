@@ -59,6 +59,7 @@ import { normalizeTerminalFontFamily } from '../src/lib/terminal-fonts'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const RENDERER_CACHE_VERSION_FILE = '.renderer-cache-version'
+const REPAIR_TERMINAL_FONTS_FILE = '.repair-terminal-fonts'
 let shouldRelaunchAfterEarlyCacheClear = false
 
 // Catch async EIO errors from dead PTYs
@@ -191,7 +192,43 @@ function clearRendererCachesOnVersionChangeEarly() {
   return true
 }
 
-shouldRelaunchAfterEarlyCacheClear = clearRendererCachesOnVersionChangeEarly()
+function clearRendererCaches() {
+  const userDataDir = app.getPath('userData')
+  const cacheEntries = [
+    'Cache',
+    'Code Cache',
+    'GPUCache',
+    'DawnGraphiteCache',
+    'DawnWebGPUCache',
+    'blob_storage',
+    'Session Storage',
+    'Shared Dictionary',
+    'Network Persistent State',
+  ]
+
+  for (const entry of cacheEntries) {
+    try {
+      fs.rmSync(path.join(userDataDir, entry), { recursive: true, force: true })
+    } catch {}
+  }
+}
+
+function consumeTerminalFontRepairRequestEarly() {
+  if (!app.isPackaged) return false
+  const markerFile = path.join(app.getPath('userData'), REPAIR_TERMINAL_FONTS_FILE)
+  if (!fs.existsSync(markerFile)) return false
+  try {
+    fs.rmSync(markerFile, { force: true })
+  } catch {}
+  return true
+}
+
+const shouldRepairTerminalFonts = consumeTerminalFontRepairRequestEarly()
+const shouldClearCachesForVersion = clearRendererCachesOnVersionChangeEarly()
+if (shouldRepairTerminalFonts || shouldClearCachesForVersion) {
+  clearRendererCaches()
+  shouldRelaunchAfterEarlyCacheClear = true
+}
 
 configureDevPaths()
 
@@ -923,6 +960,14 @@ ipcMain.handle('app:request-quit', () => {
 })
 
 ipcMain.handle('app:relaunch', () => {
+  app.relaunch()
+  quitConfirmed = true
+  app.quit()
+})
+
+ipcMain.handle('app:repair-terminal-fonts', () => {
+  const markerFile = path.join(app.getPath('userData'), REPAIR_TERMINAL_FONTS_FILE)
+  fs.writeFileSync(markerFile, '1\n', 'utf8')
   app.relaunch()
   quitConfirmed = true
   app.quit()
