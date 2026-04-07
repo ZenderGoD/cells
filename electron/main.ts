@@ -1450,7 +1450,7 @@ ipcMain.handle('app:file-thumbnail', async (_event, filePath: string) => {
   }
 })
 
-ipcMain.handle('app:get-terminal-font-resources', () => {
+ipcMain.handle('app:get-terminal-font-data', () => {
   const overrideFontDir = process.env.CELLS_TERMINAL_FONT_DIR?.trim()
   const fontDir = overrideFontDir
     ? overrideFontDir
@@ -1472,7 +1472,10 @@ ipcMain.handle('app:get-terminal-font-resources', () => {
   ]
 
   return Object.fromEntries(
-    fonts.map((filename) => [filename, pathToFileURL(path.join(fontDir, filename)).href]),
+    fonts.map((filename) => {
+      const fontPath = path.join(fontDir, filename)
+      return [filename, fs.readFileSync(fontPath).toString('base64')]
+    }),
   )
 })
 
