@@ -153,7 +153,7 @@ function configureDevPaths() {
   app.setPath('logs', devLogsDir)
 }
 
-function clearRendererCachesOnVersionChangeEarly() {
+function shouldClearRendererCachesOnVersionChangeEarly() {
   if (!app.isPackaged) return false
 
   const userDataDir = app.getPath('userData')
@@ -167,29 +167,15 @@ function clearRendererCachesOnVersionChangeEarly() {
 
   if (previousVersion === currentVersion) return false
 
-  const cacheEntries = [
-    'Cache',
-    'Code Cache',
-    'GPUCache',
-    'DawnGraphiteCache',
-    'DawnWebGPUCache',
-    'blob_storage',
-    'Session Storage',
-    'Shared Dictionary',
-    'Network Persistent State',
-  ]
-
-  for (const entry of cacheEntries) {
-    try {
-      fs.rmSync(path.join(userDataDir, entry), { recursive: true, force: true })
-    } catch {}
-  }
-
-  try {
-    fs.writeFileSync(versionFile, `${currentVersion}\n`, 'utf8')
-  } catch {}
-
   return true
+}
+
+function markRendererCachesVersionHandled() {
+  if (!app.isPackaged) return
+  const versionFile = path.join(app.getPath('userData'), RENDERER_CACHE_VERSION_FILE)
+  try {
+    fs.writeFileSync(versionFile, `${app.getVersion()}\n`, 'utf8')
+  } catch {}
 }
 
 function clearRendererCaches() {
@@ -238,11 +224,8 @@ function consumeTerminalFontRepairRequestEarly() {
 }
 
 const shouldRepairTerminalFonts = consumeTerminalFontRepairRequestEarly()
-const shouldClearCachesForVersion = clearRendererCachesOnVersionChangeEarly()
-if (shouldRepairTerminalFonts || shouldClearCachesForVersion) {
-  clearRendererCaches()
-  shouldRelaunchAfterEarlyCacheClear = true
-}
+const shouldClearCachesForVersion = shouldClearRendererCachesOnVersionChangeEarly()
+shouldRelaunchAfterEarlyCacheClear = shouldRepairTerminalFonts || shouldClearCachesForVersion
 
 configureDevPaths()
 
@@ -2641,6 +2624,10 @@ app.whenReady().then(async () => {
 
   if (shouldRelaunchAfterEarlyCacheClear) {
     stopCellsOwnedBackgroundProcesses()
+    clearRendererCaches()
+    if (shouldClearCachesForVersion) {
+      markRendererCachesVersionHandled()
+    }
     app.relaunch()
     app.exit(0)
     return
