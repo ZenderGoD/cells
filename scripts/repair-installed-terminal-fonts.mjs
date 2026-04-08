@@ -7,13 +7,19 @@ const home = os.homedir()
 const statePath = path.join(home, '.cells', 'state.json')
 const userDataDir = path.join(home, 'Library', 'Application Support', 'Cells')
 const nextFont = '"GeistMono NFM", "Geist Mono", monospace'
+const legacyNonNerdFonts = new Set([
+  '"Geist Mono", "SFMono-Regular", "JetBrains Mono", "Menlo", monospace',
+  '"JetBrains Mono", "SFMono-Regular", "Menlo", monospace',
+])
 
 if (!fs.existsSync(statePath)) {
   throw new Error(`Missing state file: ${statePath}`)
 }
 
 const state = JSON.parse(fs.readFileSync(statePath, 'utf8'))
-state.fontFamily = nextFont
+if (!state.fontFamily || legacyNonNerdFonts.has(String(state.fontFamily).trim())) {
+  state.fontFamily = nextFont
+}
 if (Array.isArray(state.projects)) {
   state.projects = state.projects.map((project) => {
     const next = { ...project }

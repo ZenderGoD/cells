@@ -2589,7 +2589,7 @@ export function CellTerminal({
         window.cells.terminal.onData((id, data) => {
           if (id === termId) {
             let nextChunk = data
-            if (getTerminalBackend(term) === 'zellij') {
+            if (usesServerOwnedTerminalState(term)) {
               const parsed = splitZellijHostQueries(
                 backendQueryRemainderRef.current + data,
                 term,
@@ -2991,7 +2991,10 @@ export function CellTerminal({
       term.options.fontFamily = fontFamily
 
       requestAnimationFrame(() => {
+        const renderer = Reflect.get(term, 'renderer') as { remeasureFont?: () => void } | undefined
+        renderer?.remeasureFont?.()
         fitAddonRef.current?.fit()
+        forceTerminalRepaint(term)
       })
     }
   }, [termId, themeName, fontSize, fontFamily, cursorStyle, cursorBlink])
