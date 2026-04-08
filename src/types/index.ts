@@ -56,6 +56,53 @@ export interface TerminalProcessInfo {
   isShell: boolean
 }
 
+export interface TmuxBackendProjectDetails {
+  projectId: string
+  sessionName: string
+  windowCount: number
+  termIds: string[]
+}
+
+export interface TmuxBackendDetails {
+  backend: 'tmux'
+  binaryPath: string | null
+  version: string | null
+  minimumVersion: string
+  socketPath: string
+  configPath: string
+  terminfoDir: string | null
+  terminfoCompiled: boolean
+  serverReachable: boolean
+  projectSessionCount: number
+  viewerSessionCount: number
+  projects: TmuxBackendProjectDetails[]
+}
+
+export interface DaemonVersionInfo {
+  protocolVersion: number
+  compatVersion?: number | null
+  backend?: 'tmux' | 'zellij' | null
+  appVersion: string | null
+  electronVersion: string | null
+  nodeAbi: string | null
+  pid: number
+  uptime: number
+  backendDetails?: TmuxBackendDetails | null
+}
+
+export interface DaemonStatus {
+  enabled: boolean
+  connected: boolean
+  sessionCount: number
+  appVersion: string
+  currentElectronVersion: string | null
+  currentNodeAbi: string
+  restartRecommended: boolean
+  restartReason: string | null
+  daemonVersion: DaemonVersionInfo | null
+  backendDetails: TmuxBackendDetails | null
+}
+
 export interface GitWorktree {
   path: string
   branch: string
@@ -280,24 +327,7 @@ export interface CellsAPI {
     checkAvailable(aliases?: Record<string, string>): Promise<Record<string, boolean>>
   }
   daemon: {
-    getStatus(): Promise<{
-      enabled: boolean
-      connected: boolean
-      sessionCount: number
-      appVersion: string
-      currentElectronVersion: string | null
-      currentNodeAbi: string
-      restartRecommended: boolean
-      restartReason: string | null
-      daemonVersion: {
-        protocolVersion: number
-        appVersion: string | null
-        electronVersion: string | null
-        nodeAbi: string | null
-        pid: number
-        uptime: number
-      } | null
-    }>
+    getStatus(): Promise<DaemonStatus>
     listSessions(): Promise<
       Array<{
         termId: string

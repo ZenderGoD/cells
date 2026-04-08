@@ -2111,6 +2111,25 @@ export function CellTerminal({
           refitTerminalToLoadedFont(cached.term, cached.fitAddon)
         })
 
+        // Same late-font-load watcher as the fresh-terminal path (see
+        // comment there). Cached terminals can also hit the race where the
+        // atlas was populated with fallback glyphs before the @font-face
+        // font finished loading.
+        const cachedPrimaryFont = (fontFamilyRef.current ?? '')
+          .split(',')[0]
+          .trim()
+          .replace(/^["']|["']$/g, '')
+        if (cachedPrimaryFont && !document.fonts.check(`16px "${cachedPrimaryFont}"`)) {
+          const onCachedFontDone = () => {
+            if (cancelled) return
+            if (document.fonts.check(`16px "${cachedPrimaryFont}"`)) {
+              document.fonts.removeEventListener('loadingdone', onCachedFontDone)
+              refitTerminalToLoadedFont(cached.term, cached.fitAddon)
+            }
+          }
+          document.fonts.addEventListener('loadingdone', onCachedFontDone)
+        }
+
         const dims = cached.fitAddon.proposeDimensions()
         let result: Awaited<ReturnType<typeof window.cells.terminal.attach>> | null = null
         if (!backendAttached) {
@@ -2446,7 +2465,33 @@ export function CellTerminal({
         if (cancelled) return
         refitTerminalToLoadedFont(term, fitAddon)
       })
+
+      // @font-face fonts may still be loading after document.fonts.ready
+      // resolves (it only waits for currently-loading fonts, not unloaded
+      // ones). When the terminal font finishes loading later — after the
+      // glyph atlas has already cached fallback glyphs — rebuild the atlas
+      // so Nerd Font icons render correctly instead of showing tofu.
+      let fontLoaded = false
+      const primaryFont = (fontFamilyRef.current ?? '')
+        .split(',')[0]
+        .trim()
+        .replace(/^["']|["']$/g, '')
+      const onFontLoadingDone = () => {
+        if (cancelled || fontLoaded) return
+        if (primaryFont && document.fonts.check(`16px "${primaryFont}"`)) {
+          fontLoaded = true
+          document.fonts.removeEventListener('loadingdone', onFontLoadingDone)
+          refitTerminalToLoadedFont(term, fitAddon)
+        }
+      }
+      if (primaryFont && !document.fonts.check(`16px "${primaryFont}"`)) {
+        document.fonts.addEventListener('loadingdone', onFontLoadingDone)
+      } else {
+        fontLoaded = true
+      }
+
       if (cancelled) {
+        document.fonts.removeEventListener('loadingdone', onFontLoadingDone)
         term.dispose()
         wrapper.remove()
         return
@@ -2589,7 +2634,7 @@ export function CellTerminal({
         window.cells.terminal.onData((id, data) => {
           if (id === termId) {
             let nextChunk = data
-            if (usesServerOwnedTerminalState(term)) {
+            if (getTerminalBackend(term) === 'zellij') {
               const parsed = splitZellijHostQueries(
                 backendQueryRemainderRef.current + data,
                 term,

@@ -232,6 +232,7 @@ export function buildPrivateTmuxConfig(
     'set-option -sg message-style "bg=default,fg=default"',
     'set-option -sg message-command-style "bg=default,fg=default"',
     'set-option -sg bell-action none',
+    'set-option -g exit-empty off',
     'set-option -g status off',
     'set-option -g mouse on',
     'set-option -g prefix None',

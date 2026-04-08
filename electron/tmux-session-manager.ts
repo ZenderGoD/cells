@@ -20,7 +20,7 @@ import {
   resolveTmuxBinary,
   TMUX_MIN_VERSION,
 } from './tmux-shared'
-import type { TerminalProcessInfo } from '../src/types'
+import type { TerminalProcessInfo, TmuxBackendDetails } from '../src/types'
 import type {
   TerminalAttachResult,
   TerminalScrollStatus,
@@ -115,10 +115,12 @@ type TerminalLocation = {
 
 export class TmuxSessionManager implements TerminalSessionManager {
   private readonly tmuxBinary = resolveTmuxBinary()
+  private readonly tmuxVersion: string | null
   private readonly tmuxConfigPath: string
   private readonly socketPath: string
   private readonly tmuxTerm: string
   private readonly terminfoDir: string | null
+  private readonly terminfoCompiled: boolean
   private readonly attachedClients = new Map<string, AttachedClient>()
   private readonly pendingWheelScrolls = new Map<string, PendingWheelScroll>()
   private readonly paneFlagsCache = new Map<string, CachedPaneFlags>()
@@ -130,6 +132,9 @@ export class TmuxSessionManager implements TerminalSessionManager {
     private readonly stateDir: string,
     private readonly hooks: TmuxSessionManagerHooks = {},
   ) {
+    // Boot the app-owned tmux server eagerly so Cells can inspect the private
+    // socket/config at startup, but keep project sessions lazy until a terminal
+    // in that project actually attaches.
     const support = getTmuxSupportStatus()
     if (!support.ok) {
       const detail =
@@ -138,18 +143,28 @@ export class TmuxSessionManager implements TerminalSessionManager {
           : `tmux ${TMUX_MIN_VERSION}+ is required`
       throw new Error(`tmux unavailable: ${detail}`)
     }
+    this.tmuxVersion = support.version
     fs.mkdirSync(stateDir, { recursive: true })
     this.tmuxConfigPath = getPrivateTmuxConfigPath(stateDir)
     this.socketPath = getPrivateTmuxSocketPath(stateDir)
     const terminfo = ensurePrivateTmuxTerminfo(stateDir)
     this.tmuxTerm = terminfo.termName
     this.terminfoDir = terminfo.terminfoDir
+    this.terminfoCompiled = terminfo.compiled
     fs.writeFileSync(
       this.tmuxConfigPath,
       buildPrivateTmuxConfig(resolveShell(), this.tmuxTerm),
       'utf8',
     )
     this.reloadConfig()
+    const backendDetails = this.getBackendDetails()
+    console.info(
+      `[tmux] private backend ready binary=${this.tmuxBinary} version=${this.tmuxVersion ?? 'unknown'} socket=${this.socketPath} config=${this.tmuxConfigPath} terminfo=${
+        this.terminfoCompiled
+          ? `${this.tmuxTerm}@${this.terminfoDir ?? 'unknown'}`
+          : `${this.tmuxTerm} (fallback)`
+      } serverReachable=${backendDetails.serverReachable ? 'yes' : 'no'}`,
+    )
     this.startDetachedSessionPoller()
   }
 
@@ -316,6 +331,45 @@ export class TmuxSessionManager implements TerminalSessionManager {
     const paneTarget = this.getPaneTarget(termId)
     if (!paneTarget) return ''
     return this.execTmux(['capture-pane', '-p', '-J', '-S', '-', '-t', paneTarget], true) ?? ''
+  }
+
+  getBackendDetails(): TmuxBackendDetails {
+    const sessionNames = this.listSessionNames()
+    const liveSessionNames = sessionNames ?? []
+    const projects = liveSessionNames
+      .map((sessionName) => {
+        const projectId = decodeProjectSessionId(sessionName)
+        if (!projectId) return null
+        const windowNames = this.listWindowNames(sessionName)
+        const termIds = windowNames
+          .map((windowName) => decodeWindowName(windowName))
+          .filter((termId): termId is string => Boolean(termId))
+          .sort()
+        return {
+          projectId,
+          sessionName,
+          windowCount: windowNames.length,
+          termIds,
+        }
+      })
+      .filter((project): project is TmuxBackendDetails['projects'][number] => project !== null)
+      .sort((left, right) => left.projectId.localeCompare(right.projectId))
+
+    return {
+      backend: 'tmux',
+      binaryPath: this.tmuxBinary || null,
+      version: this.tmuxVersion,
+      minimumVersion: TMUX_MIN_VERSION,
+      socketPath: this.socketPath,
+      configPath: this.tmuxConfigPath,
+      terminfoDir: this.terminfoDir,
+      terminfoCompiled: this.terminfoCompiled,
+      serverReachable: sessionNames !== null,
+      projectSessionCount: projects.length,
+      viewerSessionCount: liveSessionNames.filter((name) => name.startsWith(VIEWER_SESSION_PREFIX))
+        .length,
+      projects,
+    }
   }
 
   clear(termId: string): void {
@@ -528,6 +582,9 @@ export class TmuxSessionManager implements TerminalSessionManager {
     rows: number,
     cwd?: string,
   ) {
+    // Project sessions are the canonical long-lived state. Create them only on
+    // first terminal attach/spawn for that project, then keep adding windows to
+    // that same session so daemon restarts can rediscover the topology.
     const resolvedCwd = resolveCwd(cwd)
     if (!this.sessionExists(location.projectSession)) {
       this.execTmux([
@@ -574,6 +631,9 @@ export class TmuxSessionManager implements TerminalSessionManager {
   }
 
   private ensureViewerSession(location: TerminalLocation) {
+    // Viewer sessions are disposable per-renderer attach points. They should
+    // never own the canonical project state; they only let multiple visible
+    // Cells terminals attach independently to the same project session.
     if (!this.sessionExists(location.viewerSession)) {
       this.execTmux([
         'new-session',
@@ -597,26 +657,30 @@ export class TmuxSessionManager implements TerminalSessionManager {
     return this.execTmux(['has-session', '-t', sessionName], true) !== null
   }
 
-  private windowExists(location: TerminalLocation) {
-    const output = this.execTmux(
-      ['list-windows', '-t', location.projectSession, '-F', '#{window_name}'],
-      true,
-    )
-    if (!output) return false
+  private listSessionNames() {
+    const output = this.execTmux(['list-sessions', '-F', '#{session_name}'], true)
+    if (output === null) return null
     return output
       .split('\n')
       .map((line) => line.trim())
       .filter(Boolean)
-      .includes(location.windowName)
   }
 
-  private getWindowCount(sessionName: string) {
+  private listWindowNames(sessionName: string) {
     const output = this.execTmux(['list-windows', '-t', sessionName, '-F', '#{window_name}'], true)
-    if (!output) return 0
+    if (!output) return [] as string[]
     return output
       .split('\n')
       .map((line) => line.trim())
-      .filter(Boolean).length
+      .filter(Boolean)
+  }
+
+  private windowExists(location: TerminalLocation) {
+    return this.listWindowNames(location.projectSession).includes(location.windowName)
+  }
+
+  private getWindowCount(sessionName: string) {
+    return this.listWindowNames(sessionName).length
   }
 
   private getWindowTarget(location: TerminalLocation) {
@@ -634,6 +698,10 @@ export class TmuxSessionManager implements TerminalSessionManager {
   }
 
   private reloadConfig() {
+    // Always target the private Cells socket/config. `start-server` plus
+    // `exit-empty off` keeps the app-owned server reachable even before any
+    // project session exists, and lets a restarted daemon reuse that same
+    // server without prewarming project sessions.
     this.execTmux(['start-server'], true)
     this.execTmux(['source-file', this.tmuxConfigPath], true)
   }

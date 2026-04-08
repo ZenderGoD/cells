@@ -236,6 +236,10 @@ export class PtySessionManager implements TerminalSessionManager {
     return history ? history.chunks.join('') : ''
   }
 
+  getBackendDetails() {
+    return null
+  }
+
   clear(termId: string): void {
     this.buffers.delete(termId)
     this.histories.delete(termId)

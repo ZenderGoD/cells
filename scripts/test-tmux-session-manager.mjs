@@ -108,6 +108,52 @@ function killTmuxServer(tmuxBinary, socketPath) {
   } catch {}
 }
 
+function runTmux(tmuxBinary, socketPath, args) {
+  return execFileSync(tmuxBinary, ['-S', socketPath, ...args], {
+    cwd: process.cwd(),
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+}
+
+async function waitForSocketPath(socketPath) {
+  await waitFor(async () => {
+    try {
+      await fs.access(socketPath)
+      return true
+    } catch {
+      return false
+    }
+  }, 8000)
+}
+
+function startTmuxDaemon(stateDir, tmuxBinary, appVersion, extraEnv = {}) {
+  return spawn(process.execPath, ['dist-electron/pty-daemon.js'], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      CELLS_TMUX_BINARY: tmuxBinary,
+      CELLS_HOME_DIR: stateDir,
+      CELLS_APP_VERSION: appVersion,
+      CELLS_TERMINAL_BACKEND: 'tmux',
+      ...extraEnv,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+}
+
+async function waitForTmuxBackendDetails(client, predicate) {
+  return waitFor(async () => {
+    const version = await client.request('get-daemon-version')
+    const details = version?.backendDetails ?? null
+    return details && predicate(details) ? details : null
+  })
+}
+
+function getProjectDetails(details, projectId) {
+  return details.projects.find((project) => project.projectId === projectId) ?? null
+}
+
 async function removeDirWithRetry(dirPath, attempts = 5) {
   let lastError = null
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -239,19 +285,15 @@ test('tmux daemon preserves a session across detach and reattach', async () => {
   const expectedShell = getExpectedUserShell()
 
   try {
-    await waitFor(async () => {
-      try {
-        await fs.access(socketPath)
-        return true
-      } catch {
-        return false
-      }
-    }, 8000)
+    await waitForSocketPath(socketPath)
     await client.connect()
 
     const version = await client.request('get-daemon-version')
     assert.equal(version.compatVersion, 10)
     assert.equal(version.backend, 'tmux')
+    assert.equal(version.backendDetails?.serverReachable, true)
+    assert.equal(version.backendDetails?.projectSessionCount, 0)
+    assert.equal(version.backendDetails?.viewerSessionCount, 0)
 
     const firstAttach = await client.request('attach', {
       termId,
@@ -293,6 +335,7 @@ test('tmux daemon preserves a session across detach and reattach', async () => {
     assert.match(tmuxConfig, /^set-option -sg message-style "bg=default,fg=default"$/m)
     assert.match(tmuxConfig, /^set-option -sg message-command-style "bg=default,fg=default"$/m)
     assert.match(tmuxConfig, /^set-option -sg bell-action none$/m)
+    assert.match(tmuxConfig, /^set-option -g exit-empty off$/m)
     assert.match(tmuxConfig, /^set-option -g focus-events on$/m)
     assert.match(tmuxConfig, /^set-option -g extended-keys on$/m)
     assert.match(tmuxConfig, /^set-option -g monitor-activity off$/m)
@@ -450,6 +493,15 @@ test('tmux daemon preserves a session across detach and reattach', async () => {
     client.send('unsubscribe', { termId })
     await delay(200)
 
+    const detachedDetails = await waitForTmuxBackendDetails(
+      client,
+      (details) =>
+        details.projectSessionCount === 1 &&
+        details.viewerSessionCount === 0 &&
+        getProjectDetails(details, projectId)?.windowCount === 1,
+    )
+    assert.equal(detachedDetails.projects[0]?.termIds.includes(termId), true)
+
     const listed = await client.request('list')
     assert.ok(listed.includes(termId))
 
@@ -488,30 +540,23 @@ test('tmux daemon preserves a session across detach and reattach', async () => {
   assert.equal(stderr.trim(), '')
 })
 
-test('tmux daemon keeps multiple terminals under one private socket', async () => {
+test('tmux daemon keeps a shared private server across projects and daemon restarts', async () => {
   const bundledTmux = getBundledTmuxBinary()
   assert.ok(bundledTmux, 'bundled tmux should be available after build')
 
   const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cells-tmux-daemon-multi-test-'))
   const socketPath = path.join(stateDir, 'pty-daemon.sock')
-  const daemon = spawn(process.execPath, ['dist-electron/pty-daemon.js'], {
-    cwd: process.cwd(),
-    env: {
-      ...process.env,
-      CELLS_TMUX_BINARY: bundledTmux,
-      CELLS_HOME_DIR: stateDir,
-      CELLS_APP_VERSION: 'tmux-multi-session-test',
-      CELLS_TERMINAL_BACKEND: 'tmux',
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  })
+  let daemon = startTmuxDaemon(stateDir, bundledTmux, 'tmux-multi-session-test')
 
   let stderr = ''
-  daemon.stderr.on('data', (chunk) => {
-    stderr += chunk.toString()
-  })
+  const captureStderr = (child) => {
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString()
+    })
+  }
+  captureStderr(daemon)
 
-  const client = new DaemonClient(socketPath)
+  let client = new DaemonClient(socketPath)
   const termA = `multi-a-${Date.now()}`
   const termB = `multi-b-${Date.now()}`
   const termC = `multi-c-${Date.now()}`
@@ -519,93 +564,183 @@ test('tmux daemon keeps multiple terminals under one private socket', async () =
   const projectB = 'project-b'
 
   try {
-    await waitFor(async () => {
-      try {
-        await fs.access(socketPath)
-        return true
-      } catch {
-        return false
-      }
-    }, 8000)
+    await waitForSocketPath(socketPath)
     await client.connect()
 
-    await client.request('attach', {
+    const initialVersion = await client.request('get-daemon-version')
+    assert.equal(initialVersion.compatVersion, 10)
+    assert.equal(initialVersion.backend, 'tmux')
+    assert.equal(initialVersion.backendDetails?.binaryPath, bundledTmux)
+    assert.ok(initialVersion.backendDetails?.version)
+    assert.equal(initialVersion.backendDetails?.socketPath, path.join(stateDir, 'tmux.sock'))
+    assert.equal(initialVersion.backendDetails?.configPath, path.join(stateDir, 'tmux.conf'))
+    assert.equal(initialVersion.backendDetails?.serverReachable, true)
+    assert.equal(initialVersion.backendDetails?.projectSessionCount, 0)
+    assert.equal(initialVersion.backendDetails?.viewerSessionCount, 0)
+    assert.deepEqual(initialVersion.backendDetails?.projects, [])
+    assert.equal(
+      runTmux(bundledTmux, path.join(stateDir, 'tmux.sock'), ['list-sessions', '-F', '#{session_name}']).trim(),
+      '',
+    )
+
+    const firstAttachA = await client.request('attach', {
       termId: termA,
       cols: 80,
       rows: 24,
       cwd: stateDir,
       projectId: projectA,
     })
-    await client.request('attach', {
+    assert.equal(firstAttachA.backend, 'tmux')
+    assert.equal(firstAttachA.reattached, false)
+
+    const afterFirstAttach = await waitForTmuxBackendDetails(
+      client,
+      (details) =>
+        details.projectSessionCount === 1 &&
+        details.viewerSessionCount === 1 &&
+        getProjectDetails(details, projectA)?.windowCount === 1,
+    )
+    assert.equal(getProjectDetails(afterFirstAttach, projectA)?.sessionName, encodeTmuxProjectSessionId(projectA))
+    assert.deepEqual(getProjectDetails(afterFirstAttach, projectA)?.termIds, [termA])
+
+    const firstAttachB = await client.request('attach', {
       termId: termB,
       cols: 100,
       rows: 30,
       cwd: stateDir,
       projectId: projectA,
     })
-    await client.request('attach', {
+    assert.equal(firstAttachB.backend, 'tmux')
+    assert.equal(firstAttachB.reattached, false)
+
+    const afterSecondAttach = await waitForTmuxBackendDetails(
+      client,
+      (details) =>
+        details.projectSessionCount === 1 &&
+        details.viewerSessionCount === 2 &&
+        getProjectDetails(details, projectA)?.windowCount === 2,
+    )
+    assert.deepEqual(getProjectDetails(afterSecondAttach, projectA)?.termIds, [termA, termB].sort())
+
+    const firstAttachC = await client.request('attach', {
       termId: termC,
       cols: 90,
       rows: 28,
       cwd: stateDir,
       projectId: projectB,
     })
+    assert.equal(firstAttachC.backend, 'tmux')
+    assert.equal(firstAttachC.reattached, false)
 
-    const listed = await waitFor(async () => {
+    const afterProjectB = await waitForTmuxBackendDetails(
+      client,
+      (details) =>
+        details.projectSessionCount === 2 &&
+        details.viewerSessionCount === 3 &&
+        getProjectDetails(details, projectA)?.windowCount === 2 &&
+        getProjectDetails(details, projectB)?.windowCount === 1,
+    )
+    assert.deepEqual(getProjectDetails(afterProjectB, projectB)?.termIds, [termC])
+
+    client.send('unsubscribe', { termId: termA })
+    const afterDetach = await waitForTmuxBackendDetails(
+      client,
+      (details) =>
+        details.projectSessionCount === 2 &&
+        details.viewerSessionCount === 2 &&
+        getProjectDetails(details, projectA)?.windowCount === 2 &&
+        getProjectDetails(details, projectB)?.windowCount === 1,
+    )
+    assert.deepEqual(getProjectDetails(afterDetach, projectA)?.termIds, [termA, termB].sort())
+
+    const listedBeforeRestart = await waitFor(async () => {
       const current = await client.request('list')
       return current.includes(termA) && current.includes(termB) && current.includes(termC)
         ? current
         : null
     })
-    assert.ok(listed.includes(termA))
-    assert.ok(listed.includes(termB))
-    assert.ok(listed.includes(termC))
+    assert.deepEqual(listedBeforeRestart.sort(), [termA, termB, termC].sort())
 
-    const sessions = execFileSync(
-      bundledTmux,
-      ['-S', path.join(stateDir, 'tmux.sock'), 'list-sessions', '-F', '#{session_name}'],
-      {
-        cwd: process.cwd(),
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-      },
+    await client.request('shutdown')
+    client.close()
+    await stopChild(daemon)
+
+    daemon = startTmuxDaemon(stateDir, bundledTmux, 'tmux-multi-session-test')
+    captureStderr(daemon)
+    client = new DaemonClient(socketPath)
+    await waitForSocketPath(socketPath)
+    await client.connect()
+
+    const afterRestart = await waitForTmuxBackendDetails(
+      client,
+      (details) =>
+        details.serverReachable &&
+        details.projectSessionCount === 2 &&
+        details.viewerSessionCount === 0 &&
+        getProjectDetails(details, projectA)?.windowCount === 2 &&
+        getProjectDetails(details, projectB)?.windowCount === 1,
     )
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
+    assert.deepEqual(getProjectDetails(afterRestart, projectA)?.termIds, [termA, termB].sort())
+    assert.deepEqual(getProjectDetails(afterRestart, projectB)?.termIds, [termC])
 
-    const projectSessions = sessions.filter((session) => session.startsWith('cp_'))
-    const viewerSessions = sessions.filter((session) => session.startsWith('cv_'))
-    assert.deepEqual(
-      projectSessions.sort(),
-      [encodeTmuxProjectSessionId(projectA), encodeTmuxProjectSessionId(projectB)].sort(),
+    const listedAfterRestart = await client.request('list')
+    assert.deepEqual(listedAfterRestart.sort(), [termA, termB, termC].sort())
+
+    const reattachA = await client.request('attach', {
+      termId: termA,
+      cols: 80,
+      rows: 24,
+      cwd: stateDir,
+      projectId: projectA,
+    })
+    assert.equal(reattachA.backend, 'tmux')
+    assert.equal(reattachA.reattached, true)
+
+    const afterReattach = await waitForTmuxBackendDetails(
+      client,
+      (details) =>
+        details.projectSessionCount === 2 &&
+        details.viewerSessionCount === 1 &&
+        getProjectDetails(details, projectA)?.windowCount === 2,
     )
-    assert.equal(viewerSessions.length, 3)
+    assert.deepEqual(getProjectDetails(afterReattach, projectA)?.termIds, [termA, termB].sort())
 
-    const projectAWindows = execFileSync(
-      bundledTmux,
-      [
-        '-S',
-        path.join(stateDir, 'tmux.sock'),
-        'list-windows',
-        '-t',
-        encodeTmuxProjectSessionId(projectA),
-        '-F',
-        '#{window_name}',
-      ],
-      {
-        cwd: process.cwd(),
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-      },
+    await client.request('kill', { termId: termB })
+    const afterKillB = await waitForTmuxBackendDetails(
+      client,
+      (details) =>
+        details.projectSessionCount === 2 &&
+        details.viewerSessionCount === 1 &&
+        getProjectDetails(details, projectA)?.windowCount === 1 &&
+        getProjectDetails(details, projectB)?.windowCount === 1,
     )
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
+    assert.deepEqual(getProjectDetails(afterKillB, projectA)?.termIds, [termA])
 
-    assert.deepEqual(
-      projectAWindows.sort(),
-      [encodeTmuxWindowName(termA), encodeTmuxWindowName(termB)].sort(),
+    await client.request('kill', { termId: termA })
+    const afterKillA = await waitForTmuxBackendDetails(
+      client,
+      (details) =>
+        details.projectSessionCount === 1 &&
+        details.viewerSessionCount === 0 &&
+        !getProjectDetails(details, projectA) &&
+        getProjectDetails(details, projectB)?.windowCount === 1,
+    )
+    assert.deepEqual(afterKillA.projects.map((project) => project.projectId), [projectB])
+
+    await client.request('kill', { termId: termC })
+    const afterKillC = await waitForTmuxBackendDetails(
+      client,
+      (details) =>
+        details.serverReachable &&
+        details.projectSessionCount === 0 &&
+        details.viewerSessionCount === 0 &&
+        details.projects.length === 0,
+    )
+    assert.deepEqual(afterKillC.projects, [])
+    assert.deepEqual(await client.request('list'), [])
+    assert.equal(
+      runTmux(bundledTmux, path.join(stateDir, 'tmux.sock'), ['list-sessions', '-F', '#{session_name}']).trim(),
+      '',
     )
 
     await client.request('shutdown')

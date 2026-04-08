@@ -1,4 +1,4 @@
-import type { TerminalProcessInfo } from '../src/types'
+import type { TerminalProcessInfo, TmuxBackendDetails } from '../src/types'
 
 export type TerminalAttachBackend = 'replay' | 'tmux' | 'zellij'
 
@@ -17,6 +17,8 @@ export type TerminalScrollStatus = {
   mouseAnyFlag?: boolean
   alternateOn?: boolean
 }
+
+export type TerminalBackendDetails = TmuxBackendDetails | null
 
 export interface TerminalSessionManager {
   spawn(
@@ -48,6 +50,7 @@ export interface TerminalSessionManager {
   getCodexTitle(termId: string): string | null
   getBuffer(termId: string): string
   getHistory(termId: string): string
+  getBackendDetails(): TerminalBackendDetails
   clear(termId: string): void
   cleanup(): void
 }

@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type {
   CellsAPI,
+  DaemonStatus,
   PerfEventRecord,
   PerfMonitorStatus,
   ProjectsState,
@@ -300,25 +301,7 @@ const api: CellsAPI = {
     },
   },
   daemon: {
-    getStatus: () =>
-      ipcRenderer.invoke('daemon:get-status') as Promise<{
-        enabled: boolean
-        connected: boolean
-        sessionCount: number
-        appVersion: string
-        currentElectronVersion: string | null
-        currentNodeAbi: string
-        restartRecommended: boolean
-        restartReason: string | null
-        daemonVersion: {
-          protocolVersion: number
-          appVersion: string | null
-          electronVersion: string | null
-          nodeAbi: string | null
-          pid: number
-          uptime: number
-        } | null
-      }>,
+    getStatus: () => ipcRenderer.invoke('daemon:get-status') as Promise<DaemonStatus>,
     listSessions: () =>
       ipcRenderer.invoke('daemon:list-sessions') as Promise<
         Array<{

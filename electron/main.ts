@@ -20,7 +20,7 @@ import { execFileSync, spawnSync } from 'child_process'
 import { autoUpdater } from 'electron-updater'
 import { PtyDaemonClient } from './pty-client'
 import { ensureDaemon } from './daemon-lifecycle'
-import { getDaemonRestartReason } from './pty-daemon-contract'
+import { getDaemonRestartReason, type PtyDaemonVersionInfo } from './pty-daemon-contract'
 import { PerfMonitor, type RendererPerfReport, type TerminalPerfReport } from './perf-monitor'
 import type { TerminalSessionManager } from './terminal-session-manager'
 import type { ProjectsState, TerminalSessionBackend } from '../src/types'
@@ -2488,15 +2488,7 @@ ipcMain.handle('updater:set-auto-update', (_event, enabled: boolean) => {
 
 ipcMain.handle('daemon:get-status', async () => {
   const connected = useDaemon && (daemonClient?.isConnected() ?? false)
-  let daemonVersion: {
-    protocolVersion: number
-    backend?: 'tmux' | 'zellij' | null
-    appVersion: string | null
-    electronVersion: string | null
-    nodeAbi: string | null
-    pid: number
-    uptime: number
-  } | null = null
+  let daemonVersion: PtyDaemonVersionInfo | null = null
   let sessionCount = 0
   if (connected && daemonClient) {
     ;[daemonVersion, sessionCount] = await Promise.all([
@@ -2522,6 +2514,7 @@ ipcMain.handle('daemon:get-status', async () => {
     restartRecommended: restartReason !== null,
     restartReason,
     daemonVersion,
+    backendDetails: daemonVersion?.backendDetails ?? null,
   }
 })
 

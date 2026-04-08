@@ -108,6 +108,9 @@ function bufferTerminalData(termId: string, data: string) {
   }
 }
 
+// The backend manager owns canonical terminal state for this daemon lifetime.
+// In tmux mode that constructor boots the private Cells tmux server immediately
+// but still leaves per-project session creation lazy until terminal attach.
 const sessionManager = createTerminalSessionManager(BACKEND, STATE_DIR, {
   onData(termId, data) {
     bufferTerminalData(termId, data)
@@ -359,6 +362,7 @@ function handleMessage(socket: net.Socket, msg: any) {
         nodeAbi: process.versions.modules ?? null,
         pid: process.pid,
         uptime: Math.floor(process.uptime()),
+        backendDetails: sessionManager.getBackendDetails(),
       })
       break
     }
@@ -442,8 +446,9 @@ function gracefulShutdown() {
   }
   flushPendingData()
   // The daemon owns attach-side client PTYs, not the canonical backend
-  // sessions themselves. On shutdown we detach clients and leave tmux/Zellij
-  // sessions alive so a restarted daemon can reconnect cleanly.
+  // sessions themselves. On shutdown we only tear down disposable viewer/client
+  // attachments and leave the private tmux server plus project sessions alive
+  // so a restarted daemon can rediscover and reattach to the same backend state.
   sessionManager.cleanup()
   cleanup()
   process.exit(0)

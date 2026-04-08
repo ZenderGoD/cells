@@ -314,6 +314,10 @@ export class ZellijSessionManager implements TerminalSessionManager {
     return this.execZellijSession(termId, ['action', 'dump-screen', '--full'], true) ?? ''
   }
 
+  getBackendDetails() {
+    return null
+  }
+
   clear(termId: string): void {
     this.knownSessions.delete(termId)
     this.sessionNames.delete(termId)

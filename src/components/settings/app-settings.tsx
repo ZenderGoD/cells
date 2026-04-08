@@ -17,7 +17,7 @@ import {
   X,
 } from 'lucide-react'
 
-import type { ExtensionMeta, InputPrefix } from '@/types'
+import type { DaemonStatus, ExtensionMeta, InputPrefix } from '@/types'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -1690,24 +1690,7 @@ function formatUptime(seconds: number): string {
 }
 
 function DaemonSection() {
-  const [status, setStatus] = useState<{
-    enabled: boolean
-    connected: boolean
-    sessionCount: number
-    appVersion: string
-    currentElectronVersion: string | null
-    currentNodeAbi: string
-    restartRecommended: boolean
-    restartReason: string | null
-    daemonVersion: {
-      protocolVersion: number
-      appVersion: string | null
-      electronVersion: string | null
-      nodeAbi: string | null
-      pid: number
-      uptime: number
-    } | null
-  } | null>(null)
+  const [status, setStatus] = useState<DaemonStatus | null>(null)
   const [sessions, setSessions] = useState<DaemonSession[]>([])
   const [loading, setLoading] = useState(false)
   const [restarting, setRestarting] = useState(false)

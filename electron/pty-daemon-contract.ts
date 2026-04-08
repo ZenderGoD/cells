@@ -1,3 +1,5 @@
+import type { TmuxBackendDetails } from '../src/types'
+
 export const PTY_DAEMON_PROTOCOL_VERSION = 2
 
 // Bump this when a new Cells build can no longer safely reuse a daemon from an
@@ -16,6 +18,7 @@ export interface PtyDaemonVersionInfo {
   nodeAbi: string | null
   pid: number
   uptime: number
+  backendDetails?: TmuxBackendDetails | null
 }
 
 export type PtyDaemonRestartReason =

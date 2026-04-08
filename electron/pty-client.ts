@@ -9,6 +9,7 @@
 
 import net from 'net'
 import type { TerminalProcessInfo } from '../src/types'
+import type { PtyDaemonVersionInfo } from './pty-daemon-contract'
 import type { TerminalScrollStatus } from './terminal-session-manager'
 
 const REQUEST_TIMEOUT = 5000
@@ -200,16 +201,7 @@ export class PtyDaemonClient {
     return this.request('get-scroll-status', { termId })
   }
 
-  async getDaemonVersion(): Promise<{
-    protocolVersion: number
-    compatVersion?: number | null
-    backend?: 'tmux' | 'zellij' | null
-    appVersion: string | null
-    electronVersion: string | null
-    nodeAbi: string | null
-    pid: number
-    uptime: number
-  } | null> {
+  async getDaemonVersion(): Promise<PtyDaemonVersionInfo | null> {
     try {
       return await this.request('get-daemon-version', {})
     } catch {
