@@ -1129,14 +1129,12 @@ export class TerminalStatusMonitor {
     line: string,
     agentPid: number | null,
   ) {
-    let parsed: Record<string, unknown> | null = null
+    let parsed: Record<string, unknown>
     try {
       parsed = JSON.parse(line) as Record<string, unknown>
     } catch {
       return
     }
-
-    if (!parsed) return
 
     if (
       (typeof parsed.id === 'number' || typeof parsed.id === 'string') &&
@@ -1444,7 +1442,7 @@ export class TerminalStatusMonitor {
           // If we know the launch time, prefer the session created around then
           if (launch.startedAt) {
             const match = sorted.find(
-              (s: { createdAt: number }) => s.createdAt >= launch.startedAt! - 10_000,
+              (s: { createdAt?: number }) => (s.createdAt ?? 0) >= launch.startedAt! - 10_000,
             )
             if (match) {
               session = { sessionId: (match as { sessionId: string }).sessionId, cwd: launch.cwd }
@@ -1540,7 +1538,7 @@ export class TerminalStatusMonitor {
 
     if (!cwd) return fallback()
 
-    let session: OpenCodeSessionRow | null = null
+    let session: OpenCodeSessionRow | null
     try {
       session = await discoverOpenCodeSession(cwd, launch)
     } catch {
@@ -1578,7 +1576,7 @@ export class TerminalStatusMonitor {
 
     if (!cwd) return fallback()
 
-    let session: PiSessionRow | null = null
+    let session: PiSessionRow | null
     try {
       session = await discoverPiSession(cwd, launch)
     } catch {

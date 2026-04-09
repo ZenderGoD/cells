@@ -1911,6 +1911,7 @@ export function CellTerminal({
 
             if (usesServerOwnedState) {
               Reflect.set(term, '__cellsPendingReattachReset', true)
+              // eslint-disable-next-line react-hooks/immutability -- recursive setTimeout; safe at runtime
               scheduleServerOwnedAttachRecovery(term, cols, rows, cwd, attempt + 1)
               return
             }
@@ -1923,6 +1924,7 @@ export function CellTerminal({
           } catch (error) {
             console.warn(`Terminal ${termId} attach recovery failed`, error)
             if (terminalRef.current === term) {
+              // eslint-disable-next-line react-hooks/immutability -- recursive setTimeout; safe at runtime
               scheduleServerOwnedAttachRecovery(term, cols, rows, cwd, attempt + 1)
             }
           }
@@ -1931,7 +1933,6 @@ export function CellTerminal({
     },
     [getAttachProjectId, termId],
   )
-
   const refreshTerminalSearch = useCallback(() => {
     const term = getLiveTerminal()
     if (!term) return
