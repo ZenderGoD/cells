@@ -1,62 +1,233 @@
-import type { AgentStatus } from '@/types'
+import type { AgentName, AgentStatus, TerminalRuntimeStatus } from '@/types'
 
-/**
- * Centralized status indicator styles for terminals and windows.
- *
- * Determines the visual indicator based on:
- *   - agentStatus: 'active' | 'unread' | 'done' | null
- *   - agent: whether this terminal is running an agent (claude/codex)
- *   - processRunning: whether a non-shell process is running
- *
- * Rules:
- *   1. Agent status always takes priority when set
- *   2. processRunning only shows for non-agent terminals
- *   3. No indicator when agent is idle and user has seen it (null)
- */
+export type ProjectAttention = 'approval' | 'error' | 'waiting' | 'working' | 'done' | null
 
-export interface StatusIndicator {
-  /** Tailwind ring classes for minimap/window borders */
+export interface StatusPresentation {
   ringClass: string
-  /** Tailwind classes for a small dot (toolbar, switcher) */
   dotClass: string
-  /** Accessible label */
+  pillClass: string
   label: string
+  detail: string
+  projectAttention: ProjectAttention
 }
 
-const NONE: StatusIndicator = { ringClass: '', dotClass: '', label: '' }
-
-const ACTIVE: StatusIndicator = {
-  ringClass: 'ring-1 ring-primary/80 animate-pulse',
-  dotClass: 'bg-primary/90 animate-pulse',
-  label: 'Agent working',
+const NONE: StatusPresentation = {
+  ringClass: '',
+  dotClass: '',
+  pillClass: '',
+  label: '',
+  detail: '',
+  projectAttention: null,
 }
 
-const UNREAD: StatusIndicator = {
-  ringClass: 'ring-1 ring-amber-500/50',
-  dotClass: 'bg-amber-500/70',
-  label: 'Agent has unread output',
+const AGENT_LABELS: Record<AgentName, string> = {
+  claude: 'Claude',
+  codex: 'Codex',
+  opencode: 'OpenCode',
+  pi: 'Pi',
 }
 
-const DONE: StatusIndicator = {
-  ringClass: 'ring-1 ring-emerald-400/90',
-  dotClass: 'bg-emerald-400',
-  label: 'Agent finished',
+function legacyToRuntimeStatus(
+  runtimeStatus?: TerminalRuntimeStatus | null,
+  fallback?: {
+    agent?: AgentName | null
+    agentStatus?: AgentStatus | undefined
+    processRunning?: boolean | undefined
+  },
+): TerminalRuntimeStatus | null {
+  if (runtimeStatus) return runtimeStatus
+  if (fallback?.agentStatus === 'active') {
+    return {
+      kind: 'agent',
+      agent: fallback.agent ?? null,
+      state: 'working',
+      detail: 'Working',
+      shortLabel: 'Working',
+      source: 'legacy',
+      updatedAt: 0,
+    }
+  }
+  if (fallback?.agentStatus === 'unread') {
+    return {
+      kind: 'agent',
+      agent: fallback.agent ?? null,
+      state: 'waiting',
+      detail: 'Waiting for input',
+      shortLabel: 'Waiting',
+      source: 'legacy',
+      updatedAt: 0,
+      attention: true,
+    }
+  }
+  if (fallback?.agentStatus === 'done') {
+    return {
+      kind: 'agent',
+      agent: fallback.agent ?? null,
+      state: 'done',
+      detail: 'Done',
+      shortLabel: 'Done',
+      source: 'legacy',
+      updatedAt: 0,
+    }
+  }
+  if (!fallback?.agent && fallback?.processRunning) {
+    return {
+      kind: 'process',
+      detail: 'Running',
+      shortLabel: 'Running',
+      source: 'legacy',
+      updatedAt: 0,
+    }
+  }
+  if (fallback?.agent) {
+    return {
+      kind: 'agent',
+      agent: fallback.agent,
+      state: 'working',
+      detail: 'Working',
+      shortLabel: 'Working',
+      source: 'fallback:agent-brand',
+      updatedAt: 0,
+      attention: false,
+    }
+  }
+  return null
 }
 
-const PROCESS: StatusIndicator = {
-  ringClass: 'ring-1 ring-white/15',
-  dotClass: 'bg-white/20',
-  label: 'Process running',
+function getProjectAttention(runtimeStatus: TerminalRuntimeStatus | null): ProjectAttention {
+  if (runtimeStatus?.kind !== 'agent') return null
+  if (runtimeStatus.source === 'fallback:agent-brand') return null
+  switch (runtimeStatus.state) {
+    case 'approval':
+      return 'approval'
+    case 'error':
+      return 'error'
+    case 'waiting':
+      return 'waiting'
+    case 'working':
+      return 'working'
+    case 'done':
+      return 'done'
+    default:
+      return null
+  }
 }
 
-export function getStatusIndicator(
-  agentStatus: AgentStatus | undefined,
-  agent: string | null | undefined,
-  processRunning: boolean | undefined,
-): StatusIndicator {
-  if (agentStatus === 'active') return ACTIVE
-  if (agentStatus === 'unread') return UNREAD
-  if (agentStatus === 'done') return DONE
-  if (!agent && processRunning) return PROCESS
-  return NONE
+function formatStatusDetail(runtimeStatus: TerminalRuntimeStatus | null) {
+  if (!runtimeStatus) return ''
+  if (runtimeStatus.kind === 'agent') {
+    const label = runtimeStatus.agent ? AGENT_LABELS[runtimeStatus.agent] : 'Agent'
+    return `${label} · ${runtimeStatus.detail}`
+  }
+  if (runtimeStatus.kind === 'process') {
+    return `${runtimeStatus.processLabel || 'Process'} · ${runtimeStatus.detail}`
+  }
+  return runtimeStatus.detail
+}
+
+export function getStatusPresentation(
+  runtimeStatus?: TerminalRuntimeStatus | null,
+  fallback?: {
+    agent?: AgentName | null
+    agentStatus?: AgentStatus | undefined
+    processRunning?: boolean | undefined
+  },
+): StatusPresentation {
+  const resolved = legacyToRuntimeStatus(runtimeStatus, fallback)
+  if (!resolved) return NONE
+
+  const detail = formatStatusDetail(resolved)
+  const attention = getProjectAttention(resolved)
+
+  if (resolved.kind === 'process') {
+    return {
+      ringClass: 'ring-1 ring-white/15',
+      dotClass: 'bg-white/35',
+      pillClass: 'border-white/12 bg-white/8 text-foreground/55',
+      label: detail || 'Process running',
+      detail,
+      projectAttention: null,
+    }
+  }
+
+  switch (resolved.state) {
+    case 'approval':
+      return {
+        ringClass: 'ring-1 ring-amber-500/70',
+        dotClass: 'bg-amber-400',
+        pillClass: 'border-amber-500/25 bg-amber-500/10 text-amber-200',
+        label: detail || 'Approval needed',
+        detail,
+        projectAttention: attention,
+      }
+    case 'error':
+      return {
+        ringClass: 'ring-1 ring-rose-500/70',
+        dotClass: 'bg-rose-400',
+        pillClass: 'border-rose-500/25 bg-rose-500/10 text-rose-200',
+        label: detail || 'Agent error',
+        detail,
+        projectAttention: attention,
+      }
+    case 'waiting':
+      return {
+        ringClass: 'ring-1 ring-sky-500/65',
+        dotClass: 'bg-sky-400',
+        pillClass: 'border-sky-500/25 bg-sky-500/10 text-sky-200',
+        label: detail || 'Waiting for input',
+        detail,
+        projectAttention: attention,
+      }
+    case 'done':
+      return {
+        ringClass: 'ring-1 ring-emerald-400/90',
+        dotClass: 'bg-emerald-400',
+        pillClass: 'border-emerald-500/25 bg-emerald-500/10 text-emerald-200',
+        label: detail || 'Done',
+        detail,
+        projectAttention: attention,
+      }
+    case 'working':
+    default:
+      return {
+        ringClass: 'ring-1 ring-primary/80 animate-pulse',
+        dotClass: 'bg-primary/90 animate-pulse',
+        pillClass: 'border-primary/25 bg-primary/10 text-primary/90',
+        label: detail || 'Working',
+        detail,
+        projectAttention: attention,
+      }
+  }
+}
+
+export function getProjectRuntimeAttention(
+  terminals: Array<{
+    runtimeStatus?: TerminalRuntimeStatus | null
+    agent?: AgentName | null
+    agentStatus?: AgentStatus | undefined
+    processRunning?: boolean | undefined
+  }>,
+): ProjectAttention {
+  let best: ProjectAttention = null
+  let bestPriority = -1
+
+  const priorities: Record<Exclude<ProjectAttention, null>, number> = {
+    approval: 5,
+    error: 4,
+    waiting: 3,
+    working: 2,
+    done: 1,
+  }
+
+  for (const terminal of terminals) {
+    const attention = getStatusPresentation(terminal.runtimeStatus, terminal).projectAttention
+    if (!attention) continue
+    const priority = priorities[attention]
+    if (priority > bestPriority) {
+      bestPriority = priority
+      best = attention
+    }
+  }
+
+  return best
 }

@@ -53,8 +53,9 @@ import {
   clearBrowserConsoleLogs,
   clearTerminalOutputRing,
 } from './mcp-bridge'
-import type { TerminalExitDetails } from '../src/types'
+import type { TerminalExitDetails, TerminalRuntimeStatus } from '../src/types'
 import { normalizeTerminalFontFamily } from '../src/lib/terminal-fonts'
+import { TerminalStatusMonitor } from './terminal-status-monitor'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -239,6 +240,7 @@ let daemonRestartInProgress = false
 let daemonRecoveryPromise: Promise<void> | null = null
 let mainWindow: BrowserWindow | null = null
 let perfMonitor: PerfMonitor | null = null
+let terminalStatusMonitor: TerminalStatusMonitor | null = null
 
 // Per-terminal session isolation:
 // - "subscribed" = renderer component mounted → data forwarded live via IPC
@@ -677,6 +679,7 @@ function setupTerminalDataPort(win: BrowserWindow) {
 
 function forwardTerminalData(termId: string, data: string) {
   bufferTerminalOutput(termId, data)
+  terminalStatusMonitor?.handleTerminalData(termId, data)
   if (!isTerminalSubscribed(termId)) return
   try {
     const target = getWindowForTerminal(termId)
@@ -691,11 +694,28 @@ function forwardTerminalData(termId: string, data: string) {
   } catch {}
 }
 
+function broadcastTerminalStatus(termId: string, status: TerminalRuntimeStatus | null) {
+  try {
+    const targets = new Set<BrowserWindow>()
+    const pinned = pinnedWindows.get(termId)
+    if (pinned && !pinned.isDestroyed()) {
+      targets.add(pinned)
+    }
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      targets.add(mainWindow)
+    }
+    for (const target of targets) {
+      target.webContents.send('terminal:status', termId, status)
+    }
+  } catch {}
+}
+
 function forwardTerminalExit(termId: string, details?: TerminalExitDetails) {
   const exitDetails = details ?? pendingTerminalExitDetails.get(termId)
   if (!details) {
     pendingTerminalExitDetails.delete(termId)
   }
+  terminalStatusMonitor?.handleTerminalExit(termId, exitDetails)
   clearTerminalSubscriptions(termId)
   clearTerminalOutputRing(termId)
   clearHistorySnapshotsForTerm(termId)
@@ -833,6 +853,7 @@ ipcMain.handle(
     projectId?: string | null,
   ) => {
     clearHistorySnapshotsForTerm(termId)
+    terminalStatusMonitor?.trackTerminal(termId, { cwd: cwd ?? null })
 
     if (!terminalBackendSupport.ok && !fallbackSessions) {
       throw new Error(describeSelectedBackendRequirement())
@@ -873,6 +894,7 @@ ipcMain.handle('terminal:unsubscribe', (_event, termId: string) => {
 })
 
 ipcMain.handle('terminal:detach', (_event, termId: string) => {
+  terminalStatusMonitor?.forgetTerminal(termId)
   clearTerminalSubscriptions(termId)
   clearHistorySnapshotsForTerm(termId)
   if (useDaemon && daemonClient?.isConnected()) {
@@ -904,6 +926,28 @@ ipcMain.handle('terminal:get-process-info', async (_event, termId: string) => {
     return null
   }
 })
+
+ipcMain.handle('terminal:get-status', async (_event, termId: string) => {
+  return terminalStatusMonitor?.getStatus(termId) ?? null
+})
+
+ipcMain.handle(
+  'terminal:register-launch',
+  async (
+    _event,
+    termId: string,
+    launch: {
+      agent?: 'claude' | 'codex' | 'opencode' | 'pi' | null
+      command?: string | null
+      cwd?: string | null
+      startedAt?: number | null
+      claudeSessionId?: string | null
+      codexThreadId?: string | null
+    },
+  ) => {
+    terminalStatusMonitor?.setLaunchMeta(termId, launch)
+  },
+)
 
 ipcMain.handle('terminal:get-codex-title', async (_event, termId: string) => {
   try {
@@ -2524,10 +2568,14 @@ ipcMain.handle('daemon:list-sessions', async () => {
     const termIds = await daemonClient.list()
     const sessions = await Promise.all(
       termIds.map(async (termId) => {
-        const processInfo = await daemonClient!.getProcessInfo(termId).catch(() => null)
+        const [processInfo, runtimeStatus] = await Promise.all([
+          daemonClient!.getProcessInfo(termId).catch(() => null),
+          terminalStatusMonitor?.getStatus(termId) ?? Promise.resolve(null),
+        ])
         return {
           termId,
           processInfo,
+          runtimeStatus,
           subscribed: isTerminalSubscribed(termId),
         }
       }),
@@ -2657,6 +2705,13 @@ app.whenReady().then(async () => {
     }
   }
 
+  terminalStatusMonitor = new TerminalStatusMonitor({
+    getDaemonClient: () => daemonClient,
+    getFallbackSessions: () => fallbackSessions,
+    getUseDaemon: () => useDaemon,
+    onStatus: broadcastTerminalStatus,
+  })
+
   // Set dock icon on macOS (for dev; production uses the bundled .icns)
   if (process.platform === 'darwin') {
     const iconPath = path.join(__dirname, '../resources/icon.png')
@@ -2754,6 +2809,7 @@ app.whenReady().then(async () => {
       getDaemonClient: () => daemonClient,
       getFallbackSessions: () => fallbackSessions,
       getUseDaemon: () => useDaemon,
+      getTerminalStatus: (termId: string) => terminalStatusMonitor?.getStatus(termId) ?? null,
       getMainWindow: () => mainWindow,
       stateFile: STATE_FILE,
       subscribedTerminals,
@@ -2769,6 +2825,7 @@ app.whenReady().then(async () => {
 
 app.on('before-quit', () => {
   perfMonitor?.stop()
+  terminalStatusMonitor?.stop()
   quitConfirmed = true
   stopMcpBridge(MCP_BRIDGE_SOCKET)
   try {

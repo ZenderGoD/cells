@@ -5,6 +5,7 @@ import tailwindcss from '@tailwindcss/vite'
 import { build as esbuild } from 'esbuild'
 import path from 'path'
 import fs from 'fs'
+import os from 'os'
 
 // IMPORTANT: The browser preload (electron/browser-preload.cjs) is a plain CJS
 // file that gets copied as-is — it must NOT be compiled by vite-plugin-electron.
@@ -73,39 +74,55 @@ function buildMcpServer(): Plugin {
   }
 }
 
-export default defineConfig({
-  plugins: [
-    react(),
-    tailwindcss(),
-    electron({
-      main: {
-        entry: 'electron/main.ts',
-        vite: {
-          build: {
-            outDir: 'dist-electron',
-            rollupOptions: {
-              external: ['node-pty', 'adm-zip', 'execa'],
+export default defineConfig(({ command }) => {
+  const devRoot = process.env.CELLS_DEV_ROOT ?? path.join(os.homedir(), '.cells-dev')
+
+  return {
+    // Keep the Vite dep optimizer out of node_modules in dev. Electron restarts
+    // and dependency rebundles were leaving the renderer pointed at missing
+    // chunk files inside node_modules/.vite/deps.
+    cacheDir:
+      command === 'serve'
+        ? path.join(devRoot, 'vite-cache')
+        : path.resolve(__dirname, 'node_modules/.vite'),
+    optimizeDeps: {
+      // Force a fresh dep graph on each dev boot so Electron never reuses a
+      // stale optimized-chunk manifest from a previous session.
+      force: command === 'serve',
+    },
+    plugins: [
+      react(),
+      tailwindcss(),
+      electron({
+        main: {
+          entry: 'electron/main.ts',
+          vite: {
+            build: {
+              outDir: 'dist-electron',
+              rollupOptions: {
+                external: ['node-pty', 'adm-zip', 'execa'],
+              },
             },
           },
         },
-      },
-      preload: {
-        input: 'electron/preload.ts',
-        vite: {
-          build: {
-            outDir: 'dist-electron',
+        preload: {
+          input: 'electron/preload.ts',
+          vite: {
+            build: {
+              outDir: 'dist-electron',
+            },
           },
         },
+        renderer: {},
+      }),
+      copyBrowserPreload(),
+      buildPtyDaemon(),
+      buildMcpServer(),
+    ],
+    resolve: {
+      alias: {
+        '@': path.resolve(__dirname, './src'),
       },
-      renderer: {},
-    }),
-    copyBrowserPreload(),
-    buildPtyDaemon(),
-    buildMcpServer(),
-  ],
-  resolve: {
-    alias: {
-      '@': path.resolve(__dirname, './src'),
     },
-  },
+  }
 })

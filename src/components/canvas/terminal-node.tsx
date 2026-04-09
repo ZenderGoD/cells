@@ -13,7 +13,7 @@ import { getTerminalPreviewSnapshot } from '../terminal/terminal-cache-api'
 import { useStore } from '@/lib/store'
 import type { TerminalNode as TerminalNodeType } from '@/types'
 import { AgentIcon } from '@/components/agent-icon'
-import { getStatusIndicator } from '@/lib/status-indicator'
+import { getStatusPresentation } from '@/lib/status-indicator'
 import { inferAgentFromTitle } from '@/lib/agent-command'
 import { Logo } from '@/components/logo'
 import { WorktreeSwitcher } from '@/components/worktree-switcher'
@@ -238,11 +238,11 @@ export function TerminalNode({
   const z = zBase + (terminal.zIndex ?? 0)
 
   // Scale up ring widths when zoomed out so status borders remain visible
-  const statusIndicator = getStatusIndicator(
-    terminal.agentStatus,
-    terminal.agent,
-    terminal.processRunning,
-  )
+  const statusIndicator = getStatusPresentation(terminal.runtimeStatus, {
+    agent: terminal.agent,
+    agentStatus: terminal.agentStatus,
+    processRunning: terminal.processRunning,
+  })
   const hasStatusRing = !isFocused && !isSelected && !!statusIndicator.ringClass
   let ringStyle: React.CSSProperties | undefined
   if (scale < 1) {
@@ -391,6 +391,20 @@ export function TerminalNode({
                   {displayTitle}
                 </span>
               )}
+              {statusIndicator.detail ? (
+                <span
+                  className={cn(
+                    'inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] leading-none',
+                    statusIndicator.pillClass,
+                  )}
+                  title={statusIndicator.label}
+                >
+                  <span
+                    className={cn('h-1.5 w-1.5 rounded-full shrink-0', statusIndicator.dotClass)}
+                  />
+                  <span className="truncate max-w-36">{statusIndicator.detail}</span>
+                </span>
+              ) : null}
               <WorktreeSwitcher termId={terminal.id} />
               <button
                 className="p-1 rounded-md transition-colors text-muted-foreground/40 hover:text-foreground hover:bg-muted/40"

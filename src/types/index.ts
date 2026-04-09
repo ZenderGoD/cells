@@ -7,7 +7,10 @@ export interface CanvasTransform {
 }
 
 export type TitleBarPosition = 'top' | 'bottom'
+export type AgentName = 'claude' | 'codex' | 'opencode' | 'pi'
 export type AgentStatus = 'active' | 'unread' | 'done' | null
+export type AgentRuntimeState = 'working' | 'approval' | 'waiting' | 'done' | 'error'
+export type TerminalRuntimeKind = 'none' | 'process' | 'agent'
 export type TerminalSessionBackend = 'zellij' | 'tmux'
 export type TerminalExitReason =
   | 'process-exit'
@@ -22,6 +25,19 @@ export interface TerminalExitDetails {
   history?: string | null
 }
 
+export interface TerminalRuntimeStatus {
+  kind: TerminalRuntimeKind
+  agent?: AgentName | null
+  state?: AgentRuntimeState | null
+  detail: string
+  shortLabel: string
+  source: string
+  pid?: number | null
+  processLabel?: string | null
+  updatedAt: number
+  attention?: boolean
+}
+
 export interface TerminalNode {
   id: string
   x: number
@@ -32,7 +48,8 @@ export interface TerminalNode {
   customTitle?: string | null
   zIndex?: number
   pinned?: boolean
-  agent?: 'claude' | 'codex' | 'opencode' | 'pi' | null
+  agent?: AgentName | null
+  runtimeStatus?: TerminalRuntimeStatus | null
   agentStatus?: AgentStatus
   processRunning?: boolean
   /** Runtime-only flag for a terminal window whose PTY exited but whose scrollback stays visible. */
@@ -308,7 +325,20 @@ export interface CellsAPI {
       token: string | null
       totalBytes: number
     }>
+    getStatus(termId: string): Promise<TerminalRuntimeStatus | null>
+    registerLaunch(
+      termId: string,
+      launch: {
+        agent?: AgentName | null
+        command?: string | null
+        cwd?: string | null
+        startedAt?: number | null
+        claudeSessionId?: string | null
+        codexThreadId?: string | null
+      },
+    ): Promise<void>
     onData(callback: (termId: string, data: string) => void): () => void
+    onStatus(callback: (termId: string, status: TerminalRuntimeStatus | null) => void): () => void
     onExit(callback: (termId: string, details?: TerminalExitDetails) => void): () => void
   }
   git: {
@@ -332,6 +362,7 @@ export interface CellsAPI {
       Array<{
         termId: string
         processInfo: TerminalProcessInfo | null
+        runtimeStatus: TerminalRuntimeStatus | null
         subscribed: boolean
       }>
     >

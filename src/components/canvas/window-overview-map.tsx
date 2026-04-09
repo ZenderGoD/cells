@@ -3,7 +3,7 @@ import { Globe, TerminalSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { getCanvasBounds, type CanvasRect, type CanvasWindow } from '@/lib/canvas-navigation'
 import { AgentIcon } from '@/components/agent-icon'
-import { getStatusIndicator } from '@/lib/status-indicator'
+import { getStatusPresentation } from '@/lib/status-indicator'
 
 interface WindowOverviewMapProps {
   windows: CanvasWindow[]
@@ -198,10 +198,9 @@ export function WindowOverviewMap({
           const canShowIcon = minDim >= 8
           const iconSize = Math.max(6, Math.min(minDim * 0.55, 14))
           const canDrag = !!onMove
-          // Only show status ring on non-current windows to keep the current selection clear
-          const statusClass = !isCurrent
-            ? getStatusIndicator(window.agentStatus, window.agent, window.processRunning).ringClass
-            : ''
+          const status = getStatusPresentation(window.runtimeStatus, { agent: window.agent })
+          const statusClass = status.ringClass
+          const statusDotClass = minDim >= 14 ? 'size-2' : 'size-1.5'
           const sharedClassName = cn(
             'absolute flex items-center justify-center border transition-[transform,background-color,border-color,opacity,box-shadow] duration-150',
             (onSelect || canDrag) && 'hover:scale-[1.04]',
@@ -227,9 +226,18 @@ export function WindowOverviewMap({
                 onPointerDown={canDrag ? (e) => handlePointerDown(e, window) : undefined}
                 onPointerMove={canDrag ? (e) => handlePointerMove(e, window) : undefined}
                 onPointerUp={canDrag ? (e) => handlePointerUp(e, window) : undefined}
-                title={`${window.type === 'browser' ? 'Browser' : window.agent ? `Agent (${window.agent})${window.agentStatus ? ` — ${window.agentStatus}` : ''}` : 'Terminal'}: ${window.title}`}
+                title={`${window.type === 'browser' ? 'Browser' : window.agent ? `Agent (${window.agent})` : 'Terminal'}: ${window.title}${status.detail ? ` — ${status.detail}` : ''}`}
               >
                 {canShowIcon && <WindowIcon window={window} iconSize={iconSize} />}
+                {status.dotClass ? (
+                  <span
+                    className={cn(
+                      'pointer-events-none absolute right-0.5 top-0.5 rounded-full shadow-[0_0_0_1px_rgba(0,0,0,0.22)]',
+                      statusDotClass,
+                      status.dotClass,
+                    )}
+                  />
+                ) : null}
                 {isFocused && !isCurrent && (
                   <span className="pointer-events-none absolute bottom-0.5 right-0.5 size-1 rounded-full bg-white/90" />
                 )}
@@ -240,6 +248,15 @@ export function WindowOverviewMap({
           return (
             <div key={window.id} className={sharedClassName} style={rectStyle}>
               {canShowIcon && <WindowIcon window={window} iconSize={iconSize} />}
+              {status.dotClass ? (
+                <span
+                  className={cn(
+                    'pointer-events-none absolute right-0.5 top-0.5 rounded-full shadow-[0_0_0_1px_rgba(0,0,0,0.22)]',
+                    statusDotClass,
+                    status.dotClass,
+                  )}
+                />
+              ) : null}
               {isFocused && !isCurrent && (
                 <span className="pointer-events-none absolute bottom-0.5 right-0.5 size-1 rounded-full bg-white/90" />
               )}

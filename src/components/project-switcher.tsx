@@ -7,8 +7,7 @@ import { motion, AnimatePresence } from 'motion/react'
 import { WindowOverviewMap } from './canvas/window-overview-map'
 import type { Project } from '@/types'
 import { hapticNudge, hapticSuccess } from '@/lib/haptics'
-
-type ProjectAttention = 'unread' | 'done' | 'active' | null
+import { getProjectRuntimeAttention, type ProjectAttention } from '@/lib/status-indicator'
 
 interface ProjectSwitcherItem {
   id: string
@@ -82,15 +81,7 @@ export function ProjectSwitcher() {
       const projectTerminals = isCurrent ? terminals : project.terminals
       const projectBrowsers = isCurrent ? browsers : project.browsers
 
-      let attention: ProjectAttention = null
-      for (const t of projectTerminals) {
-        if (t.agentStatus === 'unread') {
-          attention = 'unread'
-          break
-        }
-        if (t.agentStatus === 'done') attention = 'done'
-        if (t.agentStatus === 'active' && !attention) attention = 'active'
-      }
+      const attention = getProjectRuntimeAttention(projectTerminals)
 
       return {
         id: project.id,
@@ -351,8 +342,10 @@ export function ProjectSwitcher() {
                             <div
                               className={cn(
                                 'h-1.5 w-1.5 shrink-0 rounded-full',
-                                item.attention === 'active' && 'bg-primary/90 animate-pulse',
-                                item.attention === 'unread' && 'bg-amber-400',
+                                item.attention === 'working' && 'bg-primary/90 animate-pulse',
+                                item.attention === 'waiting' && 'bg-sky-400',
+                                item.attention === 'approval' && 'bg-amber-400',
+                                item.attention === 'error' && 'bg-rose-400',
                                 item.attention === 'done' && 'bg-emerald-400',
                               )}
                             />

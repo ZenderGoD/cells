@@ -6,6 +6,7 @@ import type {
   PerfMonitorStatus,
   ProjectsState,
   RendererPerfSample,
+  TerminalRuntimeStatus,
   TerminalExitDetails,
   TerminalPerfSample,
 } from '../src/types'
@@ -50,6 +51,18 @@ const api: CellsAPI = {
       ipcRenderer.invoke('terminal:handle-wheel', termId, direction, steps, sequence),
     getProcess: (termId: string) => ipcRenderer.invoke('terminal:get-process', termId),
     getProcessInfo: (termId: string) => ipcRenderer.invoke('terminal:get-process-info', termId),
+    getStatus: (termId: string) => ipcRenderer.invoke('terminal:get-status', termId),
+    registerLaunch: (
+      termId: string,
+      launch: {
+        agent?: 'claude' | 'codex' | 'opencode' | 'pi' | null
+        command?: string | null
+        cwd?: string | null
+        startedAt?: number | null
+        claudeSessionId?: string | null
+        codexThreadId?: string | null
+      },
+    ) => ipcRenderer.invoke('terminal:register-launch', termId, launch),
     getCodexTitle: (termId: string) => ipcRenderer.invoke('terminal:get-codex-title', termId),
     getScrollStatus: (termId: string) => ipcRenderer.invoke('terminal:get-scroll-status', termId),
     getHistory: (termId: string) => ipcRenderer.invoke('terminal:get-history', termId),
@@ -64,6 +77,15 @@ const api: CellsAPI = {
       return () => {
         terminalDataListeners.delete(callback)
       }
+    },
+    onStatus: (callback: (termId: string, status: TerminalRuntimeStatus | null) => void) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        termId: string,
+        status: TerminalRuntimeStatus | null,
+      ) => callback(termId, status)
+      ipcRenderer.on('terminal:status', handler)
+      return () => ipcRenderer.removeListener('terminal:status', handler)
     },
     onExit: (callback: (termId: string, details?: TerminalExitDetails) => void) => {
       const handler = (
@@ -313,6 +335,7 @@ const api: CellsAPI = {
             key: string
             isShell: boolean
           } | null
+          runtimeStatus: TerminalRuntimeStatus | null
           subscribed: boolean
         }>
       >,

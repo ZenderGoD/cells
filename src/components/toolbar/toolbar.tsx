@@ -43,6 +43,11 @@ import { WorktreeSwitcher } from '../worktree-switcher'
 import { AgentIcon } from '../agent-icon'
 import { inferAgentFromTitle } from '@/lib/agent-command'
 import { hapticNudge, hapticSuccess, hapticBuzz } from '@/lib/haptics'
+import {
+  getProjectRuntimeAttention,
+  getStatusPresentation,
+  type ProjectAttention,
+} from '@/lib/status-indicator'
 
 const EMPTY_BROWSER_UI = {
   browserId: null as string | null,
@@ -64,8 +69,6 @@ function shortenUrl(url?: string): string {
     return url
   }
 }
-
-type ProjectAttention = 'unread' | 'done' | 'active' | null
 
 function ProjectTab({
   project,
@@ -140,8 +143,10 @@ function ProjectTab({
           <span
             className={cn(
               'size-1.5 shrink-0 rounded-full',
-              attention === 'active' && 'bg-primary/90 animate-pulse',
-              attention === 'unread' && 'bg-amber-400',
+              attention === 'working' && 'bg-primary/90 animate-pulse',
+              attention === 'waiting' && 'bg-sky-400',
+              attention === 'approval' && 'bg-amber-400',
+              attention === 'error' && 'bg-rose-400',
               attention === 'done' && 'bg-emerald-400',
             )}
           />
@@ -531,17 +536,8 @@ export function StatusBar() {
               ? windowCount
               : (project.terminals?.length ?? 0) + (project.browsers?.length ?? 0)
 
-            // Compute highest-priority agent attention for this project
             const projectTerminals = isActive ? terminals : (project.terminals ?? [])
-            let attention: ProjectAttention = null
-            for (const t of projectTerminals) {
-              if (t.agentStatus === 'unread') {
-                attention = 'unread'
-                break
-              }
-              if (t.agentStatus === 'done') attention = 'done'
-              if (t.agentStatus === 'active' && !attention) attention = 'active'
-            }
+            const attention = getProjectRuntimeAttention(projectTerminals)
 
             return (
               <ProjectTab
@@ -689,6 +685,11 @@ export function StatusBar() {
             const ft = terminals.find((t) => t.id === focusedTerminalId)
             const ftTitle = ft?.customTitle || ft?.title || 'Terminal'
             const ftAgent = ft?.agent ?? inferAgentFromTitle(ftTitle)
+            const ftStatus = getStatusPresentation(ft?.runtimeStatus, {
+              agent: ftAgent,
+              agentStatus: ft?.agentStatus,
+              processRunning: ft?.processRunning,
+            })
             return (
               <div className="flex-1 flex items-center gap-2 px-3 min-w-0 no-drag">
                 {ftAgent ? (
@@ -740,6 +741,18 @@ export function StatusBar() {
                   </span>
                 )}
                 <WorktreeSwitcher termId={focusedTerminalId} />
+                {ftStatus.detail ? (
+                  <span
+                    className={cn(
+                      'inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] leading-none',
+                      ftStatus.pillClass,
+                    )}
+                    title={ftStatus.label}
+                  >
+                    <span className={cn('h-1.5 w-1.5 rounded-full', ftStatus.dotClass)} />
+                    <span className="truncate max-w-44">{ftStatus.detail}</span>
+                  </span>
+                ) : null}
                 {showTerminalFind ? (
                   <div className="flex min-w-0 flex-[0_1_360px] items-center gap-1.5 rounded-md border border-border/25 bg-background/45 px-1.5 py-1">
                     <Search className="h-3 w-3 shrink-0 text-muted-foreground/45" />

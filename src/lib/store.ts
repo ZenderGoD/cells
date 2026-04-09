@@ -1,12 +1,14 @@
 import { create } from 'zustand'
 import { nanoid } from 'nanoid'
 import type {
+  AgentName,
   BrowserNode,
   CanvasTransform,
   GitWorktree,
   InputPrefix,
   Project,
   ProjectsState,
+  TerminalRuntimeStatus,
   TerminalSessionBackend,
   TerminalNode,
   TerminalProcessInfo,
@@ -181,7 +183,9 @@ interface StoreState {
     title: string | undefined,
     worktreePath: string,
   ): TerminalNode
-  updateTerminalAgent(id: string, agent: 'claude' | 'codex' | 'opencode' | 'pi' | null): void
+  updateTerminalAgent(id: string, agent: AgentName | null): void
+  updateTerminalRuntimeStatus(id: string, status: TerminalRuntimeStatus | null): void
+  clearTerminalRuntimeAttention(id: string): void
   updateTerminalAgentStatus(id: string, status: import('../types').AgentStatus): void
   updateTerminalProcessRunning(id: string, running: boolean): void
   removeAllTerminals(): void
@@ -282,8 +286,8 @@ interface StoreState {
 const TERMINAL_PAD = 8
 const FOCUS_READ_DELAY_MS = 2000
 
-// Timer for delayed agent-status clear on focus
-let _agentStatusClearTimer: ReturnType<typeof setTimeout> | null = null
+// Timer for delayed runtime-attention clear on focus
+let _runtimeAttentionClearTimer: ReturnType<typeof setTimeout> | null = null
 
 // Pending commands to run after terminal attaches (not persisted)
 const pendingCommands = new Map<string, string>()
@@ -412,22 +416,109 @@ function sanitizeProjectLinkSettings(
   }
 }
 
+function cloneRuntimeStatus(
+  status: TerminalRuntimeStatus | null | undefined,
+): TerminalRuntimeStatus | null {
+  if (!status) return null
+  return { ...status }
+}
+
+function stripTerminalRuntimeFields(terminal: TerminalNode) {
+  const {
+    runtimeStatus: _runtimeStatus,
+    agentStatus: _agentStatus,
+    processRunning: _processRunning,
+    exited: _exited,
+    exitStatusMessage: _exitStatusMessage,
+    ...persisted
+  } = terminal
+  return persisted
+}
+
+function normalizeLegacyRuntimeStatus(terminal: TerminalNode): TerminalRuntimeStatus | null {
+  const now = Date.now()
+  if (terminal.runtimeStatus) {
+    return {
+      ...terminal.runtimeStatus,
+      attention: terminal.runtimeStatus.attention === true,
+    }
+  }
+  if (terminal.agentStatus === 'active') {
+    return {
+      kind: 'agent',
+      agent: terminal.agent ?? null,
+      state: 'working',
+      detail: 'Working',
+      shortLabel: 'Working',
+      source: 'legacy',
+      updatedAt: now,
+      attention: true,
+    }
+  }
+  if (terminal.agentStatus === 'unread') {
+    return {
+      kind: 'agent',
+      agent: terminal.agent ?? null,
+      state: 'waiting',
+      detail: 'Waiting for input',
+      shortLabel: 'Waiting',
+      source: 'legacy',
+      updatedAt: now,
+      attention: true,
+    }
+  }
+  if (terminal.agentStatus === 'done') {
+    return {
+      kind: 'agent',
+      agent: terminal.agent ?? null,
+      state: 'done',
+      detail: 'Done',
+      shortLabel: 'Done',
+      source: 'legacy',
+      updatedAt: now,
+      attention: true,
+    }
+  }
+  if (!terminal.agent && terminal.processRunning) {
+    return {
+      kind: 'process',
+      detail: 'Running',
+      shortLabel: 'Running',
+      source: 'legacy',
+      updatedAt: now,
+      attention: false,
+    }
+  }
+  return null
+}
+
 function normalizeTerminals(terminals: TerminalNode[]) {
   return terminals.map((terminal, index) => ({
     ...terminal,
     zIndex: typeof terminal.zIndex === 'number' ? terminal.zIndex : index + 1,
-    // Normalize stale agent status from previous session.
-    // 'active' can't survive a restart (the agent isn't running anymore),
-    // so convert to 'unread' — the user hasn't seen whatever the agent
-    // produced before the app closed. 'unread' and 'done' persist as-is.
-    agentStatus:
-      terminal.agentStatus === 'active' ? ('unread' as const) : (terminal.agentStatus ?? null),
-    // processRunning is runtime-only (detected by polling the process tree).
-    // Always reset on restore since the process info is stale.
+    runtimeStatus: normalizeLegacyRuntimeStatus(terminal),
+    agentStatus: null,
     processRunning: false,
     exited: false,
     exitStatusMessage: null,
   }))
+}
+
+function mapTerminalsEverywhere(
+  terminals: TerminalNode[],
+  projects: Project[],
+  id: string,
+  updater: (terminal: TerminalNode) => TerminalNode,
+) {
+  return {
+    terminals: terminals.map((terminal) => (terminal.id === id ? updater(terminal) : terminal)),
+    projects: projects.map((project) => ({
+      ...project,
+      terminals: (project.terminals ?? []).map((terminal) =>
+        terminal.id === id ? updater(terminal) : terminal,
+      ),
+    })),
+  }
 }
 
 function pushFocusHistory(history: string[], id: string) {
@@ -709,66 +800,26 @@ export const useStore = create<StoreState>((set, get) => ({
   },
   markTerminalExited(id, message, restoredOutput) {
     const snapshot = restoredOutput ?? getTerminalRestoreSnapshot(id)
-    set((s) => ({
-      terminals: s.terminals.map((t) =>
-        t.id === id
-          ? {
-              ...t,
-              processRunning: false,
-              agentStatus: t.agent ? 'done' : t.agentStatus,
-              exited: true,
-              exitStatusMessage: message ?? 'Process exited',
-              restoredOutput: snapshot ?? t.restoredOutput,
-            }
-          : t,
-      ),
-      projects: s.projects.map((project) => ({
-        ...project,
-        terminals: (project.terminals ?? []).map((t) =>
-          t.id === id
-            ? {
-                ...t,
-                processRunning: false,
-                agentStatus: t.agent ? 'done' : t.agentStatus,
-                exited: true,
-                exitStatusMessage: message ?? 'Process exited',
-                restoredOutput: snapshot ?? t.restoredOutput,
-              }
-            : t,
-        ),
+    set((s) =>
+      mapTerminalsEverywhere(s.terminals, s.projects, id, (terminal) => ({
+        ...terminal,
+        exited: true,
+        exitStatusMessage: message ?? 'Process exited',
+        restoredOutput: snapshot ?? terminal.restoredOutput,
       })),
-    }))
+    )
     debouncedPersist(() => get().persist())
   },
   restartTerminalSession(id) {
     const snapshot = getTerminalRestoreSnapshot(id)
-    set((s) => ({
-      terminals: s.terminals.map((t) =>
-        t.id === id
-          ? {
-              ...t,
-              exited: false,
-              exitStatusMessage: null,
-              processRunning: false,
-              restoredOutput: snapshot ?? t.restoredOutput,
-            }
-          : t,
-      ),
-      projects: s.projects.map((project) => ({
-        ...project,
-        terminals: (project.terminals ?? []).map((t) =>
-          t.id === id
-            ? {
-                ...t,
-                exited: false,
-                exitStatusMessage: null,
-                processRunning: false,
-                restoredOutput: snapshot ?? t.restoredOutput,
-              }
-            : t,
-        ),
+    set((s) =>
+      mapTerminalsEverywhere(s.terminals, s.projects, id, (terminal) => ({
+        ...terminal,
+        exited: false,
+        exitStatusMessage: null,
+        restoredOutput: snapshot ?? terminal.restoredOutput,
       })),
-    }))
+    )
     reloadTerminal(id)
     get().focusTerminal(id)
     debouncedPersist(() => get().persist())
@@ -876,6 +927,38 @@ export const useStore = create<StoreState>((set, get) => ({
       state.markTerminalExited(termId, formatTerminalExitMessage(details), details?.history ?? null)
     })
 
+    window.cells.terminal.onStatus((termId, status) => {
+      const state = get()
+      const exists =
+        state.terminals.some((terminal) => terminal.id === termId) ||
+        state.projects.some((project) =>
+          (project.terminals ?? []).some((terminal) => terminal.id === termId),
+        )
+      if (!exists) return
+      state.updateTerminalRuntimeStatus(termId, status)
+    })
+
+    const hydrateRuntimeStatuses = (projects: Project[]) => {
+      const termIds = [
+        ...new Set(projects.flatMap((project) => project.terminals.map((t) => t.id))),
+      ]
+      for (const termId of termIds) {
+        window.cells.terminal
+          .getStatus(termId)
+          .then((status) => {
+            const latest = get()
+            const stillExists =
+              latest.terminals.some((terminal) => terminal.id === termId) ||
+              latest.projects.some((project) =>
+                (project.terminals ?? []).some((terminal) => terminal.id === termId),
+              )
+            if (!stillExists) return
+            latest.updateTerminalRuntimeStatus(termId, status)
+          })
+          .catch(() => {})
+      }
+    }
+
     const saved = await window.cells.state.load()
 
     if (saved && (saved as any).version === 2) {
@@ -974,6 +1057,9 @@ export const useStore = create<StoreState>((set, get) => ({
         ...globalSettings,
         initialized: true,
       })
+      setTimeout(() => {
+        hydrateRuntimeStatuses(projects)
+      }, 0)
       applyColorScheme(globalSettings.colorScheme)
       if (
         didStripLegacyProjectSettings ||
@@ -1048,6 +1134,9 @@ export const useStore = create<StoreState>((set, get) => ({
         titleBarPosition: (saved as any).titleBarPosition ?? DEFAULT_TITLE_BAR_POSITION,
         initialized: true,
       })
+      setTimeout(() => {
+        hydrateRuntimeStatuses([project])
+      }, 0)
       applyColorScheme(get().colorScheme)
       get().persist()
       return
@@ -1117,10 +1206,14 @@ export const useStore = create<StoreState>((set, get) => ({
         }
 
         const freshState = get()
+        const persistedProjects = projects.map((project) => ({
+          ...project,
+          terminals: (project.terminals ?? []).map(stripTerminalRuntimeFields),
+        }))
         return saveState({
           version: 2,
           activeProjectId: freshState.activeProjectId,
-          projects,
+          projects: persistedProjects,
           appDarkTheme: freshState.appDarkTheme,
           appLightTheme: freshState.appLightTheme,
           terminalSessionBackend: freshState.terminalSessionBackend,
@@ -1167,10 +1260,14 @@ export const useStore = create<StoreState>((set, get) => ({
               : mergeTerminalSnapshots(project.terminals ?? []),
         }))
         set({ terminals, projects })
+        const persistedProjects = projects.map((project) => ({
+          ...project,
+          terminals: (project.terminals ?? []).map(stripTerminalRuntimeFields),
+        }))
         return saveState({
           version: 2,
           activeProjectId: state.activeProjectId,
-          projects,
+          projects: persistedProjects,
           appDarkTheme: state.appDarkTheme,
           appLightTheme: state.appLightTheme,
           terminalSessionBackend: state.terminalSessionBackend,
@@ -1460,23 +1557,137 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   updateTerminalAgent(id, agent) {
-    set((s) => ({
-      terminals: s.terminals.map((t) => (t.id === id ? { ...t, agent } : t)),
-    }))
+    set((s) =>
+      mapTerminalsEverywhere(s.terminals, s.projects, id, (terminal) => ({ ...terminal, agent })),
+    )
+  },
+
+  updateTerminalRuntimeStatus(id, status) {
+    const state = get()
+    const current = state.terminals.find((terminal) => terminal.id === id)
+    if (!current) return
+
+    const nextStatus = cloneRuntimeStatus(status)
+    const previous = current.runtimeStatus ?? null
+    const focused = state.focusedTerminalId === id
+    const sameRuntime =
+      previous?.kind === nextStatus?.kind &&
+      previous?.agent === nextStatus?.agent &&
+      previous?.state === nextStatus?.state &&
+      previous?.detail === nextStatus?.detail &&
+      previous?.shortLabel === nextStatus?.shortLabel &&
+      previous?.source === nextStatus?.source &&
+      (previous?.pid ?? null) === (nextStatus?.pid ?? null) &&
+      (previous?.processLabel ?? null) === (nextStatus?.processLabel ?? null)
+
+    if (sameRuntime && (previous?.attention === true) === (nextStatus?.attention === true)) {
+      return
+    }
+
+    let mergedStatus = nextStatus
+    if (mergedStatus) {
+      const shouldGainAttention =
+        !focused &&
+        mergedStatus.kind === 'agent' &&
+        (mergedStatus.state === 'approval' ||
+          mergedStatus.state === 'error' ||
+          mergedStatus.state === 'waiting' ||
+          mergedStatus.state === 'done')
+      mergedStatus = {
+        ...mergedStatus,
+        attention: focused ? false : previous?.attention === true || shouldGainAttention,
+      }
+    }
+
+    set((s) =>
+      mapTerminalsEverywhere(s.terminals, s.projects, id, (terminal) => ({
+        ...terminal,
+        runtimeStatus: mergedStatus,
+        agent:
+          mergedStatus?.kind === 'agent'
+            ? (mergedStatus.agent ?? terminal.agent ?? null)
+            : mergedStatus
+              ? terminal.agent
+              : null,
+        agentStatus: null,
+        processRunning: false,
+      })),
+    )
+  },
+
+  clearTerminalRuntimeAttention(id) {
+    const current = get().terminals.find((terminal) => terminal.id === id)
+    if (!current?.runtimeStatus?.attention) return
+    set((s) =>
+      mapTerminalsEverywhere(s.terminals, s.projects, id, (terminal) => ({
+        ...terminal,
+        runtimeStatus: terminal.runtimeStatus
+          ? { ...terminal.runtimeStatus, attention: false }
+          : null,
+      })),
+    )
   },
 
   updateTerminalAgentStatus(id, status) {
-    set((s) => ({
-      terminals: s.terminals.map((t) => (t.id === id ? { ...t, agentStatus: status } : t)),
-    }))
+    const current = get().terminals.find((terminal) => terminal.id === id)
+    if (!current) return
+
+    if (status === 'active') {
+      get().updateTerminalRuntimeStatus(id, {
+        kind: 'agent',
+        agent: current.agent ?? null,
+        state: 'working',
+        detail: 'Working',
+        shortLabel: 'Working',
+        source: 'legacy',
+        updatedAt: Date.now(),
+      })
+      return
+    }
+    if (status === 'unread') {
+      get().updateTerminalRuntimeStatus(id, {
+        kind: 'agent',
+        agent: current.agent ?? null,
+        state: 'waiting',
+        detail: 'Waiting for input',
+        shortLabel: 'Waiting',
+        source: 'legacy',
+        updatedAt: Date.now(),
+        attention: true,
+      })
+      return
+    }
+    if (status === 'done') {
+      get().updateTerminalRuntimeStatus(id, {
+        kind: 'agent',
+        agent: current.agent ?? null,
+        state: 'done',
+        detail: 'Done',
+        shortLabel: 'Done',
+        source: 'legacy',
+        updatedAt: Date.now(),
+      })
+      return
+    }
+    get().updateTerminalRuntimeStatus(id, null)
   },
 
   updateTerminalProcessRunning(id, running) {
-    const current = get().terminals.find((t) => t.id === id)
-    if (current?.processRunning === running) return
-    set((s) => ({
-      terminals: s.terminals.map((t) => (t.id === id ? { ...t, processRunning: running } : t)),
-    }))
+    const current = get().terminals.find((terminal) => terminal.id === id)
+    if (!current) return
+    if (running) {
+      get().updateTerminalRuntimeStatus(id, {
+        kind: 'process',
+        detail: 'Running',
+        shortLabel: 'Running',
+        source: 'legacy',
+        updatedAt: Date.now(),
+      })
+      return
+    }
+    if (current.runtimeStatus?.kind === 'process') {
+      get().updateTerminalRuntimeStatus(id, null)
+    }
   },
 
   removeAllTerminals() {
@@ -1549,10 +1760,10 @@ export const useStore = create<StoreState>((set, get) => ({
       set({ crossProjectReturn: null })
     }
 
-    // Cancel any pending delayed status clear from a previous focus
-    if (_agentStatusClearTimer) {
-      clearTimeout(_agentStatusClearTimer)
-      _agentStatusClearTimer = null
+    // Cancel any pending delayed attention clear from a previous focus
+    if (_runtimeAttentionClearTimer) {
+      clearTimeout(_runtimeAttentionClearTimer)
+      _runtimeAttentionClearTimer = null
     }
 
     if (id && id !== prev) {
@@ -1574,19 +1785,13 @@ export const useStore = create<StoreState>((set, get) => ({
       })
     }
 
-    // Delayed clear of 'unread'/'done' status — only mark as read after 2s of focus.
-    // We don't clear 'active' — that means the agent is genuinely working.
+    // Delayed clear of unseen attention. Runtime state stays intact.
     if (id) {
-      _agentStatusClearTimer = setTimeout(() => {
-        _agentStatusClearTimer = null
+      _runtimeAttentionClearTimer = setTimeout(() => {
+        _runtimeAttentionClearTimer = null
         const store = get()
         if (store.focusedTerminalId !== id) return
-        const terminal = store.terminals.find((t) => t.id === id)
-        if (terminal?.agentStatus && terminal.agentStatus !== 'active') {
-          set((s) => ({
-            terminals: s.terminals.map((t) => (t.id === id ? { ...t, agentStatus: null } : t)),
-          }))
-        }
+        store.clearTerminalRuntimeAttention(id)
       }, FOCUS_READ_DELAY_MS)
     }
 

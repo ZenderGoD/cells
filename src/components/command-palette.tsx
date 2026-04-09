@@ -84,6 +84,9 @@ function buildAgentCommand(
   cmd: string,
   prompt: string,
   attachments: Attachment[] = [],
+  launchMeta: {
+    claudeSessionId?: string | null
+  } = {},
 ) {
   const imageAttachments = attachments.filter((a) => isImageFile(a.name))
   const supportsImageFlags = id === 'codex'
@@ -109,6 +112,9 @@ function buildAgentCommand(
   }
 
   let fullCommand = cmd
+  if (id === 'claude' && launchMeta.claudeSessionId) {
+    fullCommand += ` --session-id ${shellQuote(launchMeta.claudeSessionId)}`
+  }
   if (imageFlags) fullCommand += ` ${imageFlags}`
   if (fileArgs) fullCommand += ` ${fileArgs}`
   if (fullPromptText) {
@@ -116,7 +122,12 @@ function buildAgentCommand(
     fullCommand += id === 'opencode' ? ` --prompt ${escaped}` : ` ${escaped}`
   }
 
-  return { fullCommand, fullPromptText, imageAttachmentCount: imageAttachments.length }
+  return {
+    fullCommand,
+    fullPromptText,
+    imageAttachmentCount: imageAttachments.length,
+    claudeSessionId: launchMeta.claudeSessionId ?? null,
+  }
 }
 
 function launchAgentAction(
@@ -126,29 +137,54 @@ function launchAgentAction(
   searchText: string,
   attachments: Attachment[] = [],
 ) {
+  const registerAgentLaunch = (
+    termId: string,
+    command: string,
+    cwd: string | null,
+    startedAt = Date.now(),
+    launchMeta: {
+      claudeSessionId?: string | null
+    } = {},
+  ) => {
+    void window.cells.terminal
+      .registerLaunch(termId, {
+        agent: id as AgentName,
+        command,
+        cwd,
+        startedAt,
+        claudeSessionId: launchMeta.claudeSessionId ?? null,
+      })
+      .catch(() => {})
+  }
+
   useStore.getState().setLastUsedAgent(id)
   useStore.getState().setLastCommandAction('agent')
   useStore.getState().trackCommandAction(`agent-${id}`)
   const cmd = useStore.getState().getAgentCommand(id)
   const prompt = stripPrefix(searchText.trim())
-  const initialCommand = buildAgentCommand(id, cmd, prompt, attachments)
+  const initialCommand = buildAgentCommand(id, cmd, prompt, attachments, {
+    claudeSessionId: id === 'claude' ? crypto.randomUUID() : null,
+  })
 
   if (!inWorktree) {
+    const cwd = useStore.getState().getActiveProjectPath() ?? null
     if (
       !initialCommand.fullPromptText &&
       initialCommand.imageAttachmentCount === 0 &&
       !attachments.length
     ) {
-      useStore.getState().addTerminalWithCommand(cmd, label)
+      const terminal = useStore.getState().addTerminalWithCommand(cmd, label)
+      registerAgentLaunch(terminal.id, cmd, cwd, Date.now(), initialCommand)
       return
     }
 
-    useStore
+    const terminal = useStore
       .getState()
       .addTerminalWithCommand(
         initialCommand.fullCommand,
         `${label}: ${searchText.trim().slice(0, 40) || 'attachments'}`,
       )
+    registerAgentLaunch(terminal.id, initialCommand.fullCommand, cwd, Date.now(), initialCommand)
     return
   }
 
@@ -162,15 +198,24 @@ function launchAgentAction(
       const finalPrompt = initialCommand.fullPromptText
         ? branchInstruction + initialCommand.fullPromptText
         : branchInstruction + 'Waiting for instructions.'
-      const worktreeCommand = buildAgentCommand(id, cmd, finalPrompt, attachments)
+      const worktreeCommand = buildAgentCommand(id, cmd, finalPrompt, attachments, {
+        claudeSessionId: initialCommand.claudeSessionId,
+      })
 
-      useStore
+      const terminal = useStore
         .getState()
         .addTerminalInWorktree(
           worktreeCommand.fullCommand,
           `${label}: ${searchText.trim() ? searchText.trim().slice(0, 40) : 'worktree'}`,
           wt.path,
         )
+      registerAgentLaunch(
+        terminal.id,
+        worktreeCommand.fullCommand,
+        wt.path,
+        Date.now(),
+        worktreeCommand,
+      )
     })
     .catch((err) => {
       showToast(
@@ -182,14 +227,28 @@ function launchAgentAction(
         initialCommand.imageAttachmentCount === 0 &&
         !attachments.length
       ) {
-        useStore.getState().addTerminalWithCommand(cmd, label)
+        const terminal = useStore.getState().addTerminalWithCommand(cmd, label)
+        registerAgentLaunch(
+          terminal.id,
+          cmd,
+          useStore.getState().getActiveProjectPath() ?? null,
+          Date.now(),
+          initialCommand,
+        )
       } else {
-        useStore
+        const terminal = useStore
           .getState()
           .addTerminalWithCommand(
             initialCommand.fullCommand,
             `${label}: ${searchText.trim().slice(0, 40) || 'attachments'}`,
           )
+        registerAgentLaunch(
+          terminal.id,
+          initialCommand.fullCommand,
+          useStore.getState().getActiveProjectPath() ?? null,
+          Date.now(),
+          initialCommand,
+        )
       }
     })
 }

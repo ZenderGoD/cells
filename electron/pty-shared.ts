@@ -166,7 +166,7 @@ function readSqliteValue(dbPath: string, query: string) {
 
 function readProcessTable() {
   try {
-    return execFileSync('ps', ['-axo', 'pid=,ppid=,comm='], {
+    return execFileSync('ps', ['-axo', 'pid=,ppid=,command='], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 1500,
@@ -189,10 +189,17 @@ function readProcessTable() {
   }
 }
 
-function basenameCommand(command: string) {
+function firstCommandToken(command: string) {
   const trimmed = command.trim()
   if (!trimmed) return ''
-  return trimmed.split('/').pop() ?? trimmed
+  const match = trimmed.match(/^(?:"[^"]+"|'[^']+'|\S+)/)
+  return (match?.[0] ?? trimmed).replace(/^['"]|['"]$/g, '')
+}
+
+function basenameCommand(command: string) {
+  const token = firstCommandToken(command)
+  if (!token) return ''
+  return token.split('/').pop() ?? token
 }
 
 function isShellProcess(command: string) {

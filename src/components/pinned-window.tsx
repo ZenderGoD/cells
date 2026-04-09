@@ -4,6 +4,9 @@ import { CellTerminal } from './terminal/cell-terminal'
 import { useStore } from '@/lib/store'
 import { getTerminalTheme } from '@/lib/terminal-themes'
 import { hapticBuzz } from '@/lib/haptics'
+import { getStatusPresentation } from '@/lib/status-indicator'
+import { inferAgentFromTitle } from '@/lib/agent-command'
+import { cn } from '@/lib/utils'
 
 const TITLE_BAR_HEIGHT = 38
 
@@ -18,8 +21,14 @@ export function PinnedWindow({ termId, type }: { termId: string; type: 'terminal
     height: Math.max(0, window.innerHeight - TITLE_BAR_HEIGHT),
   })
   const customTitle = useStore((s) => s.terminals.find((t) => t.id === termId)?.customTitle)
+  const terminal = useStore((s) => s.terminals.find((t) => t.id === termId) ?? null)
   const [inferredTitle, setInferredTitle] = useState('Terminal')
   const title = customTitle || inferredTitle
+  const status = getStatusPresentation(terminal?.runtimeStatus, {
+    agent: terminal?.agent ?? inferAgentFromTitle(title),
+    agentStatus: terminal?.agentStatus,
+    processRunning: terminal?.processRunning,
+  })
 
   useEffect(() => {
     init()
@@ -70,12 +79,26 @@ export function PinnedWindow({ termId, type }: { termId: string; type: 'terminal
         {/* Spacer for traffic lights */}
         <div className="w-[78px] shrink-0" />
 
-        <span
-          className="flex-1 text-center text-[11px] font-medium truncate select-none"
-          style={{ color: theme.foreground, opacity: 0.5 }}
-        >
-          {title}
-        </span>
+        <div className="flex flex-1 items-center justify-center gap-2 px-3 min-w-0">
+          <span
+            className="min-w-0 truncate text-center text-[11px] font-medium select-none"
+            style={{ color: theme.foreground, opacity: 0.5 }}
+          >
+            {title}
+          </span>
+          {status.detail ? (
+            <span
+              className={cn(
+                'inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] leading-none',
+                status.pillClass,
+              )}
+              title={status.label}
+            >
+              <span className={cn('h-1.5 w-1.5 rounded-full', status.dotClass)} />
+              <span className="truncate max-w-40">{status.detail}</span>
+            </span>
+          ) : null}
+        </div>
 
         <div
           className="flex items-center gap-1 px-3 shrink-0"

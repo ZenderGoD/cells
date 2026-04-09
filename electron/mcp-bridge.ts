@@ -15,7 +15,7 @@ import { Notification } from 'electron'
 import type { BrowserWindow, WebContentsView } from 'electron'
 import type { PtyDaemonClient } from './pty-client'
 import type { TerminalSessionManager } from './terminal-session-manager'
-import type { Project, ProjectsState } from '../src/types'
+import type { Project, ProjectsState, TerminalRuntimeStatus } from '../src/types'
 
 // ---------- Console log buffering ----------
 
@@ -95,6 +95,9 @@ export interface BridgeContext {
   getDaemonClient: () => PtyDaemonClient | null
   getFallbackSessions: () => TerminalSessionManager | null
   getUseDaemon: () => boolean
+  getTerminalStatus: (
+    termId: string,
+  ) => Promise<TerminalRuntimeStatus | null> | TerminalRuntimeStatus | null
   getMainWindow: () => BrowserWindow | null
   stateFile: string
   subscribedTerminals: Set<string>
@@ -164,17 +167,23 @@ async function handleRequest(ctx: BridgeContext, method: string, params: any): P
       // Enrich terminals with process info
       const terminals = await Promise.all(
         project.terminals.map(async (t) => {
-          let processInfo = null
-          try {
-            if (useDaemon && daemon?.isConnected()) {
-              processInfo = await daemon.getProcessInfo(t.id)
-            }
-          } catch {}
+          const [processInfo, runtimeStatus] = await Promise.all([
+            (async () => {
+              try {
+                if (useDaemon && daemon?.isConnected()) {
+                  return await daemon.getProcessInfo(t.id)
+                }
+              } catch {}
+              return null
+            })(),
+            Promise.resolve(ctx.getTerminalStatus(t.id)),
+          ])
           return {
             id: t.id,
             title: t.title,
             agent: t.agent ?? null,
             agentStatus: t.agentStatus ?? null,
+            runtimeStatus,
             processInfo,
           }
         }),
@@ -183,17 +192,23 @@ async function handleRequest(ctx: BridgeContext, method: string, params: any): P
       // Include MCP-created headless terminals for this project
       for (const [, mcp] of mcpTerminals) {
         if (project && mcp.projectId === project.id) {
-          let processInfo = null
-          try {
-            if (useDaemon && daemon?.isConnected()) {
-              processInfo = await daemon.getProcessInfo(mcp.termId)
-            }
-          } catch {}
+          const [processInfo, runtimeStatus] = await Promise.all([
+            (async () => {
+              try {
+                if (useDaemon && daemon?.isConnected()) {
+                  return await daemon.getProcessInfo(mcp.termId)
+                }
+              } catch {}
+              return null
+            })(),
+            Promise.resolve(ctx.getTerminalStatus(mcp.termId)),
+          ])
           terminals.push({
             id: mcp.termId,
             title: `MCP Terminal (${mcp.cwd})`,
             agent: null,
             agentStatus: null,
+            runtimeStatus,
             processInfo,
           })
         }

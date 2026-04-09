@@ -1245,36 +1245,6 @@ const ANSI_CSI_SEQUENCE_RE = new RegExp(`${ESCAPE_CHAR}\\[[0-9;?]*[ -/]*[@-~]`, 
 //
 // 1. Only timing-based detection (no terminal output parsing).
 //    Earlier attempts tried to detect agent prompt characters (❯, ›, >)
-//    in the PTY output buffer, but this was fragile: agents render status
-//    bars below the prompt, different versions use different characters,
-//    and ANSI escape sequences leave artifacts that break regex matching.
-//    A 3-second silence threshold is simple and reliable — agents actively
-//    working always produce continuous output (streaming text, tool use
-//    blocks, progress spinners).
-//
-// 2. State machine transitions, not re-evaluation.
-//    The poll must NOT re-derive status from scratch each cycle. If it did,
-//    an idle unfocused agent would get re-marked as 'unread' every 3s,
-//    even after the user already focused it and acknowledged the output.
-//    Instead, 'unread' is only set on the active→idle transition. Once
-//    cleared to null (by focusing), it stays null until the agent produces
-//    NEW output and goes idle again while unfocused.
-//
-// 3. Focus clears status immediately (in store.focusTerminal), including
-//    when re-focusing the same terminal. Without this, clicking an already-
-//    focused terminal wouldn't clear a stale 'unread' that the poll set
-//    between focus events.
-//
-// 4. Bell character (BEL, \x07) is an early idle signal. Agents ring the
-//    bell when they finish a turn, so we don't have to wait the full 3s.
-//
-// 5. processRunning (for non-agent terminals) is purely runtime — cleared
-//    on app restart since the process tree is stale. agentStatus persists
-//    across restarts: 'active' is normalized to 'unread' on restore (the
-//    agent was mid-work when the app closed, so there's unread output).
-
-const AGENT_IDLE_SILENCE_MS = 3_000
-const BEL = '\x07'
 const ANSI_ESCAPE_RE = new RegExp(`${ESCAPE_CHAR}[@-_]`, 'g')
 const NULL_CHAR_RE = new RegExp(NULL_CHAR, 'g')
 const COMMAND_EDITING_SEQUENCES: Record<string, string> = {
@@ -1590,6 +1560,12 @@ export function CellTerminal({
   const terminalExitStatusMessage = useStore(
     (s) => s.terminals.find((terminal) => terminal.id === termId)?.exitStatusMessage ?? null,
   )
+  const terminalAgent = useStore(
+    (s) => s.terminals.find((terminal) => terminal.id === termId)?.agent ?? null,
+  )
+  const terminalRuntimeStatus = useStore(
+    (s) => s.terminals.find((terminal) => terminal.id === termId)?.runtimeStatus ?? null,
+  )
   const overlayOpen = useStore((s) => s.overlayOpen)
   const focusTerminal = useStore((s) => s.focusTerminal)
   const restartTerminalSession = useStore((s) => s.restartTerminalSession)
@@ -1603,15 +1579,12 @@ export function CellTerminal({
   const cursorBlinkRef = useRef(cursorBlink)
   const inferredAgentRef = useRef<AgentName | null>(null)
   const detectedAgentRef = useRef<AgentName | null>(null)
+  const backendAgentSyncRef = useRef<AgentName | null>(null)
   const inputBufferRef = useRef('')
   const backendQueryRemainderRef = useRef('')
   const lastInferredTitleRef = useRef<string | null>(null)
-  const lastAgentDataRef = useRef<number>(0) // timestamp of last PTY data while agent active
   const lastCodexTitleDataRef = useRef<number>(-1)
   const lastCodexTitleRef = useRef<string | null>(null)
-  const agentPollInFlightRef = useRef(false)
-  const prevAgentRef = useRef<AgentName | null>(null) // track transitions for done detection
-  const agentBellRef = useRef(false) // whether a BEL was heard since last input
   const processTitleRef = useRef(false) // whether the agent process has set its own title
   const dragDepthRef = useRef(0)
   const shouldRenderRef = useRef(isFocused || isVisible)
@@ -1664,6 +1637,45 @@ export function CellTerminal({
     [],
   )
 
+  const getPrimaryTerminalFont = useCallback(() => {
+    return (fontFamilyRef.current ?? '')
+      .split(',')[0]
+      .trim()
+      .replace(/^["']|["']$/g, '')
+  }, [])
+
+  const ensurePrimaryTerminalFontLoaded = useCallback(async () => {
+    const fontSet = document.fonts
+    const primaryFont = getPrimaryTerminalFont()
+    if (!fontSet || !primaryFont) return
+
+    const descriptor = `16px "${primaryFont}"`
+    if (fontSet.check(descriptor)) return
+
+    const waitForFont = () =>
+      new Promise<void>((resolve) => {
+        const finish = () => {
+          cleanup()
+          resolve()
+        }
+        const onLoadingDone = () => {
+          if (fontSet.check(descriptor)) finish()
+        }
+        const timer = window.setTimeout(finish, 1200)
+        const cleanup = () => {
+          window.clearTimeout(timer)
+          fontSet.removeEventListener('loadingdone', onLoadingDone)
+        }
+        fontSet.addEventListener('loadingdone', onLoadingDone)
+      })
+
+    try {
+      await Promise.race([fontSet.load(descriptor).then(() => undefined), waitForFont()])
+    } catch {
+      // Best-effort only. The post-open watcher still handles late font loads.
+    }
+  }, [getPrimaryTerminalFont])
+
   const getLiveTerminal = useCallback(
     () => terminalCache.get(termId)?.term ?? terminalRef.current,
     [termId],
@@ -1711,6 +1723,32 @@ export function CellTerminal({
   useEffect(() => {
     cursorBlinkRef.current = cursorBlink
   }, [cursorBlink])
+
+  useEffect(() => {
+    detectedAgentRef.current = terminalAgent
+    if (terminalAgent) {
+      inferredAgentRef.current = terminalAgent
+      return
+    }
+    if (terminalRuntimeStatus?.kind !== 'agent') {
+      detectedAgentRef.current = null
+    }
+  }, [terminalAgent, terminalRuntimeStatus])
+
+  useEffect(() => {
+    if (!terminalAgent) {
+      backendAgentSyncRef.current = null
+      return
+    }
+    if (backendAgentSyncRef.current === terminalAgent) return
+    backendAgentSyncRef.current = terminalAgent
+    void window.cells.terminal
+      .registerLaunch(termId, {
+        agent: terminalAgent,
+        cwd: getAttachProjectPath(),
+      })
+      .catch(() => {})
+  }, [getAttachProjectPath, termId, terminalAgent])
 
   const syncTerminalState = useCallback(
     (term: Terminal | null = getLiveTerminal()) => {
@@ -1760,6 +1798,25 @@ export function CellTerminal({
     restartTerminalSession(termId)
   }, [restartTerminalSession, termId])
 
+  const shouldRouteServerOwnedMouseInput = useCallback((term: Terminal | null | undefined) => {
+    if (!term || !usesServerOwnedTerminalState(term)) return false
+    if (serverOwnedMouseModeRef.current) return true
+
+    const wasmTerm = Reflect.get(term, 'wasmTerm') as
+      | {
+          hasMouseTracking?: () => boolean
+          isAlternateScreen?: () => boolean
+        }
+      | undefined
+
+    try {
+      if (wasmTerm?.hasMouseTracking?.() === true) return true
+      if (wasmTerm?.isAlternateScreen?.() === true) return true
+    } catch {}
+
+    return term.buffer.active.type === 'alternate'
+  }, [])
+
   const queueServerOwnedWheelPayload = useCallback(
     (event: WheelEvent, payload: QueuedWheelPayload) => {
       Reflect.set(event, SERVER_OWNED_WHEEL_HANDLED_KEY, true)
@@ -1769,8 +1826,11 @@ export function CellTerminal({
         Math.sign(wheelDeltaCarryRef.current) === directionSign || wheelDeltaCarryRef.current === 0
           ? wheelDeltaCarryRef.current + directionSign * payload.delta
           : directionSign * payload.delta
-      const threshold = 0.75
-      const steps = Math.max(0, Math.min(4, Math.floor(Math.abs(combinedDelta) / threshold)))
+      // Fullscreen TUIs often emit many small trackpad wheel deltas. Keep the
+      // threshold low enough that those deltas become prompt scroll steps
+      // instead of feeling dropped until several gestures accumulate.
+      const threshold = 0.12
+      const steps = Math.max(0, Math.min(8, Math.floor(Math.abs(combinedDelta) / threshold)))
       wheelDeltaCarryRef.current =
         steps > 0 ? directionSign * (Math.abs(combinedDelta) - steps * threshold) : combinedDelta
       if (steps <= 0) return
@@ -1781,13 +1841,14 @@ export function CellTerminal({
         { length: steps },
         () => `\x1b[<${button};${payload.x};${payload.y}M`,
       ).join('')
-      if (term && getTerminalBackend(term) === 'tmux') {
+      if (term && isServerOwnedTerminalBackend(getTerminalBackend(term))) {
+        focusGhosttyInput(term)
         window.cells.terminal.write(termId, sequence)
         return
       }
       void window.cells.terminal.handleWheel(termId, payload.direction, steps, sequence)
     },
-    [getLiveTerminal, termId],
+    [focusGhosttyInput, getLiveTerminal, termId],
   )
 
   const flushQueuedMouseSequences = useCallback(() => {
@@ -1799,8 +1860,12 @@ export function CellTerminal({
   }, [termId])
 
   const queueServerOwnedMouseSequence = useCallback(
-    (event: MouseEvent, sequence: string) => {
+    (event: MouseEvent, term: Terminal, sequence: string) => {
       Reflect.set(event, SERVER_OWNED_MOUSE_HANDLED_KEY, true)
+      if (getTerminalBackend(term) === 'zellij') {
+        window.cells.terminal.write(termId, sequence)
+        return
+      }
       queuedMouseSequencesRef.current.push(sequence)
       if (queuedMouseTimerRef.current === null) {
         queuedMouseTimerRef.current = window.setTimeout(
@@ -1971,12 +2036,44 @@ export function CellTerminal({
     onTitleChangeRef.current?.(sanitized)
   }, [])
 
+  useEffect(() => {
+    const agent =
+      terminalRuntimeStatus?.kind === 'agent' ? (terminalRuntimeStatus.agent ?? null) : null
+    if (agent !== 'codex') {
+      lastCodexTitleDataRef.current = -1
+      lastCodexTitleRef.current = null
+      return
+    }
+
+    const statusVersion = terminalRuntimeStatus?.updatedAt ?? 0
+    if (statusVersion === lastCodexTitleDataRef.current) return
+    lastCodexTitleDataRef.current = statusVersion
+
+    void window.cells.terminal
+      .getCodexTitle(termId)
+      .then((codexTitle) => {
+        if (!codexTitle) return
+        lastCodexTitleRef.current = codexTitle
+        setInferredTitle(formatAgentWindowTitle('codex', codexTitle))
+      })
+      .catch(() => {})
+  }, [setInferredTitle, termId, terminalRuntimeStatus])
+
   const handleSubmittedInput = useCallback(
     (line: string) => {
       const launch = inferAgentLaunch(line)
       if (launch) {
         inferredAgentRef.current = launch.agent
+        backendAgentSyncRef.current = launch.agent
         processTitleRef.current = false
+        void window.cells.terminal
+          .registerLaunch(termId, {
+            agent: launch.agent,
+            command: line.trim(),
+            cwd: getAttachProjectPath(),
+            startedAt: Date.now(),
+          })
+          .catch(() => {})
         const current = useStore.getState().terminals.find((terminal) => terminal.id === termId)
         if (current && current.agent !== launch.agent) {
           useStore.getState().updateTerminalAgent(termId, launch.agent)
@@ -1988,12 +2085,30 @@ export function CellTerminal({
       const trimmed = line.trim()
       if (['exit', 'quit', 'logout'].includes(trimmed.toLowerCase())) {
         inferredAgentRef.current = null
+        detectedAgentRef.current = null
+        backendAgentSyncRef.current = null
         processTitleRef.current = false
+        void window.cells.terminal
+          .registerLaunch(termId, {
+            agent: null,
+            command: null,
+            cwd: getAttachProjectPath(),
+            startedAt: null,
+          })
+          .catch(() => {})
         return
       }
 
       const activeAgent = detectedAgentRef.current ?? inferredAgentRef.current
       if (!activeAgent) return
+      backendAgentSyncRef.current = activeAgent
+      void window.cells.terminal
+        .registerLaunch(termId, {
+          agent: activeAgent,
+          cwd: getAttachProjectPath(),
+          startedAt: Date.now(),
+        })
+        .catch(() => {})
 
       // If the agent process has already set its own title (via escape sequences),
       // don't overwrite it with inferred titles from user input.
@@ -2086,6 +2201,7 @@ export function CellTerminal({
         const avoidSyntheticResize = shouldAvoidSyntheticResizeForTerminal(cached.term)
         const backendAttached = Reflect.get(cached.term, '__cellsBackendAttached') === true
         patchTerminalViewportPreservation(cached.term)
+        await ensurePrimaryTerminalFontLoaded()
         // Move the existing DOM back into our container
         cached.wrapper.style.backgroundColor = buildTheme(themeNameRef.current).background
         container.appendChild(cached.wrapper)
@@ -2115,10 +2231,7 @@ export function CellTerminal({
         // comment there). Cached terminals can also hit the race where the
         // atlas was populated with fallback glyphs before the @font-face
         // font finished loading.
-        const cachedPrimaryFont = (fontFamilyRef.current ?? '')
-          .split(',')[0]
-          .trim()
-          .replace(/^["']|["']$/g, '')
+        const cachedPrimaryFont = getPrimaryTerminalFont()
         if (cachedPrimaryFont && !document.fonts.check(`16px "${cachedPrimaryFont}"`)) {
           const onCachedFontDone = () => {
             if (cancelled) return
@@ -2206,6 +2319,8 @@ export function CellTerminal({
 
       // First time — create new terminal
       await ensureInit()
+      if (cancelled) return
+      await ensurePrimaryTerminalFontLoaded()
       if (cancelled) return
 
       const wrapper = document.createElement('div')
@@ -2443,7 +2558,7 @@ export function CellTerminal({
       })
 
       term.attachCustomWheelEventHandler((e: WheelEvent) => {
-        if (!usesServerOwnedTerminalState(term)) return false
+        if (!shouldRouteServerOwnedMouseInput(term)) return false
         if (e.metaKey || e.ctrlKey) return false
         if (Reflect.get(e, SERVER_OWNED_WHEEL_HANDLED_KEY) === true) return true
 
@@ -2472,10 +2587,7 @@ export function CellTerminal({
       // glyph atlas has already cached fallback glyphs — rebuild the atlas
       // so Nerd Font icons render correctly instead of showing tofu.
       let fontLoaded = false
-      const primaryFont = (fontFamilyRef.current ?? '')
-        .split(',')[0]
-        .trim()
-        .replace(/^["']|["']$/g, '')
+      const primaryFont = getPrimaryTerminalFont()
       const onFontLoadingDone = () => {
         if (cancelled || fontLoaded) return
         if (primaryFont && document.fonts.check(`16px "${primaryFont}"`)) {
@@ -2614,18 +2726,6 @@ export function CellTerminal({
         term.onData((data) => {
           trackInputForTitle(data)
           window.cells.terminal.write(termId, data)
-          // When user sends input (Enter key), immediately mark agent as active
-          if (data.includes('\r') || data.includes('\n')) {
-            const agent = detectedAgentRef.current ?? inferredAgentRef.current
-            if (agent) {
-              agentBellRef.current = false
-              const store = useStore.getState()
-              const current = store.terminals.find((t) => t.id === termId)
-              if (current?.agentStatus !== 'active') {
-                store.updateTerminalAgentStatus(termId, 'active')
-              }
-            }
-          }
         }).dispose,
         term.onResize(({ cols, rows }) => {
           lastReportedSizeRef.current = { cols, rows }
@@ -2674,27 +2774,6 @@ export function CellTerminal({
             // Accumulate data and schedule a single flush per frame
             writeBuf += nextChunk
             if (!writeRaf) writeRaf = requestAnimationFrame(flushWrites)
-
-            const agent = detectedAgentRef.current ?? inferredAgentRef.current
-            if (agent) {
-              lastAgentDataRef.current = Date.now()
-
-              // Bell = agent finished its turn. This lets the poll detect
-              // idle state immediately instead of waiting the full 3s.
-              if (nextChunk.includes(BEL)) {
-                agentBellRef.current = true
-              }
-
-              // Any PTY output means the agent is working. Transition to
-              // 'active' immediately — this is the only place 'active' is set
-              // (aside from user pressing Enter). The poll handles the
-              // active→idle transition after silence.
-              const store = useStore.getState()
-              const current = store.terminals.find((t) => t.id === termId)
-              if (current && current.agentStatus !== 'active') {
-                store.updateTerminalAgentStatus(termId, 'active')
-              }
-            }
           }
         }),
       )
@@ -2710,128 +2789,7 @@ export function CellTerminal({
       wrapper.addEventListener('paste', handlePaste)
       cleanups.push(() => wrapper.removeEventListener('paste', handlePaste))
 
-      let agentPoll: ReturnType<typeof setInterval> | null = null
-      const runAgentPoll = async () => {
-        if (agentPollInFlightRef.current) return
-        agentPollInFlightRef.current = true
-        try {
-          const procInfo = await window.cells.terminal.getProcessInfo(termId)
-          if (cancelled) return
-
-          const proc = procInfo?.command ?? null
-          const agent = normalizeAgentProcess(proc)
-          const wasAgent = prevAgentRef.current
-          detectedAgentRef.current = agent
-          if (agent) inferredAgentRef.current = agent
-          prevAgentRef.current = agent
-
-          const store = useStore.getState()
-          const current = store.terminals.find((t) => t.id === termId)
-
-          // Track whether any non-shell process is running (for subtle indicator)
-          const hasProcess = Boolean(procInfo && !procInfo.isShell && !agent)
-          if (current?.processRunning !== hasProcess) {
-            store.updateTerminalProcessRunning(termId, hasProcess)
-          }
-          if (current && current.agent !== agent) {
-            store.updateTerminalAgent(termId, agent)
-          }
-
-          // ── Agent status state machine ──
-          //
-          // This is a state machine, NOT a stateless re-evaluation. The previous
-          // status determines what transitions are valid. This is critical:
-          // a naive "idle + unfocused → unread" would re-mark terminals the
-          // user already read every 3 seconds, causing phantom notifications.
-          //
-          // Valid transitions:
-          //   null/unread → active    (output arrived — handled in onData above)
-          //   active → null           (silence + focused: user is watching)
-          //   active → unread         (silence + unfocused: user missed it)
-          //   unread/done → null      (user focused the terminal)
-          //   null → null             (no-op: user already acknowledged)
-          //   unread → unread         (no-op: user still hasn't looked)
-          //   any → done              (agent process exited)
-          //
-          if (agent) {
-            const elapsed = Date.now() - lastAgentDataRef.current
-            const focused = store.focusedTerminalId === termId
-            const isIdle =
-              (lastAgentDataRef.current > 0 && elapsed > AGENT_IDLE_SILENCE_MS) ||
-              agentBellRef.current
-            const prev = current?.agentStatus ?? null
-
-            let newStatus: import('@/types').AgentStatus = prev
-            if (!isIdle && lastAgentDataRef.current > 0) {
-              // Output still flowing — agent is actively working
-              newStatus = 'active'
-            } else if (isIdle && prev === 'active') {
-              // TRANSITION: agent just went from working → idle.
-              // This is the ONLY place 'unread' gets set. If the user is
-              // watching (focused), skip straight to null.
-              newStatus = focused ? null : 'unread'
-            } else if (isIdle && focused && (prev === 'unread' || prev === 'done')) {
-              // User focused an idle agent terminal — acknowledge & clear,
-              // but only after they've been looking at it for at least 2s
-              const focusedFor = Date.now() - store.focusedTerminalSince
-              if (focusedFor >= 2000) {
-                newStatus = null
-              }
-            }
-            // All other cases: keep current status unchanged.
-            // null stays null (user already saw it — don't re-notify).
-            // unread stays unread (user hasn't focused yet).
-
-            if (current && current.agentStatus !== newStatus) {
-              store.updateTerminalAgentStatus(termId, newStatus)
-            }
-          } else if (wasAgent && !agent) {
-            // Agent process exited — mark done so user sees it
-            store.updateTerminalAgentStatus(termId, 'done')
-            lastAgentDataRef.current = 0
-            lastCodexTitleDataRef.current = -1
-            lastCodexTitleRef.current = null
-            agentBellRef.current = false
-            // Clear inferred agent so subsequent shell output doesn't
-            // re-trigger the active → unread cycle on a dead agent
-            inferredAgentRef.current = null
-          }
-
-          if (agent === 'codex') {
-            const shouldRefreshCodexTitle =
-              lastCodexTitleRef.current === null ||
-              lastCodexTitleDataRef.current !== lastAgentDataRef.current
-            if (shouldRefreshCodexTitle) {
-              const codexTitle = await window.cells.terminal.getCodexTitle(termId)
-              if (cancelled) return
-              lastCodexTitleDataRef.current = lastAgentDataRef.current
-              lastCodexTitleRef.current = codexTitle
-              if (codexTitle) {
-                setInferredTitle(formatAgentWindowTitle('codex', codexTitle))
-              }
-            }
-          } else {
-            lastCodexTitleDataRef.current = -1
-            lastCodexTitleRef.current = null
-          }
-        } finally {
-          agentPollInFlightRef.current = false
-        }
-      }
-      const setPollingEnabled = (enabled: boolean) => {
-        if (enabled) {
-          if (agentPoll) return
-          agentPoll = setInterval(() => {
-            void runAgentPoll()
-          }, 3000)
-          void runAgentPoll()
-          return
-        }
-        if (agentPoll) {
-          clearInterval(agentPoll)
-          agentPoll = null
-        }
-      }
+      const setPollingEnabled = (_enabled: boolean) => {}
       cleanups.push(() => setPollingEnabled(false))
 
       // Store in cache
@@ -2967,6 +2925,8 @@ export function CellTerminal({
     }
   }, [
     copySelectionToClipboard,
+    ensurePrimaryTerminalFontLoaded,
+    getPrimaryTerminalFont,
     pasteToTerminal,
     queueServerOwnedWheelPayload,
     reloadKey,
@@ -2976,6 +2936,7 @@ export function CellTerminal({
     setInferredTitle,
     getAttachProjectId,
     getAttachProjectPath,
+    shouldRouteServerOwnedMouseInput,
     syncTerminalState,
     terminalFindOpen,
     termId,
@@ -3103,7 +3064,7 @@ export function CellTerminal({
 
     const onWheel = (e: WheelEvent) => {
       const term = terminalRef.current
-      if (term && usesServerOwnedTerminalState(term) && !e.metaKey && !e.ctrlKey) {
+      if (term && shouldRouteServerOwnedMouseInput(term) && !e.metaKey && !e.ctrlKey) {
         if (Reflect.get(e, SERVER_OWNED_WHEEL_HANDLED_KEY) === true) return
         const payload = getMouseWheelSequencePayload(e, term, container)
         if (payload) {
@@ -3140,8 +3101,8 @@ export function CellTerminal({
 
     const shouldHandleServerOwnedMouse = (e: MouseEvent) => {
       const term = terminalRef.current
-      if (!term || !usesServerOwnedTerminalState(term)) return null
-      if (getTerminalBackend(term) !== 'tmux') return null
+      if (!term || !shouldRouteServerOwnedMouseInput(term)) return null
+      if (!isServerOwnedTerminalBackend(getTerminalBackend(term))) return null
       if (Reflect.get(e, SERVER_OWNED_MOUSE_HANDLED_KEY) === true) return null
       return term
     }
@@ -3188,7 +3149,7 @@ export function CellTerminal({
         Reflect.set(e, SERVER_OWNED_MOUSE_HANDLED_KEY, true)
         window.cells.terminal.write(termId, sequence)
       } else {
-        queueServerOwnedMouseSequence(e, sequence)
+        queueServerOwnedMouseSequence(e, term, sequence)
       }
     }
 
@@ -3215,6 +3176,7 @@ export function CellTerminal({
     flushQueuedMouseSequences,
     queueServerOwnedMouseSequence,
     queueServerOwnedWheelPayload,
+    shouldRouteServerOwnedMouseInput,
     termId,
   ])
 

@@ -1,4 +1,4 @@
-import type { BrowserNode, TerminalNode } from '../types'
+import type { BrowserNode, TerminalNode, TerminalRuntimeStatus } from '../types'
 
 export type CanvasDirection = 'left' | 'right' | 'up' | 'down'
 
@@ -12,8 +12,7 @@ export interface CanvasWindow {
   height: number
   zIndex: number
   agent?: 'claude' | 'codex' | 'opencode' | 'pi' | null
-  agentStatus?: import('../types').AgentStatus
-  processRunning?: boolean
+  runtimeStatus?: TerminalRuntimeStatus | null
   faviconUrl?: string
 }
 
@@ -41,8 +40,7 @@ export function getCanvasWindows(
       height: terminal.height,
       zIndex: terminal.zIndex ?? index + 1,
       agent: terminal.agent,
-      agentStatus: terminal.agentStatus,
-      processRunning: terminal.processRunning,
+      runtimeStatus: terminal.runtimeStatus ?? null,
     })),
     ...browsers.map((browser, index) => ({
       id: browser.id,

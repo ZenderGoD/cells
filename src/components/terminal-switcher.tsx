@@ -9,15 +9,15 @@ import { motion, AnimatePresence } from 'motion/react'
 import { WindowOverviewMap } from './canvas/window-overview-map'
 import { AgentIcon } from './agent-icon'
 import { Logo } from './logo'
-import { getStatusIndicator } from '@/lib/status-indicator'
+import { getStatusPresentation } from '@/lib/status-indicator'
+import type { TerminalRuntimeStatus } from '@/types'
 
 interface SwitcherItem {
   id: string
   title: string
   type: 'terminal' | 'browser'
   agent?: 'claude' | 'codex' | 'opencode' | 'pi' | null
-  agentStatus?: import('@/types').AgentStatus
-  processRunning?: boolean
+  runtimeStatus?: TerminalRuntimeStatus | null
   url?: string
   isCurrent: boolean
   faviconUrl?: string
@@ -65,8 +65,7 @@ export function TerminalSwitcher() {
       title: t.customTitle || t.title,
       type: 'terminal' as const,
       agent: t.agent ?? inferAgentFromTitle(t.customTitle || t.title),
-      agentStatus: t.agentStatus,
-      processRunning: t.processRunning,
+      runtimeStatus: t.runtimeStatus ?? null,
       isCurrent: t.id === focusedTerminalId,
     })),
     ...browsers.map((b) => ({
@@ -317,11 +316,7 @@ export function TerminalSwitcher() {
                       )}
                       <span className="text-[10px] truncate flex-1">{item.title}</span>
                       {(() => {
-                        const si = getStatusIndicator(
-                          item.agentStatus,
-                          item.agent,
-                          item.processRunning,
-                        )
+                        const si = getStatusPresentation(item.runtimeStatus, { agent: item.agent })
                         if (si.dotClass)
                           return (
                             <div
