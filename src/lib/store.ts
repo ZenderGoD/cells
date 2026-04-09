@@ -1599,20 +1599,25 @@ export const useStore = create<StoreState>((set, get) => ({
       }
     }
 
-    set((s) =>
-      mapTerminalsEverywhere(s.terminals, s.projects, id, (terminal) => ({
-        ...terminal,
-        runtimeStatus: mergedStatus,
-        agent:
-          mergedStatus?.kind === 'agent'
-            ? (mergedStatus.agent ?? terminal.agent ?? null)
-            : mergedStatus
-              ? terminal.agent
-              : null,
-        agentStatus: null,
-        processRunning: false,
-      })),
-    )
+    const updater = (terminal: TerminalNode) => ({
+      ...terminal,
+      runtimeStatus: mergedStatus,
+      agent:
+        mergedStatus?.kind === 'agent'
+          ? (mergedStatus.agent ?? terminal.agent ?? null)
+          : mergedStatus
+            ? terminal.agent
+            : null,
+      agentStatus: null as TerminalNode['agentStatus'],
+      processRunning: false,
+    })
+
+    // Only map the active terminals array for runtime status changes.
+    // Skip the expensive projects-wide mapping — project terminals get
+    // their status synced on persist/snapshot instead.
+    set((s) => ({
+      terminals: s.terminals.map((t) => (t.id === id ? updater(t) : t)),
+    }))
   },
 
   clearTerminalRuntimeAttention(id) {
@@ -1767,16 +1772,22 @@ export const useStore = create<StoreState>((set, get) => ({
     }
 
     if (id && id !== prev) {
-      get().bringToFront(id)
-      const history = pushFocusHistory(get().focusHistory, id)
-      const counts = { ...get().focusCounts, [id]: (get().focusCounts[id] ?? 0) + 1 }
-      set({
-        focusedTerminalId: id,
-        focusedBrowserId: null,
-        focusHistory: history,
-        focusCounts: counts,
-        focusedTerminalSince: Date.now(),
-      })
+      // When snapOnFocus is enabled, skip the separate bringToFront + set
+      // and let snapToTerminal handle everything in a single set() call.
+      if (get().snapOnFocus) {
+        get().snapToTerminal(id)
+      } else {
+        get().bringToFront(id)
+        const history = pushFocusHistory(get().focusHistory, id)
+        const counts = { ...get().focusCounts, [id]: (get().focusCounts[id] ?? 0) + 1 }
+        set({
+          focusedTerminalId: id,
+          focusedBrowserId: null,
+          focusHistory: history,
+          focusCounts: counts,
+          focusedTerminalSince: Date.now(),
+        })
+      }
     } else {
       set({
         focusedTerminalId: id,
@@ -1793,10 +1804,6 @@ export const useStore = create<StoreState>((set, get) => ({
         if (store.focusedTerminalId !== id) return
         store.clearTerminalRuntimeAttention(id)
       }, FOCUS_READ_DELAY_MS)
-    }
-
-    if (id && id !== prev && get().snapOnFocus) {
-      get().snapToTerminal(id)
     }
   },
 
@@ -1937,6 +1944,9 @@ export const useStore = create<StoreState>((set, get) => ({
     const shouldBringToFront = id !== state.focusedTerminalId
     const nextTopZIndex = shouldBringToFront ? state.topZIndex + 1 : state.topZIndex
     const focusHistory = pushFocusHistory(state.focusHistory, id)
+    const focusCounts = shouldBringToFront
+      ? { ...state.focusCounts, [id]: (state.focusCounts[id] ?? 0) + 1 }
+      : state.focusCounts
     const viewW = window.innerWidth
     const viewH = window.innerHeight - STATUS_BAR_HEIGHT
     const scale = options?.keepScale
@@ -1953,9 +1963,11 @@ export const useStore = create<StoreState>((set, get) => ({
         : state.terminals,
       focusedTerminalId: id,
       focusedBrowserId: null,
+      focusedTerminalSince: Date.now(),
       snapPaused: false,
       snapFast: true,
       focusHistory,
+      focusCounts,
       topZIndex: nextTopZIndex,
       canvas: {
         x: viewW / 2 - (terminal.x + terminal.width / 2) * scale,

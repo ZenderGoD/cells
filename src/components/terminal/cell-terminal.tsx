@@ -1480,9 +1480,19 @@ function reportTerminalSizeIfChanged(termId: string, fitAddon: FitAddon | null) 
   window.cells.terminal.resize(termId, dims.cols, dims.rows)
 }
 
+let _repaintRaf = 0
+let _repaintTimer = 0
 function forceTerminalRepaint(term: Terminal) {
-  requestAnimationFrame(() => forceTerminalFullRender(term))
-  window.setTimeout(() => requestAnimationFrame(() => forceTerminalFullRender(term)), 32)
+  if (_repaintRaf) cancelAnimationFrame(_repaintRaf)
+  if (_repaintTimer) clearTimeout(_repaintTimer)
+  _repaintRaf = requestAnimationFrame(() => {
+    _repaintRaf = 0
+    forceTerminalFullRender(term)
+  })
+  _repaintTimer = window.setTimeout(() => {
+    _repaintTimer = 0
+    requestAnimationFrame(() => forceTerminalFullRender(term))
+  }, 32)
 }
 
 function shouldRetryTerminalAttach(error: unknown) {
@@ -1750,6 +1760,7 @@ export function CellTerminal({
       .catch(() => {})
   }, [getAttachProjectPath, termId, terminalAgent])
 
+  const syncRafRef = useRef<number>(0)
   const syncTerminalState = useCallback(
     (term: Terminal | null = getLiveTerminal()) => {
       if (!term) return
@@ -1759,7 +1770,10 @@ export function CellTerminal({
       shouldRenderRef.current = shouldRender
       setTerminalRenderLoopEnabled(term, shouldRender)
 
-      requestAnimationFrame(() => {
+      // Cancel any pending sync rAF so rapid focus changes don't pile up
+      if (syncRafRef.current) cancelAnimationFrame(syncRafRef.current)
+      syncRafRef.current = requestAnimationFrame(() => {
+        syncRafRef.current = 0
         if (focused && !suppressAutoFocusRef.current) {
           focusGhosttyInput(term)
         } else {
@@ -3288,7 +3302,7 @@ export function CellTerminal({
           }
         })
       }
-      timer = window.setTimeout(poll, isFocused ? 120 : 220)
+      timer = window.setTimeout(poll, isFocused ? 500 : 1000)
     }
 
     void poll()

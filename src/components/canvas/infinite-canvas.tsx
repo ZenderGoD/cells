@@ -149,23 +149,34 @@ export function InfiniteCanvas() {
     }
   }, [transform.scale, viewportRect.x, viewportRect.y, viewportRect.width, viewportRect.height])
   const viewportArea = viewportRect.width * viewportRect.height
-  const visibleWindowCount =
-    viewportArea > 0
-      ? getCanvasWindows(terminals, browsers).reduce((count, window) => {
-          const overlapW = Math.max(
-            0,
-            Math.min(window.x + window.width, viewportRect.x + viewportRect.width) -
-              Math.max(window.x, viewportRect.x),
-          )
-          const overlapH = Math.max(
-            0,
-            Math.min(window.y + window.height, viewportRect.y + viewportRect.height) -
-              Math.max(window.y, viewportRect.y),
-          )
-          const coverage = (overlapW * overlapH) / viewportArea
-          return coverage >= 0.08 ? count + 1 : count
-        }, 0)
-      : 0
+  const visibleWindowCount = useMemo(
+    () =>
+      viewportArea > 0
+        ? getCanvasWindows(terminals, browsers).reduce((count, window) => {
+            const overlapW = Math.max(
+              0,
+              Math.min(window.x + window.width, viewportRect.x + viewportRect.width) -
+                Math.max(window.x, viewportRect.x),
+            )
+            const overlapH = Math.max(
+              0,
+              Math.min(window.y + window.height, viewportRect.y + viewportRect.height) -
+                Math.max(window.y, viewportRect.y),
+            )
+            const coverage = (overlapW * overlapH) / viewportArea
+            return coverage >= 0.08 ? count + 1 : count
+          }, 0)
+        : 0,
+    [
+      viewportArea,
+      viewportRect.x,
+      viewportRect.y,
+      viewportRect.width,
+      viewportRect.height,
+      terminals,
+      browsers,
+    ],
+  )
   const showFocusedTerminalRing = visibleWindowCount >= 2
   const canvasWillChange = isPanning || isDragging || isUserDriving ? 'transform' : undefined
 
@@ -201,12 +212,36 @@ export function InfiniteCanvas() {
     motionScale,
   ])
 
+  // Track snap animation state with a ref to avoid redundant setState calls
+  // inside the rAF polling loop.
+  const isSnapAnimatingRef = useRef(false)
+  const prevTransformRef = useRef({ x: transform.x, y: transform.y, scale: transform.scale })
+
   useEffect(() => {
+    const prev = prevTransformRef.current
+    prevTransformRef.current = { x: transform.x, y: transform.y, scale: transform.scale }
+
     if (isUserDriving || reducedMotion) {
-      window.requestAnimationFrame(() => {
-        setIsSnapAnimating(false)
-      })
+      if (isSnapAnimatingRef.current) {
+        isSnapAnimatingRef.current = false
+        window.requestAnimationFrame(() => {
+          setIsSnapAnimating(false)
+        })
+      }
       return
+    }
+
+    // Eagerly mark animating when snap target jumps so the focus-change
+    // render and pauseLiveRender update are batched into one pass.
+    const jumped =
+      Math.abs(prev.x - transform.x) > SNAP_POSITION_EPSILON ||
+      Math.abs(prev.y - transform.y) > SNAP_POSITION_EPSILON ||
+      Math.abs(prev.scale - transform.scale) > SNAP_SCALE_EPSILON
+    if (jumped && !isSnapAnimatingRef.current) {
+      isSnapAnimatingRef.current = true
+      // Intentional synchronous set: batches focus-change + pauseLiveRender
+      // in one render pass, avoiding an extra full re-render of all terminals.
+      setIsSnapAnimating(true) // eslint-disable-line react-hooks/set-state-in-effect
     }
 
     let frame = 0
@@ -220,14 +255,18 @@ export function InfiniteCanvas() {
         Math.abs(animatedY.get() - transform.y) > SNAP_POSITION_EPSILON ||
         Math.abs(animatedScale.get() - transform.scale) > SNAP_SCALE_EPSILON
 
-      setIsSnapAnimating((previous) => (previous === animating ? previous : animating))
+      if (isSnapAnimatingRef.current !== animating) {
+        isSnapAnimatingRef.current = animating
+        setIsSnapAnimating(animating)
+      }
 
       if (animating) {
         frame = window.requestAnimationFrame(updateAnimationState)
       }
     }
 
-    updateAnimationState()
+    // Start polling after a tick to let springs begin
+    frame = window.requestAnimationFrame(updateAnimationState)
 
     return () => {
       cancelled = true
@@ -508,15 +547,16 @@ export function InfiniteCanvas() {
 
   const handleNodeDragStart = useCallback(
     (nodeId: string, kind: 'terminal' | 'browser', startX: number, startY: number) => {
-      if (!selectionMode) {
+      const { selectionMode: sm, selectedNodeIds: sel } = useStore.getState()
+      if (!sm) {
         return
       }
 
-      const dragIds = selectedNodeIds.includes(nodeId) ? selectedNodeIds : [nodeId]
+      const dragIds = sel.includes(nodeId) ? sel : [nodeId]
       setSelectedNodeIds(dragIds)
       beginSelectionDrag(dragIds, startX, startY)
     },
-    [selectionMode, selectedNodeIds, beginSelectionDrag, setSelectedNodeIds],
+    [beginSelectionDrag, setSelectedNodeIds],
   )
 
   useEffect(() => {

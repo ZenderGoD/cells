@@ -1,4 +1,5 @@
 import {
+  memo,
   useState,
   useCallback,
   useRef,
@@ -40,7 +41,7 @@ interface TerminalNodeProps {
   onDragStart: (id: string, kind: 'terminal' | 'browser', startX: number, startY: number) => void
 }
 
-export function TerminalNode({
+export const TerminalNode = memo(function TerminalNode({
   terminal,
   scale,
   isVisible,
@@ -77,6 +78,10 @@ export function TerminalNode({
   const [isEditingTitle, setIsEditingTitle] = useState(false)
   const [editValue, setEditValue] = useState('')
   const titleInputRef = useRef<HTMLInputElement>(null)
+  const handleTitleChange = useCallback(
+    (title: string) => updateTerminalTitle(terminal.id, title),
+    [updateTerminalTitle, terminal.id],
+  )
   const displayAgent = terminal.agent ?? inferAgentFromTitle(terminal.title)
   const displayTitle = terminal.customTitle || terminal.title
   const screenWidth = terminal.width * scale
@@ -319,7 +324,7 @@ export function TerminalNode({
             height={terminal.height}
             isVisible={isVisible && !pauseLiveRender}
             isFocused={isFocused}
-            onTitleChange={(title) => updateTerminalTitle(terminal.id, title)}
+            onTitleChange={handleTitleChange}
           />
         ) : (
           isVisible && (
@@ -477,4 +482,4 @@ export function TerminalNode({
       />
     </div>
   )
-}
+})
