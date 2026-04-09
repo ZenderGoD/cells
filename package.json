@@ -107,7 +107,7 @@
       ],
       "icon": "resources/icon.icns",
       "category": "public.app-category.developer-tools",
-      "x64ArchFiles": "Contents/Resources/{app.asar.unpacked/node_modules/node-pty/prebuilds/darwin-{arm64,x64}/{pty.node,spawn-helper},vendor/zellij/darwin-{arm64,x64}/zellij,vendor/tmux/darwin-{arm64,x64}/tmux}",
+      "x64ArchFiles": "Contents/Resources/{app.asar.unpacked/node_modules/{node-pty/prebuilds/darwin-{arm64,x64}/{pty.node,spawn-helper},@anthropic-ai/claude-agent-sdk/vendor/audio-capture/{arm64,x64}-darwin/audio-capture.node},vendor/zellij/darwin-{arm64,x64}/zellij,vendor/tmux/darwin-{arm64,x64}/tmux}",
       "darkModeSupport": true,
       "hardenedRuntime": true,
       "gatekeeperAssess": false
