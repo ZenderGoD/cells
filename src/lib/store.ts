@@ -1176,13 +1176,18 @@ export const useStore = create<StoreState>((set, get) => ({
       .then((allHistory) => {
         const state = get()
         let projects = snapshotActiveProject(state)
-        const terminals = mergeTerminalSnapshots(state.terminals)
+
+        // Build snapshot-enriched terminals for the save payload only.
+        // Don't push the new array into live state — that would replace
+        // the terminals reference and trigger a full re-render of every
+        // terminal node on each persist cycle.
+        const terminalsForSave = mergeTerminalSnapshots(state.terminals)
 
         projects = projects.map((project) => ({
           ...project,
           terminals:
             project.id === state.activeProjectId
-              ? terminals
+              ? terminalsForSave
               : mergeTerminalSnapshots(project.terminals ?? []),
         }))
 
@@ -1200,9 +1205,9 @@ export const useStore = create<StoreState>((set, get) => ({
               return history ? { ...browser, history } : browser
             }),
           }))
-          set({ terminals, browsers, projects })
+          set({ browsers, projects })
         } else {
-          set({ terminals, projects })
+          set({ projects })
         }
 
         const freshState = get()
@@ -1251,15 +1256,15 @@ export const useStore = create<StoreState>((set, get) => ({
       .catch(() => {
         // Fallback: save without history
         const state = get()
-        const terminals = mergeTerminalSnapshots(state.terminals)
+        const terminalsForSave = mergeTerminalSnapshots(state.terminals)
         const projects = snapshotActiveProject(state).map((project) => ({
           ...project,
           terminals:
             project.id === state.activeProjectId
-              ? terminals
+              ? terminalsForSave
               : mergeTerminalSnapshots(project.terminals ?? []),
         }))
-        set({ terminals, projects })
+        set({ projects })
         const persistedProjects = projects.map((project) => ({
           ...project,
           terminals: (project.terminals ?? []).map(stripTerminalRuntimeFields),

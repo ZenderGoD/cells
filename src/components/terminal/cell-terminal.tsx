@@ -1006,43 +1006,70 @@ function getTerminalPreviewSnapshot(
   return previewLines
 }
 
+// Cache restore snapshots so persist() doesn't re-serialize every terminal
+// buffer on each cycle. Snapshots are invalidated when terminal data arrives.
+const snapshotCache = new Map<string, { snapshot: string | null; dirty: boolean }>()
+
+function markTerminalSnapshotDirty(termId: string) {
+  const entry = snapshotCache.get(termId)
+  if (entry) {
+    entry.dirty = true
+  } else {
+    snapshotCache.set(termId, { snapshot: null, dirty: true })
+  }
+}
+
 function getTerminalRestoreSnapshot(termId: string): string | null {
   const cached = terminalCache.get(termId)
   const term = cached?.term
   if (!term) return null
 
+  // Return cached snapshot if terminal hasn't received new data
+  const cacheEntry = snapshotCache.get(termId)
+  if (cacheEntry && !cacheEntry.dirty) {
+    return cacheEntry.snapshot
+  }
+
+  let snapshot: string | null
+
   if (shouldPreferSnapshotRestoreForTerminal(term)) {
-    return serializeVisibleTerminalSnapshot(term, useStore.getState().terminalTheme)
-  }
+    snapshot = serializeVisibleTerminalSnapshot(term, useStore.getState().terminalTheme)
+  } else {
+    const activeBuffer = term.buffer.active
+    const logicalLines: string[] = []
 
-  const activeBuffer = term.buffer.active
-  const logicalLines: string[] = []
+    for (let lineIndex = 0; lineIndex < activeBuffer.length; lineIndex += 1) {
+      const line = activeBuffer.getLine(lineIndex)
+      if (!line) {
+        logicalLines.push('')
+        continue
+      }
 
-  for (let lineIndex = 0; lineIndex < activeBuffer.length; lineIndex += 1) {
-    const line = activeBuffer.getLine(lineIndex)
-    if (!line) {
-      logicalLines.push('')
-      continue
+      const text = line.translateToString(true, 0, line.length)
+      if (line.isWrapped && logicalLines.length > 0) {
+        logicalLines[logicalLines.length - 1] += text
+      } else {
+        logicalLines.push(text)
+      }
     }
 
-    const text = line.translateToString(true, 0, line.length)
-    if (line.isWrapped && logicalLines.length > 0) {
-      logicalLines[logicalLines.length - 1] += text
+    while (logicalLines.length > 0 && logicalLines[logicalLines.length - 1] === '') {
+      logicalLines.pop()
+    }
+
+    if (logicalLines.length === 0) {
+      snapshot = ''
     } else {
-      logicalLines.push(text)
+      const joined = logicalLines.join('\r\n')
+      snapshot =
+        joined.length > TERMINAL_RESTORE_SNAPSHOT_LIMIT
+          ? joined.slice(-TERMINAL_RESTORE_SNAPSHOT_LIMIT)
+          : joined
     }
   }
 
-  while (logicalLines.length > 0 && logicalLines[logicalLines.length - 1] === '') {
-    logicalLines.pop()
-  }
-
-  if (logicalLines.length === 0) return ''
-
-  const snapshot = logicalLines.join('\r\n')
-  return snapshot.length > TERMINAL_RESTORE_SNAPSHOT_LIMIT
-    ? snapshot.slice(-TERMINAL_RESTORE_SNAPSHOT_LIMIT)
-    : snapshot
+  snapshotCache.set(termId, { snapshot, dirty: false })
+  return snapshot
 }
 
 /** Apply a theme to every cached terminal instance (mounted or not). */
@@ -1055,6 +1082,7 @@ function applyThemeToAllTerminals(themeName: string) {
 /** Call when a terminal is permanently removed (not just hidden). */
 function destroyCachedTerminal(termId: string) {
   clearRetainedAttachment(termId)
+  snapshotCache.delete(termId)
   const cached = terminalCache.get(termId)
   if (cached) {
     for (const fn of cached.cleanups) fn()
@@ -2686,6 +2714,7 @@ export function CellTerminal({
         Reflect.set(term, '__cellsPreserveViewportOnWrite', scrolledUp)
         term.write(chunk)
         Reflect.set(term, '__cellsPreserveViewportOnWrite', false)
+        markTerminalSnapshotDirty(termId)
         perfBytes += chunk.length
         perfWriteCalls += 1
         const newLen = term.getScrollbackLength()
