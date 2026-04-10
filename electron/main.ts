@@ -940,9 +940,6 @@ ipcMain.handle(
       agent?: 'claude' | 'codex' | 'opencode' | 'pi' | null
       command?: string | null
       cwd?: string | null
-      startedAt?: number | null
-      claudeSessionId?: string | null
-      codexThreadId?: string | null
     },
   ) => {
     terminalStatusMonitor?.setLaunchMeta(termId, launch)

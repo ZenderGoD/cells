@@ -231,8 +231,13 @@ export function buildPrivateZellijConfig(defaultShell: string, themeName = DEFAU
     'theme "cells_private"',
     'pane_frames false',
     'simplified_ui true',
-    'mouse_mode true',
-    'copy_on_select false',
+    // Let xterm.js handle selection natively. With mouse_mode true, zellij
+    // forwards mouse-tracking escapes to the host terminal which disables
+    // xterm's click-drag selection — the user cannot select text the way
+    // they can under tmux. Cells only uses single-pane layouts so we don't
+    // need zellij's mouse handling for pane clicks.
+    'mouse_mode false',
+    'copy_on_select true',
     'styled_underlines false',
     'scroll_buffer_size 50000',
     'show_startup_tips false',

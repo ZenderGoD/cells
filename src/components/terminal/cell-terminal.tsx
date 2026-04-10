@@ -15,6 +15,7 @@ import { useStore, consumePendingCommand, consumePendingWorktreePath } from '@/l
 import { DEFAULT_TERMINAL_CURSOR_SETTINGS, type TerminalCursorStyle } from '@/lib/terminal-cursor'
 import { isServerOwnedTerminalBackend } from '@/lib/terminal-session-backend'
 import { DEFAULT_TERMINAL_SCROLLBACK_LINES } from '@/lib/terminal-scrollback'
+import { sanitizeBackendLeakedTitle } from '@/lib/terminal-title'
 import {
   getTerminalIndexedColor,
   getTerminalTheme,
@@ -1298,21 +1299,6 @@ function summarizeTitle(input: string, maxLength = 60) {
   return `${collapsed.slice(0, maxLength - 1).trimEnd()}…`
 }
 
-function sanitizeBackendLeakedTitle(input: string) {
-  const collapsed = input.replace(/\s+/g, ' ').trim()
-  if (!collapsed) return ''
-
-  // Zellij can leak its hidden session name into pane titles, for example:
-  //   czba1d9888fa56fe2207bc8ce | * Claude Code
-  // Strip the private Cells session prefix and the transient zellij marker.
-  const withoutCellsSessionPrefix = collapsed.replace(
-    /^(?:cz[a-f0-9]{8,}|cells[-_][^\s|]+)\s*\|\s*(?:[*+-]\s*)?/i,
-    '',
-  )
-
-  return withoutCellsSessionPrefix.trim()
-}
-
 function formatAgentWindowTitle(agent: AgentName, title: string, maxLength = 60) {
   const summary = summarizeTitle(sanitizeBackendLeakedTitle(title), maxLength)
   return summary || getAgentLabel(agent)
@@ -1374,11 +1360,11 @@ function inferAgentLaunch(line: string): { agent: AgentName; title: string } | n
 
   return {
     agent,
-    title: prompt ? `${getAgentLabel(agent)}: ${prompt}` : getAgentLabel(agent),
+    title: prompt || getAgentLabel(agent),
   }
 }
 
-function inferAgentPromptTitle(agent: AgentName, line: string): string | null {
+function inferAgentPromptTitle(_agent: AgentName, line: string): string | null {
   const trimmed = line.trim()
   if (!trimmed) return null
   if (['exit', 'quit', 'logout'].includes(trimmed.toLowerCase())) return null
@@ -1405,7 +1391,7 @@ function inferAgentPromptTitle(agent: AgentName, line: string): string | null {
   }
 
   const summary = summarizeTitle(trimmed)
-  return summary ? `${getAgentLabel(agent)}: ${summary}` : null
+  return summary || null
 }
 
 function stripInputControlSequences(chunk: string) {
@@ -2804,15 +2790,14 @@ export function CellTerminal({
             // After a server-owned reattach, reset() was deferred so the
             // old cached content stays visible instead of flashing a blank
             // grid. Now that the backend is sending real redraw data, do the
-            // reset + mouse-mode setup and write the first chunk in one go
-            // so the render loop never sees an empty buffer.
+            // reset and write the first chunk in one go so the render loop
+            // never sees an empty buffer. Mouse tracking escapes are left to
+            // the inner program — if we force-enabled SGR mouse here, xterm
+            // would disable native click-drag selection.
             if (Reflect.get(term, '__cellsPendingReattachReset') === true) {
               Reflect.set(term, '__cellsPendingReattachReset', false)
               term.reset()
               term.scrollToBottom()
-              // Enable SGR mouse reporting — the multiplexer already set up
-              // mouse mode server-side but ghostty-web missed those escapes.
-              term.write('\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h')
             }
 
             // Accumulate data and schedule a single flush per frame
@@ -3295,6 +3280,15 @@ export function CellTerminal({
     const poll = async () => {
       const term = terminalRef.current
       if (!term || !usesServerOwnedTerminalState(term)) {
+        serverOwnedMouseModeRef.current = false
+        if (!cancelled) setScrollStatus(null)
+        return
+      }
+
+      // Zellij's getScrollStatus always returns null — there is no scroll
+      // overlay or mouse-mode bookkeeping to fetch — so skip the IPC round
+      // trip entirely. Polling it every 500ms contributed to UI freezes.
+      if (getTerminalBackend(term) === 'zellij') {
         serverOwnedMouseModeRef.current = false
         if (!cancelled) setScrollStatus(null)
         return
