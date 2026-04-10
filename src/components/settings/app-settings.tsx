@@ -91,6 +91,11 @@ const TERMINAL_LINK_TARGET_OPTIONS: SettingsSelectOption[] = [
   { value: 'browser', label: 'Built-in Browser', hint: 'Opens a new tab' },
 ]
 
+const DIRECTORY_LINK_TARGET_OPTIONS: SettingsSelectOption[] = [
+  { value: 'finder', label: 'Finder', hint: 'Open the folder in Finder' },
+  { value: 'terminal', label: 'New Terminal', hint: 'Open a terminal at that path' },
+]
+
 const LINK_RULE_TARGET_OPTIONS: SettingsSelectOption[] = [
   { value: 'system', label: 'System', hint: 'Default browser' },
   { value: 'browser', label: 'Built-in', hint: 'Open in Cells' },
@@ -178,6 +183,8 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const setTerminalLinkProjectId = useStore((s) => s.setTerminalLinkProjectId)
   const linkRules = useStore((s) => s.linkRules)
   const setLinkRules = useStore((s) => s.setLinkRules)
+  const directoryLinkTarget = useStore((s) => s.directoryLinkTarget)
+  const setDirectoryLinkTarget = useStore((s) => s.setDirectoryLinkTarget)
   const agentAliases = useStore((s) => s.agentAliases)
   const setAgentAliases = useStore((s) => s.setAgentAliases)
   const enabledAgents = useStore((s) => s.enabledAgents)
@@ -947,6 +954,20 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                           placeholder="Choose a project"
                           emptyText="No matching projects"
                           disabled={projects.length === 0}
+                        />
+                      </SettingsField>
+
+                      <SettingsField
+                        label="Directory clicks"
+                        hint="Files always open with the system default app"
+                      >
+                        <SettingsCombobox
+                          value={directoryLinkTarget}
+                          options={DIRECTORY_LINK_TARGET_OPTIONS}
+                          onValueChange={(value) =>
+                            setDirectoryLinkTarget((value as 'finder' | 'terminal') ?? 'finder')
+                          }
+                          placeholder="Choose directory link behavior"
                         />
                       </SettingsField>
                     </div>

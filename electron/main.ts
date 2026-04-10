@@ -1003,6 +1003,43 @@ ipcMain.handle('app:open-external', (_event, url: string) => {
   shell.openExternal(url)
 })
 
+function expandHomePath(input: string) {
+  if (!input) return input
+  if (input === '~') return os.homedir()
+  if (input.startsWith('~/')) return path.join(os.homedir(), input.slice(2))
+  if (input.startsWith('file://')) {
+    try {
+      return fileURLToPath(input)
+    } catch {
+      return input
+    }
+  }
+  return input
+}
+
+ipcMain.handle(
+  'app:stat-path',
+  async (
+    _event,
+    targetPath: string,
+  ): Promise<{ kind: 'file' | 'dir' | 'missing'; resolved: string }> => {
+    const resolved = expandHomePath(targetPath)
+    try {
+      const stat = fs.statSync(resolved)
+      if (stat.isDirectory()) return { kind: 'dir', resolved }
+      if (stat.isFile()) return { kind: 'file', resolved }
+      return { kind: 'missing', resolved }
+    } catch {
+      return { kind: 'missing', resolved }
+    }
+  },
+)
+
+ipcMain.handle('app:reveal-path', async (_event, targetPath: string) => {
+  const resolved = expandHomePath(targetPath)
+  await shell.openPath(resolved)
+})
+
 ipcMain.handle('app:request-quit', () => {
   return confirmAndQuitApp()
 })

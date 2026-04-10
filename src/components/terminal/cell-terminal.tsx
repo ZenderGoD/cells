@@ -15,6 +15,11 @@ import { useStore, consumePendingCommand, consumePendingWorktreePath } from '@/l
 import { DEFAULT_TERMINAL_CURSOR_SETTINGS, type TerminalCursorStyle } from '@/lib/terminal-cursor'
 import { isServerOwnedTerminalBackend } from '@/lib/terminal-session-backend'
 import { DEFAULT_TERMINAL_SCROLLBACK_LINES } from '@/lib/terminal-scrollback'
+import {
+  LOCAL_PATH_RE,
+  extractLocalPathCandidate,
+  looksLikeOpenablePath,
+} from '@/lib/terminal-links'
 import { sanitizeBackendLeakedTitle } from '@/lib/terminal-title'
 import {
   getTerminalIndexedColor,
@@ -548,6 +553,100 @@ function applyThemeToTerminal(term: Terminal, theme: ReturnType<typeof buildThem
 function refreshTerminalTheme(term: Terminal | null | undefined, themeName: string) {
   if (!term) return
   applyThemeToTerminal(term, buildTheme(themeName, getTerminalBackend(term)))
+}
+
+// Link provider that finds bare absolute paths in the terminal buffer and
+// makes them clickable. OSC 8 hyperlinks emitted by agents are handled by the
+// built-in OSC8LinkProvider — this one covers plain paths that agents and
+// build tools print without hyperlink escapes.
+class LocalPathLinkProvider implements ILinkProvider {
+  constructor(private readonly terminal: Terminal) {}
+
+  // Default activate is a no-op — the wrapProvider() wrapper replaces it
+  // with one that routes through the shared activateLink handler.
+  private static noopActivate(_event: MouseEvent) {}
+
+  provideLinks(
+    y: number,
+    callback: (
+      links:
+        | Array<{
+            text: string
+            range: { start: { x: number; y: number }; end: { x: number; y: number } }
+            activate: (event: MouseEvent) => void
+          }>
+        | undefined,
+    ) => void,
+  ) {
+    const line = this.terminal.buffer.active.getLine(y)
+    if (!line) {
+      callback(undefined)
+      return
+    }
+    const parts: Array<{ char: string; col: number }> = []
+    for (let col = 0; col < line.length; col++) {
+      const cell = line.getCell(col)
+      if (!cell) continue
+      const chars = cell.getChars()
+      if (!chars) continue
+      parts.push({ char: chars, col })
+    }
+    if (parts.length === 0) {
+      callback(undefined)
+      return
+    }
+    const text = parts.map((p) => p.char).join('')
+    const links: Array<{
+      text: string
+      range: { start: { x: number; y: number }; end: { x: number; y: number } }
+      activate: (event: MouseEvent) => void
+    }> = []
+
+    LOCAL_PATH_RE.lastIndex = 0
+    let match: RegExpExecArray | null
+    while ((match = LOCAL_PATH_RE.exec(text)) !== null) {
+      const raw = match[0]
+      if (!looksLikeOpenablePath(raw)) continue
+      const startIndex = match.index
+      const endIndex = startIndex + raw.length - 1
+      if (startIndex >= parts.length || endIndex >= parts.length) continue
+      links.push({
+        text: raw,
+        range: {
+          start: { x: parts[startIndex].col, y },
+          end: { x: parts[endIndex].col, y },
+        },
+        activate: LocalPathLinkProvider.noopActivate,
+      })
+    }
+
+    callback(links.length > 0 ? links : undefined)
+  }
+
+  dispose() {}
+}
+
+async function openLocalPath(pathCandidate: string) {
+  try {
+    const result = await window.cells.app.statPath(pathCandidate)
+    if (result.kind === 'missing') {
+      // Nothing to open — silently drop. Could surface a toast later.
+      return
+    }
+    if (result.kind === 'file') {
+      await window.cells.app.revealPath(result.resolved)
+      return
+    }
+    // Directory — check the user preference.
+    const directoryTarget = useStore.getState().directoryLinkTarget
+    if (directoryTarget === 'terminal') {
+      useStore.getState().addTerminalInWorktree('', undefined, result.resolved)
+      return
+    }
+    await window.cells.app.revealPath(result.resolved)
+  } catch {
+    // Ignore IPC failures — the click just won't do anything.
+  }
 }
 
 function replaceLinkProviders(term: Terminal, providers: ILinkProvider[]) {
@@ -2392,6 +2491,12 @@ export function CellTerminal({
       // Register link providers — wraps built-in providers with custom activate
       // that routes links based on user settings (system browser vs built-in)
       const activateLink = (url: string) => {
+        const pathCandidate = extractLocalPathCandidate(url)
+        if (pathCandidate) {
+          void openLocalPath(pathCandidate)
+          return
+        }
+
         const state = useStore.getState()
         const rules = state.linkRules
         // Check link rules first (most specific match wins)
@@ -2439,6 +2544,7 @@ export function CellTerminal({
       replaceLinkProviders(term, [
         wrapProvider(new OSC8LinkProvider(term as any)),
         wrapProvider(new UrlRegexProvider(term as any)),
+        wrapProvider(new LocalPathLinkProvider(term)),
       ])
 
       if (term.textarea) {

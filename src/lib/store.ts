@@ -114,6 +114,7 @@ interface StoreState {
   terminalLinkTarget: 'system' | 'browser'
   terminalLinkProjectId: string | null
   linkRules: Array<{ pattern: string; target: 'system' | 'browser'; projectId?: string }>
+  directoryLinkTarget: 'finder' | 'terminal'
   agentAliases: Record<string, string>
   enabledAgents: Record<string, boolean | 'auto'>
   inputPrefixes: InputPrefix[]
@@ -231,6 +232,7 @@ interface StoreState {
   setHomePage(url: string): void
   setTerminalLinkTarget(target: 'system' | 'browser'): void
   setTerminalLinkProjectId(projectId: string | null): void
+  setDirectoryLinkTarget(target: 'finder' | 'terminal'): void
   setLinkRules(
     rules: Array<{ pattern: string; target: 'system' | 'browser'; projectId?: string }>,
   ): void
@@ -679,6 +681,7 @@ export const useStore = create<StoreState>((set, get) => ({
   terminalLinkTarget: 'system',
   terminalLinkProjectId: null,
   linkRules: [],
+  directoryLinkTarget: 'finder',
   agentAliases: {},
   enabledAgents: {},
   inputPrefixes: DEFAULT_INPUT_PREFIXES,
@@ -1028,6 +1031,9 @@ export const useStore = create<StoreState>((set, get) => ({
         terminalLinkTarget: ps.terminalLinkTarget || 'system',
         terminalLinkProjectId: projectLinkSettings.terminalLinkProjectId,
         linkRules: projectLinkSettings.linkRules,
+        directoryLinkTarget: (ps.directoryLinkTarget === 'terminal' ? 'terminal' : 'finder') as
+          | 'finder'
+          | 'terminal',
         agentAliases: ps.agentAliases ?? {},
         enabledAgents: ps.enabledAgents ?? {},
         inputPrefixes: ps.inputPrefixes ?? DEFAULT_INPUT_PREFIXES,
@@ -1243,6 +1249,7 @@ export const useStore = create<StoreState>((set, get) => ({
           terminalLinkTarget: freshState.terminalLinkTarget,
           terminalLinkProjectId: freshState.terminalLinkProjectId,
           linkRules: freshState.linkRules,
+          directoryLinkTarget: freshState.directoryLinkTarget,
           agentAliases: freshState.agentAliases,
           enabledAgents: freshState.enabledAgents,
           inputPrefixes: freshState.inputPrefixes,
@@ -1297,6 +1304,7 @@ export const useStore = create<StoreState>((set, get) => ({
           terminalLinkTarget: state.terminalLinkTarget,
           terminalLinkProjectId: state.terminalLinkProjectId,
           linkRules: state.linkRules,
+          directoryLinkTarget: state.directoryLinkTarget,
           agentAliases: state.agentAliases,
           enabledAgents: state.enabledAgents,
           inputPrefixes: state.inputPrefixes,
@@ -2331,6 +2339,10 @@ export const useStore = create<StoreState>((set, get) => ({
   },
   setLinkRules(rules) {
     set({ linkRules: rules })
+    get().persist()
+  },
+  setDirectoryLinkTarget(target) {
+    set({ directoryLinkTarget: target })
     get().persist()
   },
   setAgentAliases(aliases) {

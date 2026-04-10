@@ -193,6 +193,7 @@ export interface ProjectsState {
   terminalLinkTarget?: 'system' | 'browser'
   terminalLinkProjectId?: string | null
   linkRules?: Array<{ pattern: string; target: 'system' | 'browser'; projectId?: string }>
+  directoryLinkTarget?: 'finder' | 'terminal'
   agentAliases?: Record<string, string>
   /** Per-agent visibility override: true = always show, false = always hide, 'auto' = detect binary */
   enabledAgents?: Record<string, boolean | 'auto'>
@@ -476,6 +477,8 @@ export interface CellsAPI {
     saveTempFile(data: Uint8Array, filename: string): Promise<string | null>
     pasteClipboardFiles(): Promise<string[] | null>
     openExternal(url: string): Promise<void>
+    statPath(targetPath: string): Promise<{ kind: 'file' | 'dir' | 'missing'; resolved: string }>
+    revealPath(targetPath: string): Promise<void>
     requestQuit(): Promise<void>
     relaunch(): Promise<void>
     repairTerminalFonts(): Promise<void>

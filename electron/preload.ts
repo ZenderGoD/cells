@@ -241,6 +241,13 @@ const api: CellsAPI = {
     pasteClipboardFiles: () =>
       ipcRenderer.invoke('app:paste-clipboard-files') as Promise<string[] | null>,
     openExternal: (url: string) => ipcRenderer.invoke('app:open-external', url),
+    statPath: (targetPath: string) =>
+      ipcRenderer.invoke('app:stat-path', targetPath) as Promise<{
+        kind: 'file' | 'dir' | 'missing'
+        resolved: string
+      }>,
+    revealPath: (targetPath: string) =>
+      ipcRenderer.invoke('app:reveal-path', targetPath) as Promise<void>,
     requestQuit: () => ipcRenderer.invoke('app:request-quit'),
     relaunch: () => ipcRenderer.invoke('app:relaunch'),
     repairTerminalFonts: () => ipcRenderer.invoke('app:repair-terminal-fonts'),
