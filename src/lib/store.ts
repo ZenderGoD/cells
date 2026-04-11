@@ -613,17 +613,6 @@ function getTopZIndex(terminals: TerminalNode[], browsers: BrowserNode[] = []) {
   return Math.max(termMax, browMax)
 }
 
-function mergeTerminalSnapshots(terminals: TerminalNode[]) {
-  return terminals.map((terminal) => {
-    const snapshot = getTerminalRestoreSnapshot(terminal.id)
-    if (snapshot === null) return terminal
-    return {
-      ...terminal,
-      restoredOutput: snapshot || undefined,
-    }
-  })
-}
-
 function upsertPendingClosedWindow(
   pending: PendingClosedWindow[],
   entry: PendingClosedWindow,
@@ -1239,20 +1228,6 @@ export const useStore = create<StoreState>((set, get) => ({
         const state = get()
         let projects = snapshotActiveProject(state)
 
-        // Build snapshot-enriched terminals for the save payload only.
-        // Don't push the new array into live state — that would replace
-        // the terminals reference and trigger a full re-render of every
-        // terminal node on each persist cycle.
-        const terminalsForSave = mergeTerminalSnapshots(state.terminals)
-
-        projects = projects.map((project) => ({
-          ...project,
-          terminals:
-            project.id === state.activeProjectId
-              ? terminalsForSave
-              : mergeTerminalSnapshots(project.terminals ?? []),
-        }))
-
         // Merge history into every project's browser nodes before saving so
         // parked browsers keep their back/forward stacks across restarts too.
         if (allHistory && Object.keys(allHistory).length > 0) {
@@ -1319,14 +1294,7 @@ export const useStore = create<StoreState>((set, get) => ({
       .catch(() => {
         // Fallback: save without history
         const state = get()
-        const terminalsForSave = mergeTerminalSnapshots(state.terminals)
-        const projects = snapshotActiveProject(state).map((project) => ({
-          ...project,
-          terminals:
-            project.id === state.activeProjectId
-              ? terminalsForSave
-              : mergeTerminalSnapshots(project.terminals ?? []),
-        }))
+        const projects = snapshotActiveProject(state)
         set({ projects })
         const persistedProjects = projects.map((project) => ({
           ...project,

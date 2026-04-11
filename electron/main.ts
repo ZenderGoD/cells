@@ -266,6 +266,7 @@ const LEGACY_STATE_DIR = path.join(app.getPath('home'), '.vector-ghost')
 const LEGACY_STATE_FILE = path.join(LEGACY_STATE_DIR, 'state.json')
 const MCP_BRIDGE_SOCKET = path.join(STATE_DIR, 'mcp-bridge.sock')
 const AUTO_UPDATE_CHECK_DELAY = 15_000
+const AUTO_UPDATE_CHECK_INTERVAL = 5 * 60_000
 const PRELOAD_FILE = 'preload.mjs'
 const BROWSER_PRELOAD_FILE = 'browser-preload.cjs'
 let quitConfirmed = false
@@ -2491,12 +2492,29 @@ function checkForAppUpdates() {
   )
 }
 
+let autoUpdateInitialTimer: ReturnType<typeof setTimeout> | null = null
+let autoUpdateRecurringTimer: ReturnType<typeof setInterval> | null = null
+
+function stopAutomaticUpdateChecks() {
+  if (autoUpdateInitialTimer) {
+    clearTimeout(autoUpdateInitialTimer)
+    autoUpdateInitialTimer = null
+  }
+  if (autoUpdateRecurringTimer) {
+    clearInterval(autoUpdateRecurringTimer)
+    autoUpdateRecurringTimer = null
+  }
+}
+
 function scheduleAutomaticUpdateChecks() {
+  stopAutomaticUpdateChecks()
   if (!shouldEnableAutoUpdates()) return
   if (!isAutoUpdateEnabled()) return
 
-  setTimeout(() => {
+  autoUpdateInitialTimer = setTimeout(() => {
+    autoUpdateInitialTimer = null
     checkForAppUpdates()
+    autoUpdateRecurringTimer = setInterval(checkForAppUpdates, AUTO_UPDATE_CHECK_INTERVAL)
   }, AUTO_UPDATE_CHECK_DELAY)
 }
 
@@ -2554,10 +2572,11 @@ ipcMain.handle('updater:get-support', () => {
 
 ipcMain.handle('updater:set-auto-update', (_event, enabled: boolean) => {
   // The renderer persists this in state.json via the store.
-  // If disabling, we don't need to do anything else since auto-check only runs on launch.
-  // If enabling, trigger a check now so the user gets immediate feedback.
   if (enabled && shouldEnableAutoUpdates()) {
     checkForAppUpdates()
+    scheduleAutomaticUpdateChecks()
+  } else {
+    stopAutomaticUpdateChecks()
   }
 })
 
@@ -2859,6 +2878,7 @@ app.whenReady().then(async () => {
 app.on('before-quit', () => {
   perfMonitor?.stop()
   terminalStatusMonitor?.stop()
+  stopAutomaticUpdateChecks()
   quitConfirmed = true
   stopMcpBridge(MCP_BRIDGE_SOCKET)
   try {

@@ -1932,16 +1932,14 @@ export function CellTerminal({
     const wasmTerm = Reflect.get(term, 'wasmTerm') as
       | {
           hasMouseTracking?: () => boolean
-          isAlternateScreen?: () => boolean
         }
       | undefined
 
     try {
       if (wasmTerm?.hasMouseTracking?.() === true) return true
-      if (wasmTerm?.isAlternateScreen?.() === true) return true
     } catch {}
 
-    return term.buffer.active.type === 'alternate'
+    return false
   }, [])
 
   const queueServerOwnedWheelPayload = useCallback(
@@ -2626,9 +2624,7 @@ export function CellTerminal({
           if (normalizedKey === 'c') {
             if (e.type === 'keydown') {
               e.preventDefault()
-              if (!copySelectionToClipboard()) {
-                window.cells.terminal.write(termId, '\x03')
-              }
+              copySelectionToClipboard()
             }
             return true
           }
@@ -3408,13 +3404,10 @@ export function CellTerminal({
         !status.paneInMode ||
         status.scrollPosition <= 0
       ) {
-        serverOwnedMouseModeRef.current =
-          status?.backend === 'tmux' &&
-          (status.mouseAnyFlag === true || status.alternateOn === true)
+        serverOwnedMouseModeRef.current = status?.backend === 'tmux' && status.mouseAnyFlag === true
         setScrollStatus((previous) => (previous === null ? previous : null))
       } else {
-        serverOwnedMouseModeRef.current =
-          status.mouseAnyFlag === true || status.alternateOn === true
+        serverOwnedMouseModeRef.current = status.mouseAnyFlag === true
         setScrollStatus((previous) => {
           if (
             previous &&
