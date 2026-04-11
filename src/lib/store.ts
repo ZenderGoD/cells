@@ -58,6 +58,11 @@ import {
   DEFAULT_TERMINAL_SESSION_BACKEND,
   normalizeTerminalSessionBackend,
 } from './terminal-session-backend'
+import {
+  getProjectCloseTransition,
+  getRunningProjectProcessLabels,
+  insertRestoredProject,
+} from './project-close'
 
 interface StoreState {
   // Project management
@@ -128,6 +133,8 @@ interface StoreState {
   closeProcessSuppressions: string[]
   pendingClosedWindows: PendingClosedWindow[]
   pendingCloseDialog: PendingCloseDialog | null
+  pendingClosedProjects: PendingClosedProject[]
+  pendingProjectCloseDialog: PendingProjectCloseDialog | null
   arrangeAnimating: boolean // true while auto-arrange is animating positions
 
   // When a link opens a browser in a different project, tracks the source so we can return
@@ -148,6 +155,10 @@ interface StoreState {
   createProject(name: string, path: string): void
   switchProject(id: string): void
   removeProject(id: string): void
+  requestCloseProject(id: string): Promise<void>
+  cancelPendingProjectClose(): void
+  confirmPendingProjectClose(): void
+  restoreLastClosedProject(): void
   renameProject(id: string, name: string): void
   reorderProjects(ids: string[]): void
   getActiveProject(): Project | undefined
@@ -300,6 +311,7 @@ const DEFAULT_CANVAS: CanvasTransform = { x: 0, y: 0, scale: 1 }
 const DEFAULT_SEARCH_ENGINE = 'https://www.google.com/search?q=%s'
 const DEFAULT_HOME_PAGE = ''
 const DEFAULT_CLOSE_UNDO_TIMEOUT_MS = 15000
+const PROJECT_CLOSE_GRACE_MS = 15000
 const DEFAULT_INPUT_PREFIXES: InputPrefix[] = [{ prefix: '!', target: 'terminal' }]
 const DEFAULT_TITLE_BAR_POSITION: TitleBarPosition = 'bottom'
 const SAVE_STATUS_RESET_MS = 1800
@@ -378,13 +390,38 @@ interface PendingClosedWindow {
   processKey?: string | null
 }
 
+interface PendingProjectCloseDialog {
+  projectId: string
+  projectName: string
+  windowCount: number
+  runningProcessLabels: string[]
+}
+
+interface PendingClosedProject {
+  id: string
+  project: Project
+  closedIndex: number
+  closedAt: number
+  expiresAt: number
+  runningProcessLabels: string[]
+}
+
 const pendingCloseTimers = new Map<string, number>()
+const pendingProjectCloseTimers = new Map<string, number>()
 
 function clearPendingCloseTimer(id: string) {
   const timer = pendingCloseTimers.get(id)
   if (timer) {
     window.clearTimeout(timer)
     pendingCloseTimers.delete(id)
+  }
+}
+
+function clearPendingProjectCloseTimer(id: string) {
+  const timer = pendingProjectCloseTimers.get(id)
+  if (timer) {
+    window.clearTimeout(timer)
+    pendingProjectCloseTimers.delete(id)
   }
 }
 
@@ -395,6 +432,23 @@ function destroyTerminalResources(id: string) {
 
 function destroyBrowserResources(id: string) {
   window.cells.browser.destroy(id).catch(() => {})
+}
+
+function parkProjectBrowsers(project: Pick<Project, 'browsers'>) {
+  for (const browser of project.browsers ?? []) {
+    window.cells.browser.park(browser.id).catch(() => {})
+  }
+}
+
+function destroyProjectResources(project: Pick<Project, 'terminals' | 'browsers'>) {
+  for (const terminal of project.terminals ?? []) {
+    clearPendingCloseTimer(terminal.id)
+    destroyTerminalResources(terminal.id)
+  }
+  for (const browser of project.browsers ?? []) {
+    clearPendingCloseTimer(browser.id)
+    destroyBrowserResources(browser.id)
+  }
 }
 
 function sanitizeProjectLinkSettings(
@@ -697,6 +751,8 @@ export const useStore = create<StoreState>((set, get) => ({
   closeProcessSuppressions: [],
   pendingClosedWindows: [],
   pendingCloseDialog: null,
+  pendingClosedProjects: [],
+  pendingProjectCloseDialog: null,
   arrangeAnimating: false,
   crossProjectReturn: null,
   focusedTerminalSince: 0,
@@ -1395,11 +1451,207 @@ export const useStore = create<StoreState>((set, get) => ({
     // screen state across switches; forcing a reload destroys that state.
   },
 
+  async requestCloseProject(id) {
+    const state = get()
+    const projects = snapshotActiveProject(state)
+    const project = projects.find((candidate) => candidate.id === id)
+    if (!project) return
+
+    const processInfos = await Promise.all(
+      (project.terminals ?? []).map((terminal) =>
+        window.cells.terminal.getProcessInfo(terminal.id).catch(() => null),
+      ),
+    )
+
+    const latest = get()
+    const latestProjects = snapshotActiveProject(latest)
+    const latestProject = latestProjects.find((candidate) => candidate.id === id)
+    if (!latestProject) return
+
+    set({
+      pendingProjectCloseDialog: {
+        projectId: id,
+        projectName: latestProject.name,
+        windowCount: (latestProject.terminals?.length ?? 0) + (latestProject.browsers?.length ?? 0),
+        runningProcessLabels: getRunningProjectProcessLabels(processInfos),
+      },
+    })
+  },
+
+  cancelPendingProjectClose() {
+    set({ pendingProjectCloseDialog: null })
+  },
+
+  confirmPendingProjectClose() {
+    const dialog = get().pendingProjectCloseDialog
+    if (!dialog) return
+
+    const state = get()
+    const projects = snapshotActiveProject(state)
+    const project = projects.find((candidate) => candidate.id === dialog.projectId)
+    if (!project) {
+      set({ pendingProjectCloseDialog: null })
+      return
+    }
+
+    const closedAt = Date.now()
+    const expiresAt = closedAt + PROJECT_CLOSE_GRACE_MS
+    const closedIndex = projects.findIndex((candidate) => candidate.id === project.id)
+    const transition = getProjectCloseTransition(projects, state.activeProjectId, project.id)
+    const projectLinkSettings = sanitizeProjectLinkSettings(
+      transition.remainingProjects,
+      state.terminalLinkProjectId === project.id ? null : state.terminalLinkProjectId,
+      state.linkRules,
+    )
+
+    parkProjectBrowsers(project)
+
+    const pendingClosedWindows = state.pendingClosedWindows.filter((entry) => {
+      if (entry.projectId !== project.id) return true
+      clearPendingCloseTimer(entry.id)
+      if (entry.target.type === 'terminal') {
+        destroyTerminalResources(entry.id)
+      } else {
+        destroyBrowserResources(entry.id)
+      }
+      return false
+    })
+    const pendingCloseDialog =
+      state.pendingCloseDialog &&
+      pendingClosedWindows.some((entry) => entry.id === state.pendingCloseDialog?.target.id)
+        ? state.pendingCloseDialog
+        : null
+    const closingBrowserIds = new Set((project.browsers ?? []).map((browser) => browser.id))
+    const crossProjectReturn =
+      state.crossProjectReturn &&
+      (state.crossProjectReturn.sourceProjectId === project.id ||
+        closingBrowserIds.has(state.crossProjectReturn.browserId))
+        ? null
+        : state.crossProjectReturn
+
+    const pendingEntry: PendingClosedProject = {
+      id: project.id,
+      project,
+      closedIndex,
+      closedAt,
+      expiresAt,
+      runningProcessLabels: dialog.runningProcessLabels,
+    }
+
+    clearPendingProjectCloseTimer(project.id)
+    pendingProjectCloseTimers.set(
+      project.id,
+      window.setTimeout(() => {
+        const latestState = useStore.getState()
+        const closingProject = latestState.pendingClosedProjects.find(
+          (entry) => entry.id === project.id,
+        )
+        if (!closingProject) return
+        destroyProjectResources(closingProject.project)
+        useStore.setState({
+          pendingClosedProjects: latestState.pendingClosedProjects.filter(
+            (entry) => entry.id !== project.id,
+          ),
+        })
+        useStore.getState().persist()
+      }, PROJECT_CLOSE_GRACE_MS),
+    )
+
+    const pendingClosedProjects = [
+      ...state.pendingClosedProjects.filter((entry) => entry.id !== project.id),
+      pendingEntry,
+    ].sort((a, b) => b.closedAt - a.closedAt)
+    const closeMessage =
+      dialog.runningProcessLabels.length > 0
+        ? `Closing ${project.name}. Running services stop in 15s.`
+        : `Closing ${project.name}. You can undo it for 15s.`
+
+    if (transition.nextActiveProjectId) {
+      const nextProject = transition.remainingProjects.find(
+        (candidate) => candidate.id === transition.nextActiveProjectId,
+      )
+      if (!nextProject) return
+      set({
+        projects: transition.remainingProjects,
+        activeProjectId: nextProject.id,
+        terminalLinkProjectId: projectLinkSettings.terminalLinkProjectId,
+        linkRules: projectLinkSettings.linkRules,
+        pendingClosedWindows,
+        pendingCloseDialog,
+        pendingClosedProjects,
+        pendingProjectCloseDialog: null,
+        crossProjectReturn,
+        ...projectToWorkingState(nextProject, true),
+      })
+      get().persist()
+      showToast(closeMessage, 'info')
+      setTimeout(() => {
+        void get().refreshWorktrees()
+      }, 0)
+      return
+    }
+
+    set({
+      projects: transition.remainingProjects,
+      activeProjectId: null,
+      terminals: [],
+      browsers: [],
+      canvas: DEFAULT_CANVAS,
+      focusedTerminalId: null,
+      focusedBrowserId: null,
+      topZIndex: 1,
+      terminalLinkProjectId: projectLinkSettings.terminalLinkProjectId,
+      linkRules: projectLinkSettings.linkRules,
+      pendingClosedWindows,
+      pendingCloseDialog,
+      pendingClosedProjects,
+      pendingProjectCloseDialog: null,
+      crossProjectReturn,
+      worktrees: [],
+      isGitRepo: false,
+      worktreesLoading: false,
+    })
+    get().persist()
+    showToast(closeMessage, 'info')
+  },
+
+  restoreLastClosedProject() {
+    const state = get()
+    const entry = state.pendingClosedProjects[0]
+    if (!entry) return
+
+    clearPendingProjectCloseTimer(entry.id)
+
+    const projects = insertRestoredProject(
+      snapshotActiveProject(state),
+      entry.project,
+      entry.closedIndex,
+    )
+    set({
+      projects,
+      activeProjectId: entry.project.id,
+      pendingClosedProjects: state.pendingClosedProjects.filter(
+        (candidate) => candidate.id !== entry.id,
+      ),
+      pendingProjectCloseDialog:
+        state.pendingProjectCloseDialog?.projectId === entry.id
+          ? null
+          : state.pendingProjectCloseDialog,
+      ...projectToWorkingState(entry.project, true),
+    })
+    get().persist()
+    showToast(`Restored ${entry.project.name}.`, 'info')
+    setTimeout(() => {
+      void get().refreshWorktrees()
+    }, 0)
+  },
+
   removeProject(id) {
     const state = get()
-    const remaining = state.projects.filter((p) => p.id !== id)
+    const projects = snapshotActiveProject(state)
+    const transition = getProjectCloseTransition(projects, state.activeProjectId, id)
     const projectLinkSettings = sanitizeProjectLinkSettings(
-      remaining,
+      transition.remainingProjects,
       state.terminalLinkProjectId === id ? null : state.terminalLinkProjectId,
       state.linkRules,
     )
@@ -1408,17 +1660,12 @@ export const useStore = create<StoreState>((set, get) => ({
     const removedProject =
       id === state.activeProjectId
         ? { terminals: state.terminals, browsers: state.browsers }
-        : state.projects.find((p) => p.id === id)
+        : projects.find((p) => p.id === id)
     if (removedProject) {
-      for (const t of removedProject.terminals) {
-        clearPendingCloseTimer(t.id)
-        destroyTerminalResources(t.id)
-      }
-      for (const b of removedProject.browsers ?? []) {
-        clearPendingCloseTimer(b.id)
-        destroyBrowserResources(b.id)
-      }
+      destroyProjectResources(removedProject)
     }
+
+    clearPendingProjectCloseTimer(id)
 
     const pendingClosedWindows = state.pendingClosedWindows.filter((entry) => {
       if (entry.projectId !== id) return true
@@ -1435,18 +1682,33 @@ export const useStore = create<StoreState>((set, get) => ({
       pendingClosedWindows.some((entry) => entry.id === state.pendingCloseDialog?.target.id)
         ? state.pendingCloseDialog
         : null
+    const pendingClosedProjects = state.pendingClosedProjects.filter((entry) => entry.id !== id)
+    const pendingProjectCloseDialog =
+      state.pendingProjectCloseDialog?.projectId === id ? null : state.pendingProjectCloseDialog
+    const closingBrowserIds = new Set((removedProject?.browsers ?? []).map((browser) => browser.id))
+    const crossProjectReturn =
+      state.crossProjectReturn &&
+      (state.crossProjectReturn.sourceProjectId === id ||
+        closingBrowserIds.has(state.crossProjectReturn.browserId))
+        ? null
+        : state.crossProjectReturn
 
     if (id === state.activeProjectId) {
-      if (remaining.length > 0) {
-        const sorted = [...remaining].sort((a, b) => (b.lastOpenedAt ?? 0) - (a.lastOpenedAt ?? 0))
-        const next = sorted[0]
+      if (transition.remainingProjects.length > 0) {
+        const next = transition.remainingProjects.find(
+          (project) => project.id === transition.nextActiveProjectId,
+        )
+        if (!next) return
         set({
-          projects: remaining,
+          projects: transition.remainingProjects,
           activeProjectId: next.id,
           terminalLinkProjectId: projectLinkSettings.terminalLinkProjectId,
           linkRules: projectLinkSettings.linkRules,
           pendingClosedWindows,
           pendingCloseDialog,
+          pendingClosedProjects,
+          pendingProjectCloseDialog,
+          crossProjectReturn,
           ...projectToWorkingState(next, true),
         })
       } else {
@@ -1463,15 +1725,24 @@ export const useStore = create<StoreState>((set, get) => ({
           linkRules: projectLinkSettings.linkRules,
           pendingClosedWindows,
           pendingCloseDialog,
+          pendingClosedProjects,
+          pendingProjectCloseDialog,
+          crossProjectReturn,
+          worktrees: [],
+          isGitRepo: false,
+          worktreesLoading: false,
         })
       }
     } else {
       set({
-        projects: remaining,
+        projects: transition.remainingProjects,
         terminalLinkProjectId: projectLinkSettings.terminalLinkProjectId,
         linkRules: projectLinkSettings.linkRules,
         pendingClosedWindows,
         pendingCloseDialog,
+        pendingClosedProjects,
+        pendingProjectCloseDialog,
+        crossProjectReturn,
       })
     }
     get().persist()

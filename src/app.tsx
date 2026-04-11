@@ -9,6 +9,7 @@ import { TerminalSwitcher } from './components/terminal-switcher'
 import { OnboardingGuide } from './components/onboarding-guide'
 import { ProjectSwitcher } from './components/project-switcher'
 import { CloseWindowDialog } from './components/close-window-dialog'
+import { CloseProjectDialog } from './components/close-project-dialog'
 import { Toaster } from './components/toast'
 import { PinnedWindow } from './components/pinned-window'
 import {
@@ -41,10 +42,16 @@ function MainApp() {
     dimWhenUnfocused,
     requestCloseWindow,
     restoreLastClosedWindow,
+    restoreLastClosedProject,
     pendingCloseDialog,
+    pendingProjectCloseDialog,
+    pendingClosedWindows,
+    pendingClosedProjects,
     closeUndoTimeoutMs,
     confirmPendingClose,
     cancelPendingClose,
+    confirmPendingProjectClose,
+    cancelPendingProjectClose,
     setOverlayOpen,
   } = useStore(
     useShallow((s) => ({
@@ -58,10 +65,16 @@ function MainApp() {
       dimWhenUnfocused: s.dimWhenUnfocused,
       requestCloseWindow: s.requestCloseWindow,
       restoreLastClosedWindow: s.restoreLastClosedWindow,
+      restoreLastClosedProject: s.restoreLastClosedProject,
       pendingCloseDialog: s.pendingCloseDialog,
+      pendingProjectCloseDialog: s.pendingProjectCloseDialog,
+      pendingClosedWindows: s.pendingClosedWindows,
+      pendingClosedProjects: s.pendingClosedProjects,
       closeUndoTimeoutMs: s.closeUndoTimeoutMs,
       confirmPendingClose: s.confirmPendingClose,
       cancelPendingClose: s.cancelPendingClose,
+      confirmPendingProjectClose: s.confirmPendingProjectClose,
+      cancelPendingProjectClose: s.cancelPendingProjectClose,
       setOverlayOpen: s.setOverlayOpen,
     })),
   )
@@ -92,7 +105,15 @@ function MainApp() {
   }, [requestCloseWindow])
 
   useHotkey('Mod+W', () => closeWindow())
-  useHotkey('Mod+Shift+T', () => restoreLastClosedWindow())
+  useHotkey('Mod+Shift+T', () => {
+    if (pendingClosedWindows.length > 0) {
+      restoreLastClosedWindow()
+      return
+    }
+    if (pendingClosedProjects.length > 0) {
+      restoreLastClosedProject()
+    }
+  })
   useHotkey('Mod+Shift+P', () => useStore.getState().togglePinFocused())
   useHotkey('Mod+Q', () => {
     void window.cells.app.requestQuit()
@@ -237,10 +258,10 @@ function MainApp() {
   }, [closeWindow])
 
   useEffect(() => {
-    if (!pendingCloseDialog) return
+    if (!pendingCloseDialog && !pendingProjectCloseDialog) return
     setOverlayOpen(true)
     return () => setOverlayOpen(false)
-  }, [pendingCloseDialog, setOverlayOpen])
+  }, [pendingCloseDialog, pendingProjectCloseDialog, setOverlayOpen])
 
   useEffect(() => {
     if (!initialized) return
@@ -340,6 +361,7 @@ function MainApp() {
         style={shellStyle}
       >
         <Onboarding />
+        <Toaster />
         {showDimOverlay && <UnfocusedOverlay onDismiss={() => setWindowFocused(true)} />}
       </div>
     )
@@ -363,6 +385,15 @@ function MainApp() {
         undoTimeoutMs={closeUndoTimeoutMs}
         onConfirm={confirmPendingClose}
         onCancel={cancelPendingClose}
+      />
+      <CloseProjectDialog
+        open={!!pendingProjectCloseDialog}
+        projectName={pendingProjectCloseDialog?.projectName ?? 'Project'}
+        windowCount={pendingProjectCloseDialog?.windowCount ?? 0}
+        runningProcessLabels={pendingProjectCloseDialog?.runningProcessLabels ?? []}
+        graceMs={15000}
+        onConfirm={confirmPendingProjectClose}
+        onCancel={cancelPendingProjectClose}
       />
       <Toaster />
       <OnboardingGuide />

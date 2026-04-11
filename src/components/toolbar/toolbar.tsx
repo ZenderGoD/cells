@@ -75,6 +75,7 @@ function ProjectTab({
   isActive,
   projectWindowCount,
   switchProject,
+  requestCloseProject,
   allWindows,
   titleBarOverviewWidth,
   titleBarOverviewHeight,
@@ -91,6 +92,7 @@ function ProjectTab({
   isActive: boolean
   projectWindowCount: number
   switchProject: (id: string) => void
+  requestCloseProject: (id: string) => Promise<void>
   allWindows: import('@/lib/canvas-navigation').CanvasWindow[]
   titleBarOverviewWidth: number
   titleBarOverviewHeight: number
@@ -111,7 +113,7 @@ function ProjectTab({
       as="div"
       dragControls={dragControls}
       dragListener={false}
-      className={cn('relative flex items-center border-r border-border/30 shrink-0')}
+      className={cn('group relative flex items-center border-r border-border/30 shrink-0')}
       whileDrag={{ opacity: 0.5, scale: 0.98 }}
       transition={{ type: 'spring', stiffness: 300, damping: 30 }}
     >
@@ -122,7 +124,7 @@ function ProjectTab({
         }}
         onPointerDown={(e) => dragControls.start(e)}
         className={cn(
-          'flex items-center gap-2 px-4 h-full transition-colors cursor-grab active:cursor-grabbing',
+          'flex h-full items-center gap-2 px-4 pr-8 transition-colors cursor-grab active:cursor-grabbing',
           isActive
             ? 'text-foreground bg-white/40 dark:bg-black/35'
             : 'text-muted-foreground/50 hover:text-muted-foreground hover:bg-white/15 dark:hover:bg-muted/30',
@@ -151,6 +153,24 @@ function ProjectTab({
             )}
           />
         )}
+      </button>
+      <button
+        type="button"
+        onClick={(event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          hapticBuzz()
+          void requestCloseProject(project.id)
+        }}
+        className={cn(
+          'absolute top-1/2 right-1 z-10 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground/30 transition-all hover:bg-muted/60 hover:text-foreground',
+          isActive
+            ? 'opacity-100'
+            : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100',
+        )}
+        title={`Close ${project.name}`}
+      >
+        <X className="h-3 w-3" />
       </button>
       <AnimatePresence>
         {isActive && allWindows.length > 0 && (
@@ -204,6 +224,7 @@ export function StatusBar() {
   const addTerminal = useStore((s) => s.addTerminal)
   const addBrowser = useStore((s) => s.addBrowser)
   const requestCloseWindow = useStore((s) => s.requestCloseWindow)
+  const requestCloseProject = useStore((s) => s.requestCloseProject)
   const windowCount = useStore((s) => s.terminals.length + s.browsers.length)
   const terminals = useStore((s) => s.terminals)
   const browsers = useStore((s) => s.browsers)
@@ -242,7 +263,9 @@ export function StatusBar() {
   const focusedBrowserId = useStore((s) => s.focusedBrowserId)
   const closeUndoTimeoutMs = useStore((s) => s.closeUndoTimeoutMs)
   const restoreLastClosedWindow = useStore((s) => s.restoreLastClosedWindow)
+  const restoreLastClosedProject = useStore((s) => s.restoreLastClosedProject)
   const pendingClosedWindows = useStore((s) => s.pendingClosedWindows)
+  const pendingClosedProjects = useStore((s) => s.pendingClosedProjects)
   const setOverlayOpen = useStore((s) => s.setOverlayOpen)
   const updateStatus = useStore((s) => s.updateStatus)
   const updateVersion = useStore((s) => s.updateVersion)
@@ -322,7 +345,14 @@ export function StatusBar() {
   const overviewAnchor = focusedWindow ?? getClosestWindow(allWindows, viewportCenter) ?? null
   const latestClosedWindow =
     pendingClosedWindows.find((entry) => entry.projectId === activeProjectId) ?? null
+  const latestClosedProject = pendingClosedProjects[0] ?? null
   const [undoNow, setUndoNow] = useState(() => Date.now())
+  const undoSecondsLeft = latestClosedWindow
+    ? Math.max(0, Math.ceil((latestClosedWindow.expiresAt - undoNow) / 1000))
+    : 0
+  const projectUndoSecondsLeft = latestClosedProject
+    ? Math.max(0, Math.ceil((latestClosedProject.expiresAt - undoNow) / 1000))
+    : 0
 
   // --- Project tab drag-to-reorder ---
   const handleReorder = useCallback(
@@ -370,10 +400,10 @@ export function StatusBar() {
   }, [])
 
   useEffect(() => {
-    if (!latestClosedWindow) return
+    if (!latestClosedWindow && !latestClosedProject) return
     const interval = window.setInterval(() => setUndoNow(Date.now()), 250)
     return () => window.clearInterval(interval)
-  }, [latestClosedWindow])
+  }, [latestClosedProject, latestClosedWindow])
 
   // Listen for nav state, loading, and theme color for focused browser
   useEffect(() => {
@@ -431,9 +461,6 @@ export function StatusBar() {
     }
   }
 
-  const undoSecondsLeft = latestClosedWindow
-    ? Math.max(0, Math.ceil((latestClosedWindow.expiresAt - undoNow) / 1000))
-    : 0
   const showTerminalFind = !!focusedTerminalId && terminalFindOpen
   const terminalFindWaitingForResults =
     !!focusedTerminalId &&
@@ -546,6 +573,7 @@ export function StatusBar() {
                 isActive={isActive}
                 projectWindowCount={projectWindowCount}
                 switchProject={switchProject}
+                requestCloseProject={requestCloseProject}
                 allWindows={allWindows}
                 titleBarOverviewWidth={titleBarOverviewWidth}
                 titleBarOverviewHeight={titleBarOverviewHeight}
@@ -813,6 +841,28 @@ export function StatusBar() {
         {/* Right side controls */}
         <div className="flex items-center gap-3 px-3 shrink-0 no-drag">
           <AnimatePresence initial={false}>
+            {latestClosedProject && projectUndoSecondsLeft > 0 ? (
+              <motion.button
+                key="undo-close-project"
+                layout
+                initial={{ opacity: 0, x: 12, scale: 0.96 }}
+                animate={{ opacity: 1, x: 0, scale: 1 }}
+                exit={{ opacity: 0, x: 12, scale: 0.96 }}
+                transition={{ duration: 0.2, ease: 'easeOut' }}
+                onClick={() => {
+                  hapticSuccess()
+                  restoreLastClosedProject()
+                }}
+                className="flex shrink-0 items-center gap-2 rounded-md border border-amber-500/15 bg-amber-500/6 px-2.5 py-1 text-[10px] text-muted-foreground/75 transition-colors hover:bg-amber-500/10 hover:text-foreground"
+                title="Restore closed project"
+              >
+                <span className="font-medium text-foreground/85">Undo project close</span>
+                <span className="max-w-24 truncate">{latestClosedProject.project.name}</span>
+                <span className="text-[9px] text-muted-foreground/70">
+                  {projectUndoSecondsLeft}s
+                </span>
+              </motion.button>
+            ) : null}
             {latestClosedWindow && closeUndoTimeoutMs > 0 && undoSecondsLeft > 0 ? (
               <motion.button
                 key="undo-close"
