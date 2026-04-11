@@ -18,6 +18,7 @@ import os from 'os'
 import { randomUUID } from 'crypto'
 import { execFileSync, spawnSync } from 'child_process'
 import { autoUpdater } from 'electron-updater'
+import { getPickFolderDialogOptions } from './app-dialog-options'
 import { PtyDaemonClient } from './pty-client'
 import { ensureDaemon } from './daemon-lifecycle'
 import { getDaemonRestartReason, type PtyDaemonVersionInfo } from './pty-daemon-contract'
@@ -1467,9 +1468,7 @@ ipcMain.handle('app:unpin-window', (_event, id: string) => {
 
 ipcMain.handle('app:pick-folder', async () => {
   if (!mainWindow) return null
-  const result = await dialog.showOpenDialog(mainWindow, {
-    properties: ['openDirectory'],
-  })
+  const result = await dialog.showOpenDialog(mainWindow, getPickFolderDialogOptions())
   return result.canceled ? null : result.filePaths[0]
 })
 
