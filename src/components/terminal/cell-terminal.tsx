@@ -1942,6 +1942,32 @@ export function CellTerminal({
     return false
   }, [])
 
+  // Wheel events need wider routing than clicks: alt-screen TUIs don't
+  // always declare mouse tracking, but ghostty-web's built-in wheel fallback
+  // synthesizes arrow-key sequences on the alt screen, which spams the shell
+  // instead of actually scrolling anything. Routing wheel events to the
+  // backend lets us write SGR mouse-wheel escapes (or swallow them) instead
+  // of letting the arrow-key synthesis run.
+  const shouldRouteServerOwnedWheel = useCallback(
+    (term: Terminal | null | undefined) => {
+      if (!term || !usesServerOwnedTerminalState(term)) return false
+      if (shouldRouteServerOwnedMouseInput(term)) return true
+
+      const wasmTerm = Reflect.get(term, 'wasmTerm') as
+        | {
+            isAlternateScreen?: () => boolean
+          }
+        | undefined
+
+      try {
+        if (wasmTerm?.isAlternateScreen?.() === true) return true
+      } catch {}
+
+      return term.buffer.active.type === 'alternate'
+    },
+    [shouldRouteServerOwnedMouseInput],
+  )
+
   const queueServerOwnedWheelPayload = useCallback(
     (event: WheelEvent, payload: QueuedWheelPayload) => {
       Reflect.set(event, SERVER_OWNED_WHEEL_HANDLED_KEY, true)
@@ -2689,7 +2715,7 @@ export function CellTerminal({
       })
 
       term.attachCustomWheelEventHandler((e: WheelEvent) => {
-        if (!shouldRouteServerOwnedMouseInput(term)) return false
+        if (!shouldRouteServerOwnedWheel(term)) return false
         if (e.metaKey || e.ctrlKey) return false
         if (Reflect.get(e, SERVER_OWNED_WHEEL_HANDLED_KEY) === true) return true
 
@@ -3068,6 +3094,7 @@ export function CellTerminal({
     getAttachProjectId,
     getAttachProjectPath,
     shouldRouteServerOwnedMouseInput,
+    shouldRouteServerOwnedWheel,
     syncTerminalState,
     terminalFindOpen,
     termId,
@@ -3195,7 +3222,7 @@ export function CellTerminal({
 
     const onWheel = (e: WheelEvent) => {
       const term = terminalRef.current
-      if (term && shouldRouteServerOwnedMouseInput(term) && !e.metaKey && !e.ctrlKey) {
+      if (term && shouldRouteServerOwnedWheel(term) && !e.metaKey && !e.ctrlKey) {
         if (Reflect.get(e, SERVER_OWNED_WHEEL_HANDLED_KEY) === true) return
         const payload = getMouseWheelSequencePayload(e, term, container)
         if (payload) {
@@ -3308,6 +3335,7 @@ export function CellTerminal({
     queueServerOwnedMouseSequence,
     queueServerOwnedWheelPayload,
     shouldRouteServerOwnedMouseInput,
+    shouldRouteServerOwnedWheel,
     termId,
   ])
 
