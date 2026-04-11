@@ -2341,10 +2341,11 @@ type UpdaterSupport = {
 }
 
 let cachedUpdaterSupport: UpdaterSupport | null = null
-// Parsed from release notes for the downloaded update. Publish a line like
-// `Cells-Daemon-Compat: 2` when a release should preserve daemon sessions.
-// Missing metadata is treated as "unknown", which means install will warn if
-// there are live daemon-managed processes.
+// Parsed from release notes for the downloaded update. Releases that change
+// the daemon protocol must publish a line like `Cells-Daemon-Compat: 2` so
+// the client can detect the mismatch and warn before installing. When the
+// marker is absent, the release is assumed to be daemon-compatible — the vast
+// majority of releases don't touch the daemon protocol.
 let pendingUpdateDaemonCompatVersion: number | null = null
 
 function extractReleaseNotesText(releaseNotes: unknown): string {
@@ -2384,8 +2385,12 @@ async function getUpdateInstallImpact() {
     return { sessionCount, requiresDaemonRestart: false, compatibilityKnown: true }
   }
 
-  if (!daemonVersion || pendingUpdateDaemonCompatVersion == null) {
+  if (!daemonVersion) {
     return { sessionCount, requiresDaemonRestart: true, compatibilityKnown: false }
+  }
+
+  if (pendingUpdateDaemonCompatVersion == null) {
+    return { sessionCount, requiresDaemonRestart: false, compatibilityKnown: true }
   }
 
   return {
