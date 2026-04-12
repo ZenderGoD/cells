@@ -92,6 +92,8 @@ type AttachedClient = {
 type TmuxPaneFlags = {
   paneInMode: boolean
   mouseAnyFlag: boolean
+  mouseButtonFlag: boolean
+  mouseStandardFlag: boolean
   alternateOn: boolean
 }
 
@@ -283,7 +285,9 @@ export class TmuxSessionManager implements TerminalSessionManager {
       paneInMode: paneInModeRaw === '1',
       scrollPosition: Number.parseInt(scrollPositionRaw ?? '0', 10) || 0,
       historySize: Number.parseInt(historySizeRaw ?? '0', 10) || 0,
-      mouseAnyFlag: paneFlags?.mouseAnyFlag ?? false,
+      mouseAnyFlag:
+        (paneFlags?.mouseAnyFlag || paneFlags?.mouseButtonFlag || paneFlags?.mouseStandardFlag) ??
+        false,
       alternateOn: paneFlags?.alternateOn ?? false,
     }
   }
@@ -400,7 +404,12 @@ export class TmuxSessionManager implements TerminalSessionManager {
       return
     }
 
-    if (flags.mouseAnyFlag || flags.alternateOn) {
+    if (
+      flags.mouseAnyFlag ||
+      flags.mouseButtonFlag ||
+      flags.mouseStandardFlag ||
+      flags.alternateOn
+    ) {
       if (sequence) this.write(termId, sequence)
       return
     }
@@ -720,15 +729,19 @@ export class TmuxSessionManager implements TerminalSessionManager {
         '-p',
         '-t',
         paneTarget,
-        '#{pane_in_mode} #{mouse_any_flag} #{alternate_on}',
+        '#{pane_in_mode} #{mouse_any_flag} #{mouse_button_flag} #{mouse_standard_flag} #{alternate_on}',
       ],
       true,
     )
     if (!output) return null
-    const [paneInMode, mouseAnyFlag, alternateOn] = output.trim().split(/\s+/)
+    const [paneInMode, mouseAnyFlag, mouseButtonFlag, mouseStandardFlag, alternateOn] = output
+      .trim()
+      .split(/\s+/)
     const flags = {
       paneInMode: paneInMode === '1',
       mouseAnyFlag: mouseAnyFlag === '1',
+      mouseButtonFlag: mouseButtonFlag === '1',
+      mouseStandardFlag: mouseStandardFlag === '1',
       alternateOn: alternateOn === '1',
     }
     this.setPaneFlagsCache(termId, flags)
