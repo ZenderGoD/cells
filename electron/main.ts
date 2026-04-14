@@ -56,7 +56,7 @@ import {
 } from './mcp-bridge'
 import type { TerminalExitDetails, TerminalRuntimeStatus } from '../src/types'
 import { normalizeTerminalFontFamily } from '../src/lib/terminal-fonts'
-import { TerminalStatusMonitor } from './terminal-status-monitor'
+import { EnhancedSessionTracker } from '../src/lib/enhanced-session-tracker'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -241,7 +241,7 @@ let daemonRestartInProgress = false
 let daemonRecoveryPromise: Promise<void> | null = null
 let mainWindow: BrowserWindow | null = null
 let perfMonitor: PerfMonitor | null = null
-let terminalStatusMonitor: TerminalStatusMonitor | null = null
+let agentSessionTracker: EnhancedSessionTracker | null = null
 
 // Per-terminal session isolation:
 // - "subscribed" = renderer component mounted → data forwarded live via IPC
@@ -681,7 +681,6 @@ function setupTerminalDataPort(win: BrowserWindow) {
 
 function forwardTerminalData(termId: string, data: string) {
   bufferTerminalOutput(termId, data)
-  terminalStatusMonitor?.handleTerminalData(termId, data)
   if (!isTerminalSubscribed(termId)) return
   try {
     const target = getWindowForTerminal(termId)
@@ -717,7 +716,7 @@ function forwardTerminalExit(termId: string, details?: TerminalExitDetails) {
   if (!details) {
     pendingTerminalExitDetails.delete(termId)
   }
-  terminalStatusMonitor?.handleTerminalExit(termId, exitDetails)
+  agentSessionTracker?.untrackSession(termId)
   clearTerminalSubscriptions(termId)
   clearTerminalOutputRing(termId)
   clearHistorySnapshotsForTerm(termId)
@@ -855,7 +854,6 @@ ipcMain.handle(
     projectId?: string | null,
   ) => {
     clearHistorySnapshotsForTerm(termId)
-    terminalStatusMonitor?.trackTerminal(termId, { cwd: cwd ?? null })
 
     if (!terminalBackendSupport.ok && !fallbackSessions) {
       throw new Error(describeSelectedBackendRequirement())
@@ -896,7 +894,7 @@ ipcMain.handle('terminal:unsubscribe', (_event, termId: string) => {
 })
 
 ipcMain.handle('terminal:detach', (_event, termId: string) => {
-  terminalStatusMonitor?.forgetTerminal(termId)
+  agentSessionTracker?.untrackSession(termId)
   clearTerminalSubscriptions(termId)
   clearHistorySnapshotsForTerm(termId)
   if (useDaemon && daemonClient?.isConnected()) {
@@ -930,7 +928,7 @@ ipcMain.handle('terminal:get-process-info', async (_event, termId: string) => {
 })
 
 ipcMain.handle('terminal:get-status', async (_event, termId: string) => {
-  return terminalStatusMonitor?.getStatus(termId) ?? null
+  return agentSessionTracker?.getStatus(termId) ?? null
 })
 
 ipcMain.handle(
@@ -942,9 +940,17 @@ ipcMain.handle(
       agent?: 'claude' | 'codex' | 'opencode' | 'pi' | null
       command?: string | null
       cwd?: string | null
+      startedAt?: number | null
+      claudeSessionId?: string | null
+      codexThreadId?: string | null
     },
   ) => {
-    terminalStatusMonitor?.setLaunchMeta(termId, launch)
+    if (launch.agent) {
+      agentSessionTracker?.trackSession(termId, launch.agent, {
+        sessionId: launch.claudeSessionId ?? undefined,
+        threadId: launch.codexThreadId ?? undefined,
+      })
+    }
   },
 )
 
@@ -2627,7 +2633,7 @@ ipcMain.handle('daemon:list-sessions', async () => {
       termIds.map(async (termId) => {
         const [processInfo, runtimeStatus] = await Promise.all([
           daemonClient!.getProcessInfo(termId).catch(() => null),
-          terminalStatusMonitor?.getStatus(termId) ?? Promise.resolve(null),
+          Promise.resolve(agentSessionTracker?.getStatus(termId) ?? null),
         ])
         return {
           termId,
@@ -2762,12 +2768,8 @@ app.whenReady().then(async () => {
     }
   }
 
-  terminalStatusMonitor = new TerminalStatusMonitor({
-    getDaemonClient: () => daemonClient,
-    getFallbackSessions: () => fallbackSessions,
-    getUseDaemon: () => useDaemon,
-    onStatus: broadcastTerminalStatus,
-  })
+  agentSessionTracker = new EnhancedSessionTracker()
+  agentSessionTracker.subscribe(broadcastTerminalStatus)
 
   // Set dock icon on macOS (for dev; production uses the bundled .icns)
   if (process.platform === 'darwin') {
@@ -2866,7 +2868,7 @@ app.whenReady().then(async () => {
       getDaemonClient: () => daemonClient,
       getFallbackSessions: () => fallbackSessions,
       getUseDaemon: () => useDaemon,
-      getTerminalStatus: (termId: string) => terminalStatusMonitor?.getStatus(termId) ?? null,
+      getTerminalStatus: (termId: string) => agentSessionTracker?.getStatus(termId) ?? null,
       getMainWindow: () => mainWindow,
       stateFile: STATE_FILE,
       subscribedTerminals,
@@ -2882,7 +2884,7 @@ app.whenReady().then(async () => {
 
 app.on('before-quit', () => {
   perfMonitor?.stop()
-  terminalStatusMonitor?.stop()
+  agentSessionTracker?.stop()
   stopAutomaticUpdateChecks()
   quitConfirmed = true
   stopMcpBridge(MCP_BRIDGE_SOCKET)
