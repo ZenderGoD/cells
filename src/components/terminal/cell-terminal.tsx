@@ -1914,12 +1914,26 @@ export function CellTerminal({
 
   const copySelectionToClipboard = useCallback(() => {
     const term = getLiveTerminal()
-    if (!term || !term.hasSelection()) return false
+    if (!term) return false
+
+    // For Zellij, use native dump-screen which includes full scrollback
+    // xterm.js getSelection() only gets the visible viewport
+    const backend = Reflect.get(term as object, '__cellsTerminalBackend')
+    if (backend === 'zellij') {
+      // Zellij has copy_on_select enabled, but to copy beyond the visible window,
+      // we need to enter Zellij's copy mode which gives access to the full buffer
+      // Send Ctrl+Z followed by copy-mode binding
+      void window.cells.terminal.write(termId, '\u0015p') // Ctrl+U, 'p' = Zellij copy-mode default binding
+      return true
+    }
+
+    // For tmux/replay, use xterm.js selection
+    if (!term.hasSelection()) return false
     const selection = term.getSelection()
     if (!selection) return false
     void navigator.clipboard.writeText(selection).catch(() => {})
     return true
-  }, [getLiveTerminal])
+  }, [getLiveTerminal, termId])
 
   const relaunchTerminal = useCallback(() => {
     restartTerminalSession(termId)
