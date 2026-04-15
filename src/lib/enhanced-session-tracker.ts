@@ -30,6 +30,7 @@ interface SessionState {
   lastKnownState: 'working' | 'waiting' | 'idle' | 'completed' | 'error'
   detail: string
   apiState?: AgentSessionState
+  cleanupTimeoutId?: ReturnType<typeof setTimeout>
 }
 
 type SessionStatusListener = (termId: string, status: TerminalRuntimeStatus | null) => void
@@ -46,9 +47,11 @@ export class EnhancedSessionTracker {
   private lastStatuses = new Map<string, TerminalRuntimeStatus | null>()
   private processMonitor = new ProcessStateMonitor()
   private pollTimer: ReturnType<typeof setInterval> | null = null
-  private readonly pollIntervalMs = 2000 // Poll for API status every 2 seconds
+  private readonly pollIntervalMs: number
 
-  constructor() {
+  constructor(options: { pollIntervalMs?: number } = {}) {
+    this.pollIntervalMs = options.pollIntervalMs ?? 2000
+
     // Subscribe to process state changes
     this.processMonitor.subscribe((termId, state) => {
       this.handleProcessStateChange(termId, state)
@@ -128,13 +131,18 @@ export class EnhancedSessionTracker {
     const session = this.sessions.get(termId)
     if (!session) return
 
+    // Cancel any pending cleanup
+    if (session.cleanupTimeoutId) {
+      clearTimeout(session.cleanupTimeoutId)
+    }
+
     session.isActive = false
     session.lastKnownState = 'completed'
     session.detail = detail
     this.notifyStatusChange(termId, this.buildStatus(session))
 
-    // Clean up after a delay
-    setTimeout(() => {
+    // Schedule cleanup (cancel previous if exists)
+    session.cleanupTimeoutId = setTimeout(() => {
       this.unregisterSession(termId)
     }, 2000)
   }
@@ -156,6 +164,11 @@ export class EnhancedSessionTracker {
    * Unregister a session
    */
   unregisterSession(termId: string) {
+    const session = this.sessions.get(termId)
+    if (session?.cleanupTimeoutId) {
+      clearTimeout(session.cleanupTimeoutId)
+    }
+
     this.sessions.delete(termId)
     this.lastStatuses.delete(termId)
     this.processMonitor.clear(termId)
@@ -256,7 +269,7 @@ export class EnhancedSessionTracker {
    * Query API status for all active sessions
    */
   private async pollSessionStatuses() {
-    const sessions = Array.from(this.sessions.values())
+    const sessions = Array.from(this.sessions.values()).filter((s) => s.isActive)
     for (const session of sessions) {
       if (!session.sessionId) continue
 
@@ -365,7 +378,11 @@ export class EnhancedSessionTracker {
     if ((a == null) !== (b == null)) return false
     if (a == null || b == null) return true
     return (
-      a.agent === b.agent && a.state === b.state && a.detail === b.detail && a.source === b.source
+      a.agent === b.agent &&
+      a.state === b.state &&
+      a.detail === b.detail &&
+      a.source === b.source &&
+      a.pid === b.pid
     )
   }
 }

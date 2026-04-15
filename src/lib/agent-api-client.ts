@@ -15,62 +15,65 @@ export interface AgentSessionStatus {
 
 /**
  * Query Claude session status via Claude's session API
+ *
+ * TODO: Implement Claude API integration
+ * - Requires: Claude API auth token (from env or secure storage)
+ * - Endpoint: https://api.claude.ai/sessions/{sessionId}
+ * - Maps API response to AgentSessionStatus
+ * - Returns null on error (process state monitoring provides fallback)
  */
 export async function queryClaudeSessionStatus(
   sessionId: string,
 ): Promise<AgentSessionStatus | null> {
-  try {
-    // Claude sessions are typically tracked via the Claude CLI or local state
-    // For now, we return null to indicate we need external API support
-    // In production, this would query: https://api.claude.ai/sessions/{sessionId}
-    // But that requires authentication and proper API setup
-
-    // Return null to fall back to process-based detection
-    return null
-  } catch {
-    return null
-  }
+  // Stub: Returns null for now, process-based detection handles it
+  // TODO: Implement actual API call
+  return null
 }
 
 /**
  * Query Codex thread status
+ *
+ * TODO: Implement Codex API integration
+ * - Query Codex thread API with threadId
+ * - Maps thread status to AgentSessionStatus
+ * - Returns null on error (process state monitoring provides fallback)
  */
 export async function queryCodexSessionStatus(
   threadId: string,
 ): Promise<AgentSessionStatus | null> {
-  try {
-    // Codex threads have their own API endpoint
-    // Similar to Claude, this would require proper authentication
-    return null
-  } catch {
-    return null
-  }
+  // Stub: Returns null for now, process-based detection handles it
+  // TODO: Implement actual API call
+  return null
 }
 
 /**
  * Query OpenCode session status
+ *
+ * TODO: Implement OpenCode API integration
+ * - Query OpenCode session API with sessionId
+ * - Maps session status to AgentSessionStatus
+ * - Returns null on error (process state monitoring provides fallback)
  */
 export async function queryOpenCodeSessionStatus(
   sessionId: string,
 ): Promise<AgentSessionStatus | null> {
-  try {
-    // OpenCode has its own session tracking
-    return null
-  } catch {
-    return null
-  }
+  // Stub: Returns null for now, process-based detection handles it
+  // TODO: Implement actual API call
+  return null
 }
 
 /**
  * Query Pi agent status
+ *
+ * TODO: Implement Pi API integration
+ * - Query Pi agent API with sessionId
+ * - Maps agent status to AgentSessionStatus
+ * - Returns null on error (process state monitoring provides fallback)
  */
 export async function queryPiSessionStatus(sessionId: string): Promise<AgentSessionStatus | null> {
-  try {
-    // Pi agent status tracking
-    return null
-  } catch {
-    return null
-  }
+  // Stub: Returns null for now, process-based detection handles it
+  // TODO: Implement actual API call
+  return null
 }
 
 /**

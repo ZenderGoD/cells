@@ -11,7 +11,7 @@
  * from the terminal backend and observable state transitions.
  */
 
-import type { TerminalProcessInfo } from '../types'
+import type { TerminalProcessInfo } from '../types/index'
 
 export interface ProcessState {
   pid: number | null
