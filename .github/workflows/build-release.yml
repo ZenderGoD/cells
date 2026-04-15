@@ -185,3 +185,16 @@ jobs:
             --latest \
             --title "${RELEASE_TAG#v}" \
             --notes-file release-notes.md
+
+      - name: Upload release artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          # Find and upload all built artifacts (dmg, zip, latest-mac.yml)
+          for file in release/*.{dmg,zip,yml}; do
+            if [ -f "$file" ]; then
+              echo "Uploading artifact: $(basename "$file")"
+              gh release upload "$RELEASE_TAG" "$file" --repo "$GITHUB_REPOSITORY" --clobber
+            fi
+          done
