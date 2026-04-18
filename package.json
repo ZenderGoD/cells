@@ -72,6 +72,16 @@
       "!resources/vendor/zellij/**/*",
       "!resources/vendor/tmux/**/*"
     ],
+    "asar": {
+      "smartUnpack": false
+    },
+    "asarUnpack": [
+      "**/node_modules/node-pty/**/*.{node,exe}",
+      "**/node_modules/node-pty/**/spawn-helper",
+      "**/node_modules/@anthropic-ai/claude-agent-sdk/vendor/**",
+      "**/node_modules/koffi/build/**/*.node",
+      "**/node_modules/@openai/codex-darwin-*/vendor/**"
+    ],
     "extraResources": [
       {
         "from": "mcp-server/dist/index.js",
