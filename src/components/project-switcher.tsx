@@ -99,7 +99,7 @@ export function ProjectSwitcher() {
         attention,
       }
     })
-  }, [activeProjectId, browsers, projectSwitchMode, projects, terminals])
+  }, [activeProjectId, agentWindows, browsers, projectSwitchMode, projects, terminals])
 
   const currentId = activeProjectId
   const selectedItem = items[selectedIndex] ?? items.find((item) => item.id === currentId) ?? null

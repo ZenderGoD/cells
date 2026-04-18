@@ -307,12 +307,10 @@ function patchGhosttyRenderer() {
       absoluteRow <= range.endAbsoluteRow;
       absoluteRow += 1
     ) {
-      let line = null
-      if (absoluteRow < scrollbackLength) {
-        line = this.wasmTerm.getScrollbackLine(absoluteRow)
-      } else {
-        line = this.wasmTerm.getLine(absoluteRow - scrollbackLength)
-      }
+      const line =
+        absoluteRow < scrollbackLength
+          ? this.wasmTerm.getScrollbackLine(absoluteRow)
+          : this.wasmTerm.getLine(absoluteRow - scrollbackLength)
       if (!line) continue
 
       const startCol = absoluteRow === range.startAbsoluteRow ? range.startCol : 0

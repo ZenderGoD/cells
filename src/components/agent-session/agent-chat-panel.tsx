@@ -232,11 +232,17 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   const inputRef = useRef(input)
-  inputRef.current = input
   const snapshotRef = useRef(snapshot)
-  snapshotRef.current = snapshot
   const windowIdRef = useRef(agentWindow.id)
-  windowIdRef.current = agentWindow.id
+  useEffect(() => {
+    inputRef.current = input
+  }, [input])
+  useEffect(() => {
+    snapshotRef.current = snapshot
+  }, [snapshot])
+  useEffect(() => {
+    windowIdRef.current = agentWindow.id
+  }, [agentWindow.id])
 
   useEffect(() => {
     let cancelled = false
@@ -356,9 +362,13 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   ])
 
   const attachmentsRef = useRef(attachments)
-  attachmentsRef.current = attachments
   const queueRef = useRef<string[]>(queuedMessages)
-  queueRef.current = queuedMessages
+  useEffect(() => {
+    attachmentsRef.current = attachments
+  }, [attachments])
+  useEffect(() => {
+    queueRef.current = queuedMessages
+  }, [queuedMessages])
 
   // Actually ship one message to the agent. Separated from submit() so the
   // queue-flusher effect can call it too.
@@ -433,7 +443,11 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     if (sendingQueuedRef.current) return
     sendingQueuedRef.current = true
     const next = queuedMessages[0]
-    setQueuedMessages((q) => q.slice(1))
+    // Defer the state update a microtask so we don't invoke setState
+    // synchronously inside the effect (cascading-renders rule).
+    queueMicrotask(() => {
+      setQueuedMessages((q) => q.slice(1))
+    })
     void sendToAgent(next)
       .catch((err) => {
         console.error('[agent-chat] queued send failed', err)

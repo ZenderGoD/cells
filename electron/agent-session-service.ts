@@ -769,7 +769,7 @@ async function readCodexTranscript(threadId: string): Promise<AgentSessionMessag
   const transcriptPath = await findCodexTranscriptFile(threadId)
   if (!transcriptPath) return []
 
-  let raw = ''
+  let raw: string
   try {
     raw = await fs.readFile(transcriptPath, 'utf8')
   } catch {
