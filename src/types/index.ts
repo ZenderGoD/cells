@@ -461,6 +461,17 @@ export interface CellsAPI {
     startLogin(agent: 'claude' | 'codex'): Promise<void>
     cancelLogin(agent: 'claude' | 'codex'): Promise<void>
     updatePermissionMode(windowId: string, mode: AgentPermissionMode | null): Promise<void>
+    listCodexModels(): Promise<
+      Array<{
+        id: string
+        displayName: string
+        description: string
+        isDefault: boolean
+        hidden: boolean
+        supportedReasoningEfforts: Array<{ effort: string; description: string }>
+        defaultReasoningEffort: string
+      }>
+    >
     onLoginEvent(
       callback: (event: {
         agent: 'claude' | 'codex'
