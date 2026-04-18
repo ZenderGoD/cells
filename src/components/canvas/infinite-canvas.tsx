@@ -31,6 +31,7 @@ import {
 } from '@/lib/canvas-selection'
 import { TerminalNode } from './terminal-node'
 import { BrowserNode } from './browser-node'
+import { AgentWindowNode } from './agent-window-node'
 import { useShallow } from 'zustand/react/shallow'
 
 const MIN_ZOOM = 0.15
@@ -49,9 +50,11 @@ export function InfiniteCanvas() {
   const {
     terminals,
     browsers,
+    agentWindows,
     canvas,
     moveTerminal,
     moveBrowser,
+    moveAgentWindow,
     setCanvasTransform,
     snapToNearest,
     snapToTerminal,
@@ -66,14 +69,17 @@ export function InfiniteCanvas() {
     setSelectedNodeIds,
     focusedTerminalId,
     focusedBrowserId,
+    focusedAgentWindowId,
     focusTerminal,
   } = useStore(
     useShallow((s) => ({
       terminals: s.terminals,
       browsers: s.browsers,
+      agentWindows: s.agentWindows,
       canvas: s.canvas,
       moveTerminal: s.moveTerminal,
       moveBrowser: s.moveBrowser,
+      moveAgentWindow: s.moveAgentWindow,
       setCanvasTransform: s.setCanvasTransform,
       snapToNearest: s.snapToNearest,
       snapToTerminal: s.snapToTerminal,
@@ -88,6 +94,7 @@ export function InfiniteCanvas() {
       setSelectedNodeIds: s.setSelectedNodeIds,
       focusedTerminalId: s.focusedTerminalId,
       focusedBrowserId: s.focusedBrowserId,
+      focusedAgentWindowId: s.focusedAgentWindowId,
       focusTerminal: s.focusTerminal,
     })),
   )
@@ -122,8 +129,9 @@ export function InfiniteCanvas() {
     () => [
       ...terminals.map((terminal) => ({ ...terminal, kind: 'terminal' as const })),
       ...browsers.map((browser) => ({ ...browser, kind: 'browser' as const })),
+      ...agentWindows.map((agentWindow) => ({ ...agentWindow, kind: 'agent' as const })),
     ],
-    [terminals, browsers],
+    [terminals, browsers, agentWindows],
   )
 
   // Animated motion values — these drive the visual transform
@@ -152,7 +160,7 @@ export function InfiniteCanvas() {
   const visibleWindowCount = useMemo(
     () =>
       viewportArea > 0
-        ? getCanvasWindows(terminals, browsers).reduce((count, window) => {
+        ? getCanvasWindows(terminals, browsers, agentWindows).reduce((count, window) => {
             const overlapW = Math.max(
               0,
               Math.min(window.x + window.width, viewportRect.x + viewportRect.width) -
@@ -175,6 +183,7 @@ export function InfiniteCanvas() {
       viewportRect.height,
       terminals,
       browsers,
+      agentWindows,
     ],
   )
   const showFocusedTerminalRing = visibleWindowCount >= 2
@@ -286,13 +295,13 @@ export function InfiniteCanvas() {
   // Schedule a snap — delay scales with how much the closest terminal fills the viewport
   const scheduleSnap = useCallback(() => {
     if (!snapEnabled) return
-    const { canvas, terminals: terms, browsers } = useStore.getState()
+    const { canvas, terminals: terms, browsers, agentWindows: agents } = useStore.getState()
     if (canvas.scale < SNAP_DISABLE_ZOOM) {
       setSnapPaused(true)
       return
     }
     setSnapPaused(false)
-    const windows = getCanvasWindows(terms, browsers)
+    const windows = getCanvasWindows(terms, browsers, agents)
     if (windows.length === 0) return
 
     // Find the window with the most overlap with the viewport
@@ -342,7 +351,8 @@ export function InfiniteCanvas() {
     (e: MouseEvent) => {
       const termNode = (e.target as HTMLElement).closest('.terminal-node')
       const browserNode = (e.target as HTMLElement).closest('.browser-node')
-      const clickedNode = termNode || browserNode
+      const agentNode = (e.target as HTMLElement).closest('.agent-window-node')
+      const clickedNode = termNode || browserNode || agentNode
 
       if (selectionMode) {
         if (!clickedNode && e.button === 0) {
@@ -362,7 +372,8 @@ export function InfiniteCanvas() {
       // Only intercept Cmd+click on the non-interactive shell of the node (title bar, resize edges).
       const isInsideContent =
         (e.target as HTMLElement).closest('.cell-terminal') ||
-        (e.target as HTMLElement).closest('.browser-node > div')
+        (e.target as HTMLElement).closest('.browser-node > div') ||
+        (e.target as HTMLElement).closest('.agent-chat-panel')
       if (clickedNode && (!e.metaKey || isInsideContent)) return
 
       if (e.button === 0 || e.button === 1) {
@@ -401,6 +412,8 @@ export function InfiniteCanvas() {
         for (const [id, origin] of Object.entries(moved)) {
           if (origin.kind === 'browser') {
             moveBrowser(id, origin.x, origin.y)
+          } else if (origin.kind === 'agent') {
+            moveAgentWindow(id, origin.x, origin.y)
           } else {
             moveTerminal(id, origin.x, origin.y)
           }
@@ -432,6 +445,7 @@ export function InfiniteCanvas() {
       setCanvasTransform,
       moveTerminal,
       moveBrowser,
+      moveAgentWindow,
       selectableWindows,
       setSelectedNodeIds,
     ],
@@ -445,12 +459,16 @@ export function InfiniteCanvas() {
     panRef.current = null
     dragRef.current = null
     marqueeRef.current = null
-    if (wasPanning && (terminals.length > 0 || browsers.length > 0) && snapEnabled) {
+    if (
+      wasPanning &&
+      (terminals.length > 0 || browsers.length > 0 || agentWindows.length > 0) &&
+      snapEnabled
+    ) {
       scheduleSnap()
     } else {
       setIsUserDriving(false)
     }
-  }, [isPanning, terminals.length, browsers.length, scheduleSnap, snapEnabled])
+  }, [isPanning, terminals.length, browsers.length, agentWindows.length, scheduleSnap, snapEnabled])
 
   useEffect(() => {
     return useStore.subscribe((state, previousState) => {
@@ -487,9 +505,10 @@ export function InfiniteCanvas() {
     (e: WheelEvent) => {
       const termNode = (e.target as HTMLElement).closest('.terminal-node')
       const browserNode = (e.target as HTMLElement).closest('.browser-node')
+      const agentNode = (e.target as HTMLElement).closest('.agent-window-node')
       // Let terminals/browsers handle their own scroll, but intercept
       // Cmd+scroll for canvas zoom regardless of what's under the cursor.
-      if ((termNode || browserNode) && !e.metaKey) return
+      if ((termNode || browserNode || agentNode) && !e.metaKey) return
 
       e.preventDefault()
       cancelSnap()
@@ -524,11 +543,19 @@ export function InfiniteCanvas() {
         })
       }
 
-      if ((terminals.length > 0 || browsers.length > 0) && snapEnabled) {
+      if ((terminals.length > 0 || browsers.length > 0 || agentWindows.length > 0) && snapEnabled) {
         scheduleSnap()
       }
     },
-    [setCanvasTransform, cancelSnap, scheduleSnap, terminals.length, browsers.length, snapEnabled],
+    [
+      setCanvasTransform,
+      cancelSnap,
+      scheduleSnap,
+      terminals.length,
+      browsers.length,
+      agentWindows.length,
+      snapEnabled,
+    ],
   )
 
   // Terminal drag handler
@@ -546,7 +573,7 @@ export function InfiniteCanvas() {
   )
 
   const handleNodeDragStart = useCallback(
-    (nodeId: string, kind: 'terminal' | 'browser', startX: number, startY: number) => {
+    (nodeId: string, kind: 'terminal' | 'browser' | 'agent', startX: number, startY: number) => {
       const { selectionMode: sm, selectedNodeIds: sel } = useStore.getState()
       if (!sm) {
         return
@@ -668,6 +695,17 @@ export function InfiniteCanvas() {
               onDragStart={handleNodeDragStart}
             />
           ))}
+        {agentWindows.map((agentWindow) => (
+          <AgentWindowNode
+            key={agentWindow.id}
+            agentWindow={agentWindow}
+            scale={transform.scale}
+            selectionMode={selectionMode}
+            isSelected={selectedNodeIds.includes(agentWindow.id)}
+            isFocused={focusedAgentWindowId === agentWindow.id}
+            onDragStart={handleNodeDragStart}
+          />
+        ))}
       </motion.div>
 
       {marqueeBox && (
@@ -683,7 +721,7 @@ export function InfiniteCanvas() {
       )}
 
       {/* Empty state */}
-      {terminals.length === 0 && browsers.length === 0 && (
+      {terminals.length === 0 && browsers.length === 0 && agentWindows.length === 0 && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <div className="text-center">
             <p className="text-muted-foreground/40 text-sm">Press ⌘T to get started</p>

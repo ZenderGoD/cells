@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type {
+  AgentSessionRequest,
+  AgentSessionSnapshot,
   CellsAPI,
   DaemonStatus,
   PerfEventRecord,
@@ -302,6 +304,61 @@ const api: CellsAPI = {
   agent: {
     checkAvailable: (aliases?: Record<string, string>) =>
       ipcRenderer.invoke('agent:check-available', aliases),
+  },
+  agentSession: {
+    ensure: (request: AgentSessionRequest) =>
+      ipcRenderer.invoke('agent-session:ensure', request) as Promise<AgentSessionSnapshot>,
+    send: (windowId: string, input: string) =>
+      ipcRenderer.invoke('agent-session:send', windowId, input),
+    close: (windowId: string) => ipcRenderer.invoke('agent-session:close', windowId),
+    dispose: (windowId: string) => ipcRenderer.invoke('agent-session:dispose', windowId),
+    getAuth: (agent: 'claude' | 'codex') =>
+      ipcRenderer.invoke('agent-session:get-auth', agent) as Promise<{
+        agent: 'claude' | 'codex'
+        binaryPath: string | null
+        authenticated: boolean | 'unknown'
+      }>,
+    getLoginCommand: (agent: 'claude' | 'codex') =>
+      ipcRenderer.invoke('agent-session:get-login-command', agent) as Promise<string>,
+    startLogin: (agent: 'claude' | 'codex') =>
+      ipcRenderer.invoke('agent-session:start-login', agent) as Promise<void>,
+    cancelLogin: (agent: 'claude' | 'codex') =>
+      ipcRenderer.invoke('agent-session:cancel-login', agent) as Promise<void>,
+    updatePermissionMode: (
+      windowId: string,
+      mode: 'safe' | 'ask' | 'allow-all' | 'bypass' | null,
+    ) =>
+      ipcRenderer.invoke('agent-session:update-permission-mode', windowId, mode) as Promise<void>,
+    listCodexModels: () =>
+      ipcRenderer.invoke('agent-session:list-codex-models') as Promise<
+        Array<{
+          id: string
+          displayName: string
+          description: string
+          isDefault: boolean
+          hidden: boolean
+          supportedReasoningEfforts: Array<{ effort: string; description: string }>
+          defaultReasoningEffort: string
+        }>
+      >,
+    onLoginEvent: (
+      callback: (event: {
+        agent: 'claude' | 'codex'
+        phase: 'starting' | 'awaiting_browser' | 'success' | 'failed' | 'cancelled'
+        url?: string | null
+        message?: string | null
+      }) => void,
+    ) => {
+      const handler = (_event: Electron.IpcRendererEvent, ev: any) => callback(ev)
+      ipcRenderer.on('agent-session:login-event', handler)
+      return () => ipcRenderer.removeListener('agent-session:login-event', handler)
+    },
+    onUpdate: (callback: (snapshot: AgentSessionSnapshot) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, snapshot: AgentSessionSnapshot) =>
+        callback(snapshot)
+      ipcRenderer.on('agent-session:update', handler)
+      return () => ipcRenderer.removeListener('agent-session:update', handler)
+    },
   },
   mcp: {
     install: (projectPath: string) => ipcRenderer.invoke('mcp:install', projectPath),

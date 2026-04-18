@@ -57,6 +57,15 @@ import {
 import type { TerminalExitDetails, TerminalRuntimeStatus } from '../src/types'
 import { normalizeTerminalFontFamily } from '../src/lib/terminal-fonts'
 import { EnhancedSessionTracker } from '../src/lib/enhanced-session-tracker'
+import {
+  AgentSessionService,
+  agentLoginManager,
+  getAgentAuthStatus,
+  getAgentLoginCommand,
+  listCodexModels,
+  type AgentAuthStatus,
+  type LoginEvent,
+} from './agent-session-service'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -242,6 +251,23 @@ let daemonRecoveryPromise: Promise<void> | null = null
 let mainWindow: BrowserWindow | null = null
 let perfMonitor: PerfMonitor | null = null
 let agentSessionTracker: EnhancedSessionTracker | null = null
+const agentSessionService = new AgentSessionService()
+
+agentSessionService.on('update', (snapshot) => {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (window.isDestroyed()) continue
+    const contents = window.webContents
+    // During Vite HMR / navigation the render frame is briefly torn down;
+    // sending would throw "Render frame was disposed before WebFrameMain
+    // could be accessed". Guard with isDestroyed + try/catch.
+    if (contents.isDestroyed() || contents.isCrashed()) continue
+    try {
+      contents.send('agent-session:update', snapshot)
+    } catch {
+      // swallow — frame was disposed between the check and the send
+    }
+  }
+})
 
 // Per-terminal session isolation:
 // - "subscribed" = renderer component mounted → data forwarded live via IPC
@@ -1196,6 +1222,17 @@ ipcMain.handle('agent:check-available', (_event, aliases?: Record<string, string
   // Packaged macOS apps inherit a minimal PATH (/usr/bin:/bin) that
   // won't include Homebrew, ~/.local/bin, nvm, etc.
   const shell = process.env.SHELL || '/bin/zsh'
+  const home = os.homedir()
+  const fallbackPaths = [
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+    '/usr/bin',
+    `${home}/.local/bin`,
+    `${home}/.bun/bin`,
+    `${home}/.npm-global/bin`,
+    `${home}/.volta/bin`,
+    `${home}/.nvm/versions/node`,
+  ]
   const results: Record<string, boolean> = {}
   for (const name of ['claude', 'codex', 'opencode', 'pi']) {
     const cmd = aliases?.[name]?.trim() || name
@@ -1207,11 +1244,85 @@ ipcMain.handle('agent:check-available', (_event, aliases?: Record<string, string
         timeout: 3000,
       })
       results[name] = true
+      continue
     } catch {
-      results[name] = false
+      // fall through to path probe
     }
+    // Fallback: probe common install locations directly (covers packaged
+    // apps where the user's login shell/rc files aren't sourced correctly).
+    results[name] = fallbackPaths.some((dir) => {
+      try {
+        return fs.existsSync(path.join(dir, executable))
+      } catch {
+        return false
+      }
+    })
   }
   return results
+})
+
+ipcMain.handle('agent-session:ensure', (_event, request) => {
+  return agentSessionService.ensure(request)
+})
+
+ipcMain.handle('agent-session:send', (_event, windowId: string, input: string) => {
+  return agentSessionService.send(windowId, input)
+})
+
+ipcMain.handle('agent-session:close', (_event, windowId: string) => {
+  // Stop the current turn but keep the runtime + messages around so the
+  // renderer can resume on the next send.
+  return agentSessionService.close(windowId)
+})
+
+ipcMain.handle('agent-session:dispose', (_event, windowId: string) => {
+  // Full teardown — called when the agent window itself is destroyed.
+  return agentSessionService.dispose(windowId)
+})
+
+ipcMain.handle('agent-session:get-auth', (_event, agent: 'claude' | 'codex') => {
+  return getAgentAuthStatus(agent)
+})
+
+ipcMain.handle('agent-session:get-login-command', (_event, agent: 'claude' | 'codex') => {
+  return getAgentLoginCommand(agent)
+})
+
+ipcMain.handle('agent-session:start-login', (_event, agent: 'claude' | 'codex') => {
+  return agentLoginManager.start(agent)
+})
+
+ipcMain.handle('agent-session:cancel-login', (_event, agent: 'claude' | 'codex') => {
+  agentLoginManager.cancel(agent)
+})
+
+ipcMain.handle(
+  'agent-session:update-permission-mode',
+  async (_event, windowId: string, mode: 'safe' | 'ask' | 'allow-all' | 'bypass' | null) => {
+    return agentSessionService.updatePermissionMode(windowId, mode)
+  },
+)
+
+ipcMain.handle('agent-session:list-codex-models', async () => {
+  try {
+    return await listCodexModels()
+  } catch (err) {
+    console.warn('[agent-session] list-codex-models failed', err)
+    return []
+  }
+})
+
+agentLoginManager.on('event', (event: LoginEvent) => {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (window.isDestroyed()) continue
+    const contents = window.webContents
+    if (contents.isDestroyed() || contents.isCrashed()) continue
+    try {
+      contents.send('agent-session:login-event', event)
+    } catch {
+      /* frame disposed */
+    }
+  }
 })
 
 // ---------- MCP server install ----------

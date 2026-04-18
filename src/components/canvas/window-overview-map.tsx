@@ -37,7 +37,7 @@ function WindowIcon({ window, iconSize }: { window: CanvasWindow; iconSize: numb
     )
   }
 
-  // Terminal with agent — use the same branded icon as terminal window tabs
+  // Agent window OR terminal with agent — use the same branded icon.
   if (window.agent) {
     return <AgentIcon agent={window.agent} className="pointer-events-none" size={iconSize} />
   }

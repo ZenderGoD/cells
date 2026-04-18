@@ -145,15 +145,118 @@ export interface BrowserNode {
   }
 }
 
+export type AgentModel = string
+
+/**
+ * Permission presets portable across Claude + Codex.
+ *   safe       — read-only preview, nothing is written
+ *   ask        — agent asks before every write / command
+ *   allow-all  — agent runs tools freely (auto-accept edits, skip prompts)
+ *   bypass     — nothing is gated, no confirmations ever
+ */
+export type AgentPermissionMode = 'safe' | 'ask' | 'allow-all' | 'bypass'
+
+/**
+ * Matches Craft's `ThinkingLevel` (../craft-agents-oss/packages/shared/src/agent/thinking-levels.ts).
+ *   off     — no extended reasoning
+ *   low     — lightest reasoning pass
+ *   medium  — balanced (default)
+ *   high    — deep reasoning
+ *   max     — absolute maximum effort
+ */
+export type AgentThinkingLevel = 'off' | 'low' | 'medium' | 'high' | 'max'
+
+export interface AgentWindowNode {
+  id: string
+  agent: Extract<AgentName, 'claude' | 'codex'>
+  x: number
+  y: number
+  width: number
+  height: number
+  title: string
+  customTitle?: string | null
+  zIndex?: number
+  status?: 'idle' | 'running' | 'error'
+  error?: string | null
+  claudeSessionId?: string | null
+  codexThreadId?: string | null
+  cwd?: string | null
+  initialPrompt?: string | null
+  model?: AgentModel | null
+  permissionMode?: AgentPermissionMode | null
+  thinkingLevel?: AgentThinkingLevel | null
+  fastMode?: boolean | null
+  createdAt?: number | null
+}
+
+export type AgentSessionMessageRole =
+  | 'user'
+  | 'assistant'
+  | 'reasoning'
+  | 'tool'
+  | 'system'
+  | 'error'
+  | 'auth_request'
+
+export interface AgentSessionMessage {
+  id: string
+  role: AgentSessionMessageRole
+  text: string
+  title?: string | null
+  metadata?: string | null
+  status?: 'in_progress' | 'completed' | 'failed'
+  updatedAt?: number | null
+  /** Only set for role='auth_request' — loginUrl the user needs to open. */
+  authLoginUrl?: string | null
+  /** Claude Agent SDK tool_use_id of this message's parent Task/Agent tool, if
+   *  this message is part of a subagent's work. Used to nest subagent activity
+   *  under its Task row instead of polluting the top-level timeline. */
+  parentToolUseId?: string | null
+  /** For role='tool' messages, the tool's own tool_use_id (raw, without the
+   *  `tool-` prefix we use as the message id). Lets children resolve their
+   *  parent Task id against this. */
+  toolUseId?: string | null
+}
+
+export interface AgentSessionRequest {
+  windowId: string
+  agent: Extract<AgentName, 'claude' | 'codex'>
+  title?: string | null
+  cwd?: string | null
+  initialPrompt?: string | null
+  claudeSessionId?: string | null
+  codexThreadId?: string | null
+  model?: AgentModel | null
+  permissionMode?: AgentPermissionMode | null
+  thinkingLevel?: AgentThinkingLevel | null
+  fastMode?: boolean | null
+}
+
+export interface AgentSessionSnapshot {
+  windowId: string
+  agent: Extract<AgentName, 'claude' | 'codex'>
+  title: string
+  cwd?: string | null
+  status: 'idle' | 'running' | 'error'
+  error?: string | null
+  claudeSessionId?: string | null
+  codexThreadId?: string | null
+  updatedAt: number
+  messages: AgentSessionMessage[]
+}
+
 export interface Project {
   id: string
   name: string
   path: string
+  hiddenFromTitleBar?: boolean
   terminals: TerminalNode[]
   browsers: BrowserNode[]
+  agentWindows?: AgentWindowNode[]
   canvas: CanvasTransform
   focusedTerminalId?: string | null
   focusedBrowserId?: string | null
+  focusedAgentWindowId?: string | null
   lastOpenedAt: number
   worktreesDir?: string
   /** Branch to use as base when creating new worktrees (defaults to current HEAD) */
@@ -166,7 +269,7 @@ export interface Project {
 }
 
 export interface ProjectsState {
-  version: 2
+  version: 4
   activeProjectId: string | null
   projects: Project[]
   appDarkTheme?: string
@@ -232,9 +335,11 @@ export interface RendererPerfSample {
   cachedTerminalCount: number
   totalTerminalCount: number
   totalBrowserCount: number
+  totalAgentWindowCount: number
   projectCount: number
   focusedTerminalId: string | null
   focusedBrowserId: string | null
+  focusedAgentWindowId: string | null
   useTransparentWindow: boolean
   windowOpacity: number
   overlayOpen: boolean
@@ -341,6 +446,30 @@ export interface CellsAPI {
     onData(callback: (termId: string, data: string) => void): () => void
     onStatus(callback: (termId: string, status: TerminalRuntimeStatus | null) => void): () => void
     onExit(callback: (termId: string, details?: TerminalExitDetails) => void): () => void
+  }
+  agentSession: {
+    ensure(request: AgentSessionRequest): Promise<AgentSessionSnapshot>
+    send(windowId: string, input: string): Promise<void>
+    close(windowId: string): Promise<void>
+    dispose(windowId: string): Promise<void>
+    getAuth(agent: 'claude' | 'codex'): Promise<{
+      agent: 'claude' | 'codex'
+      binaryPath: string | null
+      authenticated: boolean | 'unknown'
+    }>
+    getLoginCommand(agent: 'claude' | 'codex'): Promise<string>
+    startLogin(agent: 'claude' | 'codex'): Promise<void>
+    cancelLogin(agent: 'claude' | 'codex'): Promise<void>
+    updatePermissionMode(windowId: string, mode: AgentPermissionMode | null): Promise<void>
+    onLoginEvent(
+      callback: (event: {
+        agent: 'claude' | 'codex'
+        phase: 'starting' | 'awaiting_browser' | 'success' | 'failed' | 'cancelled'
+        url?: string | null
+        message?: string | null
+      }) => void,
+    ): () => void
+    onUpdate(callback: (snapshot: AgentSessionSnapshot) => void): () => void
   }
   git: {
     isRepo(cwd: string): Promise<boolean>

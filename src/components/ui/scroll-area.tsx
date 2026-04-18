@@ -6,8 +6,9 @@ const ScrollArea = React.forwardRef<
   React.ComponentRef<typeof ScrollAreaPrimitive.Root>,
   React.ComponentPropsWithoutRef<typeof ScrollAreaPrimitive.Root> & {
     viewportClassName?: string
+    viewportRef?: React.Ref<HTMLDivElement>
   }
->(({ className, children, viewportClassName, ...props }, ref) => (
+>(({ className, children, viewportClassName, viewportRef, ...props }, ref) => (
   <ScrollAreaPrimitive.Root
     ref={ref}
     data-slot="scroll-area"
@@ -15,6 +16,7 @@ const ScrollArea = React.forwardRef<
     {...props}
   >
     <ScrollAreaPrimitive.Viewport
+      ref={viewportRef}
       data-slot="scroll-area-viewport"
       className={cn('size-full rounded-[inherit]', viewportClassName)}
     >

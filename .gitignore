@@ -5,3 +5,11 @@ dist-electron/
 resources/vendor/zellij/
 *.tgz
 .DS_Store
+
+# Dev-mode runtime artifacts created by the running app
+/events.jsonl
+/config.json
+/views.json
+/statuses/
+/labels/
+/.claude-plugin/

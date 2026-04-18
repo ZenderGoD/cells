@@ -15,9 +15,10 @@ import type { TerminalRuntimeStatus } from '@/types'
 interface SwitcherItem {
   id: string
   title: string
-  type: 'terminal' | 'browser'
+  type: 'terminal' | 'browser' | 'agent'
   agent?: 'claude' | 'codex' | 'opencode' | 'pi' | null
   runtimeStatus?: TerminalRuntimeStatus | null
+  agentStatus?: 'idle' | 'running' | 'error' | null
   url?: string
   isCurrent: boolean
   faviconUrl?: string
@@ -26,11 +27,14 @@ interface SwitcherItem {
 export function TerminalSwitcher() {
   const terminals = useStore((s) => s.terminals)
   const browsers = useStore((s) => s.browsers)
+  const agentWindows = useStore((s) => s.agentWindows)
   const focusedTerminalId = useStore((s) => s.focusedTerminalId)
   const focusedBrowserId = useStore((s) => s.focusedBrowserId)
+  const focusedAgentWindowId = useStore((s) => s.focusedAgentWindowId)
   const canvas = useStore((s) => s.canvas)
   const snapToTerminal = useStore((s) => s.snapToTerminal)
   const snapToBrowser = useStore((s) => s.snapToBrowser)
+  const snapToAgentWindow = useStore((s) => s.snapToAgentWindow)
   const setOverlayOpen = useStore((s) => s.setOverlayOpen)
   const tabSwitchMode = useStore((s) => s.tabSwitchMode)
   const reducedMotion = useStore((s) => s.reducedMotion)
@@ -76,10 +80,18 @@ export function TerminalSwitcher() {
       isCurrent: b.id === focusedBrowserId,
       faviconUrl: b.faviconUrl,
     })),
+    ...agentWindows.map((a) => ({
+      id: a.id,
+      title: a.customTitle || a.title || (a.agent === 'claude' ? 'Claude Code' : 'Codex'),
+      type: 'agent' as const,
+      agent: a.agent,
+      agentStatus: a.status ?? null,
+      isCurrent: a.id === focusedAgentWindowId,
+    })),
   ]
 
-  const currentId = focusedTerminalId || focusedBrowserId
-  const canvasWindows = getCanvasWindows(terminals, browsers)
+  const currentId = focusedTerminalId || focusedBrowserId || focusedAgentWindowId
+  const canvasWindows = getCanvasWindows(terminals, browsers, agentWindows)
   const viewportRect = getViewportRect(canvas)
   const items = (
     tabSwitchMode === 'recent' && focusHistory.length > 0
@@ -94,10 +106,12 @@ export function TerminalSwitcher() {
       const chronologicalItems = [
         ...state.terminals.map((t) => ({ id: t.id, type: 'terminal' as const })),
         ...state.browsers.map((b) => ({ id: b.id, type: 'browser' as const })),
+        ...state.agentWindows.map((a) => ({ id: a.id, type: 'agent' as const })),
       ]
       if (chronologicalItems.length < 2) return
 
-      const currentId = state.focusedTerminalId || state.focusedBrowserId
+      const currentId =
+        state.focusedTerminalId || state.focusedBrowserId || state.focusedAgentWindowId
       const allItems = (
         state.tabSwitchMode === 'recent' && state.focusHistory.length > 0
           ? orderByRecent(chronologicalItems, currentId, state.focusHistory)
@@ -143,16 +157,19 @@ export function TerminalSwitcher() {
       const targetId = selectedIdRef.current
       const isTerminal = state.terminals.some((t) => t.id === targetId)
       const isBrowser = state.browsers.some((b) => b.id === targetId)
+      const isAgent = state.agentWindows.some((a) => a.id === targetId)
       if (isTerminal) {
         snapToTerminal(targetId)
       } else if (isBrowser) {
         snapToBrowser(targetId)
+      } else if (isAgent) {
+        snapToAgentWindow(targetId)
       }
       hapticSuccess()
     }
     setOpen(false)
     updateSelected(0, null)
-  }, [setOpen, snapToBrowser, snapToTerminal, updateSelected])
+  }, [setOpen, snapToAgentWindow, snapToBrowser, snapToTerminal, updateSelected])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -258,7 +275,7 @@ export function TerminalSwitcher() {
                   >
                     {/* Icon area */}
                     <div className="relative flex-1 w-full grid place-items-center overflow-hidden bg-background">
-                      {item.type === 'terminal' ? (
+                      {item.type === 'terminal' || item.type === 'agent' ? (
                         item.agent ? (
                           <AgentIcon
                             agent={item.agent}
@@ -299,7 +316,7 @@ export function TerminalSwitcher() {
                         i === selectedIndex ? 'text-foreground' : 'text-muted-foreground',
                       )}
                     >
-                      {item.type === 'terminal' ? (
+                      {item.type === 'terminal' || item.type === 'agent' ? (
                         item.agent ? (
                           <AgentIcon agent={item.agent} className="h-3 w-3 opacity-80" size={12} />
                         ) : (
@@ -316,6 +333,27 @@ export function TerminalSwitcher() {
                       )}
                       <span className="text-[10px] truncate flex-1">{item.title}</span>
                       {(() => {
+                        if (item.type === 'agent') {
+                          const s = item.agentStatus
+                          const dotClass =
+                            s === 'running'
+                              ? 'bg-emerald-400 animate-pulse'
+                              : s === 'error'
+                                ? 'bg-red-400'
+                                : null
+                          if (dotClass)
+                            return (
+                              <div
+                                className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotClass}`}
+                                title={s ?? ''}
+                              />
+                            )
+                          if (item.isCurrent)
+                            return (
+                              <div className="w-1.5 h-1.5 rounded-full bg-primary/60 shrink-0" />
+                            )
+                          return null
+                        }
                         const si = getStatusPresentation(item.runtimeStatus, { agent: item.agent })
                         if (si.dotClass)
                           return (

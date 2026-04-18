@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { FolderOpen, Globe, TerminalSquare } from 'lucide-react'
+import { Eye, EyeOff, FolderOpen, Globe, TerminalSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
 import { getCanvasWindows } from '@/lib/canvas-navigation'
@@ -13,6 +13,7 @@ interface ProjectSwitcherItem {
   id: string
   name: string
   path: string
+  hiddenFromTitleBar: boolean
   terminals: number
   browsers: number
   windows: ReturnType<typeof getCanvasWindows>
@@ -45,7 +46,9 @@ export function ProjectSwitcher() {
   const activeProjectId = useStore((s) => s.activeProjectId)
   const terminals = useStore((s) => s.terminals)
   const browsers = useStore((s) => s.browsers)
+  const agentWindows = useStore((s) => s.agentWindows)
   const switchProject = useStore((s) => s.switchProject)
+  const setProjectTitleBarHidden = useStore((s) => s.setProjectTitleBarHidden)
   const setOverlayOpen = useStore((s) => s.setOverlayOpen)
   const projectSwitchMode = useStore((s) => s.projectSwitchMode)
   const reducedMotion = useStore((s) => s.reducedMotion)
@@ -80,6 +83,7 @@ export function ProjectSwitcher() {
       const isCurrent = project.id === activeProjectId
       const projectTerminals = isCurrent ? terminals : project.terminals
       const projectBrowsers = isCurrent ? browsers : project.browsers
+      const projectAgents = isCurrent ? agentWindows : (project.agentWindows ?? [])
 
       const attention = getProjectRuntimeAttention(projectTerminals)
 
@@ -87,9 +91,10 @@ export function ProjectSwitcher() {
         id: project.id,
         name: project.name,
         path: project.path,
+        hiddenFromTitleBar: project.hiddenFromTitleBar === true,
         terminals: projectTerminals.length,
         browsers: projectBrowsers.length,
-        windows: getCanvasWindows(projectTerminals, projectBrowsers),
+        windows: getCanvasWindows(projectTerminals, projectBrowsers, projectAgents),
         isCurrent,
         attention,
       }
@@ -97,6 +102,7 @@ export function ProjectSwitcher() {
   }, [activeProjectId, browsers, projectSwitchMode, projects, terminals])
 
   const currentId = activeProjectId
+  const selectedItem = items[selectedIndex] ?? items.find((item) => item.id === currentId) ?? null
 
   const cycle = useCallback(
     (direction: 1 | -1) => {
@@ -357,6 +363,12 @@ export function ProjectSwitcher() {
                           {item.path}
                         </div>
                         <div className="flex items-center gap-2.5 text-[10px] text-muted-foreground/40">
+                          {item.hiddenFromTitleBar ? (
+                            <span className="flex items-center gap-1 text-muted-foreground/55">
+                              <EyeOff className="h-2.5 w-2.5" />
+                              Hidden
+                            </span>
+                          ) : null}
                           {item.terminals > 0 ? (
                             <span className="flex items-center gap-1">
                               <TerminalSquare className="h-2.5 w-2.5" />
@@ -381,9 +393,29 @@ export function ProjectSwitcher() {
               <span className="text-[10px] text-muted-foreground/30">
                 ⌃` forward, ⌃~ back, ⌃A panel
               </span>
-              <span className="text-[10px] text-muted-foreground/30">
-                Release ⌃ to switch, 1-9 jump
-              </span>
+              {selectedItem ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    hapticNudge()
+                    setProjectTitleBarHidden(selectedItem.id, !selectedItem.hiddenFromTitleBar)
+                  }}
+                  className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[10px] text-muted-foreground/55 transition-colors hover:bg-muted/40 hover:text-foreground"
+                >
+                  {selectedItem.hiddenFromTitleBar ? (
+                    <Eye className="h-3 w-3" />
+                  ) : (
+                    <EyeOff className="h-3 w-3" />
+                  )}
+                  <span>
+                    {selectedItem.hiddenFromTitleBar ? 'Show in title bar' : 'Hide from title bar'}
+                  </span>
+                </button>
+              ) : (
+                <span className="text-[10px] text-muted-foreground/30">
+                  Release ⌃ to switch, 1-9 jump
+                </span>
+              )}
             </div>
 
             <div className="mt-2 px-1 text-center">

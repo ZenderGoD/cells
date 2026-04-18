@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { nanoid } from 'nanoid'
 import type {
+  AgentWindowNode,
   AgentName,
   BrowserNode,
   CanvasTransform,
@@ -72,6 +73,7 @@ interface StoreState {
   // Active project working state
   terminals: TerminalNode[]
   browsers: BrowserNode[]
+  agentWindows: AgentWindowNode[]
   canvas: CanvasTransform
   initialized: boolean
   terminalTheme: string
@@ -97,6 +99,7 @@ interface StoreState {
   terminalFindResultLimitHit: boolean
   focusedTerminalId: string | null
   focusedBrowserId: string | null
+  focusedAgentWindowId: string | null
   focusHistory: string[] // stack of recently focused IDs (most recent last)
   focusCounts: Record<string, number> // per-window focus counts for usage ranking
   commandActionCounts: Record<string, number> // per-project catch-all action usage (search, agent-claude, agent-opencode, run, etc.)
@@ -161,6 +164,7 @@ interface StoreState {
   restoreLastClosedProject(): void
   renameProject(id: string, name: string): void
   reorderProjects(ids: string[]): void
+  setProjectTitleBarHidden(id: string, hidden: boolean): void
   getActiveProject(): Project | undefined
   getActiveProjectPath(): string | undefined
 
@@ -212,6 +216,18 @@ interface StoreState {
   togglePinFocused(): void
   panToTerminal(id: string): void
   panToBrowser(id: string): void
+  addAgentWindow(
+    agent: Extract<AgentName, 'claude' | 'codex'>,
+    options?: { title?: string; cwd?: string | null; initialPrompt?: string | null },
+  ): AgentWindowNode
+  removeAgentWindow(id: string): void
+  moveAgentWindow(id: string, x: number, y: number): void
+  resizeAgentWindow(id: string, width: number, height: number): void
+  focusAgentWindow(id: string | null): void
+  bringAgentWindowToFront(id: string): void
+  panToAgentWindow(id: string): void
+  snapToAgentWindow(id: string, options?: { keepScale?: boolean }): void
+  syncAgentWindow(id: string, patch: Partial<AgentWindowNode>): void
   snapToTerminal(id: string, options?: { keepScale?: boolean }): void
   zoomToFit(id: string): void
   snapToNearest(
@@ -369,7 +385,7 @@ function applyColorScheme(
   }
 }
 
-type CloseWindowTarget = { id: string; type: 'terminal' | 'browser' }
+type CloseWindowTarget = { id: string; type: 'terminal' | 'browser' | 'agent' }
 
 interface PendingCloseDialog {
   target: CloseWindowTarget
@@ -383,6 +399,7 @@ interface PendingClosedWindow {
   projectId: string
   terminal?: TerminalNode
   browser?: BrowserNode
+  agentWindow?: AgentWindowNode
   title: string
   closedAt: number
   expiresAt: number
@@ -434,13 +451,20 @@ function destroyBrowserResources(id: string) {
   window.cells.browser.destroy(id).catch(() => {})
 }
 
+function destroyAgentWindowResources(id: string) {
+  // Full teardown — the agent window is being removed from the project.
+  window.cells.agentSession.dispose(id).catch(() => {})
+}
+
 function parkProjectBrowsers(project: Pick<Project, 'browsers'>) {
   for (const browser of project.browsers ?? []) {
     window.cells.browser.park(browser.id).catch(() => {})
   }
 }
 
-function destroyProjectResources(project: Pick<Project, 'terminals' | 'browsers'>) {
+function destroyProjectResources(
+  project: Pick<Project, 'terminals' | 'browsers' | 'agentWindows'>,
+) {
   for (const terminal of project.terminals ?? []) {
     clearPendingCloseTimer(terminal.id)
     destroyTerminalResources(terminal.id)
@@ -448,6 +472,10 @@ function destroyProjectResources(project: Pick<Project, 'terminals' | 'browsers'
   for (const browser of project.browsers ?? []) {
     clearPendingCloseTimer(browser.id)
     destroyBrowserResources(browser.id)
+  }
+  for (const agentWindow of project.agentWindows ?? []) {
+    clearPendingCloseTimer(agentWindow.id)
+    destroyAgentWindowResources(agentWindow.id)
   }
 }
 
@@ -577,6 +605,25 @@ function mapTerminalsEverywhere(
   }
 }
 
+function mapAgentWindowsEverywhere(
+  agentWindows: AgentWindowNode[],
+  projects: Project[],
+  id: string,
+  updater: (agentWindow: AgentWindowNode) => AgentWindowNode,
+) {
+  return {
+    agentWindows: agentWindows.map((agentWindow) =>
+      agentWindow.id === id ? updater(agentWindow) : agentWindow,
+    ),
+    projects: projects.map((project) => ({
+      ...project,
+      agentWindows: (project.agentWindows ?? []).map((agentWindow) =>
+        agentWindow.id === id ? updater(agentWindow) : agentWindow,
+      ),
+    })),
+  }
+}
+
 function pushFocusHistory(history: string[], id: string) {
   const next = history.filter((entry) => entry !== id)
   next.push(id)
@@ -588,29 +635,38 @@ function getPreviousWindowId(
   history: string[],
   terminals: TerminalNode[],
   browsers: BrowserNode[],
+  agentWindows: AgentWindowNode[] = [],
 ): string | null {
   const existingIds = new Set([
     ...terminals.map((terminal) => terminal.id),
     ...browsers.map((browser) => browser.id),
+    ...agentWindows.map((agentWindow) => agentWindow.id),
   ])
   const previousFromHistory = [...history].reverse().find((id) => existingIds.has(id))
   if (previousFromHistory) return previousFromHistory
 
-  const topWindow = [...terminals, ...browsers].reduce<(TerminalNode | BrowserNode) | null>(
-    (currentTop, candidate) => {
-      if (!currentTop) return candidate
-      return (candidate.zIndex ?? 0) > (currentTop.zIndex ?? 0) ? candidate : currentTop
-    },
-    null,
-  )
+  const topWindow = [...terminals, ...browsers, ...agentWindows].reduce<
+    TerminalNode | BrowserNode | AgentWindowNode | null
+  >((currentTop, candidate) => {
+    if (!currentTop) return candidate
+    return (candidate.zIndex ?? 0) > (currentTop.zIndex ?? 0) ? candidate : currentTop
+  }, null)
 
   return topWindow?.id ?? null
 }
 
-function getTopZIndex(terminals: TerminalNode[], browsers: BrowserNode[] = []) {
+function getTopZIndex(
+  terminals: TerminalNode[],
+  browsers: BrowserNode[] = [],
+  agentWindows: AgentWindowNode[] = [],
+) {
   const termMax = terminals.reduce((max, t) => Math.max(max, t.zIndex ?? 0), 1)
   const browMax = browsers.reduce((max, b) => Math.max(max, b.zIndex ?? 0), 0)
-  return Math.max(termMax, browMax)
+  const agentMax = agentWindows.reduce(
+    (max, agentWindow) => Math.max(max, agentWindow.zIndex ?? 0),
+    0,
+  )
+  return Math.max(termMax, browMax, agentMax)
 }
 
 function upsertPendingClosedWindow(
@@ -647,9 +703,11 @@ function snapshotActiveProject(state: StoreState): Project[] {
           ...p,
           terminals: state.terminals,
           browsers: state.browsers,
+          agentWindows: state.agentWindows,
           canvas: state.canvas,
           focusedTerminalId: state.focusedTerminalId,
           focusedBrowserId: state.focusedBrowserId,
+          focusedAgentWindowId: state.focusedAgentWindowId,
           focusCounts: state.focusCounts,
           commandActionCounts: state.commandActionCounts,
           autoArrangeOnCreate: state.autoArrangeOnCreate,
@@ -667,13 +725,21 @@ function projectToWorkingState(project: Project, preserveRuntime = false) {
       }))
     : normalizeTerminals(project.terminals ?? [])
   const browsers = project.browsers ?? []
+  const agentWindows = (project.agentWindows ?? []).map((agentWindow, index) => ({
+    ...agentWindow,
+    zIndex: typeof agentWindow.zIndex === 'number' ? agentWindow.zIndex : index + 1,
+    status: agentWindow.status ?? 'idle',
+    error: agentWindow.error ?? null,
+  }))
   return {
     terminals,
     browsers,
+    agentWindows,
     canvas: project.canvas ?? DEFAULT_CANVAS,
-    topZIndex: getTopZIndex(terminals, browsers),
+    topZIndex: getTopZIndex(terminals, browsers, agentWindows),
     focusedTerminalId: (project.focusedTerminalId ?? null) as string | null,
     focusedBrowserId: (project.focusedBrowserId ?? null) as string | null,
+    focusedAgentWindowId: (project.focusedAgentWindowId ?? null) as string | null,
     focusHistory: [] as string[],
     focusCounts: (project.focusCounts ?? {}) as Record<string, number>,
     commandActionCounts: (project.commandActionCounts ?? {}) as Record<string, number>,
@@ -698,10 +764,12 @@ export const useStore = create<StoreState>((set, get) => ({
   activeProjectId: null,
   terminals: [],
   browsers: [],
+  agentWindows: [],
   canvas: DEFAULT_CANVAS,
   initialized: false,
   focusedTerminalId: null,
   focusedBrowserId: null,
+  focusedAgentWindowId: null,
   focusHistory: [],
   focusCounts: {},
   commandActionCounts: {},
@@ -1009,7 +1077,12 @@ export const useStore = create<StoreState>((set, get) => ({
 
     const saved = await window.cells.state.load()
 
-    if (saved && (saved as any).version === 2) {
+    if (
+      saved &&
+      typeof (saved as any).version === 'number' &&
+      (saved as any).version >= 2 &&
+      Array.isArray((saved as any).projects)
+    ) {
       const ps = saved as ProjectsState
       // Migrate old global autoArrangeOnCreate into per-project field
       let didStripLegacyProjectSettings = false
@@ -1154,6 +1227,7 @@ export const useStore = create<StoreState>((set, get) => ({
         path: '',
         terminals: normalizeTerminals(terminals),
         browsers: [],
+        agentWindows: [],
         canvas,
         lastOpenedAt: Date.now(),
       }
@@ -1253,7 +1327,7 @@ export const useStore = create<StoreState>((set, get) => ({
           terminals: (project.terminals ?? []).map(stripTerminalRuntimeFields),
         }))
         return saveState({
-          version: 2,
+          version: 4,
           activeProjectId: freshState.activeProjectId,
           projects: persistedProjects,
           appDarkTheme: freshState.appDarkTheme,
@@ -1301,7 +1375,7 @@ export const useStore = create<StoreState>((set, get) => ({
           terminals: (project.terminals ?? []).map(stripTerminalRuntimeFields),
         }))
         return saveState({
-          version: 2,
+          version: 4,
           activeProjectId: state.activeProjectId,
           projects: persistedProjects,
           appDarkTheme: state.appDarkTheme,
@@ -1364,8 +1438,10 @@ export const useStore = create<StoreState>((set, get) => ({
       id,
       name,
       path,
+      hiddenFromTitleBar: false,
       terminals: [],
       browsers: [],
+      agentWindows: [],
       canvas: DEFAULT_CANVAS,
       lastOpenedAt: Date.now(),
     }
@@ -1440,7 +1516,10 @@ export const useStore = create<StoreState>((set, get) => ({
       pendingProjectCloseDialog: {
         projectId: id,
         projectName: latestProject.name,
-        windowCount: (latestProject.terminals?.length ?? 0) + (latestProject.browsers?.length ?? 0),
+        windowCount:
+          (latestProject.terminals?.length ?? 0) +
+          (latestProject.browsers?.length ?? 0) +
+          (latestProject.agentWindows?.length ?? 0),
         runningProcessLabels: getRunningProjectProcessLabels(processInfos),
       },
     })
@@ -1564,9 +1643,11 @@ export const useStore = create<StoreState>((set, get) => ({
       activeProjectId: null,
       terminals: [],
       browsers: [],
+      agentWindows: [],
       canvas: DEFAULT_CANVAS,
       focusedTerminalId: null,
       focusedBrowserId: null,
+      focusedAgentWindowId: null,
       topZIndex: 1,
       terminalLinkProjectId: projectLinkSettings.terminalLinkProjectId,
       linkRules: projectLinkSettings.linkRules,
@@ -1685,9 +1766,11 @@ export const useStore = create<StoreState>((set, get) => ({
           activeProjectId: null,
           terminals: [],
           browsers: [],
+          agentWindows: [],
           canvas: DEFAULT_CANVAS,
           focusedTerminalId: null,
           focusedBrowserId: null,
+          focusedAgentWindowId: null,
           topZIndex: 1,
           terminalLinkProjectId: projectLinkSettings.terminalLinkProjectId,
           linkRules: projectLinkSettings.linkRules,
@@ -1735,21 +1818,34 @@ export const useStore = create<StoreState>((set, get) => ({
     get().persist()
   },
 
+  setProjectTitleBarHidden(id, hidden) {
+    set((state) => ({
+      projects: state.projects.map((project) =>
+        project.id === id ? { ...project, hiddenFromTitleBar: hidden } : project,
+      ),
+    }))
+    get().persist()
+  },
+
   addTerminal() {
     const id = nanoid(8)
     const newZ = get().topZIndex + 1
-    const { terminals, focusHistory } = get()
+    const { terminals, browsers, agentWindows, focusHistory } = get()
 
     // Size: fill the viewport minus padding and status bar
     const width = window.innerWidth - TERMINAL_PAD * 2
     const height = window.innerHeight - STATUS_BAR_HEIGHT - TERMINAL_PAD * 2
 
-    // Place to the right of the rightmost terminal, or at origin
+    // Place to the right of the rightmost *any* window, or at origin.
     let x = TERMINAL_PAD
     const y = TERMINAL_PAD
-    if (terminals.length > 0) {
-      const rightEdge = Math.max(...terminals.map((t) => t.x + t.width))
-      x = rightEdge + TERMINAL_GAP
+    const rightEdges = [
+      ...terminals.map((t) => t.x + t.width),
+      ...browsers.map((b) => b.x + b.width),
+      ...agentWindows.map((a) => a.x + a.width),
+    ]
+    if (rightEdges.length > 0) {
+      x = Math.max(...rightEdges) + TERMINAL_GAP
     }
 
     const terminal: TerminalNode = {
@@ -1766,12 +1862,18 @@ export const useStore = create<StoreState>((set, get) => ({
       topZIndex: newZ,
       focusedTerminalId: id,
       focusedBrowserId: null,
+      focusedAgentWindowId: null,
       focusHistory: pushFocusHistory(focusHistory, id),
     }))
     if (get().autoArrangeOnCreate) {
       get().autoArrangeGrid(true)
       // Stay focused on the new terminal — no overview zoom
-      set({ focusedTerminalId: id, focusedBrowserId: null, canvas: { ...get().canvas, scale: 1 } })
+      set({
+        focusedTerminalId: id,
+        focusedBrowserId: null,
+        focusedAgentWindowId: null,
+        canvas: { ...get().canvas, scale: 1 },
+      })
       get().snapToTerminal(id)
     } else {
       // Reset scale to 1 and snap to the new terminal
@@ -1982,7 +2084,7 @@ export const useStore = create<StoreState>((set, get) => ({
         state.pendingCloseDialog?.target.id === id ? null : state.pendingCloseDialog,
     })
     if (wasFocused) {
-      const previousId = getPreviousWindowId(history, remaining, state.browsers)
+      const previousId = getPreviousWindowId(history, remaining, state.browsers, state.agentWindows)
       if (previousId) {
         if (remaining.some((terminal) => terminal.id === previousId)) {
           const nextHistory = pushFocusHistory(history, previousId)
@@ -1990,21 +2092,33 @@ export const useStore = create<StoreState>((set, get) => ({
           set({
             focusedTerminalId: previousId,
             focusedBrowserId: null,
+            focusedAgentWindowId: null,
             focusHistory: nextHistory,
           })
           get().panToTerminal(previousId)
+        } else if (state.agentWindows.some((agentWindow) => agentWindow.id === previousId)) {
+          const nextHistory = pushFocusHistory(history, previousId)
+          get().bringAgentWindowToFront(previousId)
+          set({
+            focusedTerminalId: null,
+            focusedBrowserId: null,
+            focusedAgentWindowId: previousId,
+            focusHistory: nextHistory,
+          })
+          get().panToAgentWindow(previousId)
         } else {
           const nextHistory = pushFocusHistory(history, previousId)
           get().bringBrowserToFront(previousId)
           set({
             focusedTerminalId: null,
             focusedBrowserId: previousId,
+            focusedAgentWindowId: null,
             focusHistory: nextHistory,
           })
           get().panToBrowser(previousId)
         }
       } else {
-        set({ focusedBrowserId: null })
+        set({ focusedBrowserId: null, focusedAgentWindowId: null })
       }
     }
     get().persist()
@@ -2035,6 +2149,7 @@ export const useStore = create<StoreState>((set, get) => ({
         set({
           focusedTerminalId: id,
           focusedBrowserId: null,
+          focusedAgentWindowId: null,
           focusHistory: history,
           focusCounts: counts,
           focusedTerminalSince: Date.now(),
@@ -2044,6 +2159,7 @@ export const useStore = create<StoreState>((set, get) => ({
       set({
         focusedTerminalId: id,
         focusedBrowserId: null,
+        focusedAgentWindowId: null,
         focusedTerminalSince: id ? Date.now() : 0,
       })
     }
@@ -2215,6 +2331,7 @@ export const useStore = create<StoreState>((set, get) => ({
         : state.terminals,
       focusedTerminalId: id,
       focusedBrowserId: null,
+      focusedAgentWindowId: null,
       focusedTerminalSince: Date.now(),
       snapPaused: false,
       snapFast: true,
@@ -2251,11 +2368,19 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   snapToNearest(direction, options) {
-    const { terminals, browsers, focusedTerminalId, focusedBrowserId, canvas } = get()
-    const windows = getCanvasWindows(terminals, browsers)
+    const {
+      terminals,
+      browsers,
+      agentWindows,
+      focusedTerminalId,
+      focusedBrowserId,
+      focusedAgentWindowId,
+      canvas,
+    } = get()
+    const windows = getCanvasWindows(terminals, browsers, agentWindows)
     if (windows.length === 0) return
 
-    const currentId = focusedTerminalId || focusedBrowserId
+    const currentId = focusedTerminalId || focusedBrowserId || focusedAgentWindowId
     const current = currentId ? windows.find((window) => window.id === currentId) : null
     const origin = current ? getWindowCenter(current) : getViewportCenter(canvas)
     const next = getDirectionalWindow(windows, direction, origin, current?.id ?? null)
@@ -2266,6 +2391,8 @@ export const useStore = create<StoreState>((set, get) => ({
 
     if (next.type === 'terminal') {
       get().snapToTerminal(next.id, options)
+    } else if (next.type === 'agent') {
+      get().snapToAgentWindow(next.id, options)
     } else {
       get().snapToBrowser(next.id, options)
     }
@@ -2273,8 +2400,8 @@ export const useStore = create<StoreState>((set, get) => ({
 
   snapToClosest() {
     set({ snapFast: false })
-    const { terminals, browsers, canvas } = get()
-    const windows = getCanvasWindows(terminals, browsers)
+    const { terminals, browsers, agentWindows, canvas } = get()
+    const windows = getCanvasWindows(terminals, browsers, agentWindows)
     if (windows.length === 0) return
 
     const best = getClosestWindow(windows, getViewportCenter(canvas))
@@ -2282,6 +2409,8 @@ export const useStore = create<StoreState>((set, get) => ({
 
     if (best.type === 'terminal') {
       get().snapToTerminal(best.id)
+    } else if (best.type === 'agent') {
+      get().snapToAgentWindow(best.id)
     } else {
       get().snapToBrowser(best.id)
     }
@@ -2348,12 +2477,21 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   resizeWindowToFitFocused() {
-    const { terminals, browsers, focusedTerminalId, focusedBrowserId } = get()
+    const {
+      terminals,
+      browsers,
+      agentWindows,
+      focusedTerminalId,
+      focusedBrowserId,
+      focusedAgentWindowId,
+    } = get()
     const node = focusedTerminalId
       ? terminals.find((t) => t.id === focusedTerminalId)
       : focusedBrowserId
         ? browsers.find((b) => b.id === focusedBrowserId)
-        : null
+        : focusedAgentWindowId
+          ? agentWindows.find((entry) => entry.id === focusedAgentWindowId)
+          : null
     if (!node) return
     const width = node.width + TERMINAL_PAD * 2
     const height = node.height + TERMINAL_PAD * 2 + STATUS_BAR_HEIGHT
@@ -2362,11 +2500,19 @@ export const useStore = create<StoreState>((set, get) => ({
     requestAnimationFrame(() => {
       if (focusedTerminalId) get().snapToTerminal(focusedTerminalId)
       else if (focusedBrowserId) get().snapToBrowser(focusedBrowserId)
+      else if (focusedAgentWindowId) get().snapToAgentWindow(focusedAgentWindowId)
     })
   },
 
   resizeFocusedToFitViewport() {
-    const { terminals, browsers, focusedTerminalId, focusedBrowserId } = get()
+    const {
+      terminals,
+      browsers,
+      agentWindows,
+      focusedTerminalId,
+      focusedBrowserId,
+      focusedAgentWindowId,
+    } = get()
     const viewW = window.innerWidth - TERMINAL_PAD * 2
     const viewH = window.innerHeight - STATUS_BAR_HEIGHT - TERMINAL_PAD * 2
     if (focusedTerminalId) {
@@ -2379,14 +2525,25 @@ export const useStore = create<StoreState>((set, get) => ({
       if (!b) return
       get().resizeBrowser(focusedBrowserId, viewW, viewH)
       get().snapToBrowser(focusedBrowserId)
+    } else if (focusedAgentWindowId) {
+      const agentWindow = agentWindows.find((entry) => entry.id === focusedAgentWindowId)
+      if (!agentWindow) return
+      get().resizeAgentWindow(focusedAgentWindowId, viewW, viewH)
+      get().snapToAgentWindow(focusedAgentWindowId)
     }
   },
 
   zoomToFitAll() {
-    const { terminals, browsers } = get()
+    const { terminals, browsers, agentWindows } = get()
     const allNodes = [
       ...terminals.map((t) => ({ x: t.x, y: t.y, width: t.width, height: t.height })),
       ...browsers.map((b) => ({ x: b.x, y: b.y, width: b.width, height: b.height })),
+      ...agentWindows.map((entry) => ({
+        x: entry.x,
+        y: entry.y,
+        width: entry.width,
+        height: entry.height,
+      })),
     ]
     const nextTransform = getOverviewTransform(
       allNodes,
@@ -2395,14 +2552,28 @@ export const useStore = create<StoreState>((set, get) => ({
     )
     if (!nextTransform) return
 
-    set({ snapPaused: true, focusedTerminalId: null, focusedBrowserId: null, snapFast: false })
+    set({
+      snapPaused: true,
+      focusedTerminalId: null,
+      focusedBrowserId: null,
+      focusedAgentWindowId: null,
+      snapFast: false,
+    })
     get().setCanvasTransform(nextTransform)
   },
 
   exitOverview() {
-    const { focusedTerminalId, focusedBrowserId, focusHistory, terminals, browsers } = get()
+    const {
+      focusedTerminalId,
+      focusedBrowserId,
+      focusedAgentWindowId,
+      focusHistory,
+      terminals,
+      browsers,
+      agentWindows,
+    } = get()
     // Only meaningful when no window is focused (i.e. in overview)
-    if (focusedTerminalId || focusedBrowserId) return
+    if (focusedTerminalId || focusedBrowserId || focusedAgentWindowId) return
 
     // Restore focus to the most recently focused window from history
     for (let i = focusHistory.length - 1; i >= 0; i--) {
@@ -2417,6 +2588,11 @@ export const useStore = create<StoreState>((set, get) => ({
         get().snapToBrowser(id)
         return
       }
+      if (agentWindows.some((entry) => entry.id === id)) {
+        get().focusAgentWindow(id)
+        get().snapToAgentWindow(id)
+        return
+      }
     }
     // Fallback: focus the first terminal or browser
     if (terminals.length > 0) {
@@ -2425,14 +2601,17 @@ export const useStore = create<StoreState>((set, get) => ({
     } else if (browsers.length > 0) {
       get().focusBrowser(browsers[0].id)
       get().snapToBrowser(browsers[0].id)
+    } else if (agentWindows.length > 0) {
+      get().focusAgentWindow(agentWindows[0].id)
+      get().snapToAgentWindow(agentWindows[0].id)
     }
   },
 
   autoArrangeGrid(skipOverview?: boolean) {
-    const { terminals, browsers } = get()
+    const { terminals, browsers, agentWindows } = get()
     const allNodes: Array<{
       id: string
-      type: 'terminal' | 'browser'
+      type: 'terminal' | 'browser' | 'agent'
       x: number
       y: number
       width: number
@@ -2453,6 +2632,14 @@ export const useStore = create<StoreState>((set, get) => ({
         y: b.y,
         width: b.width,
         height: b.height,
+      })),
+      ...agentWindows.map((entry) => ({
+        id: entry.id,
+        type: 'agent' as const,
+        x: entry.x,
+        y: entry.y,
+        width: entry.width,
+        height: entry.height,
       })),
     ]
     if (allNodes.length === 0) return
@@ -2499,6 +2686,7 @@ export const useStore = create<StoreState>((set, get) => ({
 
     const updatedTerminals = new Map<string, { x: number; y: number }>()
     const updatedBrowsers = new Map<string, { x: number; y: number }>()
+    const updatedAgentWindows = new Map<string, { x: number; y: number }>()
     let curY = centroidY - totalH / 2
 
     for (const row of rows) {
@@ -2510,6 +2698,7 @@ export const useStore = create<StoreState>((set, get) => ({
       for (const node of row) {
         const pos = { x: curX, y: curY }
         if (node.type === 'terminal') updatedTerminals.set(node.id, pos)
+        else if (node.type === 'agent') updatedAgentWindows.set(node.id, pos)
         else updatedBrowsers.set(node.id, pos)
         curX += node.width + gap
       }
@@ -2528,6 +2717,10 @@ export const useStore = create<StoreState>((set, get) => ({
         browsers: s.browsers.map((b) => {
           const pos = updatedBrowsers.get(b.id)
           return pos ? { ...b, x: pos.x, y: pos.y } : b
+        }),
+        agentWindows: s.agentWindows.map((agentWindow) => {
+          const pos = updatedAgentWindows.get(agentWindow.id)
+          return pos ? { ...agentWindow, x: pos.x, y: pos.y } : agentWindow
         }),
       }))
 
@@ -2631,13 +2824,20 @@ export const useStore = create<StoreState>((set, get) => ({
     const state = get()
     const resolvedTarget =
       target ??
-      (state.focusedBrowserId
-        ? { id: state.focusedBrowserId, type: 'browser' as const }
-        : state.focusedTerminalId
-          ? { id: state.focusedTerminalId, type: 'terminal' as const }
-          : state.terminals.length > 0
-            ? { id: state.terminals[state.terminals.length - 1].id, type: 'terminal' as const }
-            : null)
+      (state.focusedAgentWindowId
+        ? { id: state.focusedAgentWindowId, type: 'agent' as const }
+        : state.focusedBrowserId
+          ? { id: state.focusedBrowserId, type: 'browser' as const }
+          : state.focusedTerminalId
+            ? { id: state.focusedTerminalId, type: 'terminal' as const }
+            : state.agentWindows.length > 0
+              ? {
+                  id: state.agentWindows[state.agentWindows.length - 1].id,
+                  type: 'agent' as const,
+                }
+              : state.terminals.length > 0
+                ? { id: state.terminals[state.terminals.length - 1].id, type: 'terminal' as const }
+                : null)
 
     if (!resolvedTarget) return
 
@@ -2688,7 +2888,12 @@ export const useStore = create<StoreState>((set, get) => ({
         )
 
         if (wasFocused) {
-          const previousId = getPreviousWindowId(history, remaining, current.browsers)
+          const previousId = getPreviousWindowId(
+            history,
+            remaining,
+            current.browsers,
+            current.agentWindows,
+          )
           if (previousId) {
             if (remaining.some((item) => item.id === previousId)) {
               const nextHistory = pushFocusHistory(history, previousId)
@@ -2696,24 +2901,36 @@ export const useStore = create<StoreState>((set, get) => ({
               set({
                 focusedTerminalId: previousId,
                 focusedBrowserId: null,
+                focusedAgentWindowId: null,
                 focusHistory: nextHistory,
               })
               get().panToTerminal(previousId)
+            } else if (current.agentWindows.some((item) => item.id === previousId)) {
+              const nextHistory = pushFocusHistory(history, previousId)
+              get().bringAgentWindowToFront(previousId)
+              set({
+                focusedTerminalId: null,
+                focusedBrowserId: null,
+                focusedAgentWindowId: previousId,
+                focusHistory: nextHistory,
+              })
+              get().panToAgentWindow(previousId)
             } else {
               const nextHistory = pushFocusHistory(history, previousId)
               get().bringBrowserToFront(previousId)
               set({
                 focusedTerminalId: null,
                 focusedBrowserId: previousId,
+                focusedAgentWindowId: null,
                 focusHistory: nextHistory,
               })
               get().panToBrowser(previousId)
             }
           } else {
-            set({ focusedBrowserId: null })
+            set({ focusedBrowserId: null, focusedAgentWindowId: null })
           }
         }
-      } else {
+      } else if (resolvedTarget.type === 'browser') {
         const browser = current.browsers.find((item) => item.id === resolvedTarget.id)
         if (!browser) return
 
@@ -2763,7 +2980,12 @@ export const useStore = create<StoreState>((set, get) => ({
         }
 
         if (wasFocused) {
-          const previousId = getPreviousWindowId(history, current.terminals, remaining)
+          const previousId = getPreviousWindowId(
+            history,
+            current.terminals,
+            remaining,
+            current.agentWindows,
+          )
           if (previousId) {
             if (current.terminals.some((item) => item.id === previousId)) {
               const nextHistory = pushFocusHistory(history, previousId)
@@ -2771,6 +2993,96 @@ export const useStore = create<StoreState>((set, get) => ({
               set({
                 focusedTerminalId: previousId,
                 focusedBrowserId: null,
+                focusedAgentWindowId: null,
+                focusHistory: nextHistory,
+              })
+              get().panToTerminal(previousId)
+            } else if (current.agentWindows.some((item) => item.id === previousId)) {
+              const nextHistory = pushFocusHistory(history, previousId)
+              get().bringAgentWindowToFront(previousId)
+              set({
+                focusedTerminalId: null,
+                focusedBrowserId: null,
+                focusedAgentWindowId: previousId,
+                focusHistory: nextHistory,
+              })
+              get().panToAgentWindow(previousId)
+            } else {
+              const nextHistory = pushFocusHistory(history, previousId)
+              get().bringBrowserToFront(previousId)
+              set({
+                focusedTerminalId: null,
+                focusedBrowserId: previousId,
+                focusedAgentWindowId: null,
+                focusHistory: nextHistory,
+              })
+              get().panToBrowser(previousId)
+            }
+          } else {
+            set({ focusedTerminalId: null, focusedAgentWindowId: null })
+          }
+        }
+      } else {
+        const agentWindow = current.agentWindows.find((item) => item.id === resolvedTarget.id)
+        if (!agentWindow) return
+
+        if (timeoutMs <= 0) {
+          current.removeAgentWindow(agentWindow.id)
+          return
+        }
+
+        const remaining = current.agentWindows.filter((item) => item.id !== agentWindow.id)
+        const history = current.focusHistory.filter((entry) => entry !== agentWindow.id)
+        const wasFocused = current.focusedAgentWindowId === agentWindow.id
+
+        set({
+          agentWindows: remaining,
+          focusHistory: history,
+          focusedAgentWindowId: wasFocused ? null : current.focusedAgentWindowId,
+          pendingClosedWindows: upsertPendingClosedWindow(current.pendingClosedWindows, {
+            id: agentWindow.id,
+            target: resolvedTarget,
+            projectId: current.activeProjectId,
+            agentWindow,
+            title: agentWindow.customTitle || agentWindow.title,
+            closedAt: now,
+            expiresAt,
+          }),
+        })
+
+        clearPendingCloseTimer(agentWindow.id)
+        pendingCloseTimers.set(
+          agentWindow.id,
+          window.setTimeout(() => {
+            useStore.getState().removeAgentWindow(agentWindow.id)
+          }, timeoutMs),
+        )
+
+        if (wasFocused) {
+          const previousId = getPreviousWindowId(
+            history,
+            current.terminals,
+            current.browsers,
+            remaining,
+          )
+          if (previousId) {
+            if (remaining.some((item) => item.id === previousId)) {
+              const nextHistory = pushFocusHistory(history, previousId)
+              get().bringAgentWindowToFront(previousId)
+              set({
+                focusedTerminalId: null,
+                focusedBrowserId: null,
+                focusedAgentWindowId: previousId,
+                focusHistory: nextHistory,
+              })
+              get().panToAgentWindow(previousId)
+            } else if (current.terminals.some((item) => item.id === previousId)) {
+              const nextHistory = pushFocusHistory(history, previousId)
+              get().bringToFront(previousId)
+              set({
+                focusedTerminalId: previousId,
+                focusedBrowserId: null,
+                focusedAgentWindowId: null,
                 focusHistory: nextHistory,
               })
               get().panToTerminal(previousId)
@@ -2780,12 +3092,13 @@ export const useStore = create<StoreState>((set, get) => ({
               set({
                 focusedTerminalId: null,
                 focusedBrowserId: previousId,
+                focusedAgentWindowId: null,
                 focusHistory: nextHistory,
               })
               get().panToBrowser(previousId)
             }
           } else {
-            set({ focusedTerminalId: null })
+            set({ focusedTerminalId: null, focusedBrowserId: null })
           }
         }
       }
@@ -2867,6 +3180,7 @@ export const useStore = create<StoreState>((set, get) => ({
         topZIndex: newZ,
         focusedTerminalId: restoredTerminal.id,
         focusedBrowserId: null,
+        focusedAgentWindowId: null,
         focusHistory: nextHistory,
       })
       get().snapToTerminal(restoredTerminal.id)
@@ -2882,9 +3196,26 @@ export const useStore = create<StoreState>((set, get) => ({
         topZIndex: newZ,
         focusedTerminalId: null,
         focusedBrowserId: restoredBrowser.id,
+        focusedAgentWindowId: null,
         focusHistory: nextHistory,
       })
       get().snapToBrowser(restoredBrowser.id)
+      get().persist()
+      return
+    }
+
+    if (entry.agentWindow) {
+      const restoredAgentWindow = { ...entry.agentWindow, zIndex: newZ }
+      const nextHistory = pushFocusHistory(current.focusHistory, restoredAgentWindow.id)
+      set({
+        agentWindows: [...current.agentWindows, restoredAgentWindow],
+        topZIndex: newZ,
+        focusedTerminalId: null,
+        focusedBrowserId: null,
+        focusedAgentWindowId: restoredAgentWindow.id,
+        focusHistory: nextHistory,
+      })
+      get().snapToAgentWindow(restoredAgentWindow.id)
       get().persist()
     }
   },
@@ -2995,22 +3326,265 @@ export const useStore = create<StoreState>((set, get) => ({
     return get().getActiveProject()?.worktreeBaseBranch
   },
 
-  // ---- Browser actions ----
+  // ---- Agent window actions ----
 
-  addBrowser() {
+  addAgentWindow(agent, options) {
     const id = nanoid(8)
     const newZ = get().topZIndex + 1
-    const { terminals, browsers, focusHistory } = get()
-
+    const { terminals, browsers, agentWindows, focusHistory } = get()
     const width = window.innerWidth - TERMINAL_PAD * 2
     const height = window.innerHeight - STATUS_BAR_HEIGHT - TERMINAL_PAD * 2
 
-    // Place to the right of all nodes (terminals + browsers)
     let x = TERMINAL_PAD
     const y = TERMINAL_PAD
     const allRightEdges = [
       ...terminals.map((t) => t.x + t.width),
       ...browsers.map((b) => b.x + b.width),
+      ...agentWindows.map((entry) => entry.x + entry.width),
+    ]
+    if (allRightEdges.length > 0) {
+      x = Math.max(...allRightEdges) + TERMINAL_GAP
+    }
+
+    const agentWindow: AgentWindowNode = {
+      id,
+      agent,
+      x,
+      y,
+      width,
+      height,
+      title: options?.title ?? (agent === 'claude' ? 'Claude Code' : 'Codex'),
+      cwd: options?.cwd ?? get().getActiveProjectPath() ?? null,
+      initialPrompt: options?.initialPrompt ?? null,
+      status: 'idle',
+      error: null,
+      zIndex: newZ,
+      createdAt: Date.now(),
+    }
+
+    set((s) => ({
+      agentWindows: [...s.agentWindows, agentWindow],
+      topZIndex: newZ,
+      focusedTerminalId: null,
+      focusedBrowserId: null,
+      focusedAgentWindowId: id,
+      focusHistory: pushFocusHistory(focusHistory, id),
+    }))
+    if (get().autoArrangeOnCreate) {
+      get().autoArrangeGrid(true)
+      set({
+        focusedTerminalId: null,
+        focusedBrowserId: null,
+        focusedAgentWindowId: id,
+        canvas: { ...get().canvas, scale: 1 },
+      })
+      get().snapToAgentWindow(id)
+    } else {
+      set({ canvas: { ...get().canvas, scale: 1 } })
+      get().snapToAgentWindow(id)
+    }
+    get().persist()
+    return agentWindow
+  },
+
+  removeAgentWindow(id) {
+    clearPendingCloseTimer(id)
+    void window.cells.agentSession.dispose(id).catch(() => {})
+    const state = get()
+    const remaining = state.agentWindows.filter((entry) => entry.id !== id)
+    const history = state.focusHistory.filter((entry) => entry !== id)
+    const wasFocused = state.focusedAgentWindowId === id
+    set({
+      agentWindows: remaining,
+      focusHistory: history,
+      focusedAgentWindowId: wasFocused ? null : state.focusedAgentWindowId,
+      pendingClosedWindows: state.pendingClosedWindows.filter((entry) => entry.id !== id),
+      pendingCloseDialog:
+        state.pendingCloseDialog?.target.id === id ? null : state.pendingCloseDialog,
+    })
+    if (wasFocused) {
+      const previousId = getPreviousWindowId(history, state.terminals, state.browsers, remaining)
+      if (previousId) {
+        if (remaining.some((entry) => entry.id === previousId)) {
+          const nextHistory = pushFocusHistory(history, previousId)
+          get().bringAgentWindowToFront(previousId)
+          set({
+            focusedTerminalId: null,
+            focusedBrowserId: null,
+            focusedAgentWindowId: previousId,
+            focusHistory: nextHistory,
+          })
+          get().panToAgentWindow(previousId)
+        } else if (state.terminals.some((terminal) => terminal.id === previousId)) {
+          const nextHistory = pushFocusHistory(history, previousId)
+          get().bringToFront(previousId)
+          set({
+            focusedTerminalId: previousId,
+            focusedBrowserId: null,
+            focusedAgentWindowId: null,
+            focusHistory: nextHistory,
+          })
+          get().panToTerminal(previousId)
+        } else {
+          const nextHistory = pushFocusHistory(history, previousId)
+          get().bringBrowserToFront(previousId)
+          set({
+            focusedTerminalId: null,
+            focusedBrowserId: previousId,
+            focusedAgentWindowId: null,
+            focusHistory: nextHistory,
+          })
+          get().panToBrowser(previousId)
+        }
+      } else {
+        set({ focusedTerminalId: null, focusedBrowserId: null, focusedAgentWindowId: null })
+      }
+    }
+    get().persist()
+  },
+
+  moveAgentWindow(id, x, y) {
+    if (get().autoArrangeOnCreate) {
+      get().setAutoArrangeOnCreate(false)
+      showToast('Auto-arrange disabled', 'info')
+    }
+    set((s) => ({
+      agentWindows: s.agentWindows.map((agentWindow) =>
+        agentWindow.id === id ? { ...agentWindow, x, y } : agentWindow,
+      ),
+    }))
+    debouncedPersist(() => get().persist())
+  },
+
+  resizeAgentWindow(id, width, height) {
+    set((s) => ({
+      agentWindows: s.agentWindows.map((agentWindow) =>
+        agentWindow.id === id ? { ...agentWindow, width, height } : agentWindow,
+      ),
+    }))
+    debouncedPersist(() => get().persist())
+  },
+
+  focusAgentWindow(id) {
+    const prev = get().focusedAgentWindowId
+    if (id && id !== prev) {
+      if (get().snapOnFocus) {
+        get().snapToAgentWindow(id)
+      } else {
+        get().bringAgentWindowToFront(id)
+        const history = pushFocusHistory(get().focusHistory, id)
+        const counts = { ...get().focusCounts, [id]: (get().focusCounts[id] ?? 0) + 1 }
+        set({
+          focusedTerminalId: null,
+          focusedBrowserId: null,
+          focusedAgentWindowId: id,
+          focusHistory: history,
+          focusCounts: counts,
+        })
+      }
+    } else {
+      set({
+        focusedTerminalId: null,
+        focusedBrowserId: null,
+        focusedAgentWindowId: id,
+      })
+    }
+  },
+
+  bringAgentWindowToFront(id) {
+    const newZ = get().topZIndex + 1
+    set((s) => ({
+      topZIndex: newZ,
+      agentWindows: s.agentWindows.map((agentWindow) =>
+        agentWindow.id === id ? { ...agentWindow, zIndex: newZ } : agentWindow,
+      ),
+    }))
+  },
+
+  panToAgentWindow(id) {
+    const { agentWindows, canvas } = get()
+    const agentWindow = agentWindows.find((entry) => entry.id === id)
+    if (!agentWindow) return
+    const viewW = window.innerWidth
+    const viewH = window.innerHeight - STATUS_BAR_HEIGHT
+    get().setCanvasTransform({
+      ...canvas,
+      x: viewW / 2 - (agentWindow.x + agentWindow.width / 2) * canvas.scale,
+      y: viewH / 2 - (agentWindow.y + agentWindow.height / 2) * canvas.scale,
+    })
+  },
+
+  snapToAgentWindow(id, options) {
+    const state = get()
+    const agentWindow = state.agentWindows.find((entry) => entry.id === id)
+    if (!agentWindow) return
+
+    const shouldBringToFront = id !== state.focusedAgentWindowId
+    const nextTopZIndex = shouldBringToFront ? state.topZIndex + 1 : state.topZIndex
+    const focusHistory = pushFocusHistory(state.focusHistory, id)
+    const focusCounts = shouldBringToFront
+      ? { ...state.focusCounts, [id]: (state.focusCounts[id] ?? 0) + 1 }
+      : state.focusCounts
+    const viewW = window.innerWidth
+    const viewH = window.innerHeight - STATUS_BAR_HEIGHT
+    const scale = options?.keepScale
+      ? state.canvas.scale
+      : Math.min(
+          viewW / (agentWindow.width + TERMINAL_PAD * 2),
+          viewH / (agentWindow.height + TERMINAL_PAD * 2),
+          1,
+        )
+
+    set({
+      agentWindows: shouldBringToFront
+        ? state.agentWindows.map((entry) =>
+            entry.id === id ? { ...entry, zIndex: nextTopZIndex } : entry,
+          )
+        : state.agentWindows,
+      focusedTerminalId: null,
+      focusedBrowserId: null,
+      focusedAgentWindowId: id,
+      snapPaused: false,
+      snapFast: true,
+      focusHistory,
+      focusCounts,
+      topZIndex: nextTopZIndex,
+      canvas: {
+        x: viewW / 2 - (agentWindow.x + agentWindow.width / 2) * scale,
+        y: viewH / 2 - (agentWindow.y + agentWindow.height / 2) * scale,
+        scale,
+      },
+    })
+    debouncedPersist(() => get().persist())
+  },
+
+  syncAgentWindow(id, patch) {
+    set((s) =>
+      mapAgentWindowsEverywhere(s.agentWindows, s.projects, id, (agentWindow) => ({
+        ...agentWindow,
+        ...patch,
+      })),
+    )
+    debouncedPersist(() => get().persist())
+  },
+
+  // ---- Browser actions ----
+
+  addBrowser() {
+    const id = nanoid(8)
+    const newZ = get().topZIndex + 1
+    const { terminals, browsers, agentWindows, focusHistory } = get()
+
+    const width = window.innerWidth - TERMINAL_PAD * 2
+    const height = window.innerHeight - STATUS_BAR_HEIGHT - TERMINAL_PAD * 2
+
+    // Place to the right of all nodes
+    let x = TERMINAL_PAD
+    const y = TERMINAL_PAD
+    const allRightEdges = [
+      ...terminals.map((t) => t.x + t.width),
+      ...browsers.map((b) => b.x + b.width),
+      ...agentWindows.map((agentWindow) => agentWindow.x + agentWindow.width),
     ]
     if (allRightEdges.length > 0) {
       x = Math.max(...allRightEdges) + TERMINAL_GAP
@@ -3044,12 +3618,18 @@ export const useStore = create<StoreState>((set, get) => ({
       topZIndex: newZ,
       focusedTerminalId: null,
       focusedBrowserId: id,
+      focusedAgentWindowId: null,
       focusHistory: pushFocusHistory(focusHistory, id),
     }))
     if (get().autoArrangeOnCreate) {
       get().autoArrangeGrid(true)
       // Stay focused on the new browser — no overview zoom
-      set({ focusedTerminalId: null, focusedBrowserId: id, canvas: { ...get().canvas, scale: 1 } })
+      set({
+        focusedTerminalId: null,
+        focusedBrowserId: id,
+        focusedAgentWindowId: null,
+        canvas: { ...get().canvas, scale: 1 },
+      })
       const s = get().canvas.scale
       get().setCanvasTransform({
         x: TERMINAL_PAD - browser.x * s,
@@ -3119,7 +3699,12 @@ export const useStore = create<StoreState>((set, get) => ({
       return
     }
     if (wasFocused) {
-      const previousId = getPreviousWindowId(history, state.terminals, remaining)
+      const previousId = getPreviousWindowId(
+        history,
+        state.terminals,
+        remaining,
+        state.agentWindows,
+      )
       if (previousId) {
         if (state.terminals.some((terminal) => terminal.id === previousId)) {
           const nextHistory = pushFocusHistory(history, previousId)
@@ -3127,21 +3712,33 @@ export const useStore = create<StoreState>((set, get) => ({
           set({
             focusedTerminalId: previousId,
             focusedBrowserId: null,
+            focusedAgentWindowId: null,
             focusHistory: nextHistory,
           })
           get().panToTerminal(previousId)
+        } else if (state.agentWindows.some((agentWindow) => agentWindow.id === previousId)) {
+          const nextHistory = pushFocusHistory(history, previousId)
+          get().bringAgentWindowToFront(previousId)
+          set({
+            focusedTerminalId: null,
+            focusedBrowserId: null,
+            focusedAgentWindowId: previousId,
+            focusHistory: nextHistory,
+          })
+          get().panToAgentWindow(previousId)
         } else {
           const nextHistory = pushFocusHistory(history, previousId)
           get().bringBrowserToFront(previousId)
           set({
             focusedTerminalId: null,
             focusedBrowserId: previousId,
+            focusedAgentWindowId: null,
             focusHistory: nextHistory,
           })
           get().panToBrowser(previousId)
         }
       } else {
-        set({ focusedTerminalId: null })
+        set({ focusedTerminalId: null, focusedAgentWindowId: null })
       }
     }
     get().persist()
@@ -3204,11 +3801,12 @@ export const useStore = create<StoreState>((set, get) => ({
       set({
         focusedTerminalId: null,
         focusedBrowserId: id,
+        focusedAgentWindowId: null,
         focusHistory: history,
         focusCounts: counts,
       })
     } else {
-      set({ focusedTerminalId: null, focusedBrowserId: id })
+      set({ focusedTerminalId: null, focusedBrowserId: id, focusedAgentWindowId: null })
     }
     if (id && id !== prev && get().snapOnFocus) {
       get().snapToBrowser(id)
@@ -3239,6 +3837,7 @@ export const useStore = create<StoreState>((set, get) => ({
         : state.browsers,
       focusedTerminalId: null,
       focusedBrowserId: id,
+      focusedAgentWindowId: null,
       snapPaused: false,
       snapFast: true,
       focusHistory,

@@ -1,10 +1,10 @@
-import type { BrowserNode, TerminalNode, TerminalRuntimeStatus } from '../types'
+import type { AgentWindowNode, BrowserNode, TerminalNode, TerminalRuntimeStatus } from '../types'
 
 export type CanvasDirection = 'left' | 'right' | 'up' | 'down'
 
 export interface CanvasWindow {
   id: string
-  type: 'terminal' | 'browser'
+  type: 'terminal' | 'browser' | 'agent'
   title: string
   x: number
   y: number
@@ -28,6 +28,7 @@ export const STATUS_BAR_HEIGHT = 40
 export function getCanvasWindows(
   terminals: TerminalNode[],
   browsers: BrowserNode[],
+  agentWindows: AgentWindowNode[] = [],
 ): CanvasWindow[] {
   return [
     ...terminals.map((terminal, index) => ({
@@ -52,6 +53,17 @@ export function getCanvasWindows(
       height: browser.height,
       zIndex: browser.zIndex ?? index + 1,
       faviconUrl: browser.faviconUrl,
+    })),
+    ...agentWindows.map((agentWindow, index) => ({
+      id: agentWindow.id,
+      type: 'agent' as const,
+      title: agentWindow.customTitle || agentWindow.title,
+      x: agentWindow.x,
+      y: agentWindow.y,
+      width: agentWindow.width,
+      height: agentWindow.height,
+      zIndex: agentWindow.zIndex ?? index + 1,
+      agent: agentWindow.agent,
     })),
   ]
 }

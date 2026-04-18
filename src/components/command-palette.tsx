@@ -65,8 +65,6 @@ import { hapticNudge, hapticSuccess } from '@/lib/haptics'
 const AGENT_OPTIONS = [
   { id: 'claude', label: 'Claude Code' },
   { id: 'codex', label: 'Codex' },
-  { id: 'opencode', label: 'OpenCode' },
-  { id: 'pi', label: 'Pi' },
 ] as const
 
 interface Attachment {
@@ -130,6 +128,12 @@ function buildAgentCommand(
   }
 }
 
+function buildDirectAgentPrompt(prompt: string, attachments: Attachment[] = []) {
+  const filePaths = attachments.map((attachment) => `[${attachment.path}]`).join(' ')
+  if (!filePaths) return prompt
+  return prompt ? `${prompt}\n\n${filePaths}` : filePaths
+}
+
 function launchAgentAction(
   id: string,
   label: string,
@@ -160,8 +164,40 @@ function launchAgentAction(
   useStore.getState().setLastUsedAgent(id)
   useStore.getState().setLastCommandAction('agent')
   useStore.getState().trackCommandAction(`agent-${id}`)
-  const cmd = useStore.getState().getAgentCommand(id)
   const prompt = stripPrefix(searchText.trim())
+  const directPrompt = buildDirectAgentPrompt(prompt, attachments)
+
+  if (id === 'claude' || id === 'codex') {
+    const openWindow = (cwd: string | null) => {
+      useStore.getState().addAgentWindow(id, {
+        title: label,
+        cwd,
+        initialPrompt: directPrompt || null,
+      })
+    }
+
+    if (!inWorktree) {
+      openWindow(useStore.getState().getActiveProjectPath() ?? null)
+      return
+    }
+
+    const tempBranch = `cells-${Date.now().toString(36)}`
+    useStore
+      .getState()
+      .createWorktree(tempBranch)
+      .then((wt) => {
+        openWindow(wt.path)
+      })
+      .catch((err) => {
+        showToast(
+          `Worktree failed, launching without it: ${err instanceof Error ? err.message : err}`,
+        )
+        openWindow(useStore.getState().getActiveProjectPath() ?? null)
+      })
+    return
+  }
+
+  const cmd = useStore.getState().getAgentCommand(id)
   const initialCommand = buildAgentCommand(id, cmd, prompt, attachments, {
     claudeSessionId: id === 'claude' ? crypto.randomUUID() : null,
   })
@@ -378,6 +414,7 @@ export function CommandPalette() {
   }, [cmdkValue])
   const terminals = useStore((s) => s.terminals)
   const browsers = useStore((s) => s.browsers)
+  const agentWindows = useStore((s) => s.agentWindows)
   const terminalTheme = useStore((s) => s.terminalTheme)
   const projects = useStore((s) => s.projects)
   const activeProjectId = useStore((s) => s.activeProjectId)
@@ -392,7 +429,14 @@ export function CommandPalette() {
   const focusedTerminalId = useStore((s) => s.focusedTerminalId)
   const selectionMode = useStore((s) => s.selectionMode)
   const selectedNodeIds = useStore((s) => s.selectedNodeIds)
-  const availableAgents = AGENT_OPTIONS.filter(({ id }) => agents[id])
+  // Always surface all supported agents — the detection heuristic occasionally
+  // misses binaries (e.g. flaky login shell PATH). If the CLI is missing the
+  // user still sees the row, so the fix is visible: install + retry.
+  const availableAgents = AGENT_OPTIONS.map(({ id, label }) => ({
+    id,
+    label,
+    detected: agents[id] === true,
+  }))
   const wordCount = search.trim().split(/\s+/).filter(Boolean).length
   const isPromptMode = wordCount > 10
   // Determine which catch-all group appears at the bottom (closest to input = default selected).
@@ -434,6 +478,41 @@ export function CommandPalette() {
         : shellHistory.slice(0, 15)
       return filtered.length > 0
     })()
+
+  // Does the current search match any "real" item (terminal, browser, project,
+  // agent window, worktree, or one of the fixed actions)? If yes, we suppress
+  // the catch-all "Search for" / "Run in Terminal" fallbacks — they exist to
+  // give the user something to click when nothing else matches, but if an
+  // actual palette item lines up with the query, we don't need the noise.
+  const hasCoreMatches = (() => {
+    const q = search.trim().toLowerCase()
+    if (!q) return true // empty search → show the idle palette, not fallbacks
+    const fuzzyMatch = (value: string) => {
+      const v = value.toLowerCase()
+      if (v.includes(q)) return true
+      let j = 0
+      for (let i = 0; i < v.length && j < q.length; i += 1) {
+        if (v[i] === q[j]) j += 1
+      }
+      return j === q.length
+    }
+    const candidates: string[] = [
+      ...terminals.map((t) => t.customTitle || t.title || ''),
+      ...browsers.map((b) => `${b.title ?? ''} ${b.url ?? ''}`),
+      ...agentWindows.map((a) => a.customTitle || a.title || ''),
+      ...projects.map((p) => p.name || ''),
+      ...availableAgents.map(({ label }) => `New ${label} window`),
+      // Fixed Actions entries — keep aligned with the Actions CommandGroup
+      // below (Quit/Kill/New Project/Install MCP/Extensions/Settings).
+      'Quit Cells',
+      'Kill All Processes',
+      'New Project',
+      'Install MCP Server',
+      'Manage Extensions',
+      'Settings',
+    ]
+    return candidates.some((label) => label && fuzzyMatch(label))
+  })()
 
   const addAttachments = useCallback(async (paths: string[]) => {
     const newAttachments = paths.map((p) => ({
@@ -734,42 +813,51 @@ export function CommandPalette() {
 
     return (
       <CommandGroup heading="AI Agents" forceMount>
-        {sortedAgents.map(({ id, label }) => (
-          <CommandItem
-            key={id}
-            forceMount
-            value={`agent-${id}-${getAgentCommandLabel(id)}`}
-            onSelect={() => {
-              runAction(() => {
-                launchAgentAction(id, label, false, search, attachments)
-              })
-            }}
-            onMetaSelect={() => {
-              runAction(() => {
-                launchAgentAction(id, label, true, search, attachments)
-              })
-            }}
-          >
-            <AgentIcon agent={id} className="text-muted-foreground" size={16} />
-            <span className="truncate">
-              {search.trim() && attachments.length > 0
-                ? `Ask ${label} with ${attachments.length} file${attachments.length > 1 ? 's' : ''}: "${search.trim().slice(0, 40)}"`
-                : search.trim()
-                  ? `Ask ${label}: "${search.trim().slice(0, 50)}"`
-                  : attachments.length > 0
-                    ? `Send ${attachments.length} file${attachments.length > 1 ? 's' : ''} to ${label}`
-                    : `New ${label} Terminal`}
-            </span>
-            {sortedAgents.length > 1 && id === sortedAgents[sortedAgents.length - 1].id && (
-              <span className="ml-auto text-[10px] text-muted-foreground/40">
-                {(commandActionCounts[`agent-${id}`] ?? 0) > 0 ? 'most used' : 'recent'}
+        {sortedAgents.map((entry) => {
+          const { id, label } = entry
+          const detected =
+            'detected' in entry ? (entry as { detected: boolean }).detected : agents[id] === true
+          return (
+            <CommandItem
+              key={id}
+              forceMount
+              value={`agent-${id}-${getAgentCommandLabel(id)}`}
+              onSelect={() => {
+                runAction(() => {
+                  launchAgentAction(id, label, false, search, attachments)
+                })
+              }}
+              onMetaSelect={() => {
+                runAction(() => {
+                  launchAgentAction(id, label, true, search, attachments)
+                })
+              }}
+            >
+              <AgentIcon agent={id} className="text-muted-foreground" size={16} />
+              <span className="truncate">
+                {search.trim() && attachments.length > 0
+                  ? `Ask ${label} with ${attachments.length} file${attachments.length > 1 ? 's' : ''}: "${search.trim().slice(0, 40)}"`
+                  : search.trim()
+                    ? `Ask ${label}: "${search.trim().slice(0, 50)}"`
+                    : attachments.length > 0
+                      ? `Send ${attachments.length} file${attachments.length > 1 ? 's' : ''} to ${label}`
+                      : id === 'claude' || id === 'codex'
+                        ? `New ${label} window`
+                        : `New ${label} Terminal`}
               </span>
-            )}
-            {isGitRepo && cmdHeld && (
-              <GitBranch className="absolute right-2 size-3.5 text-muted-foreground/50" />
-            )}
-          </CommandItem>
-        ))}
+              {!detected ? (
+                <span className="ml-auto text-[10px] text-amber-400/80">CLI not detected</span>
+              ) : sortedAgents.length > 1 && id === sortedAgents[sortedAgents.length - 1].id ? (
+                <span className="ml-auto text-[10px] text-muted-foreground/40">
+                  {(commandActionCounts[`agent-${id}`] ?? 0) > 0 ? 'most used' : 'recent'}
+                </span>
+              ) : null}
+              {isGitRepo && cmdHeld && (
+                <GitBranch className="absolute right-2 size-3.5 text-muted-foreground/50" />
+              )}
+            </CommandItem>
+          )
+        })}
         {branchTargets.map((target) => (
           <CommandItem
             key={`branch-${target.id}`}
@@ -1140,6 +1228,10 @@ export function CommandPalette() {
                         .map((group) => {
                           if (group === 'search') {
                             if (!search.trim()) return null
+                            // Only show "Search for X" when nothing else in the
+                            // palette matches — it's a fallback, not the main
+                            // affordance. Matches Raycast-style behaviour.
+                            if (hasCoreMatches) return null
                             return (
                               <React.Fragment key="search">
                                 <CommandSeparator />
@@ -1169,6 +1261,9 @@ export function CommandPalette() {
                           }
                           if (group === 'run') {
                             if (!search.trim()) return null
+                            // Same as "Search for" — this is a fallback, so
+                            // hide it once any real item matches.
+                            if (hasCoreMatches) return null
                             return (
                               <React.Fragment key="run">
                                 <CommandSeparator />
@@ -1320,6 +1415,35 @@ export function CommandPalette() {
                 )
               },
             )}
+
+            {availableAgents.length > 0 && attachments.length === 0 ? (
+              <>
+                <CommandSeparator />
+                <CommandGroup heading="Start a session">
+                  {sortedAgents.map(({ id, label }) => (
+                    <CommandItem
+                      key={`new-agent-${id}`}
+                      value={`new ${label} window agent session ${id}`}
+                      onSelect={() => {
+                        runAction(() => {
+                          useStore.getState().addAgentWindow(id, {
+                            title: label,
+                            cwd: useStore.getState().getActiveProjectPath() ?? null,
+                            initialPrompt: null,
+                          })
+                        })
+                      }}
+                    >
+                      <AgentIcon agent={id} className="text-muted-foreground" size={16} />
+                      <span className="truncate">New {label} window</span>
+                      <span className="ml-auto text-[10px] text-muted-foreground/40">
+                        agent session
+                      </span>
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              </>
+            ) : null}
           </CommandList>
           {/* Always render the hint container when agents are available to avoid
               layout shift — cmdk briefly resets selection on every keystroke, so

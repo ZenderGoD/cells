@@ -10,6 +10,9 @@ import {
   Globe,
   LayoutGrid,
   Download,
+  Eye,
+  EyeOff,
+  Folder,
   Loader2,
   Magnet,
   ArrowUpRight,
@@ -75,6 +78,7 @@ function ProjectTab({
   isActive,
   projectWindowCount,
   switchProject,
+  setProjectTitleBarHidden,
   requestCloseProject,
   allWindows,
   titleBarOverviewWidth,
@@ -84,14 +88,17 @@ function ProjectTab({
   viewportRect,
   snapToTerminal,
   snapToBrowser,
+  snapToAgentWindow,
   moveTerminal,
   moveBrowser,
+  moveAgentWindow,
   attention,
 }: {
-  project: { id: string; name: string }
+  project: { id: string; name: string; hiddenFromTitleBar?: boolean }
   isActive: boolean
   projectWindowCount: number
   switchProject: (id: string) => void
+  setProjectTitleBarHidden: (id: string, hidden: boolean) => void
   requestCloseProject: (id: string) => Promise<void>
   allWindows: import('@/lib/canvas-navigation').CanvasWindow[]
   titleBarOverviewWidth: number
@@ -101,34 +108,77 @@ function ProjectTab({
   viewportRect: import('@/lib/canvas-navigation').CanvasRect | undefined
   snapToTerminal: (id: string) => void
   snapToBrowser: (id: string) => void
+  snapToAgentWindow: (id: string) => void
   moveTerminal: (id: string, x: number, y: number) => void
   moveBrowser: (id: string, x: number, y: number) => void
+  moveAgentWindow: (id: string, x: number, y: number) => void
   attention: ProjectAttention
 }) {
   const dragControls = useDragControls()
+  const itemRef = useRef<HTMLDivElement | null>(null)
+  const [menuOpen, setMenuOpen] = useState(false)
+
+  useEffect(() => {
+    if (!menuOpen) return
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target
+      if (target instanceof Node && itemRef.current?.contains(target)) return
+      setMenuOpen(false)
+    }
+
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setMenuOpen(false)
+      }
+    }
+
+    window.addEventListener('pointerdown', handlePointerDown, true)
+    window.addEventListener('keydown', handleKeyDown, true)
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDown, true)
+      window.removeEventListener('keydown', handleKeyDown, true)
+    }
+  }, [menuOpen])
 
   return (
     <Reorder.Item
       value={project}
       as="div"
+      ref={itemRef}
       dragControls={dragControls}
       dragListener={false}
-      className={cn('group relative flex items-center border-r border-border/30 shrink-0')}
+      className={cn('relative flex items-center border-r border-border/30 shrink-0')}
       whileDrag={{ opacity: 0.5, scale: 0.98 }}
       transition={{ type: 'spring', stiffness: 300, damping: 30 }}
     >
       <button
         onClick={() => {
           hapticNudge()
+          if (isActive) {
+            setMenuOpen((open) => !open)
+            return
+          }
+          setMenuOpen(false)
           switchProject(project.id)
         }}
-        onPointerDown={(e) => dragControls.start(e)}
+        onContextMenu={(event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          hapticNudge()
+          setMenuOpen(true)
+        }}
+        onPointerDown={(event) => {
+          if (event.button !== 0) return
+          dragControls.start(event)
+        }}
         className={cn(
-          'flex h-full items-center gap-2 px-4 pr-8 transition-colors cursor-grab active:cursor-grabbing',
+          'flex h-full items-center gap-2 px-4 transition-colors cursor-grab active:cursor-grabbing',
           isActive
             ? 'text-foreground bg-white/40 dark:bg-black/35'
             : 'text-muted-foreground/50 hover:text-muted-foreground hover:bg-white/15 dark:hover:bg-muted/30',
         )}
+        title={isActive ? `${project.name} actions` : project.name}
       >
         <span className="text-[11px] font-medium truncate max-w-28">{project.name}</span>
         {projectWindowCount > 0 && (
@@ -154,24 +204,42 @@ function ProjectTab({
           />
         )}
       </button>
-      <button
-        type="button"
-        onClick={(event) => {
-          event.preventDefault()
-          event.stopPropagation()
-          hapticBuzz()
-          void requestCloseProject(project.id)
-        }}
-        className={cn(
-          'absolute top-1/2 right-1 z-10 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground/30 transition-all hover:bg-muted/60 hover:text-foreground',
-          isActive
-            ? 'opacity-100'
-            : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100',
-        )}
-        title={`Close ${project.name}`}
-      >
-        <X className="h-3 w-3" />
-      </button>
+      {menuOpen ? (
+        <div className="absolute right-1 top-[calc(100%+4px)] z-20 min-w-36 rounded-lg border border-border/40 bg-popover/95 p-1 shadow-md backdrop-blur no-drag">
+          <button
+            type="button"
+            onClick={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              setMenuOpen(false)
+              hapticNudge()
+              setProjectTitleBarHidden(project.id, !project.hiddenFromTitleBar)
+            }}
+            className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-[11px] text-popover-foreground transition-colors hover:bg-muted/60"
+          >
+            {project.hiddenFromTitleBar ? (
+              <Eye className="h-3 w-3 text-muted-foreground" />
+            ) : (
+              <EyeOff className="h-3 w-3 text-muted-foreground" />
+            )}
+            <span>{project.hiddenFromTitleBar ? 'Show in title bar' : 'Hide from title bar'}</span>
+          </button>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              setMenuOpen(false)
+              hapticBuzz()
+              void requestCloseProject(project.id)
+            }}
+            className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-[11px] text-popover-foreground transition-colors hover:bg-muted/60"
+          >
+            <X className="h-3 w-3 text-muted-foreground" />
+            <span>Close project</span>
+          </button>
+        </div>
+      ) : null}
       <AnimatePresence>
         {isActive && allWindows.length > 0 && (
           <motion.div
@@ -202,11 +270,17 @@ function ProjectTab({
                   snapToBrowser(window.id)
                   return
                 }
+                if (window.type === 'agent') {
+                  snapToAgentWindow(window.id)
+                  return
+                }
                 snapToTerminal(window.id)
               }}
               onMove={(window, x, y) => {
                 if (window.type === 'browser') {
                   moveBrowser(window.id, x, y)
+                } else if (window.type === 'agent') {
+                  moveAgentWindow(window.id, x, y)
                 } else {
                   moveTerminal(window.id, x, y)
                 }
@@ -225,11 +299,14 @@ export function StatusBar() {
   const addBrowser = useStore((s) => s.addBrowser)
   const requestCloseWindow = useStore((s) => s.requestCloseWindow)
   const requestCloseProject = useStore((s) => s.requestCloseProject)
+  const setProjectTitleBarHidden = useStore((s) => s.setProjectTitleBarHidden)
   const windowCount = useStore((s) => s.terminals.length + s.browsers.length)
   const terminals = useStore((s) => s.terminals)
   const browsers = useStore((s) => s.browsers)
+  const agentWindows = useStore((s) => s.agentWindows)
   const canvas = useStore((s) => s.canvas)
   const focusedTerminalId = useStore((s) => s.focusedTerminalId)
+  const focusedAgentWindowId = useStore((s) => s.focusedAgentWindowId)
   const focusedBrowser = useStore((s) =>
     s.focusedBrowserId ? s.browsers.find((b) => b.id === s.focusedBrowserId) : undefined,
   )
@@ -251,15 +328,21 @@ export function StatusBar() {
       return s.browsers.find((b) => b.id === s.focusedBrowserId)?.pinned ?? false
     return false
   })
-  const hasFocusedWindow = useStore((s) => !!(s.focusedTerminalId || s.focusedBrowserId))
+  const hasFocusedWindow = useStore(
+    (s) => !!(s.focusedTerminalId || s.focusedBrowserId || s.focusedAgentWindowId),
+  )
+  const syncAgentWindow = useStore((s) => s.syncAgentWindow)
+  const [editingTitleForAgentId, setEditingTitleForAgentId] = useState<string | null>(null)
   const zoomToFitAll = useStore((s) => s.zoomToFitAll)
   const autoArrangeGrid = useStore((s) => s.autoArrangeGrid)
   const autoArrangeOnCreate = useStore((s) => s.autoArrangeOnCreate)
   const setAutoArrangeOnCreate = useStore((s) => s.setAutoArrangeOnCreate)
   const snapToTerminal = useStore((s) => s.snapToTerminal)
   const snapToBrowser = useStore((s) => s.snapToBrowser)
+  const snapToAgentWindow = useStore((s) => s.snapToAgentWindow)
   const moveTerminal = useStore((s) => s.moveTerminal)
   const moveBrowser = useStore((s) => s.moveBrowser)
+  const moveAgentWindow = useStore((s) => s.moveAgentWindow)
   const focusedBrowserId = useStore((s) => s.focusedBrowserId)
   const closeUndoTimeoutMs = useStore((s) => s.closeUndoTimeoutMs)
   const restoreLastClosedWindow = useStore((s) => s.restoreLastClosedWindow)
@@ -327,7 +410,7 @@ export function StatusBar() {
   }, [refreshExtensions])
   const copyResetRef = useRef<number | null>(null)
   const showCopied = !!focusedBrowser?.url && copiedBrowserId === focusedBrowser.id
-  const allWindows = getCanvasWindows(terminals, browsers)
+  const allWindows = getCanvasWindows(terminals, browsers, agentWindows)
   const viewportRect = getViewportRect(canvas)
   const overviewBounds = getCanvasBounds([viewportRect, ...allWindows])
   const titleBarOverviewHeight = 38
@@ -341,12 +424,17 @@ export function StatusBar() {
   const focusedWindow =
     (focusedTerminalId
       ? allWindows.find((window) => window.id === focusedTerminalId)
-      : allWindows.find((window) => window.id === focusedBrowserId)) ?? null
+      : focusedBrowserId
+        ? allWindows.find((window) => window.id === focusedBrowserId)
+        : allWindows.find((window) => window.id === focusedAgentWindowId)) ?? null
   const overviewAnchor = focusedWindow ?? getClosestWindow(allWindows, viewportCenter) ?? null
   const latestClosedWindow =
     pendingClosedWindows.find((entry) => entry.projectId === activeProjectId) ?? null
   const latestClosedProject = pendingClosedProjects[0] ?? null
   const [undoNow, setUndoNow] = useState(() => Date.now())
+  const visibleProjects = projects.filter(
+    (project) => !project.hiddenFromTitleBar || project.id === activeProjectId,
+  )
   const undoSecondsLeft = latestClosedWindow
     ? Math.max(0, Math.ceil((latestClosedWindow.expiresAt - undoNow) / 1000))
     : 0
@@ -356,10 +444,20 @@ export function StatusBar() {
 
   // --- Project tab drag-to-reorder ---
   const handleReorder = useCallback(
-    (reordered: typeof projects) => {
-      reorderProjects(reordered.map((p) => p.id))
+    (reordered: typeof visibleProjects) => {
+      const reorderedVisibleIds = reordered.map((project) => project.id)
+      let visibleIndex = 0
+      const mergedIds = projects.map((project) => {
+        if (project.hiddenFromTitleBar && project.id !== activeProjectId) {
+          return project.id
+        }
+        const reorderedId = reorderedVisibleIds[visibleIndex]
+        visibleIndex += 1
+        return reorderedId ?? project.id
+      })
+      reorderProjects(mergedIds)
     },
-    [reorderProjects],
+    [activeProjectId, projects, reorderProjects, visibleProjects],
   )
 
   const openUrlBar = () => {
@@ -552,12 +650,12 @@ export function StatusBar() {
         <Reorder.Group
           as="div"
           axis="x"
-          values={projects}
+          values={visibleProjects}
           onReorder={handleReorder}
           ref={tabsRef}
           className="flex items-stretch overflow-x-auto scrollbar-none no-drag shrink-0"
         >
-          {projects.map((project) => {
+          {visibleProjects.map((project) => {
             const isActive = project.id === activeProjectId
             const projectWindowCount = isActive
               ? windowCount
@@ -573,6 +671,7 @@ export function StatusBar() {
                 isActive={isActive}
                 projectWindowCount={projectWindowCount}
                 switchProject={switchProject}
+                setProjectTitleBarHidden={setProjectTitleBarHidden}
                 requestCloseProject={requestCloseProject}
                 allWindows={allWindows}
                 titleBarOverviewWidth={titleBarOverviewWidth}
@@ -582,8 +681,10 @@ export function StatusBar() {
                 viewportRect={viewportRect}
                 snapToTerminal={snapToTerminal}
                 snapToBrowser={snapToBrowser}
+                snapToAgentWindow={snapToAgentWindow}
                 moveTerminal={moveTerminal}
                 moveBrowser={moveBrowser}
+                moveAgentWindow={moveAgentWindow}
                 attention={attention}
               />
             )
@@ -828,6 +929,107 @@ export function StatusBar() {
                     </button>
                   </div>
                 ) : null}
+              </div>
+            )
+          })()
+        ) : focusedAgentWindowId ? (
+          (() => {
+            const aw = agentWindows.find((a) => a.id === focusedAgentWindowId)
+            if (!aw) return <div className="flex-1" />
+            const awTitle =
+              aw.customTitle || aw.title || (aw.agent === 'claude' ? 'Claude Code' : 'Codex')
+            const awStatus = aw.status || 'idle'
+            const isEditingAgentTitle = editingTitleForAgentId === focusedAgentWindowId
+            const awStatusPill =
+              awStatus === 'running'
+                ? {
+                    label: 'Running',
+                    pillClass: 'border-emerald-400/25 bg-emerald-500/10 text-emerald-300',
+                    dotClass: 'bg-emerald-400 animate-pulse',
+                  }
+                : awStatus === 'error'
+                  ? {
+                      label: 'Error',
+                      pillClass: 'border-red-400/25 bg-red-500/10 text-red-300',
+                      dotClass: 'bg-red-400',
+                    }
+                  : {
+                      label: 'Idle',
+                      pillClass: 'border-border/30 bg-muted/40 text-muted-foreground/80',
+                      dotClass: 'bg-muted-foreground/50',
+                    }
+            return (
+              <div className="flex-1 flex items-center gap-2 px-3 min-w-0 no-drag">
+                <AgentIcon agent={aw.agent} className="h-3 w-3 shrink-0" size={12} />
+                {isEditingAgentTitle ? (
+                  <input
+                    ref={titleInputRef}
+                    className="text-[11px] font-medium text-muted-foreground bg-transparent border-b border-muted-foreground/40 outline-none min-w-0 flex-1 max-w-48"
+                    value={editTitleValue}
+                    onChange={(e) => setEditTitleValue(e.target.value)}
+                    onBlur={() => {
+                      setEditingTitleForAgentId(null)
+                      const trimmed = editTitleValue.trim()
+                      syncAgentWindow(focusedAgentWindowId, {
+                        customTitle: trimmed || null,
+                      })
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        e.currentTarget.blur()
+                      } else if (e.key === 'Escape') {
+                        e.preventDefault()
+                        setEditingTitleForAgentId(null)
+                      }
+                    }}
+                  />
+                ) : (
+                  <span
+                    className="text-[11px] font-medium truncate min-w-0 text-muted-foreground cursor-text"
+                    onDoubleClick={(event) => {
+                      event.preventDefault()
+                      event.stopPropagation()
+                      setEditTitleValue(awTitle)
+                      setEditingTitleForAgentId(focusedAgentWindowId)
+                      requestAnimationFrame(() => {
+                        titleInputRef.current?.focus()
+                        titleInputRef.current?.select()
+                      })
+                    }}
+                    title="Double-click to rename"
+                  >
+                    {awTitle}
+                  </span>
+                )}
+                {aw.cwd ? (
+                  <span
+                    className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border/30 bg-muted/30 px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground/80"
+                    title={aw.cwd}
+                  >
+                    <Folder className="h-2.5 w-2.5" />
+                    <span className="max-w-40 truncate">{aw.cwd.replace(/^.*\//, '')}</span>
+                  </span>
+                ) : null}
+                <span
+                  className={cn(
+                    'inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] leading-none',
+                    awStatusPill.pillClass,
+                  )}
+                  title={awStatusPill.label}
+                >
+                  <span className={cn('h-1.5 w-1.5 rounded-full', awStatusPill.dotClass)} />
+                  <span>{awStatusPill.label}</span>
+                </span>
+                <button
+                  className="p-1 rounded text-muted-foreground/40 hover:text-foreground hover:bg-muted/40 transition-colors shrink-0"
+                  onClick={() =>
+                    void requestCloseWindow({ id: focusedAgentWindowId, type: 'agent' })
+                  }
+                  title="Close Agent Window"
+                >
+                  <X className="w-3 h-3" />
+                </button>
               </div>
             )
           })()

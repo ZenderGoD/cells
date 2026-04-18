@@ -7,6 +7,7 @@ import {
   OSC8LinkProvider,
   CanvasRenderer,
   CellFlags,
+  SelectionManager,
 } from 'ghostty-web'
 import type { ILinkProvider } from 'ghostty-web'
 
@@ -67,11 +68,30 @@ type MouseCellPosition = {
   y: number
 }
 
+type GhosttySelectionEndpoint = {
+  col: number
+  absoluteRow: number
+  __cellsAnchorAfter?: boolean
+}
+
+type TerminalCopyOptions = {
+  writeToClipboard?: boolean
+  clearSelection?: boolean
+  allowBackendNativeCopy?: boolean
+}
+
+type TerminalCopyResult = {
+  handled: boolean
+  selection: string | null
+  clearSelection: () => void
+}
+
 function patchGhosttyRenderer() {
   if (ghosttyRendererPatched) return
   ghosttyRendererPatched = true
 
   const proto = CanvasRenderer.prototype as any
+  const selectionProto = SelectionManager.prototype as any
   const originalRenderCursor = proto.renderCursor
   const originalRenderCellText = proto.renderCellText
 
@@ -111,6 +131,52 @@ function patchGhosttyRenderer() {
     // Zellij/Codex uses dim styling more aggressively than tmux/native Ghostty.
     // ghostty-web's default 0.5 opacity makes those rows look washed out.
     return theme.__cellsBackend === 'zellij' ? 0.78 : 0.5
+  }
+
+  function compareSelectionEndpoints(
+    left: GhosttySelectionEndpoint,
+    right: GhosttySelectionEndpoint,
+  ) {
+    if (left.absoluteRow !== right.absoluteRow) {
+      return left.absoluteRow - right.absoluteRow
+    }
+    return left.col - right.col
+  }
+
+  function advanceSelectionAnchor(col: number, absoluteRow: number, cols: number) {
+    const nextCol = col + 1
+    if (nextCol < cols) return { col: nextCol, absoluteRow }
+    return { col: 0, absoluteRow: absoluteRow + 1 }
+  }
+
+  function getAdjustedSelectionRange(manager: any) {
+    const rawStart = manager.selectionStart as GhosttySelectionEndpoint | null
+    const rawEnd = manager.selectionEnd as GhosttySelectionEndpoint | null
+    if (!rawStart || !rawEnd) return null
+
+    let start = rawStart
+    let end = rawEnd
+    if (compareSelectionEndpoints(start, end) > 0) {
+      ;[start, end] = [end, start]
+    }
+
+    if (start.__cellsAnchorAfter) {
+      const dimensions = manager.wasmTerm.getDimensions()
+      start = {
+        ...start,
+        ...advanceSelectionAnchor(start.col, start.absoluteRow, dimensions.cols),
+        __cellsAnchorAfter: false,
+      }
+    }
+
+    if (compareSelectionEndpoints(start, end) > 0) return null
+
+    return {
+      startCol: start.col,
+      startAbsoluteRow: start.absoluteRow,
+      endCol: end.col,
+      endAbsoluteRow: end.absoluteRow,
+    }
   }
 
   proto.renderCursor = function renderCursorPatched(this: any, x: number, y: number) {
@@ -207,6 +273,283 @@ function patchGhosttyRenderer() {
       this.ctx.lineTo(px + width, strikeY)
       this.ctx.stroke()
     }
+  }
+
+  selectionProto.pixelToCell = function patchedPixelToCell(this: any, x: number, y: number) {
+    const metrics = this.renderer.getMetrics()
+    const canvas = this.renderer.getCanvas()
+    const rect = canvas.getBoundingClientRect()
+    const dpr = window.devicePixelRatio || 1
+    const cssWidth = rect.width || canvas.clientWidth || canvas.width / dpr || 1
+    const cssHeight = rect.height || canvas.clientHeight || canvas.height / dpr || 1
+    const naturalWidth = canvas.width / dpr || cssWidth
+    const naturalHeight = canvas.height / dpr || cssHeight
+    const adjustedX = x * (naturalWidth / cssWidth)
+    const adjustedY = y * (naturalHeight / cssHeight)
+    const col = Math.floor(adjustedX / metrics.width)
+    const row = Math.floor(adjustedY / metrics.height)
+
+    return {
+      col: Math.max(0, Math.min(col, this.terminal.cols - 1)),
+      row: Math.max(0, Math.min(row, this.terminal.rows - 1)),
+    }
+  }
+
+  selectionProto.getSelection = function patchedGetSelection(this: any) {
+    const range = getAdjustedSelectionRange(this)
+    if (!range) return ''
+
+    const scrollbackLength = this.wasmTerm.getScrollbackLength()
+    let selectedText = ''
+
+    for (
+      let absoluteRow = range.startAbsoluteRow;
+      absoluteRow <= range.endAbsoluteRow;
+      absoluteRow += 1
+    ) {
+      let line = null
+      if (absoluteRow < scrollbackLength) {
+        line = this.wasmTerm.getScrollbackLine(absoluteRow)
+      } else {
+        line = this.wasmTerm.getLine(absoluteRow - scrollbackLength)
+      }
+      if (!line) continue
+
+      const startCol = absoluteRow === range.startAbsoluteRow ? range.startCol : 0
+      const endCol = absoluteRow === range.endAbsoluteRow ? range.endCol : line.length - 1
+      let rightmostNonWhitespaceIndex = -1
+      let rowText = ''
+
+      for (let col = startCol; col <= endCol; col += 1) {
+        const cell = line[col]
+        if (cell && cell.codepoint !== 0) {
+          let text: string
+          if (cell.grapheme_len > 0) {
+            if (absoluteRow < scrollbackLength) {
+              text = this.wasmTerm.getScrollbackGraphemeString(absoluteRow, col)
+            } else {
+              text = this.wasmTerm.getGraphemeString(absoluteRow - scrollbackLength, col)
+            }
+          } else {
+            text = String.fromCodePoint(cell.codepoint)
+          }
+          rowText += text
+          if (text.trim()) rightmostNonWhitespaceIndex = rowText.length
+        } else {
+          rowText += ' '
+        }
+      }
+
+      rowText =
+        rightmostNonWhitespaceIndex >= 0 ? rowText.slice(0, rightmostNonWhitespaceIndex) : ''
+      selectedText += rowText
+      if (absoluteRow < range.endAbsoluteRow) selectedText += '\n'
+    }
+
+    return selectedText
+  }
+
+  selectionProto.normalizeSelection = function patchedNormalizeSelection(this: any) {
+    const range = getAdjustedSelectionRange(this)
+    if (!range) return null
+
+    let startCol = range.startCol
+    let endCol = range.endCol
+    let startRow = this.absoluteRowToViewport(range.startAbsoluteRow)
+    let endRow = this.absoluteRowToViewport(range.endAbsoluteRow)
+    const dimensions = this.wasmTerm.getDimensions()
+    const lastVisibleRow = dimensions.rows - 1
+
+    if (endRow < 0 || startRow > lastVisibleRow) return null
+    if (startRow < 0) {
+      startRow = 0
+      startCol = 0
+    }
+    if (endRow > lastVisibleRow) {
+      endRow = lastVisibleRow
+      endCol = dimensions.cols - 1
+    }
+
+    return { startCol, startRow, endCol, endRow }
+  }
+
+  selectionProto.attachEventListeners = function patchedAttachEventListeners(this: any) {
+    const canvas = this.renderer.getCanvas()
+
+    canvas.addEventListener('mousedown', (event: MouseEvent) => {
+      if (event.button !== 0) return
+
+      canvas.parentElement?.focus()
+      const cell = this.pixelToCell(event.offsetX, event.offsetY)
+      if (this.hasSelection()) this.clearSelection()
+
+      const activeBuffer = this.terminal.buffer?.active
+      const anchorAfter =
+        activeBuffer != null &&
+        activeBuffer.cursorX === cell.col &&
+        activeBuffer.cursorY === cell.row
+      const absoluteRow = this.viewportRowToAbsolute(cell.row)
+      const anchor = {
+        col: cell.col,
+        absoluteRow,
+        __cellsAnchorAfter: anchorAfter,
+      }
+
+      this.selectionStart = anchor
+      this.selectionEnd = anchor
+      this.isSelecting = true
+    })
+
+    canvas.addEventListener('mousemove', (event: MouseEvent) => {
+      if (!this.isSelecting) return
+
+      this.markCurrentSelectionDirty()
+      const cell = this.pixelToCell(event.offsetX, event.offsetY)
+      this.selectionEnd = {
+        col: cell.col,
+        absoluteRow: this.viewportRowToAbsolute(cell.row),
+      }
+      this.requestRender()
+      this.updateAutoScroll(event.offsetY, canvas.clientHeight)
+    })
+
+    canvas.addEventListener('mouseleave', (event: MouseEvent) => {
+      if (!this.isSelecting) return
+
+      const rect = canvas.getBoundingClientRect()
+      if (event.clientY < rect.top) {
+        this.startAutoScroll(-1)
+      } else if (event.clientY > rect.bottom) {
+        this.startAutoScroll(1)
+      }
+    })
+
+    canvas.addEventListener('mouseenter', () => {
+      if (this.isSelecting) this.stopAutoScroll()
+    })
+
+    this.boundDocumentMouseMoveHandler = (event: MouseEvent) => {
+      if (!this.isSelecting) return
+
+      const rect = canvas.getBoundingClientRect()
+      const clampedX = Math.max(rect.left, Math.min(event.clientX, rect.right))
+      const clampedY = Math.max(rect.top, Math.min(event.clientY, rect.bottom))
+      const offsetX = clampedX - rect.left
+      const offsetY = clampedY - rect.top
+      const outsideCanvas =
+        event.clientX < rect.left ||
+        event.clientX > rect.right ||
+        event.clientY < rect.top ||
+        event.clientY > rect.bottom
+
+      if (outsideCanvas) {
+        if (event.clientY < rect.top) {
+          this.startAutoScroll(-1)
+        } else if (event.clientY > rect.bottom) {
+          this.startAutoScroll(1)
+        } else {
+          this.stopAutoScroll()
+        }
+      }
+
+      if (!outsideCanvas || this.autoScrollDirection !== 0) return
+
+      this.markCurrentSelectionDirty()
+      const cell = this.pixelToCell(offsetX, offsetY)
+      this.selectionEnd = {
+        col: cell.col,
+        absoluteRow: this.viewportRowToAbsolute(cell.row),
+      }
+      this.requestRender()
+    }
+    document.addEventListener('mousemove', this.boundDocumentMouseMoveHandler)
+
+    document.addEventListener('mousedown', (event: MouseEvent) => {
+      this.mouseDownTarget = event.target
+    })
+
+    this.boundMouseUpHandler = () => {
+      if (!this.isSelecting) return
+
+      this.isSelecting = false
+      this.stopAutoScroll()
+      const selection = this.getSelection()
+      if (!selection) return
+
+      this.copyToClipboard(selection)
+      this.selectionChangedEmitter.fire()
+    }
+    document.addEventListener('mouseup', this.boundMouseUpHandler)
+
+    canvas.addEventListener('dblclick', (event: MouseEvent) => {
+      const cell = this.pixelToCell(event.offsetX, event.offsetY)
+      const word = this.getWordAtCell(cell.col, cell.row)
+      if (!word) return
+
+      const absoluteRow = this.viewportRowToAbsolute(cell.row)
+      this.selectionStart = { col: word.startCol, absoluteRow }
+      this.selectionEnd = { col: word.endCol, absoluteRow }
+      this.requestRender()
+
+      const selection = this.getSelection()
+      if (!selection) return
+
+      this.copyToClipboard(selection)
+      this.selectionChangedEmitter.fire()
+    })
+
+    this.boundContextMenuHandler = (event: MouseEvent) => {
+      this.textarea.style.position = 'fixed'
+      this.textarea.style.left = `${event.clientX}px`
+      this.textarea.style.top = `${event.clientY}px`
+      this.textarea.style.width = '1px'
+      this.textarea.style.height = '1px'
+      this.textarea.style.zIndex = '1000'
+      this.textarea.style.opacity = '0'
+      this.textarea.style.pointerEvents = 'auto'
+
+      if (this.hasSelection()) {
+        const selection = this.getSelection()
+        this.textarea.value = selection
+        this.textarea.select()
+        this.textarea.setSelectionRange(0, selection.length)
+      } else {
+        this.textarea.value = ''
+      }
+
+      this.textarea.focus()
+
+      setTimeout(() => {
+        const cleanup = () => {
+          this.textarea.style.pointerEvents = 'none'
+          this.textarea.style.zIndex = '-10'
+          this.textarea.style.width = '0'
+          this.textarea.style.height = '0'
+          this.textarea.style.left = '0'
+          this.textarea.style.top = '0'
+          this.textarea.value = ''
+          document.removeEventListener('click', cleanup)
+          document.removeEventListener('contextmenu', cleanup)
+          this.textarea.removeEventListener('blur', cleanup)
+        }
+
+        document.addEventListener('click', cleanup, { once: true })
+        document.addEventListener('contextmenu', cleanup, { once: true })
+        this.textarea.addEventListener('blur', cleanup, { once: true })
+      }, 10)
+    }
+    canvas.addEventListener('contextmenu', this.boundContextMenuHandler)
+
+    this.boundClickHandler = (event: MouseEvent) => {
+      if (this.isSelecting || (this.mouseDownTarget && canvas.contains(this.mouseDownTarget)))
+        return
+
+      const target = event.target
+      if (!canvas.contains(target) && this.hasSelection()) {
+        this.clearSelection()
+      }
+    }
+    document.addEventListener('click', this.boundClickHandler)
   }
 }
 
@@ -1912,28 +2255,76 @@ export function CellTerminal({
     [focusTerminal, getLiveTerminal, termId],
   )
 
-  const copySelectionToClipboard = useCallback(() => {
-    const term = getLiveTerminal()
-    if (!term) return false
+  const copySelectionToClipboard = useCallback(
+    ({
+      writeToClipboard = true,
+      clearSelection = writeToClipboard,
+      allowBackendNativeCopy = true,
+    }: TerminalCopyOptions = {}): TerminalCopyResult => {
+      const term = getLiveTerminal()
+      if (!term) {
+        return {
+          handled: false,
+          selection: null,
+          clearSelection: () => {},
+        }
+      }
 
-    // For Zellij, use native dump-screen which includes full scrollback
-    // xterm.js getSelection() only gets the visible viewport
-    const backend = Reflect.get(term as object, '__cellsTerminalBackend')
-    if (backend === 'zellij') {
-      // Zellij has copy_on_select enabled, but to copy beyond the visible window,
-      // we need to enter Zellij's copy mode which gives access to the full buffer
-      // Send Ctrl+Z followed by copy-mode binding
-      void window.cells.terminal.write(termId, '\u0015p') // Ctrl+U, 'p' = Zellij copy-mode default binding
-      return true
-    }
+      const clearTerminalSelection = () => {
+        if (term.hasSelection()) term.clearSelection()
+      }
 
-    // For tmux/replay, use xterm.js selection
-    if (!term.hasSelection()) return false
-    const selection = term.getSelection()
-    if (!selection) return false
-    void navigator.clipboard.writeText(selection).catch(() => {})
-    return true
-  }, [getLiveTerminal, termId])
+      if (term.hasSelection()) {
+        const selection = term.getSelection()
+        if (!selection) {
+          return {
+            handled: false,
+            selection: null,
+            clearSelection: clearTerminalSelection,
+          }
+        }
+
+        if (writeToClipboard) {
+          void navigator.clipboard
+            .writeText(selection)
+            .then(() => {
+              if (clearSelection) clearTerminalSelection()
+            })
+            .catch(() => {})
+        } else if (clearSelection) {
+          clearTerminalSelection()
+        }
+
+        return {
+          handled: true,
+          selection,
+          clearSelection: clearTerminalSelection,
+        }
+      }
+
+      // For Zellij, use native dump-screen which includes full scrollback
+      // when there isn't an active local selection to copy.
+      const backend = Reflect.get(term as object, '__cellsTerminalBackend')
+      if (backend === 'zellij' && allowBackendNativeCopy) {
+        // Zellij has copy_on_select enabled, but to copy beyond the visible window,
+        // we need to enter Zellij's copy mode which gives access to the full buffer.
+        void window.cells.terminal.write(termId, '\u0015p') // Ctrl+U, 'p' = Zellij copy-mode default binding
+        if (clearSelection) clearTerminalSelection()
+        return {
+          handled: true,
+          selection: null,
+          clearSelection: clearTerminalSelection,
+        }
+      }
+
+      return {
+        handled: false,
+        selection: null,
+        clearSelection: clearTerminalSelection,
+      }
+    },
+    [getLiveTerminal, termId],
+  )
 
   const relaunchTerminal = useCallback(() => {
     restartTerminalSession(termId)
@@ -2662,10 +3053,12 @@ export function CellTerminal({
           }
 
           if (normalizedKey === 'c') {
-            if (e.type === 'keydown') {
-              e.preventDefault()
-              copySelectionToClipboard()
-            }
+            if (e.type !== 'keydown') return false
+
+            const copied = copySelectionToClipboard()
+            if (!copied.handled) return false
+
+            e.preventDefault()
             return true
           }
 
@@ -3129,11 +3522,18 @@ export function CellTerminal({
 
       if (!inThisTerminal && !fromTerminalTextarea) return
 
-      if (!copySelectionToClipboard()) return
+      const copied = copySelectionToClipboard({
+        writeToClipboard: false,
+        clearSelection: false,
+        allowBackendNativeCopy: false,
+      })
+      if (!copied.handled || !copied.selection) return
+
       event.preventDefault()
       event.stopPropagation()
-      const selection = getLiveTerminal()?.getSelection()
-      if (selection) event.clipboardData?.setData('text/plain', selection)
+
+      event.clipboardData?.setData('text/plain', copied.selection)
+      copied.clearSelection()
     }
 
     document.addEventListener('copy', handleCopy, true)

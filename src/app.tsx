@@ -188,14 +188,17 @@ function MainApp() {
         if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
       }
 
-      // ESC in overview mode → return to previously focused window
+      // ESC in overview mode → return to previously focused window.
+      // Skip when an agent window is focused — the agent panel binds Esc
+      // to "stop the current turn".
       if (
         key === 'escape' &&
         !event.metaKey &&
         !event.ctrlKey &&
         !event.shiftKey &&
         !state.focusedTerminalId &&
-        !state.focusedBrowserId
+        !state.focusedBrowserId &&
+        !state.focusedAgentWindowId
       ) {
         event.preventDefault()
         event.stopPropagation()
@@ -314,9 +317,11 @@ function MainApp() {
         cachedTerminalCount: getCachedTerminalCount(),
         totalTerminalCount: state.terminals.length,
         totalBrowserCount: state.browsers.length,
+        totalAgentWindowCount: state.agentWindows.length,
         projectCount: state.projects.length,
         focusedTerminalId: state.focusedTerminalId,
         focusedBrowserId: state.focusedBrowserId,
+        focusedAgentWindowId: state.focusedAgentWindowId,
         useTransparentWindow: state.useTransparentWindow,
         windowOpacity: state.windowOpacity,
         overlayOpen: state.overlayOpen,

@@ -6,6 +6,7 @@ import {
   Download,
   ExternalLink,
   Github,
+  KeyRound,
   Loader2,
   Plus,
   Puzzle,
@@ -16,6 +17,8 @@ import {
   Trash2,
   X,
 } from 'lucide-react'
+
+import { AgentIcon } from '@/components/agent-icon'
 
 import type { DaemonStatus, ExtensionMeta, InputPrefix } from '@/types'
 
@@ -1105,7 +1108,8 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
 
               {activeSection === 'agents' ? (
                 <div className="space-y-3.5">
-                  <SettingsGroup title="Agents">
+                  <AgentAuthSection />
+                  <SettingsGroup title="Command aliases">
                     <p className="text-[10px] text-muted-foreground/40 mb-3">
                       Enable or disable agents and configure custom commands. Aliases are used when
                       launching agents from the command palette and for auto-detection in terminals.
@@ -1115,8 +1119,6 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                         [
                           { id: 'claude', label: 'Claude Code', placeholder: 'claude' },
                           { id: 'codex', label: 'Codex', placeholder: 'codex' },
-                          { id: 'opencode', label: 'OpenCode', placeholder: 'opencode' },
-                          { id: 'pi', label: 'Pi', placeholder: 'pi' },
                         ] as const
                       ).map(({ id, label, placeholder }) => {
                         const override = enabledAgents[id]
@@ -1310,6 +1312,185 @@ function ThemePreviewDots({ themeKey }: { themeKey: string }) {
         style={{ background: theme.blue }}
       />
     </div>
+  )
+}
+
+type AgentAuthState = {
+  agent: 'claude' | 'codex'
+  binaryPath: string | null
+  authenticated: boolean | 'unknown'
+}
+
+const AGENT_AUTH_ITEMS = [
+  { id: 'claude' as const, label: 'Claude Code' },
+  { id: 'codex' as const, label: 'Codex' },
+]
+
+type LoginPhase = 'idle' | 'starting' | 'awaiting_browser' | 'success' | 'failed' | 'cancelled'
+
+function AgentAuthSection() {
+  const [statuses, setStatuses] = useState<Record<'claude' | 'codex', AgentAuthState | null>>({
+    claude: null,
+    codex: null,
+  })
+  const [phases, setPhases] = useState<Record<'claude' | 'codex', LoginPhase>>({
+    claude: 'idle',
+    codex: 'idle',
+  })
+  const [errors, setErrors] = useState<Record<'claude' | 'codex', string | null>>({
+    claude: null,
+    codex: null,
+  })
+
+  const refresh = useCallback(async () => {
+    try {
+      const [claude, codex] = await Promise.all([
+        window.cells.agentSession.getAuth('claude'),
+        window.cells.agentSession.getAuth('codex'),
+      ])
+      setStatuses({ claude, codex })
+    } catch {
+      // leave nulls — UI renders "unknown"
+    }
+  }, [])
+
+  useEffect(() => {
+    void refresh()
+    const unsubscribe = window.cells.agentSession.onLoginEvent((event) => {
+      setPhases((prev) => ({ ...prev, [event.agent]: event.phase }))
+      setErrors((prev) => ({
+        ...prev,
+        [event.agent]: event.phase === 'failed' ? (event.message ?? 'Sign-in failed') : null,
+      }))
+      if (event.phase === 'success' || event.phase === 'failed' || event.phase === 'cancelled') {
+        setTimeout(() => void refresh(), 250)
+      }
+    })
+    return unsubscribe
+  }, [refresh])
+
+  const launchLogin = async (agent: 'claude' | 'codex') => {
+    setErrors((prev) => ({ ...prev, [agent]: null }))
+    setPhases((prev) => ({ ...prev, [agent]: 'starting' }))
+    try {
+      await window.cells.agentSession.startLogin(agent)
+    } catch (err) {
+      setPhases((prev) => ({ ...prev, [agent]: 'failed' }))
+      setErrors((prev) => ({
+        ...prev,
+        [agent]: err instanceof Error ? err.message : String(err),
+      }))
+    }
+  }
+
+  const cancelLogin = (agent: 'claude' | 'codex') => {
+    void window.cells.agentSession.cancelLogin(agent)
+  }
+
+  return (
+    <SettingsGroup title="Accounts">
+      <p className="text-[10px] text-muted-foreground/40 mb-3">
+        Cells drives your locally-installed <code className="font-mono">claude</code> and{' '}
+        <code className="font-mono">codex</code> CLIs. Sign in once per CLI and every agent window
+        will inherit the credentials.
+      </p>
+      <div className="space-y-2">
+        {AGENT_AUTH_ITEMS.map(({ id, label }) => {
+          const status = statuses[id]
+          const installed = Boolean(status?.binaryPath)
+          const signedIn = status?.authenticated === true
+          const phase = phases[id]
+          const errorText = errors[id]
+          const isBusy = phase === 'starting' || phase === 'awaiting_browser'
+
+          const stateLabel = isBusy
+            ? phase === 'starting'
+              ? 'Starting…'
+              : 'Waiting for browser'
+            : phase === 'failed'
+              ? 'Failed'
+              : phase === 'cancelled'
+                ? 'Cancelled'
+                : !installed
+                  ? 'Not installed'
+                  : signedIn
+                    ? 'Signed in'
+                    : 'Not signed in'
+          const stateTone = isBusy
+            ? 'text-amber-400'
+            : phase === 'failed' || phase === 'cancelled'
+              ? 'text-red-400'
+              : !installed
+                ? 'text-muted-foreground/60'
+                : signedIn
+                  ? 'text-emerald-400'
+                  : 'text-amber-400'
+          const dotTone = isBusy
+            ? 'bg-amber-400'
+            : phase === 'failed' || phase === 'cancelled'
+              ? 'bg-red-400'
+              : !installed
+                ? 'bg-muted-foreground/40'
+                : signedIn
+                  ? 'bg-emerald-400'
+                  : 'bg-amber-400'
+
+          return (
+            <div key={id} className="rounded-md border border-border/10 p-2.5">
+              <div className="flex items-center gap-3">
+                <div className="flex size-7 shrink-0 items-center justify-center rounded-[8px] bg-foreground/5">
+                  <AgentIcon agent={id} className="size-4" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[12px] font-medium text-foreground">{label}</span>
+                    <span className={cn('inline-flex items-center gap-1 text-[10.5px]', stateTone)}>
+                      <span className={cn('size-1.5 rounded-full', dotTone)} />
+                      {stateLabel}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground/50">
+                    {status?.binaryPath ?? 'binary not detected on PATH'}
+                  </div>
+                </div>
+                {isBusy ? (
+                  <button
+                    type="button"
+                    onClick={() => cancelLogin(id)}
+                    className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-border/30 bg-background/60 px-2 text-[11px] text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+                  >
+                    <Loader2 className="size-3 animate-spin" />
+                    <span>Cancel</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void launchLogin(id)}
+                    disabled={!installed}
+                    className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-border/30 bg-background/60 px-2 text-[11px] text-foreground transition-colors hover:bg-foreground/5 disabled:cursor-not-allowed disabled:opacity-50"
+                    title={
+                      !installed
+                        ? `Install the ${label} CLI first`
+                        : signedIn
+                          ? 'Re-authenticate'
+                          : 'Sign in'
+                    }
+                  >
+                    <KeyRound className="size-3" />
+                    <span>{signedIn ? 'Re-auth' : 'Sign in'}</span>
+                  </button>
+                )}
+              </div>
+              {errorText ? (
+                <div className="mt-2 rounded border border-red-500/20 bg-red-500/5 px-2 py-1.5 text-[10.5px] leading-[1.45] text-red-300">
+                  {errorText}
+                </div>
+              ) : null}
+            </div>
+          )
+        })}
+      </div>
+    </SettingsGroup>
   )
 }
 
