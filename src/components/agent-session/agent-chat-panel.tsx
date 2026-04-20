@@ -780,12 +780,6 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   // the queue is empty so the user can decide whether to resume.
   const [midTurnDetected, setMidTurnDetected] = useState(false)
   const midTurnAppliedRef = useRef(false)
-  useEffect(() => {
-    // If the user removes every queued message manually we don't want to keep
-    // gating future queues — lift the gate once the queue empties, unless a
-    // mid-turn banner is still being offered.
-    if (queuedMessages.length === 0 && resumeGated && !midTurnDetected) setResumeGated(false)
-  }, [queuedMessages.length, resumeGated, midTurnDetected])
   // Queue list collapses by default — the header already shows count + a
   // preview of the next message, mirroring AgentTurnCard's activities stripe.
   const [queueCollapsed, setQueueCollapsed] = useState(true)
@@ -1082,20 +1076,24 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     [
       sendToAgent,
       handleStop,
+      setQueuedMessages,
       agentWindow.model,
       agentWindow.thinkingLevel,
       agentWindow.permissionMode,
     ],
   )
 
-  const unqueueMessage = useCallback((index: number) => {
-    setQueuedMessages((q) => q.filter((_, i) => i !== index))
-    setEditingIndex((current) => {
-      if (current === null) return current
-      if (current === index) return null
-      return current > index ? current - 1 : current
-    })
-  }, [])
+  const unqueueMessage = useCallback(
+    (index: number) => {
+      setQueuedMessages((q) => q.filter((_, i) => i !== index))
+      setEditingIndex((current) => {
+        if (current === null) return current
+        if (current === index) return null
+        return current > index ? current - 1 : current
+      })
+    },
+    [setQueuedMessages],
+  )
 
   const beginEditQueued = useCallback(
     (index: number) => {
@@ -1115,7 +1113,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     setQueuedMessages((q) => q.map((m, i) => (i === index ? { ...m, text: draft || m.text } : m)))
     setEditingIndex(null)
     setEditDraft('')
-  }, [editDraft, editingIndex])
+  }, [editDraft, editingIndex, setQueuedMessages])
 
   const cancelEditQueued = useCallback(() => {
     setEditingIndex(null)
@@ -1197,7 +1195,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       .finally(() => {
         sendingQueuedRef.current = false
       })
-  }, [queuedMessages, resumeGated, sendToAgent, snapshot?.status])
+  }, [queuedMessages, resumeGated, sendToAgent, setQueuedMessages, snapshot?.status])
 
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
