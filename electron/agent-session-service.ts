@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { promises as fs, existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { promises as fs, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { userInfo } from 'node:os'
 import * as path from 'node:path'
 import { app, shell } from 'electron'
@@ -17,6 +17,7 @@ import type {
   AgentSessionRequest,
   AgentSessionSnapshot,
   AgentThinkingLevel,
+  RecentAgentSessionSummary,
   SavedAgentSessionSummary,
 } from '../src/types'
 import {
@@ -1866,6 +1867,155 @@ function summarizeEvent(event: any): Record<string, unknown> {
   return base
 }
 
+const CLAUDE_NATIVE_PROJECTS_DIR = path.join(userInfo().homedir, '.claude', 'projects')
+const CODEX_NATIVE_STATE_DB = path.join(userInfo().homedir, '.codex', 'state_5.sqlite')
+const DEFAULT_RECENT_SESSION_LIMIT = 12
+const MAX_NATIVE_CLAUDE_SCAN = 80
+
+function toTimestampMs(value: number | null | undefined) {
+  if (!value || !Number.isFinite(value)) return now()
+  return value < 1_000_000_000_000 ? value * 1000 : value
+}
+
+function summarizeSessionText(value: string | null | undefined, fallback: string) {
+  const trimmed = value?.replace(/\s+/g, ' ').trim()
+  if (!trimmed) return fallback
+  return trimmed.length > 120 ? `${trimmed.slice(0, 117)}...` : trimmed
+}
+
+function collectClaudeNativeSessionFiles(rootDir: string) {
+  if (!existsSync(rootDir)) return [] as Array<{ filePath: string; updatedAt: number }>
+  const files: Array<{ filePath: string; updatedAt: number }> = []
+  const stack = [rootDir]
+  while (stack.length > 0 && files.length < MAX_NATIVE_CLAUDE_SCAN) {
+    const current = stack.pop()
+    if (!current) break
+    let entries: string[]
+    try {
+      entries = readdirSync(current)
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      const absolutePath = path.join(current, entry)
+      let stat: ReturnType<typeof statSync>
+      try {
+        stat = statSync(absolutePath)
+      } catch {
+        continue
+      }
+      if (stat.isDirectory()) {
+        if (entry === 'subagents') continue
+        stack.push(absolutePath)
+        continue
+      }
+      if (!stat.isFile() || !entry.endsWith('.jsonl')) continue
+      files.push({ filePath: absolutePath, updatedAt: stat.mtimeMs })
+      if (files.length >= MAX_NATIVE_CLAUDE_SCAN) break
+    }
+  }
+  return files.sort((a, b) => b.updatedAt - a.updatedAt)
+}
+
+function readClaudeNativeSessionSummary(filePath: string): RecentAgentSessionSummary | null {
+  const sessionId = path.basename(filePath, '.jsonl')
+  try {
+    const source = readFileSync(filePath, 'utf8')
+    const lines = source.split('\n')
+    let cwd: string | null = null
+    let title: string | null = null
+    let lastUserText: string | null = null
+    for (const rawLine of lines) {
+      const line = rawLine.trim()
+      if (!line) continue
+      const parsed = JSON.parse(line) as {
+        cwd?: unknown
+        type?: unknown
+        message?: { role?: unknown; content?: unknown }
+      }
+      if (!cwd && typeof parsed.cwd === 'string' && parsed.cwd.trim()) cwd = parsed.cwd
+      const content = parsed.message?.content
+      const userText =
+        typeof content === 'string'
+          ? content
+          : Array.isArray(content)
+            ? content
+                .map((part) =>
+                  typeof (part as { text?: unknown }).text === 'string'
+                    ? (part as { text: string }).text
+                    : '',
+                )
+                .filter(Boolean)
+                .join(' ')
+            : null
+      if (parsed.type === 'user' && userText?.trim()) {
+        const summary = summarizeSessionText(userText, `Claude session ${sessionId.slice(0, 8)}`)
+        if (!title) title = summary
+        lastUserText = summary
+      }
+      if (cwd && title && lastUserText) break
+    }
+    const updatedAt = toTimestampMs(statSync(filePath).mtimeMs)
+    return {
+      origin: 'native',
+      windowId: null,
+      nativeId: sessionId,
+      agent: 'claude',
+      title: title ?? `Claude session ${sessionId.slice(0, 8)}`,
+      cwd,
+      claudeSessionId: sessionId,
+      codexThreadId: null,
+      model: null,
+      updatedAt,
+      messageCount: null,
+      lastMessageText: lastUserText,
+      sourceLabel: 'Claude Code',
+    }
+  } catch {
+    return null
+  }
+}
+
+function readSqliteRows(dbPath: string, queryText: string) {
+  if (!existsSync(dbPath)) return [] as string[][]
+  try {
+    const output = execFileSync('sqlite3', ['-separator', '\t', dbPath, queryText], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 1500,
+    }).trim()
+    if (!output) return []
+    return output
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => line.split('\t'))
+  } catch {
+    return []
+  }
+}
+
+function listCodexNativeSessions(limit: number): RecentAgentSessionSummary[] {
+  const rows = readSqliteRows(
+    CODEX_NATIVE_STATE_DB,
+    `select id, coalesce(replace(replace(title, char(10), ' '), char(13), ' '), ''), coalesce(cwd, ''), updated_at, created_at from threads order by updated_at desc limit ${Math.max(limit, 1)}`,
+  )
+  return rows.map(([id, title, cwd, updatedAt, createdAt]) => ({
+    origin: 'native',
+    windowId: null,
+    nativeId: id || null,
+    agent: 'codex',
+    title: summarizeSessionText(title, id ? `Codex session ${id.slice(0, 8)}` : 'Codex session'),
+    cwd: cwd || null,
+    claudeSessionId: null,
+    codexThreadId: id || null,
+    model: null,
+    updatedAt: toTimestampMs(Number.parseInt(updatedAt || createdAt || '0', 10)),
+    messageCount: null,
+    lastMessageText: null,
+    sourceLabel: 'Codex CLI',
+  }))
+}
+
 export class AgentSessionService extends EventEmitter {
   private runtimes = new Map<string, Runtime>()
 
@@ -1879,6 +2029,10 @@ export class AgentSessionService extends EventEmitter {
       .filter((entry) => entry.endsWith('.json'))
       .map((entry) => loadPersistedSnapshot(path.basename(entry, '.json')))
       .filter((snapshot): snapshot is AgentSessionSnapshot => snapshot !== null)
+      .filter(
+        (snapshot) =>
+          snapshot.messages.length > 0 || !!snapshot.claudeSessionId || !!snapshot.codexThreadId,
+      )
       .map((snapshot) => {
         const lastMessage = [...snapshot.messages]
           .reverse()
@@ -1896,7 +2050,54 @@ export class AgentSessionService extends EventEmitter {
           lastMessageText: lastMessage?.text?.trim() ?? null,
         }
       })
-      .sort((a, b) => a.updatedAt - b.updatedAt)
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+  }
+
+  async listRecentSessions(
+    agent: 'claude' | 'codex',
+    limit = DEFAULT_RECENT_SESSION_LIMIT,
+  ): Promise<RecentAgentSessionSummary[]> {
+    const normalizedLimit = Math.max(1, Math.min(limit, 24))
+    const cellsSessions = (await this.listSavedSessions())
+      .filter((session) => session.agent === agent)
+      .map<RecentAgentSessionSummary>((session) => ({
+        origin: 'cells',
+        windowId: session.windowId,
+        nativeId: null,
+        agent: session.agent,
+        title: session.title,
+        cwd: session.cwd ?? null,
+        claudeSessionId: session.claudeSessionId ?? null,
+        codexThreadId: session.codexThreadId ?? null,
+        model: session.model ?? null,
+        updatedAt: session.updatedAt,
+        messageCount: session.messageCount,
+        lastMessageText: session.lastMessageText ?? null,
+        sourceLabel: 'Cells',
+      }))
+
+    const nativeSessions =
+      agent === 'claude'
+        ? collectClaudeNativeSessionFiles(CLAUDE_NATIVE_PROJECTS_DIR)
+            .map((entry) => readClaudeNativeSessionSummary(entry.filePath))
+            .filter((session): session is RecentAgentSessionSummary => session !== null)
+        : listCodexNativeSessions(normalizedLimit * 2)
+
+    const seen = new Set<string>()
+    return [...cellsSessions, ...nativeSessions]
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .filter((session) => {
+        const dedupeKey =
+          session.claudeSessionId ||
+          session.codexThreadId ||
+          session.nativeId ||
+          session.windowId ||
+          session.title
+        if (seen.has(dedupeKey)) return false
+        seen.add(dedupeKey)
+        return true
+      })
+      .slice(0, normalizedLimit)
   }
 
   async ensure(request: AgentSessionRequest): Promise<AgentSessionSnapshot> {

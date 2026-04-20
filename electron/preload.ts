@@ -393,6 +393,8 @@ const api: CellsAPI = {
       ipcRenderer.invoke('agent-session:list-saved-sessions') as Promise<
         SavedAgentSessionSummary[]
       >,
+    listRecentSessions: (agent: 'claude' | 'codex', limit?: number) =>
+      ipcRenderer.invoke('agent-session:list-recent-sessions', agent, limit),
     onLoginEvent: (
       callback: (event: {
         agent: 'claude' | 'codex'

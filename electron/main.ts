@@ -1594,6 +1594,18 @@ ipcMain.handle('agent-session:list-saved-sessions', async () => {
   }
 })
 
+ipcMain.handle(
+  'agent-session:list-recent-sessions',
+  async (_event, agent: 'claude' | 'codex', limit?: number) => {
+    try {
+      return await agentSessionService.listRecentSessions(agent, limit)
+    } catch (err) {
+      console.warn('[agent-session] list-recent-sessions failed', err)
+      return []
+    }
+  },
+)
+
 agentLoginManager.on('event', (event: LoginEvent) => {
   for (const window of BrowserWindow.getAllWindows()) {
     if (window.isDestroyed()) continue

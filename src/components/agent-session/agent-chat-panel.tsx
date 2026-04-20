@@ -11,6 +11,7 @@ import {
   Folder,
   GripVertical,
   HelpCircle,
+  History,
   ListTodo,
   Loader2,
   MessageSquare,
@@ -32,6 +33,7 @@ import type {
   PendingAgentApproval,
   PendingQuestion,
   QueuedAgentMessage,
+  RecentAgentSessionSummary,
 } from '@/types'
 import { useStore } from '@/lib/store'
 import { AgentIcon } from '@/components/agent-icon'
@@ -80,6 +82,18 @@ function truncateCwd(cwd: string | null | undefined) {
   const home = '/Users/raj'
   if (cwd.startsWith(home)) return '~' + cwd.slice(home.length)
   return cwd
+}
+
+function formatRelativeTime(timestamp: number) {
+  const deltaMs = Math.max(0, Date.now() - timestamp)
+  const deltaMinutes = Math.floor(deltaMs / 60_000)
+  if (deltaMinutes < 1) return 'just now'
+  if (deltaMinutes < 60) return `${deltaMinutes}m ago`
+  const deltaHours = Math.floor(deltaMinutes / 60)
+  if (deltaHours < 24) return `${deltaHours}h ago`
+  const deltaDays = Math.floor(deltaHours / 24)
+  if (deltaDays < 7) return `${deltaDays}d ago`
+  return new Date(timestamp).toLocaleDateString()
 }
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp'])
@@ -1026,6 +1040,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   // the queue is empty so the user can decide whether to resume.
   const [midTurnDetected, setMidTurnDetected] = useState(false)
   const midTurnAppliedRef = useRef(false)
+  const [recentSessions, setRecentSessions] = useState<RecentAgentSessionSummary[]>([])
   // Queue list collapses by default — the header already shows count + a
   // preview of the next message, mirroring AgentTurnCard's activities stripe.
   const [queueCollapsed, setQueueCollapsed] = useState(true)
@@ -1665,6 +1680,51 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
 
   const messages = useMemo(() => snapshot?.messages ?? [], [snapshot?.messages])
   const hasMessages = messages.length > 0
+  useEffect(() => {
+    if (hasMessages) return
+    let cancelled = false
+    window.cells.agentSession
+      .listRecentSessions(agentWindow.agent, 8)
+      .then((sessions) => {
+        if (!cancelled) setRecentSessions(sessions)
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          console.error('[agent-chat] listRecentSessions failed', err)
+          setRecentSessions([])
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [agentWindow.agent, hasMessages])
+
+  const openRecentSession = useCallback(
+    (session: RecentAgentSessionSummary) => {
+      const store = useStore.getState()
+      if (session.origin === 'cells' && session.windowId) {
+        store.addAgentWindow(session.agent, {
+          id: session.windowId,
+          title: session.title,
+          cwd: session.cwd ?? null,
+          claudeSessionId: session.claudeSessionId ?? null,
+          codexThreadId: session.codexThreadId ?? null,
+          model: session.model ?? null,
+        })
+      } else {
+        store.addAgentWindow(session.agent, {
+          title: session.title,
+          cwd: session.cwd ?? null,
+          claudeSessionId: session.claudeSessionId ?? null,
+          codexThreadId: session.codexThreadId ?? null,
+          model: session.model ?? null,
+        })
+      }
+      store.removeAgentWindow(agentWindow.id)
+    },
+    [agentWindow.id],
+  )
+
   const groups = useMemo(() => groupMessages(messages), [messages])
   const sessionDiffStats = useMemo(() => sumDiffStats(messages), [messages])
   const [diffsPanelOpen, setDiffsPanelOpen] = useState(false)
@@ -1743,6 +1803,49 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                       )}
                     </div>
                     <AgentEmptyStateHint />
+                    {recentSessions.length > 0 ? (
+                      <div className="w-full max-w-xl rounded-[12px] border border-border/45 bg-background/55 p-2 shadow-minimal">
+                        <div className="flex items-center gap-1.5 px-1 pb-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground/65">
+                          <History className="size-3.5" />
+                          Recent Sessions
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          {recentSessions.map((session) => (
+                            <button
+                              key={`${session.origin}:${session.windowId ?? session.nativeId ?? session.title}`}
+                              type="button"
+                              onClick={() => openRecentSession(session)}
+                              className="flex items-center gap-3 rounded-[10px] border border-border/35 bg-background/45 px-3 py-2 text-left transition-colors hover:border-foreground/15 hover:bg-foreground/5"
+                            >
+                              <AgentIcon agent={session.agent} className="size-4 shrink-0" />
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <span className="truncate text-[12.5px] font-medium text-foreground/90">
+                                    {session.title}
+                                  </span>
+                                  <span className="shrink-0 rounded-[6px] border border-border/35 bg-background/50 px-1.5 py-0.5 text-[10px] text-muted-foreground/70">
+                                    {session.sourceLabel}
+                                  </span>
+                                </div>
+                                <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground/65">
+                                  {session.cwd ? (
+                                    <span className="truncate font-mono">
+                                      {truncateCwd(session.cwd)}
+                                    </span>
+                                  ) : null}
+                                  <span className="shrink-0">
+                                    {formatRelativeTime(session.updatedAt)}
+                                  </span>
+                                </div>
+                              </div>
+                              <span className="shrink-0 text-[11px] text-muted-foreground/70">
+                                {session.origin === 'cells' ? 'Open' : 'Import'}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
                     <div className="mt-1 flex flex-col items-stretch gap-1 text-[11.5px] text-muted-foreground/70">
                       {(['stop', 'after-tool', 'after-turn'] as const).map((mode) => {
                         const meta = QUEUE_MODE_META[mode]

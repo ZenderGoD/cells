@@ -382,6 +382,22 @@ export interface SavedAgentSessionSummary {
   lastMessageText?: string | null
 }
 
+export interface RecentAgentSessionSummary {
+  origin: 'cells' | 'native'
+  windowId?: string | null
+  nativeId?: string | null
+  agent: Extract<AgentName, 'claude' | 'codex'>
+  title: string
+  cwd?: string | null
+  claudeSessionId?: string | null
+  codexThreadId?: string | null
+  model?: string | null
+  updatedAt: number
+  messageCount?: number | null
+  lastMessageText?: string | null
+  sourceLabel: string
+}
+
 export interface AgentMentionSearchResult {
   type: 'skill' | 'file' | 'folder'
   label: string
@@ -655,6 +671,10 @@ export interface CellsAPI {
       }>
     >
     listSavedSessions(): Promise<SavedAgentSessionSummary[]>
+    listRecentSessions(
+      agent: 'claude' | 'codex',
+      limit?: number,
+    ): Promise<RecentAgentSessionSummary[]>
     onLoginEvent(
       callback: (event: {
         agent: 'claude' | 'codex'
