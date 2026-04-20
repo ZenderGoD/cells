@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useCallback, useRef, useEffect } from 'react'
 import { ChevronRight, FileText, X } from 'lucide-react'
 import type { AgentSessionMessage } from '@/types'
 import { cn } from '@/lib/utils'
@@ -192,13 +192,59 @@ function FileDiffRow({ file }: { file: FileDiffStats }) {
   )
 }
 
+const MIN_WIDTH = 280
+const MAX_WIDTH = 900
+const DEFAULT_WIDTH = 520
+
 export function SessionDiffsPanel({ messages, onClose }: SessionDiffsPanelProps) {
   const files = useMemo(() => groupDiffsByFile(messages), [messages])
   const totalAdditions = files.reduce((acc, f) => acc + f.additions, 0)
   const totalDeletions = files.reduce((acc, f) => acc + f.deletions, 0)
+  const [width, setWidth] = useState(DEFAULT_WIDTH)
+  const dragging = useRef(false)
+  const startX = useRef(0)
+  const startWidth = useRef(0)
+
+  const onMouseMove = useCallback((e: MouseEvent) => {
+    if (!dragging.current) return
+    const delta = startX.current - e.clientX
+    setWidth(Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, startWidth.current + delta)))
+  }, [])
+
+  const onMouseUp = useCallback(() => {
+    dragging.current = false
+    document.body.style.cursor = ''
+    document.body.style.userSelect = ''
+  }, [])
+
+  useEffect(() => {
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup', onMouseUp)
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mouseup', onMouseUp)
+    }
+  }, [onMouseMove, onMouseUp])
+
+  const onResizeStart = (e: React.MouseEvent) => {
+    e.preventDefault()
+    dragging.current = true
+    startX.current = e.clientX
+    startWidth.current = width
+    document.body.style.cursor = 'ew-resize'
+    document.body.style.userSelect = 'none'
+  }
 
   return (
-    <div className="flex h-full w-[400px] shrink-0 flex-col border-l border-border/40 bg-[oklch(0.11_0.004_285)] backdrop-blur-sm">
+    <div
+      className="relative flex h-full shrink-0 flex-col border-l border-border/40 bg-[oklch(0.11_0.004_285)] backdrop-blur-sm"
+      style={{ width }}
+    >
+      {/* Drag-resize handle on the left edge */}
+      <div
+        onMouseDown={onResizeStart}
+        className="absolute inset-y-0 left-0 z-10 w-1 cursor-ew-resize transition-colors hover:bg-foreground/10"
+      />
       {/* pr-8 keeps the X clear of the absolute 3-dot menu button */}
       <div className="flex shrink-0 items-center gap-2 border-b border-border/30 px-3 py-2 pr-8">
         <FileText className="size-3 shrink-0 text-muted-foreground/50" />
