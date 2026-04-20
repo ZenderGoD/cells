@@ -278,6 +278,15 @@ function resolveSystemBinary(name: string): string | null {
 let cachedClaudePath: string | null | undefined
 let cachedCodexPath: string | null | undefined
 
+export function setCustomAgentPaths(paths: Record<string, string>) {
+  if (paths.claude !== undefined) {
+    cachedClaudePath = paths.claude?.trim() || undefined
+  }
+  if (paths.codex !== undefined) {
+    cachedCodexPath = paths.codex?.trim() || undefined
+  }
+}
+
 function getSystemClaudePath(): string | null {
   if (cachedClaudePath === undefined) cachedClaudePath = resolveSystemBinary('claude')
   return cachedClaudePath

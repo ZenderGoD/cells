@@ -124,6 +124,7 @@ interface StoreState {
   linkRules: Array<{ pattern: string; target: 'system' | 'browser'; projectId?: string }>
   directoryLinkTarget: 'finder' | 'terminal'
   agentAliases: Record<string, string>
+  agentPaths: Record<string, string>
   enabledAgents: Record<string, boolean | 'auto'>
   inputPrefixes: InputPrefix[]
   lastUsedAgent: string | null
@@ -264,6 +265,7 @@ interface StoreState {
     rules: Array<{ pattern: string; target: 'system' | 'browser'; projectId?: string }>,
   ): void
   setAgentAliases(aliases: Record<string, string>): void
+  setAgentPaths(paths: Record<string, string>): void
   setEnabledAgents(agents: Record<string, boolean | 'auto'>): void
   setInputPrefixes(prefixes: InputPrefix[]): void
   setLastUsedAgent(agent: string): void
@@ -794,6 +796,7 @@ export const useStore = create<StoreState>((set, get) => ({
   linkRules: [],
   directoryLinkTarget: 'finder',
   agentAliases: {},
+  agentPaths: {},
   enabledAgents: {},
   inputPrefixes: DEFAULT_INPUT_PREFIXES,
   lastUsedAgent: null,
@@ -1153,6 +1156,7 @@ export const useStore = create<StoreState>((set, get) => ({
           | 'finder'
           | 'terminal',
         agentAliases: ps.agentAliases ?? {},
+        agentPaths: ps.agentPaths ?? {},
         enabledAgents: ps.enabledAgents ?? {},
         inputPrefixes: ps.inputPrefixes ?? DEFAULT_INPUT_PREFIXES,
         colorScheme: ps.colorScheme || 'dark',
@@ -1160,6 +1164,10 @@ export const useStore = create<StoreState>((set, get) => ({
         closeProcessSuppressions: ps.closeProcessSuppressions ?? [],
         dimWhenUnfocused: ps.dimWhenUnfocused ?? true,
         hasSeenOnboardingGuide: ps.hasSeenOnboardingGuide ?? false,
+      }
+
+      if (Object.keys(globalSettings.agentPaths).length > 0) {
+        void window.cells.agent.setCustomPaths(globalSettings.agentPaths)
       }
 
       if (projects.length === 0) {
@@ -1356,6 +1364,7 @@ export const useStore = create<StoreState>((set, get) => ({
           linkRules: freshState.linkRules,
           directoryLinkTarget: freshState.directoryLinkTarget,
           agentAliases: freshState.agentAliases,
+          agentPaths: freshState.agentPaths,
           enabledAgents: freshState.enabledAgents,
           inputPrefixes: freshState.inputPrefixes,
           colorScheme: freshState.colorScheme,
@@ -1404,6 +1413,7 @@ export const useStore = create<StoreState>((set, get) => ({
           linkRules: state.linkRules,
           directoryLinkTarget: state.directoryLinkTarget,
           agentAliases: state.agentAliases,
+          agentPaths: state.agentPaths,
           enabledAgents: state.enabledAgents,
           inputPrefixes: state.inputPrefixes,
           colorScheme: state.colorScheme,
@@ -2780,6 +2790,11 @@ export const useStore = create<StoreState>((set, get) => ({
   setAgentAliases(aliases) {
     set({ agentAliases: aliases })
     get().persist()
+  },
+  setAgentPaths(paths) {
+    set({ agentPaths: paths })
+    get().persist()
+    void window.cells.agent.setCustomPaths(paths)
   },
   setEnabledAgents(agents) {
     set({ enabledAgents: agents })

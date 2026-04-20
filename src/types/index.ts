@@ -421,6 +421,7 @@ export interface ProjectsState {
   linkRules?: Array<{ pattern: string; target: 'system' | 'browser'; projectId?: string }>
   directoryLinkTarget?: 'finder' | 'terminal'
   agentAliases?: Record<string, string>
+  agentPaths?: Record<string, string>
   /** Per-agent visibility override: true = always show, false = always hide, 'auto' = detect binary */
   enabledAgents?: Record<string, boolean | 'auto'>
   inputPrefixes?: InputPrefix[]
@@ -653,7 +654,11 @@ export interface CellsAPI {
     removeWorktree(cwd: string, worktreePath: string): Promise<void>
   }
   agent: {
-    checkAvailable(aliases?: Record<string, string>): Promise<Record<string, boolean>>
+    checkAvailable(
+      aliases?: Record<string, string>,
+      paths?: Record<string, string>,
+    ): Promise<Record<string, boolean>>
+    setCustomPaths(paths: Record<string, string>): Promise<void>
   }
   daemon: {
     getStatus(): Promise<DaemonStatus>

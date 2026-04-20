@@ -420,6 +420,7 @@ export function CommandPalette() {
   const activeProjectId = useStore((s) => s.activeProjectId)
   const setOverlayOpen = useStore((s) => s.setOverlayOpen)
   const agentAliases = useStore((s) => s.agentAliases)
+  const agentPaths = useStore((s) => s.agentPaths)
   const enabledAgents = useStore((s) => s.enabledAgents)
   const lastUsedAgent = useStore((s) => s.lastUsedAgent)
   const lastCommandAction = useStore((s) => s.lastCommandAction)
@@ -591,7 +592,7 @@ export function CommandPalette() {
 
   useEffect(() => {
     if (open) {
-      window.cells.agent.checkAvailable(agentAliases).then((detected) => {
+      window.cells.agent.checkAvailable(agentAliases, agentPaths).then((detected) => {
         // Apply enabledAgents overrides: true = force on, false = force off, 'auto'/undefined = use detected
         const merged = { ...detected }
         for (const { id } of AGENT_OPTIONS) {
@@ -612,7 +613,7 @@ export function CommandPalette() {
         .then(setShellHistory)
         .catch(() => {})
     }
-  }, [open, agentAliases, enabledAgents])
+  }, [open, agentAliases, agentPaths, enabledAgents])
 
   // Track whether Cmd key is held
   useEffect(() => {

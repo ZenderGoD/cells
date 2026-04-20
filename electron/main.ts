@@ -61,6 +61,7 @@ import {
   AgentSessionService,
   agentLoginManager,
   getAgentAuthStatus,
+  setCustomAgentPaths,
   getAgentLoginCommand,
   listClaudeModels,
   listCodexModels,
@@ -1220,48 +1221,65 @@ ipcMain.handle('git:remove-worktree', (_event, cwd: string, worktreePath: string
   gitExec(['worktree', 'remove', worktreePath], cwd)
 })
 
-ipcMain.handle('agent:check-available', (_event, aliases?: Record<string, string>) => {
-  // Use a login shell so the user's full PATH is available.
-  // Packaged macOS apps inherit a minimal PATH (/usr/bin:/bin) that
-  // won't include Homebrew, ~/.local/bin, nvm, etc.
-  const shell = process.env.SHELL || '/bin/zsh'
-  const home = os.homedir()
-  const fallbackPaths = [
-    '/opt/homebrew/bin',
-    '/usr/local/bin',
-    '/usr/bin',
-    `${home}/.local/bin`,
-    `${home}/.bun/bin`,
-    `${home}/.npm-global/bin`,
-    `${home}/.volta/bin`,
-    `${home}/.nvm/versions/node`,
-  ]
-  const results: Record<string, boolean> = {}
-  for (const name of ['claude', 'codex', 'opencode', 'pi']) {
-    const cmd = aliases?.[name]?.trim() || name
-    const executable = (cmd.match(/^(".*?"|'.*?'|\S+)/)?.[0] ?? name).replace(/^['"]|['"]$/g, '')
-    const escapedExecutable = executable.replace(/'/g, "'\\''")
-    try {
-      execFileSync(shell, ['-lc', `command -v -- '${escapedExecutable}'`], {
-        stdio: 'pipe',
-        timeout: 3000,
-      })
-      results[name] = true
-      continue
-    } catch {
-      // fall through to path probe
-    }
-    // Fallback: probe common install locations directly (covers packaged
-    // apps where the user's login shell/rc files aren't sourced correctly).
-    results[name] = fallbackPaths.some((dir) => {
-      try {
-        return fs.existsSync(path.join(dir, executable))
-      } catch {
-        return false
+ipcMain.handle(
+  'agent:check-available',
+  (_event, aliases?: Record<string, string>, customPaths?: Record<string, string>) => {
+    // Use a login shell so the user's full PATH is available.
+    // Packaged macOS apps inherit a minimal PATH (/usr/bin:/bin) that
+    // won't include Homebrew, ~/.local/bin, nvm, etc.
+    const shell = process.env.SHELL || '/bin/zsh'
+    const home = os.homedir()
+    const fallbackPaths = [
+      '/opt/homebrew/bin',
+      '/usr/local/bin',
+      '/usr/bin',
+      `${home}/.local/bin`,
+      `${home}/.bun/bin`,
+      `${home}/.npm-global/bin`,
+      `${home}/.volta/bin`,
+      `${home}/.nvm/versions/node`,
+    ]
+    const results: Record<string, boolean> = {}
+    for (const name of ['claude', 'codex', 'opencode', 'pi']) {
+      // If a custom path is configured, check it directly first.
+      const customPath = customPaths?.[name]?.trim()
+      if (customPath) {
+        try {
+          results[name] = fs.existsSync(customPath)
+        } catch {
+          results[name] = false
+        }
+        continue
       }
-    })
-  }
-  return results
+      const cmd = aliases?.[name]?.trim() || name
+      const executable = (cmd.match(/^(".*?"|'.*?'|\S+)/)?.[0] ?? name).replace(/^['"]|['"]$/g, '')
+      const escapedExecutable = executable.replace(/'/g, "'\\''")
+      try {
+        execFileSync(shell, ['-lc', `command -v -- '${escapedExecutable}'`], {
+          stdio: 'pipe',
+          timeout: 3000,
+        })
+        results[name] = true
+        continue
+      } catch {
+        // fall through to path probe
+      }
+      // Fallback: probe common install locations directly (covers packaged
+      // apps where the user's login shell/rc files aren't sourced correctly).
+      results[name] = fallbackPaths.some((dir) => {
+        try {
+          return fs.existsSync(path.join(dir, executable))
+        } catch {
+          return false
+        }
+      })
+    }
+    return results
+  },
+)
+
+ipcMain.handle('agent:set-custom-paths', (_event, paths: Record<string, string>) => {
+  setCustomAgentPaths(paths)
 })
 
 ipcMain.handle('agent-session:ensure', (_event, request) => {

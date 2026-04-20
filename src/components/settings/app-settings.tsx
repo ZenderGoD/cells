@@ -190,6 +190,8 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const setDirectoryLinkTarget = useStore((s) => s.setDirectoryLinkTarget)
   const agentAliases = useStore((s) => s.agentAliases)
   const setAgentAliases = useStore((s) => s.setAgentAliases)
+  const agentPaths = useStore((s) => s.agentPaths)
+  const setAgentPaths = useStore((s) => s.setAgentPaths)
   const enabledAgents = useStore((s) => s.enabledAgents)
   const setEnabledAgents = useStore((s) => s.setEnabledAgents)
   const inputPrefixes = useStore((s) => s.inputPrefixes)
@@ -1161,19 +1163,38 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                               </div>
                             </button>
                             {isEnabled && (
-                              <div>
-                                <label className="text-[10px] text-muted-foreground/40 mb-1 block">
-                                  Command alias
-                                </label>
-                                <input
-                                  type="text"
-                                  value={agentAliases[id] ?? ''}
-                                  onChange={(e) =>
-                                    setAgentAliases({ ...agentAliases, [id]: e.target.value })
-                                  }
-                                  placeholder={placeholder}
-                                  className="w-full rounded-md border border-border/20 bg-background/40 px-2.5 py-1.5 text-[11px] text-foreground outline-none placeholder:text-muted-foreground/30 focus:border-border/40 font-mono"
-                                />
+                              <div className="space-y-2">
+                                <div>
+                                  <label className="text-[10px] text-muted-foreground/40 mb-1 block">
+                                    Command alias
+                                  </label>
+                                  <input
+                                    type="text"
+                                    value={agentAliases[id] ?? ''}
+                                    onChange={(e) =>
+                                      setAgentAliases({ ...agentAliases, [id]: e.target.value })
+                                    }
+                                    placeholder={placeholder}
+                                    className="w-full rounded-md border border-border/20 bg-background/40 px-2.5 py-1.5 text-[11px] text-foreground outline-none placeholder:text-muted-foreground/30 focus:border-border/40 font-mono"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-[10px] text-muted-foreground/40 mb-1 block">
+                                    Custom CLI path
+                                  </label>
+                                  <input
+                                    type="text"
+                                    value={agentPaths[id] ?? ''}
+                                    onChange={(e) =>
+                                      setAgentPaths({ ...agentPaths, [id]: e.target.value })
+                                    }
+                                    placeholder={`/usr/local/bin/${placeholder}`}
+                                    className="w-full rounded-md border border-border/20 bg-background/40 px-2.5 py-1.5 text-[11px] text-foreground outline-none placeholder:text-muted-foreground/30 focus:border-border/40 font-mono"
+                                  />
+                                  <p className="mt-1 text-[10px] text-muted-foreground/30">
+                                    Override auto-detection with an absolute path to the CLI binary.
+                                  </p>
+                                </div>
                               </div>
                             )}
                           </div>

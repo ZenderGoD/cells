@@ -306,8 +306,10 @@ const api: CellsAPI = {
       ipcRenderer.invoke('git:remove-worktree', cwd, worktreePath),
   },
   agent: {
-    checkAvailable: (aliases?: Record<string, string>) =>
-      ipcRenderer.invoke('agent:check-available', aliases),
+    checkAvailable: (aliases?: Record<string, string>, paths?: Record<string, string>) =>
+      ipcRenderer.invoke('agent:check-available', aliases, paths),
+    setCustomPaths: (paths: Record<string, string>) =>
+      ipcRenderer.invoke('agent:set-custom-paths', paths),
   },
   agentSession: {
     ensure: (request: AgentSessionRequest) =>
