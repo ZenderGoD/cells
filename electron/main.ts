@@ -90,6 +90,8 @@ if (shouldIgnoreGpuBlocklist) {
   app.commandLine.appendSwitch('ignore-gpu-blocklist')
 }
 
+const isPerfMonitorEnabled = !app.isPackaged || process.env.CELLS_ENABLE_PERF_MONITOR === '1'
+
 const DEV_ROOT = process.env.CELLS_DEV_ROOT
   ? path.resolve(process.env.CELLS_DEV_ROOT)
   : path.join(app.getPath('home'), '.cells-dev')
@@ -2892,8 +2894,10 @@ ipcMain.handle('daemon:restart', async () => {
 // ---------- App lifecycle ----------
 
 app.whenReady().then(async () => {
-  perfMonitor = new PerfMonitor(app.getPath('logs'))
-  perfMonitor.start()
+  if (isPerfMonitorEnabled) {
+    perfMonitor = new PerfMonitor(app.getPath('logs'))
+    perfMonitor.start()
+  }
 
   if (shouldRelaunchAfterEarlyCacheClear) {
     stopCellsOwnedBackgroundProcesses()

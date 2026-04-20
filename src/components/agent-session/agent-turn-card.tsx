@@ -489,7 +489,9 @@ function ResponseCard({ responses }: { responses: AgentSessionMessage[] }) {
                 {response.text}
               </pre>
             ) : (
-              <AgentMarkdown>{response.text}</AgentMarkdown>
+              <AgentMarkdown breaks={response.status === 'in_progress'}>
+                {response.text}
+              </AgentMarkdown>
             )}
           </div>
         ))}

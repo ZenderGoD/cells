@@ -22,6 +22,8 @@ import type {
 
 type TerminalDataListener = (termId: string, data: string) => void
 const terminalDataListeners = new Set<TerminalDataListener>()
+const perfMonitorEnabled =
+  process.env.CELLS_ENABLE_PERF_MONITOR === '1' || !!process.env.VITE_DEV_SERVER_URL
 
 function dispatchTerminalData(termId: string, data: string) {
   for (const cb of terminalDataListeners) cb(termId, data)
@@ -465,7 +467,10 @@ const api: CellsAPI = {
     },
   },
   perf: {
+    enabled: perfMonitorEnabled,
     reportRendererSample: async (sample: RendererPerfSample) => {
+      if (!perfMonitorEnabled) return
+
       const electronProcess = process as NodeJS.Process & {
         getCPUUsage?: () => { percentCPUUsage: number; idleWakeupsPerSecond: number }
         getProcessMemoryInfo?: () => Promise<{
@@ -494,6 +499,7 @@ const api: CellsAPI = {
       })
     },
     reportTerminalSample: (sample: TerminalPerfSample) => {
+      if (!perfMonitorEnabled) return
       ipcRenderer.send('perf:terminal-sample', sample)
     },
     getStatus: () => ipcRenderer.invoke('perf:get-status') as Promise<PerfMonitorStatus | null>,

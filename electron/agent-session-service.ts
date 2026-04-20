@@ -349,6 +349,11 @@ function asNonEmptyString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null
 }
 
+function asNonEmptyText(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  return value.length > 0 ? value : null
+}
+
 function parseJsonRecord(text: string): Record<string, unknown> | null {
   const trimmed = text.trim()
   if (!trimmed) return null
@@ -2833,7 +2838,7 @@ export class AgentSessionService extends EventEmitter {
 
     if (method === 'item/agentMessage/delta') {
       const itemId = asNonEmptyString(params?.itemId)
-      const delta = asNonEmptyString(params?.delta)
+      const delta = asNonEmptyText(params?.delta)
       if (!itemId || !delta) return
       appendCodexDelta(runtime.snapshot, {
         id: codexMessageId(runtime, itemId),
@@ -2846,7 +2851,7 @@ export class AgentSessionService extends EventEmitter {
 
     if (method === 'item/reasoning/summaryTextDelta' || method === 'item/reasoning/textDelta') {
       const itemId = asNonEmptyString(params?.itemId)
-      const delta = asNonEmptyString(params?.delta)
+      const delta = asNonEmptyText(params?.delta)
       if (!itemId || !delta) return
       appendCodexDelta(runtime.snapshot, {
         id: codexMessageId(runtime, itemId),
@@ -2862,7 +2867,7 @@ export class AgentSessionService extends EventEmitter {
       method === 'item/fileChange/outputDelta'
     ) {
       const itemId = asNonEmptyString(params?.itemId)
-      const delta = asNonEmptyString(params?.delta)
+      const delta = asNonEmptyText(params?.delta)
       if (!itemId || !delta) return
       appendCodexDelta(runtime.snapshot, {
         id: codexMessageId(runtime, itemId),

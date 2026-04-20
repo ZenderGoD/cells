@@ -3282,8 +3282,10 @@ export function CellTerminal({
           }
         }),
       )
-      const perfInterval = window.setInterval(reportTerminalPerf, 10_000)
-      cleanups.push(() => window.clearInterval(perfInterval))
+      if (window.cells.perf.enabled) {
+        const perfInterval = window.setInterval(reportTerminalPerf, 10_000)
+        cleanups.push(() => window.clearInterval(perfInterval))
+      }
 
       // Handle paste events from any source (Raycast, right-click, etc.)
       const handlePaste = (e: ClipboardEvent) => {

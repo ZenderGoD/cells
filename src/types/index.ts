@@ -683,6 +683,7 @@ export interface CellsAPI {
     onStatus(callback: (status: string, info?: any) => void): () => void
   }
   perf: {
+    enabled: boolean
     reportRendererSample(sample: RendererPerfSample): Promise<void>
     reportTerminalSample(sample: TerminalPerfSample): void
     getStatus(): Promise<PerfMonitorStatus | null>

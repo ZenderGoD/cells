@@ -273,7 +273,7 @@ function MainApp() {
   }, [initialized, persist])
 
   useEffect(() => {
-    if (!initialized) return
+    if (!initialized || !window.cells.perf.enabled) return
 
     let frameCount = 0
     let sampleStart = performance.now()
