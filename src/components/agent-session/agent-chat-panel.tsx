@@ -326,6 +326,11 @@ type ChatGroup =
       key: string
       activities: AgentSessionMessage[]
       responses: AgentSessionMessage[]
+      // Interim assistant text that preceded this turn's tool calls. When the
+      // agent emits prose between tool groups, we demote that prose from its
+      // own ResponseCard into the next turn's header line — it reads as the
+      // intent behind the upcoming activity instead of a separate bubble.
+      leadText?: string
     }
   | { kind: 'error'; key: string; message: AgentSessionMessage }
   | { kind: 'auth'; key: string; message: AgentSessionMessage }
@@ -412,7 +417,45 @@ function groupMessages(messages: AgentSessionMessage[]): ChatGroup[] {
     }
   }
   flushPending()
-  return groups
+  return demoteInterimResponses(groups)
+}
+
+// Walks the grouped output and moves any "interim" assistant responses
+// (responses in a turn that is immediately followed by another turn) into
+// the next turn's `leadText`. The current turn keeps only its activities;
+// if it had no activities either, it is dropped entirely.
+//
+// Example: [tool_a, tool_b, text, tool_c, tool_d] groups as
+//   turn1(acts=[a,b], resp=[text]) + turn2(acts=[c,d])
+// After demotion:
+//   turn1(acts=[a,b]) + turn2(acts=[c,d], leadText=text)
+function demoteInterimResponses(groups: ChatGroup[]): ChatGroup[] {
+  const result: ChatGroup[] = []
+  for (let i = 0; i < groups.length; i++) {
+    const g = groups[i]
+    if (g.kind === 'turn' && g.responses.length > 0) {
+      const next = groups[i + 1]
+      if (next && next.kind === 'turn' && next.activities.length > 0) {
+        const leadText = g.responses
+          .map((r) => r.text)
+          .join('\n\n')
+          .trim()
+        if (g.activities.length > 0) {
+          result.push({
+            kind: 'turn',
+            key: g.key,
+            activities: g.activities,
+            responses: [],
+          })
+        }
+        result.push({ ...next, leadText: leadText || next.leadText })
+        i++
+        continue
+      }
+    }
+    result.push(g)
+  }
+  return result
 }
 
 // Craft-style "working" pill shown while the agent is running but hasn't
@@ -730,6 +773,7 @@ function GroupRenderer({
         <AgentTurnCard
           activities={group.activities}
           responses={group.responses}
+          leadText={group.leadText}
           agent={agent}
           isStreaming={isStreamingLastTurn}
         />

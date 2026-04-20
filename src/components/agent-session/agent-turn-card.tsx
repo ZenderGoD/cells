@@ -27,6 +27,10 @@ const RESPONSE_FADE_MASK =
 interface AgentTurnCardProps {
   activities: AgentSessionMessage[]
   responses: AgentSessionMessage[]
+  // Interim assistant text that preceded this turn's tool calls. When
+  // present it replaces the generic "Working…" preview so the user reads
+  // the intent behind the upcoming activity instead of a filler label.
+  leadText?: string
   agent: AgentWindowNode['agent']
   isStreaming: boolean
 }
@@ -514,7 +518,13 @@ function ResponseCard({ responses }: { responses: AgentSessionMessage[] }) {
   )
 }
 
-export function AgentTurnCard({ activities, responses, agent, isStreaming }: AgentTurnCardProps) {
+export function AgentTurnCard({
+  activities,
+  responses,
+  leadText,
+  agent,
+  isStreaming,
+}: AgentTurnCardProps) {
   const hasActivities = activities.length > 0
   const hasResponse = responses.some((r) => r.text.trim().length > 0)
   // Small turns (≤3 activities) render inline so the user sees each step at a
@@ -523,12 +533,29 @@ export function AgentTurnCard({ activities, responses, agent, isStreaming }: Age
   const isSmallTurn = activities.length <= 3
   const [collapsed, setCollapsed] = useState(true)
   const showActivities = !collapsed
-  const previewText = usePreviewText(activities, isStreaming, agent)
+  const computedPreview = usePreviewText(activities, isStreaming, agent)
+  // First-line preview derived from the interim assistant text, used in the
+  // collapsed header when the turn is followed by more tools. Keeps the
+  // header a single line even if the original prose wrapped.
+  const leadPreview = useMemo(() => {
+    if (!leadText) return null
+    const firstLine = leadText.split('\n')[0].trim()
+    return firstLine.length > 200 ? firstLine.slice(0, 200) + '…' : firstLine
+  }, [leadText])
+  const previewText = leadPreview || computedPreview
   const tree = useMemo(() => buildActivityTree(activities), [activities])
 
   return (
     <div className="flex w-full justify-start">
       <div className="w-full space-y-1">
+        {/* When the turn has a demoted interim text, render the full prose
+         *  as a muted lead line so the user still sees the context even in
+         *  inline (small-turn) mode where there's no collapsed header. */}
+        {leadText && isSmallTurn ? (
+          <div className="select-text px-1 text-sm leading-relaxed text-foreground/80">
+            {leadText}
+          </div>
+        ) : null}
         {hasActivities ? (
           isSmallTurn ? (
             <div className="space-y-0.5 px-1 py-0.5">
@@ -546,7 +573,7 @@ export function AgentTurnCard({ activities, responses, agent, isStreaming }: Age
                 <span className="shrink-0 rounded-[4px] bg-background px-1.5 py-0.5 text-[10px] font-medium tabular-nums shadow-minimal">
                   {activities.length}
                 </span>
-                {isStreaming ? (
+                {isStreaming && !leadPreview ? (
                   <LoadingIndicator
                     label={previewText}
                     showElapsed
