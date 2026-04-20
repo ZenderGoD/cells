@@ -1,5 +1,6 @@
 import { memo } from 'react'
 import ReactMarkdown from 'react-markdown'
+import remarkBreaks from 'remark-breaks'
 import remarkGfm from 'remark-gfm'
 import { activateLink } from '@/lib/activate-link'
 import { cn } from '@/lib/utils'
@@ -15,6 +16,8 @@ interface AgentMarkdownProps {
   className?: string
   /** Inline mode collapses block spacing for short messages. */
   inline?: boolean
+  /** Treat single newlines as hard line breaks (for user-typed messages). */
+  breaks?: boolean
 }
 
 const components = {
@@ -139,13 +142,15 @@ export const AgentMarkdown = memo(function AgentMarkdown({
   children,
   className,
   inline,
+  breaks,
 }: AgentMarkdownProps) {
   // No font-size / color override here — the response card wrapper sets
   // `text-sm` and the default foreground color, matching Craft's ResponseCard.
   // Overriding here would disagree with Craft.
+  const plugins = breaks ? [remarkGfm, remarkBreaks] : [remarkGfm]
   return (
     <div className={cn('agent-markdown', inline && '[&_p]:m-0 [&_p]:inline', className)}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+      <ReactMarkdown remarkPlugins={plugins} components={components}>
         {children}
       </ReactMarkdown>
     </div>

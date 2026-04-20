@@ -224,17 +224,21 @@ export interface AgentWindowNode {
  *  Claude Sonnet 4/4.5 is the only model that accepts 'extended'. */
 export type AgentContextLength = 'default' | 'extended'
 
-/** Rolling per-session token accounting, sourced from the agent's last
- *  turn-completion event. `contextWindow` is the model's actual max
- *  prompt-token capacity as reported by the SDK (Claude) or a known fallback
- *  (Codex). `inputTokens` already includes cached tokens — it's the full
- *  prompt the model saw. */
+/** Rolling per-session token accounting, sourced from the agent's latest
+ *  turn-completion event. `usedTokens` is the best available approximation of
+ *  the active context load and is capped to `contextWindow` when known.
+ *  `totalProcessedTokens` is the full token volume handled during the latest
+ *  completed turn, which can exceed the active context window after
+ *  compaction/truncation. `inputTokens` already includes cached reads. */
 export interface AgentUsageStats {
   model: string | null
   inputTokens: number
   outputTokens: number
   cachedInputTokens: number
   contextWindow: number | null
+  usedTokens: number | null
+  totalProcessedTokens: number | null
+  compactsAutomatically: boolean
   updatedAt: number
 }
 
@@ -306,6 +310,7 @@ export interface PendingQuestionOption {
 
 /** One question in an AskUserQuestion prompt. */
 export interface PendingQuestion {
+  id?: string
   question: string
   header: string
   options: PendingQuestionOption[]
@@ -317,6 +322,31 @@ export interface PendingQuestion {
 export interface PendingQuestionApproval {
   questions: PendingQuestion[]
   createdAt: number
+}
+
+export interface PendingAgentApproval {
+  kind: 'command' | 'file-change'
+  title: string
+  detail?: string | null
+  reason?: string | null
+  command?: string | null
+  cwd?: string | null
+  grantRoot?: string | null
+  canApproveForSession?: boolean
+  createdAt: number
+}
+
+/** One entry in Codex's rolling todo_list. */
+export interface CodexPlanItem {
+  text: string
+  completed: boolean
+}
+
+/** Latest Codex todo_list snapshot — surfaced as a persistent banner above
+ *  the composer while the agent works. Cleared when the turn ends. */
+export interface CodexPlanSnapshot {
+  items: CodexPlanItem[]
+  updatedAt: number
 }
 
 export interface AgentSessionSnapshot {
@@ -333,6 +363,8 @@ export interface AgentSessionSnapshot {
   usage?: AgentUsageStats | null
   pendingPlanApproval?: PendingPlanApproval | null
   pendingQuestion?: PendingQuestionApproval | null
+  pendingApproval?: PendingAgentApproval | null
+  codexPlan?: CodexPlanSnapshot | null
 }
 
 export interface Project {
@@ -555,6 +587,7 @@ export interface CellsAPI {
       agent: 'claude' | 'codex'
       binaryPath: string | null
       authenticated: boolean | 'unknown'
+      account?: string | null
     }>
     getLoginCommand(agent: 'claude' | 'codex'): Promise<string>
     startLogin(agent: 'claude' | 'codex'): Promise<void>
@@ -571,6 +604,10 @@ export interface CellsAPI {
      *  Value = array of chosen option labels (single entry for single-select).
      *  Pass `null` to cancel the prompt (treated as declined). */
     respondQuestion(windowId: string, answers: Record<string, string[]> | null): Promise<void>
+    respondApproval(
+      windowId: string,
+      decision: 'accept' | 'acceptForSession' | 'decline',
+    ): Promise<void>
     listCodexModels(): Promise<
       Array<{
         id: string

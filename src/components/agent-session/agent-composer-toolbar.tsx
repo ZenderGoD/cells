@@ -592,16 +592,24 @@ function formatTokens(n: number): string {
 }
 
 // Rolling "% of context used" readout that sits next to the model picker.
-// Hidden when no usage has been reported yet (first-turn case) so the
-// composer doesn't light up empty percentages.
+// Uses the backend's normalized `usedTokens` snapshot when available and
+// falls back to a capped view of `totalProcessedTokens` so the badge never
+// renders impossible values like "4.6M / 272k".
 export function ContextUsageIndicator({ usage, agent, contextLength }: ContextUsageIndicatorProps) {
   if (!usage) return null
-  const used = usage.inputTokens + usage.outputTokens
-  if (used <= 0) return null
   const fromSdk = usage.contextWindow && usage.contextWindow > 0 ? usage.contextWindow : null
   const fallback =
     agent === 'claude' && contextLength === 'extended' ? 1_000_000 : CONTEXT_WINDOW_FALLBACK[agent]
   const limit = fromSdk ?? fallback
+  const totalProcessed =
+    usage.totalProcessedTokens && usage.totalProcessedTokens > 0 ? usage.totalProcessedTokens : null
+  const used =
+    usage.usedTokens && usage.usedTokens > 0
+      ? usage.usedTokens
+      : totalProcessed && totalProcessed > 0
+        ? Math.min(totalProcessed, limit)
+        : null
+  if (!used || used <= 0) return null
   const pct = Math.min(100, Math.round((used / limit) * 100))
   const tint =
     pct >= 90
@@ -609,13 +617,21 @@ export function ContextUsageIndicator({ usage, agent, contextLength }: ContextUs
       : pct >= 70
         ? 'text-amber-300 bg-amber-500/10'
         : 'text-muted-foreground/85 bg-foreground/5'
+  const title = [
+    `Context: ${used.toLocaleString()} / ${limit.toLocaleString()} tokens`,
+    totalProcessed && totalProcessed > used
+      ? `${usage.compactsAutomatically ? 'Processed this turn' : 'Processed'}: ${totalProcessed.toLocaleString()} tokens`
+      : null,
+  ]
+    .filter(Boolean)
+    .join('\n')
   return (
     <span
       className={cn(
         'inline-flex h-7 shrink-0 items-center gap-1.5 rounded-[8px] px-2 text-[11px] font-medium tabular-nums',
         tint,
       )}
-      title={`Context: ${used.toLocaleString()} / ${limit.toLocaleString()} tokens`}
+      title={title}
     >
       <Gauge className="size-3" />
       {pct}%

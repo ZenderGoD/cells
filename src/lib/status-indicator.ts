@@ -1,4 +1,10 @@
-import type { AgentName, AgentStatus, TerminalRuntimeStatus } from '@/types'
+import type {
+  AgentName,
+  AgentSessionSnapshot,
+  AgentStatus,
+  AgentWindowNode,
+  TerminalRuntimeStatus,
+} from '@/types'
 
 export type ProjectAttention = 'approval' | 'error' | 'waiting' | 'working' | 'done' | null
 
@@ -8,6 +14,10 @@ export interface StatusPresentation {
   pillClass: string
   label: string
   detail: string
+  /** Extra detail lines — plan/question/queue/usage state — for UIs that
+   *  want to render more than the single-line `detail`. Empty if no snapshot
+   *  is provided or none of the conditions apply. */
+  details: string[]
   projectAttention: ProjectAttention
 }
 
@@ -17,7 +27,48 @@ const NONE: StatusPresentation = {
   pillClass: '',
   label: '',
   detail: '',
+  details: [],
   projectAttention: null,
+}
+
+function buildAgentDetails(
+  snapshot?: AgentSessionSnapshot | null,
+  windowNode?: AgentWindowNode | null,
+): string[] {
+  const details: string[] = []
+  if (snapshot?.pendingPlanApproval) {
+    details.push('Plan proposed — awaiting approval')
+  }
+  if (snapshot?.pendingApproval) {
+    details.push(
+      snapshot.pendingApproval.kind === 'command'
+        ? 'Command approval needed'
+        : 'File-change approval needed',
+    )
+  }
+  if (snapshot?.pendingQuestion) {
+    const n = snapshot.pendingQuestion.questions.length
+    details.push(n === 1 ? 'Question for you' : `${n} questions for you`)
+  }
+  if (snapshot?.codexPlan && snapshot.codexPlan.items.length > 0) {
+    const done = snapshot.codexPlan.items.filter((item) => item.completed).length
+    details.push(`Plan: ${done}/${snapshot.codexPlan.items.length}`)
+  }
+  if (windowNode?.queuedMessages && windowNode.queuedMessages.length > 0) {
+    const n = windowNode.queuedMessages.length
+    details.push(n === 1 ? '1 message queued' : `${n} messages queued`)
+  }
+  if (snapshot?.usage && snapshot.usage.contextWindow) {
+    const used =
+      snapshot.usage.usedTokens && snapshot.usage.usedTokens > 0
+        ? snapshot.usage.usedTokens
+        : snapshot.usage.totalProcessedTokens && snapshot.usage.totalProcessedTokens > 0
+          ? Math.min(snapshot.usage.totalProcessedTokens, snapshot.usage.contextWindow)
+          : 0
+    const pct = Math.round((used / snapshot.usage.contextWindow) * 100)
+    if (pct >= 1) details.push(`${pct}% context`)
+  }
+  return details
 }
 
 const AGENT_LABELS: Record<AgentName, string> = {
@@ -132,12 +183,19 @@ export function getStatusPresentation(
     agentStatus?: AgentStatus | undefined
     processRunning?: boolean | undefined
   },
+  extras?: {
+    /** Agent snapshot — used to derive plan/question/usage detail lines. */
+    agentSnapshot?: AgentSessionSnapshot | null
+    /** Agent window node — used to derive queued-message count detail. */
+    agentWindow?: AgentWindowNode | null
+  },
 ): StatusPresentation {
   const resolved = legacyToRuntimeStatus(runtimeStatus, fallback)
   if (!resolved) return NONE
 
   const detail = formatStatusDetail(resolved)
   const attention = getProjectAttention(resolved)
+  const details = buildAgentDetails(extras?.agentSnapshot, extras?.agentWindow)
 
   if (resolved.kind === 'process') {
     return {
@@ -146,6 +204,7 @@ export function getStatusPresentation(
       pillClass: 'border-white/12 bg-white/8 text-foreground/55',
       label: detail || 'Process running',
       detail,
+      details,
       projectAttention: null,
     }
   }
@@ -158,6 +217,7 @@ export function getStatusPresentation(
         pillClass: 'border-amber-500/25 bg-amber-500/10 text-amber-200',
         label: detail || 'Approval needed',
         detail,
+        details,
         projectAttention: attention,
       }
     case 'error':
@@ -167,6 +227,7 @@ export function getStatusPresentation(
         pillClass: 'border-rose-500/25 bg-rose-500/10 text-rose-200',
         label: detail || 'Agent error',
         detail,
+        details,
         projectAttention: attention,
       }
     case 'waiting':
@@ -176,6 +237,7 @@ export function getStatusPresentation(
         pillClass: 'border-sky-500/25 bg-sky-500/10 text-sky-200',
         label: detail || 'Waiting for input',
         detail,
+        details,
         projectAttention: attention,
       }
     case 'done':
@@ -185,6 +247,7 @@ export function getStatusPresentation(
         pillClass: 'border-emerald-500/25 bg-emerald-500/10 text-emerald-200',
         label: detail || 'Done',
         detail,
+        details,
         projectAttention: attention,
       }
     case 'working':
@@ -195,6 +258,7 @@ export function getStatusPresentation(
         pillClass: 'border-primary/25 bg-primary/10 text-primary/90',
         label: detail || 'Working',
         detail,
+        details,
         projectAttention: attention,
       }
   }

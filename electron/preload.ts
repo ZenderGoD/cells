@@ -354,6 +354,8 @@ const api: CellsAPI = {
       ) as Promise<void>,
     respondQuestion: (windowId: string, answers: Record<string, string[]> | null) =>
       ipcRenderer.invoke('agent-session:respond-question', windowId, answers) as Promise<void>,
+    respondApproval: (windowId: string, decision: 'accept' | 'acceptForSession' | 'decline') =>
+      ipcRenderer.invoke('agent-session:respond-approval', windowId, decision) as Promise<void>,
     listCodexModels: () =>
       ipcRenderer.invoke('agent-session:list-codex-models') as Promise<
         Array<{

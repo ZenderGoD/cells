@@ -129,6 +129,7 @@ test('getStatusPresentation returns an empty presentation when there is no runti
     pillClass: '',
     label: '',
     detail: '',
+    details: [],
     projectAttention: null,
   })
 })

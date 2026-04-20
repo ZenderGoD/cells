@@ -3,11 +3,14 @@ import {
   ArrowUp,
   Check,
   ChevronRight,
+  Circle,
   Clock,
   FastForward,
+  FileText,
   Folder,
   GripVertical,
   HelpCircle,
+  ListTodo,
   MessageSquare,
   Paperclip,
   Pencil,
@@ -23,6 +26,8 @@ import type {
   AgentSessionSnapshot,
   AgentThinkingLevel,
   AgentWindowNode,
+  CodexPlanSnapshot,
+  PendingAgentApproval,
   PendingQuestion,
   QueuedAgentMessage,
 } from '@/types'
@@ -43,6 +48,8 @@ import {
 } from './agent-composer-toolbar'
 import { AgentTurnCard } from './agent-turn-card'
 import { LoadingIndicator } from './agent-loading-indicator'
+import { SessionDiffsPanel } from './session-diffs-panel'
+import { sumDiffStats, hasDiffStats } from '@/lib/tool-diff-stats'
 import { cn } from '@/lib/utils'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Kbd } from '@/components/ui/kbd'
@@ -252,7 +259,9 @@ function UserBubble({ message }: { message: AgentSessionMessage }) {
         ) : null}
         {hasText ? (
           <div className="break-words rounded-[10px] bg-foreground/5 px-3 py-1.5 text-[13px] leading-[1.45] text-foreground">
-            <AgentMarkdown inline>{message.text}</AgentMarkdown>
+            <AgentMarkdown inline breaks>
+              {message.text}
+            </AgentMarkdown>
           </div>
         ) : null}
         {others.length > 0 ? (
@@ -473,6 +482,140 @@ function PendingTurnIndicator({ agent }: { agent: AgentWindowNode['agent'] }) {
 // Banner shown above the composer while Claude has called ExitPlanMode and
 // is waiting on the user's decision. Mirrors the Claude Code CLI's three
 // prompt options verbatim: auto-accept, manually approve, or keep planning.
+function CodexPlanBanner({ plan }: { plan: CodexPlanSnapshot }) {
+  const [collapsed, setCollapsed] = useState(false)
+  const total = plan.items.length
+  const done = plan.items.filter((item) => item.completed).length
+  if (total === 0) return null
+  return (
+    <div className="mb-2 rounded-[12px] border border-sky-400/25 bg-sky-500/5 px-3 py-2 text-[12px] text-foreground/90 shadow-minimal">
+      <button
+        type="button"
+        onClick={() => setCollapsed((prev) => !prev)}
+        className="flex w-full items-center gap-2 text-left"
+      >
+        <ListTodo className="size-3.5 shrink-0 text-sky-300/90" />
+        <span className="flex-1 text-[11px] font-medium uppercase tracking-[0.12em] text-sky-300/90">
+          Plan
+        </span>
+        <span className="text-[11px] tabular-nums text-muted-foreground/80">
+          {done}/{total}
+        </span>
+        <ChevronRight
+          className={cn(
+            'size-3.5 shrink-0 text-muted-foreground/70 transition-transform',
+            !collapsed && 'rotate-90',
+          )}
+        />
+      </button>
+      {!collapsed ? (
+        <ul className="mt-1.5 flex flex-col gap-1">
+          {plan.items.map((item, idx) => (
+            <li key={`${idx}-${item.text}`} className="flex items-start gap-2">
+              {item.completed ? (
+                <Check className="mt-0.5 size-3.5 shrink-0 text-emerald-400/90" />
+              ) : (
+                <Circle className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/50" />
+              )}
+              <span
+                className={cn(
+                  'min-w-0 flex-1 break-words leading-[1.45]',
+                  item.completed && 'text-muted-foreground/70 line-through',
+                )}
+              >
+                {item.text}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  )
+}
+
+function AgentApprovalBanner({
+  windowId,
+  approval,
+}: {
+  windowId: string
+  approval: PendingAgentApproval
+}) {
+  const [busy, setBusy] = useState<'accept' | 'acceptForSession' | 'decline' | null>(null)
+  const respond = useCallback(
+    async (decision: 'accept' | 'acceptForSession' | 'decline') => {
+      if (busy) return
+      setBusy(decision)
+      try {
+        await window.cells.agentSession.respondApproval(windowId, decision)
+      } catch (err) {
+        console.error('[agent-chat] respondApproval failed', err)
+      } finally {
+        setBusy(null)
+      }
+    },
+    [busy, windowId],
+  )
+
+  return (
+    <div className="mb-2 rounded-[12px] border border-amber-400/25 bg-amber-400/5 px-3 py-2.5 text-[12px] text-foreground/90 shadow-minimal">
+      <div className="mb-2 flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-amber-300/90">
+        <ShieldCheck className="size-3.5" />
+        <span>{approval.title}</span>
+      </div>
+      <div className="space-y-1.5">
+        {approval.detail ? (
+          <div className="rounded-[8px] border border-border/50 bg-background/50 px-2.5 py-2 text-[12px] leading-[1.45] text-foreground/90">
+            {approval.detail}
+          </div>
+        ) : null}
+        {approval.reason ? (
+          <div className="text-[11px] leading-[1.45] text-muted-foreground/80">
+            Reason: {approval.reason}
+          </div>
+        ) : null}
+        {approval.cwd ? (
+          <div className="text-[11px] leading-[1.45] text-muted-foreground/80">
+            Cwd: {truncateCwd(approval.cwd)}
+          </div>
+        ) : null}
+        {approval.grantRoot ? (
+          <div className="text-[11px] leading-[1.45] text-muted-foreground/80">
+            Grant root: {truncateCwd(approval.grantRoot)}
+          </div>
+        ) : null}
+      </div>
+      <div className="mt-2.5 flex flex-wrap items-center justify-end gap-1.5">
+        <button
+          type="button"
+          disabled={!!busy}
+          onClick={() => void respond('decline')}
+          className="rounded-[6px] px-2 py-1 text-[11.5px] text-muted-foreground/80 hover:bg-foreground/5 hover:text-foreground disabled:cursor-wait disabled:opacity-60"
+        >
+          {busy === 'decline' ? 'Declining…' : 'Decline'}
+        </button>
+        {approval.canApproveForSession ? (
+          <button
+            type="button"
+            disabled={!!busy}
+            onClick={() => void respond('acceptForSession')}
+            className="rounded-[6px] border border-border/60 bg-background/60 px-2.5 py-1 text-[11.5px] font-medium text-foreground transition-colors hover:border-foreground/30 hover:bg-foreground/5 disabled:cursor-wait disabled:opacity-60"
+          >
+            {busy === 'acceptForSession' ? 'Approving…' : 'Allow for session'}
+          </button>
+        ) : null}
+        <button
+          type="button"
+          disabled={!!busy}
+          onClick={() => void respond('accept')}
+          className="rounded-[6px] bg-amber-400 px-2.5 py-1 text-[11.5px] font-medium text-background transition-colors hover:bg-amber-300 disabled:cursor-wait disabled:opacity-60"
+        >
+          {busy === 'accept' ? 'Approving…' : 'Allow once'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function PlanApprovalBanner({ windowId }: { windowId: string }) {
   const [busy, setBusy] = useState<'auto-accept' | 'ask' | 'reject' | null>(null)
   const [showFeedback, setShowFeedback] = useState(false)
@@ -608,31 +751,35 @@ function PlanApprovalBanner({ windowId }: { windowId: string }) {
 // without the input.
 function QuestionBanner({
   windowId,
+  agent,
   questions,
 }: {
   windowId: string
+  agent: AgentWindowNode['agent']
   questions: PendingQuestion[]
 }) {
+  const questionKey = useCallback((q: PendingQuestion) => q.id || q.question, [])
   const [selections, setSelections] = useState<Record<string, string[]>>(() => {
     const init: Record<string, string[]> = {}
-    for (const q of questions) init[q.question] = []
+    for (const q of questions) init[questionKey(q)] = []
     return init
   })
   const [busy, setBusy] = useState<'submit' | 'cancel' | null>(null)
 
   const toggle = useCallback((q: PendingQuestion, label: string) => {
+    const key = q.id || q.question
     setSelections((prev) => {
-      const current = prev[q.question] ?? []
+      const current = prev[key] ?? []
       if (q.multiSelect) {
         const has = current.includes(label)
         const next = has ? current.filter((x) => x !== label) : [...current, label]
-        return { ...prev, [q.question]: next }
+        return { ...prev, [key]: next }
       }
-      return { ...prev, [q.question]: [label] }
+      return { ...prev, [key]: [label] }
     })
   }, [])
 
-  const canSubmit = questions.every((q) => (selections[q.question]?.length ?? 0) > 0)
+  const canSubmit = questions.every((q) => (selections[questionKey(q)]?.length ?? 0) > 0)
 
   const submit = useCallback(async () => {
     if (busy || !canSubmit) return
@@ -664,15 +811,15 @@ function QuestionBanner({
         <HelpCircle className="size-3.5" />
         <span>
           {questions.length === 1
-            ? 'Claude needs an answer'
-            : `Claude needs ${questions.length} answers`}
+            ? `${getAgentDisplayName(agent)} needs an answer`
+            : `${getAgentDisplayName(agent)} needs ${questions.length} answers`}
         </span>
       </div>
       <div className="flex flex-col gap-3">
         {questions.map((q) => {
-          const selected = selections[q.question] ?? []
+          const selected = selections[questionKey(q)] ?? []
           return (
-            <div key={q.question} className="flex flex-col gap-1.5">
+            <div key={questionKey(q)} className="flex flex-col gap-1.5">
               <div className="flex items-center gap-2">
                 {q.header ? (
                   <span className="shrink-0 rounded-[4px] bg-background px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-foreground/70 shadow-minimal">
@@ -735,14 +882,16 @@ function QuestionBanner({
         })}
       </div>
       <div className="mt-2.5 flex items-center justify-end gap-1.5">
-        <button
-          type="button"
-          disabled={!!busy}
-          onClick={() => void cancel()}
-          className="rounded-[6px] px-2 py-1 text-[11.5px] text-muted-foreground/80 hover:bg-foreground/5 hover:text-foreground disabled:cursor-wait disabled:opacity-60"
-        >
-          {busy === 'cancel' ? 'Dismissing…' : 'Skip'}
-        </button>
+        {agent === 'claude' ? (
+          <button
+            type="button"
+            disabled={!!busy}
+            onClick={() => void cancel()}
+            className="rounded-[6px] px-2 py-1 text-[11.5px] text-muted-foreground/80 hover:bg-foreground/5 hover:text-foreground disabled:cursor-wait disabled:opacity-60"
+          >
+            {busy === 'cancel' ? 'Dismissing…' : 'Skip'}
+          </button>
+        ) : null}
         <button
           type="button"
           disabled={!!busy || !canSubmit}
@@ -1321,9 +1470,11 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [submit, handleStop, agentWindow.id])
 
-  const messages = snapshot?.messages ?? []
+  const messages = useMemo(() => snapshot?.messages ?? [], [snapshot?.messages])
   const hasMessages = messages.length > 0
   const groups = useMemo(() => groupMessages(messages), [messages])
+  const sessionDiffStats = useMemo(() => sumDiffStats(messages), [messages])
+  const [diffsPanelOpen, setDiffsPanelOpen] = useState(false)
   const lastTurnIndex = (() => {
     for (let i = groups.length - 1; i >= 0; i -= 1) {
       if (groups[i].kind === 'turn') return i
@@ -1337,7 +1488,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
 
   return (
     <div
-      className="agent-chat-panel flex h-full min-h-0 flex-col"
+      className="agent-chat-panel flex h-full min-h-0"
       data-focus-zone="chat"
       onDragOver={(event) => {
         if (event.dataTransfer?.types.includes('Files')) {
@@ -1353,539 +1504,594 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         void absorbDroppedImages(event.dataTransfer)
       }}
     >
-      <div className="relative flex min-h-0 flex-1 flex-col">
-        <div
-          className="min-h-0 flex-1"
-          style={{
-            maskImage:
-              'linear-gradient(to bottom, transparent 0%, black 28px, black calc(100% - 20px), transparent 100%)',
-            WebkitMaskImage:
-              'linear-gradient(to bottom, transparent 0%, black 28px, black calc(100% - 20px), transparent 100%)',
-          }}
-        >
-          <ScrollArea
-            className="h-full min-w-0"
-            viewportRef={scrollViewportRef}
-            viewportClassName="rounded-none"
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="relative flex min-h-0 flex-1 flex-col">
+          <div
+            className="min-h-0 flex-1"
+            style={{
+              maskImage:
+                'linear-gradient(to bottom, transparent 0%, black 28px, black calc(100% - 20px), transparent 100%)',
+              WebkitMaskImage:
+                'linear-gradient(to bottom, transparent 0%, black 28px, black calc(100% - 20px), transparent 100%)',
+            }}
           >
-            <div className="mx-auto min-h-full max-w-3xl py-6">
-              {!hasMessages ? (
-                <div className="flex min-h-[360px] flex-col items-center justify-center gap-6 py-10">
-                  <div className="relative flex size-14 items-center justify-center rounded-[16px] border border-border/60 bg-background/85 shadow-middle">
-                    <AgentIcon agent={agentWindow.agent} className="size-7" />
-                    <span
+            <ScrollArea
+              className="h-full min-w-0"
+              viewportRef={scrollViewportRef}
+              viewportClassName="rounded-none"
+            >
+              <div className="mx-auto min-h-full max-w-3xl py-6">
+                {!hasMessages ? (
+                  <div className="flex min-h-[360px] flex-col items-center justify-center gap-6 py-10">
+                    <div className="relative flex size-14 items-center justify-center rounded-[16px] border border-border/60 bg-background/85 shadow-middle">
+                      <AgentIcon agent={agentWindow.agent} className="size-7" />
+                      <span
+                        className={cn(
+                          'absolute -right-1 -bottom-1 size-3 rounded-full ring-2 ring-background',
+                          isRunning
+                            ? 'bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.6)]'
+                            : 'bg-muted-foreground/40',
+                        )}
+                      />
+                    </div>
+                    <div className="space-y-1.5 text-center">
+                      <p className="text-[15px] font-semibold tracking-tight text-foreground">
+                        New {getAgentDisplayName(agentWindow.agent)} session
+                      </p>
+                      {cwdDisplay ? (
+                        <p className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-muted-foreground/85">
+                          <Folder className="h-3 w-3" />
+                          <span className="font-mono">{cwdDisplay}</span>
+                        </p>
+                      ) : (
+                        <p className="text-[11.5px] text-muted-foreground/60">
+                          No working directory
+                        </p>
+                      )}
+                    </div>
+                    <AgentEmptyStateHint />
+                    <div className="mt-1 flex flex-col items-stretch gap-1 text-[11.5px] text-muted-foreground/70">
+                      {(['stop', 'after-tool', 'after-turn'] as const).map((mode) => {
+                        const meta = QUEUE_MODE_META[mode]
+                        return (
+                          <div
+                            key={mode}
+                            className="flex items-center justify-between gap-3 rounded-[8px] border border-border/40 bg-background/40 px-2.5 py-1 shadow-minimal"
+                          >
+                            <div className="flex items-center gap-1.5">
+                              <meta.Icon className={cn('size-3.5 shrink-0', meta.tint)} />
+                              <span className="text-foreground/80">{meta.label}</span>
+                            </div>
+                            <Kbd className="h-[18px] min-w-[18px] rounded-[4px] bg-foreground/6 px-1 text-[10px] text-muted-foreground/80">
+                              {meta.shortcut}
+                            </Kbd>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {groups.map((group, idx) => (
+                      <GroupRenderer
+                        key={group.key}
+                        group={group}
+                        agent={agentWindow.agent}
+                        isStreamingLastTurn={isRunning && idx === lastTurnIndex}
+                      />
+                    ))}
+                    {showPendingLoader ? (
+                      <div className="flex justify-start px-2">
+                        <PendingTurnIndicator agent={agentWindow.agent} />
+                      </div>
+                    ) : null}
+                  </div>
+                )}
+              </div>
+            </ScrollArea>
+          </div>
+
+          <div className="relative shrink-0 px-4 pb-4 pt-2">
+            <div className="mx-auto max-w-3xl">
+              {snapshot?.error ? (
+                <div className="mb-2 rounded-[12px] border border-red-500/25 bg-red-500/8 px-3 py-2 text-[12px] text-red-300 shadow-minimal">
+                  {snapshot.error}
+                </div>
+              ) : null}
+              {snapshot?.pendingPlanApproval ? (
+                <PlanApprovalBanner
+                  key={snapshot.pendingPlanApproval.createdAt}
+                  windowId={agentWindow.id}
+                />
+              ) : null}
+              {snapshot?.pendingApproval ? (
+                <AgentApprovalBanner
+                  key={snapshot.pendingApproval.createdAt}
+                  windowId={agentWindow.id}
+                  approval={snapshot.pendingApproval}
+                />
+              ) : null}
+              {snapshot?.pendingQuestion ? (
+                <QuestionBanner
+                  key={snapshot.pendingQuestion.createdAt}
+                  windowId={agentWindow.id}
+                  agent={agentWindow.agent}
+                  questions={snapshot.pendingQuestion.questions}
+                />
+              ) : null}
+              {snapshot?.codexPlan ? <CodexPlanBanner plan={snapshot.codexPlan} /> : null}
+              {hasDiffStats(sessionDiffStats) ? (
+                <button
+                  type="button"
+                  onClick={() => setDiffsPanelOpen((v) => !v)}
+                  className={cn(
+                    'mb-2 flex w-full items-center gap-2 rounded-[10px] border border-border/40 bg-background/60 px-2.5 py-1.5 text-[12px] text-foreground/85 shadow-minimal transition-colors hover:border-foreground/30 hover:bg-foreground/5',
+                    diffsPanelOpen && 'border-foreground/40 bg-foreground/5',
+                  )}
+                  title="Show session diffs"
+                >
+                  <FileText className="size-3.5 shrink-0 text-muted-foreground/80" />
+                  <span className="min-w-0 flex-1 text-left text-muted-foreground/90">
+                    Session diffs
+                  </span>
+                  <span className="shrink-0 text-[11px] tabular-nums">
+                    {sessionDiffStats.additions > 0 ? (
+                      <span className="text-emerald-400/90">+{sessionDiffStats.additions}</span>
+                    ) : null}
+                    {sessionDiffStats.additions > 0 && sessionDiffStats.deletions > 0 ? ' ' : ''}
+                    {sessionDiffStats.deletions > 0 ? (
+                      <span className="text-rose-400/90">-{sessionDiffStats.deletions}</span>
+                    ) : null}
+                  </span>
+                </button>
+              ) : null}
+              {resumeGated && (queuedMessages.length > 0 || midTurnDetected) ? (
+                <div className="mb-2 flex items-center gap-2 rounded-[10px] border border-amber-400/25 bg-amber-400/5 px-2.5 py-1.5 text-[12px] text-foreground/90 shadow-minimal">
+                  <Clock className="size-3.5 shrink-0 text-amber-400/90" />
+                  <span className="min-w-0 flex-1 truncate text-muted-foreground/90">
+                    {queuedMessages.length > 0
+                      ? queuedMessages.length === 1
+                        ? '1 message queued from your last session.'
+                        : `${queuedMessages.length} messages queued from your last session.`
+                      : 'Your last session ended mid-turn.'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setResumeGated(false)
+                      setMidTurnDetected(false)
+                      if (queuedMessages.length > 0) {
+                        setQueueCollapsed(false)
+                      } else {
+                        void sendToAgent('Please continue where you left off.', [], {
+                          model: agentWindow.model ?? null,
+                          thinkingLevel: agentWindow.thinkingLevel ?? null,
+                          permissionMode: agentWindow.permissionMode ?? null,
+                        })
+                      }
+                    }}
+                    className="inline-flex shrink-0 items-center gap-1 rounded-[8px] bg-amber-400/90 px-2.5 py-1 text-[11.5px] font-medium text-background transition-colors hover:bg-amber-400"
+                  >
+                    <ArrowUp className="size-3" />
+                    Continue
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (queuedMessages.length > 0) setQueuedMessages(() => [])
+                      setResumeGated(false)
+                      setMidTurnDetected(false)
+                    }}
+                    aria-label={queuedMessages.length > 0 ? 'Discard queued messages' : 'Dismiss'}
+                    className="shrink-0 rounded p-1 text-muted-foreground/60 hover:bg-foreground/10 hover:text-foreground"
+                    title={queuedMessages.length > 0 ? 'Discard queued messages' : 'Dismiss'}
+                  >
+                    <X className="size-3.5" />
+                  </button>
+                </div>
+              ) : null}
+              {queuedMessages.length > 0 ? (
+                <div className="mb-2 select-none">
+                  <button
+                    type="button"
+                    onClick={() => setQueueCollapsed((v) => !v)}
+                    className="flex w-full items-center gap-2 rounded-[8px] px-2 py-1 text-left transition-colors hover:bg-foreground/5 focus:outline-none"
+                    title={queueCollapsed ? 'Show queued messages' : 'Hide queued messages'}
+                  >
+                    <span className="shrink-0 rounded-[4px] bg-background px-1.5 py-0.5 text-[10px] font-medium tabular-nums shadow-minimal">
+                      {queuedMessages.length}
+                    </span>
+                    {(() => {
+                      const next = queuedMessages[0]
+                      const meta = QUEUE_MODE_META[next.mode]
+                      return (
+                        <meta.Icon
+                          className={cn('size-3.5 shrink-0', meta.tint)}
+                          aria-label={meta.label}
+                        />
+                      )
+                    })()}
+                    <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground">
+                      {queuedMessages[0].text.replace(/\n/g, ' ') || '(attached files)'}
+                    </span>
+                    <ChevronRight
                       className={cn(
-                        'absolute -right-1 -bottom-1 size-3 rounded-full ring-2 ring-background',
-                        isRunning
-                          ? 'bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.6)]'
-                          : 'bg-muted-foreground/40',
+                        'ml-auto size-3.5 shrink-0 text-muted-foreground/70 transition-transform',
+                        !queueCollapsed && 'rotate-90',
                       )}
                     />
-                  </div>
-                  <div className="space-y-1.5 text-center">
-                    <p className="text-[15px] font-semibold tracking-tight text-foreground">
-                      New {getAgentDisplayName(agentWindow.agent)} session
-                    </p>
-                    {cwdDisplay ? (
-                      <p className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-muted-foreground/85">
-                        <Folder className="h-3 w-3" />
-                        <span className="font-mono">{cwdDisplay}</span>
-                      </p>
-                    ) : (
-                      <p className="text-[11.5px] text-muted-foreground/60">No working directory</p>
-                    )}
-                  </div>
-                  <AgentEmptyStateHint />
-                  <div className="mt-1 flex flex-col items-stretch gap-1 text-[11.5px] text-muted-foreground/70">
-                    {(['stop', 'after-tool', 'after-turn'] as const).map((mode) => {
-                      const meta = QUEUE_MODE_META[mode]
-                      return (
-                        <div
-                          key={mode}
-                          className="flex items-center justify-between gap-3 rounded-[8px] border border-border/40 bg-background/40 px-2.5 py-1 shadow-minimal"
-                        >
-                          <div className="flex items-center gap-1.5">
-                            <meta.Icon className={cn('size-3.5 shrink-0', meta.tint)} />
-                            <span className="text-foreground/80">{meta.label}</span>
-                          </div>
-                          <Kbd className="h-[18px] min-w-[18px] rounded-[4px] bg-foreground/6 px-1 text-[10px] text-muted-foreground/80">
-                            {meta.shortcut}
-                          </Kbd>
-                        </div>
-                      )
-                    })}
-                  </div>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {groups.map((group, idx) => (
-                    <GroupRenderer
-                      key={group.key}
-                      group={group}
-                      agent={agentWindow.agent}
-                      isStreamingLastTurn={isRunning && idx === lastTurnIndex}
-                    />
-                  ))}
-                  {showPendingLoader ? (
-                    <div className="flex justify-start px-2">
-                      <PendingTurnIndicator agent={agentWindow.agent} />
-                    </div>
-                  ) : null}
-                </div>
-              )}
-            </div>
-          </ScrollArea>
-        </div>
-
-        <div className="relative shrink-0 px-4 pb-4 pt-2">
-          <div className="mx-auto max-w-3xl">
-            {snapshot?.error ? (
-              <div className="mb-2 rounded-[12px] border border-red-500/25 bg-red-500/8 px-3 py-2 text-[12px] text-red-300 shadow-minimal">
-                {snapshot.error}
-              </div>
-            ) : null}
-            {snapshot?.pendingPlanApproval ? (
-              <PlanApprovalBanner windowId={agentWindow.id} />
-            ) : null}
-            {snapshot?.pendingQuestion ? (
-              <QuestionBanner
-                windowId={agentWindow.id}
-                questions={snapshot.pendingQuestion.questions}
-              />
-            ) : null}
-            {resumeGated && (queuedMessages.length > 0 || midTurnDetected) ? (
-              <div className="mb-2 flex items-center gap-2 rounded-[10px] border border-amber-400/25 bg-amber-400/5 px-2.5 py-1.5 text-[12px] text-foreground/90 shadow-minimal">
-                <Clock className="size-3.5 shrink-0 text-amber-400/90" />
-                <span className="min-w-0 flex-1 truncate text-muted-foreground/90">
-                  {queuedMessages.length > 0
-                    ? queuedMessages.length === 1
-                      ? '1 message queued from your last session.'
-                      : `${queuedMessages.length} messages queued from your last session.`
-                    : 'Your last session ended mid-turn.'}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setResumeGated(false)
-                    setMidTurnDetected(false)
-                    if (queuedMessages.length > 0) {
-                      setQueueCollapsed(false)
-                    } else {
-                      void sendToAgent('Please continue where you left off.', [], {
-                        model: agentWindow.model ?? null,
-                        thinkingLevel: agentWindow.thinkingLevel ?? null,
-                        permissionMode: agentWindow.permissionMode ?? null,
-                      })
-                    }
-                  }}
-                  className="inline-flex shrink-0 items-center gap-1 rounded-[8px] bg-amber-400/90 px-2.5 py-1 text-[11.5px] font-medium text-background transition-colors hover:bg-amber-400"
-                >
-                  <ArrowUp className="size-3" />
-                  Continue
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (queuedMessages.length > 0) setQueuedMessages(() => [])
-                    setResumeGated(false)
-                    setMidTurnDetected(false)
-                  }}
-                  aria-label={queuedMessages.length > 0 ? 'Discard queued messages' : 'Dismiss'}
-                  className="shrink-0 rounded p-1 text-muted-foreground/60 hover:bg-foreground/10 hover:text-foreground"
-                  title={queuedMessages.length > 0 ? 'Discard queued messages' : 'Dismiss'}
-                >
-                  <X className="size-3.5" />
-                </button>
-              </div>
-            ) : null}
-            {queuedMessages.length > 0 ? (
-              <div className="mb-2 select-none">
-                <button
-                  type="button"
-                  onClick={() => setQueueCollapsed((v) => !v)}
-                  className="flex w-full items-center gap-2 rounded-[8px] px-2 py-1 text-left transition-colors hover:bg-foreground/5 focus:outline-none"
-                  title={queueCollapsed ? 'Show queued messages' : 'Hide queued messages'}
-                >
-                  <span className="shrink-0 rounded-[4px] bg-background px-1.5 py-0.5 text-[10px] font-medium tabular-nums shadow-minimal">
-                    {queuedMessages.length}
-                  </span>
-                  {(() => {
-                    const next = queuedMessages[0]
-                    const meta = QUEUE_MODE_META[next.mode]
-                    return (
-                      <meta.Icon
-                        className={cn('size-3.5 shrink-0', meta.tint)}
-                        aria-label={meta.label}
-                      />
-                    )
-                  })()}
-                  <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground">
-                    {queuedMessages[0].text.replace(/\n/g, ' ') || '(attached files)'}
-                  </span>
-                  <ChevronRight
-                    className={cn(
-                      'ml-auto size-3.5 shrink-0 text-muted-foreground/70 transition-transform',
-                      !queueCollapsed && 'rotate-90',
-                    )}
-                  />
-                </button>
-                {!queueCollapsed ? (
-                  <div className="mt-1 flex max-h-[108px] flex-col gap-1 overflow-y-auto overscroll-contain pr-0.5">
-                    {queuedMessages.map((entry, i) => {
-                      const meta = QUEUE_MODE_META[entry.mode]
-                      const modelLabel = entry.model
-                        ? prettifyModelId(agentWindow.agent, entry.model)
-                        : null
-                      const thinkingLabel =
-                        entry.thinkingLevel && entry.thinkingLevel !== 'off'
-                          ? THINKING_LEVEL_LABEL_MAP[entry.thinkingLevel]
+                  </button>
+                  {!queueCollapsed ? (
+                    <div className="mt-1 flex max-h-[108px] flex-col gap-1 overflow-y-auto overscroll-contain pr-0.5">
+                      {queuedMessages.map((entry, i) => {
+                        const meta = QUEUE_MODE_META[entry.mode]
+                        const modelLabel = entry.model
+                          ? prettifyModelId(agentWindow.agent, entry.model)
                           : null
-                      const permissionOption = entry.permissionMode
-                        ? PERMISSION_MODE_OPTIONS.find((o) => o.id === entry.permissionMode)
-                        : null
-                      const isEditing = editingIndex === i
-                      const isDragging = dragIndex === i
-                      const isDropTarget =
-                        dragOverIndex === i && dragIndex !== null && dragIndex !== i
-                      return (
-                        <div
-                          key={`${i}-${entry.text.slice(0, 16)}`}
-                          draggable={!isEditing}
-                          onDragStart={(e) => {
-                            if (isEditing) return
-                            setDragIndex(i)
-                            e.dataTransfer.effectAllowed = 'move'
-                            try {
-                              e.dataTransfer.setData('text/plain', String(i))
-                            } catch {
-                              // Safari may throw if dataTransfer is locked; drag still works.
+                        const thinkingLabel =
+                          entry.thinkingLevel && entry.thinkingLevel !== 'off'
+                            ? THINKING_LEVEL_LABEL_MAP[entry.thinkingLevel]
+                            : null
+                        const permissionOption = entry.permissionMode
+                          ? PERMISSION_MODE_OPTIONS.find((o) => o.id === entry.permissionMode)
+                          : null
+                        const isEditing = editingIndex === i
+                        const isDragging = dragIndex === i
+                        const isDropTarget =
+                          dragOverIndex === i && dragIndex !== null && dragIndex !== i
+                        return (
+                          <div
+                            key={`${i}-${entry.text.slice(0, 16)}`}
+                            draggable={!isEditing}
+                            onDragStart={(e) => {
+                              if (isEditing) return
+                              setDragIndex(i)
+                              e.dataTransfer.effectAllowed = 'move'
+                              try {
+                                e.dataTransfer.setData('text/plain', String(i))
+                              } catch {
+                                // Safari may throw if dataTransfer is locked; drag still works.
+                              }
+                            }}
+                            onDragOver={(e) => {
+                              if (dragIndex === null || dragIndex === i) return
+                              e.preventDefault()
+                              e.dataTransfer.dropEffect = 'move'
+                              if (dragOverIndex !== i) setDragOverIndex(i)
+                            }}
+                            onDragLeave={() => {
+                              setDragOverIndex((prev) => (prev === i ? null : prev))
+                            }}
+                            onDrop={(e) => {
+                              e.preventDefault()
+                              if (dragIndex !== null && dragIndex !== i) {
+                                reorderQueue(dragIndex, i)
+                              }
+                              setDragIndex(null)
+                              setDragOverIndex(null)
+                            }}
+                            onDragEnd={() => {
+                              setDragIndex(null)
+                              setDragOverIndex(null)
+                            }}
+                            className={cn(
+                              'group/queued flex gap-2 rounded-[10px] border border-border/50 bg-muted/30 px-2.5 py-1.5 text-[12px] text-foreground/85 shadow-minimal transition-colors',
+                              isEditing ? 'items-start' : 'items-center',
+                              isEditing && 'border-foreground/30 bg-muted/50',
+                              isDragging && 'opacity-50',
+                              isDropTarget && 'border-foreground/40 bg-foreground/5',
+                            )}
+                            title={
+                              isEditing
+                                ? undefined
+                                : `${meta.shortcut} · ${meta.hint} · drag to reorder`
                             }
-                          }}
-                          onDragOver={(e) => {
-                            if (dragIndex === null || dragIndex === i) return
-                            e.preventDefault()
-                            e.dataTransfer.dropEffect = 'move'
-                            if (dragOverIndex !== i) setDragOverIndex(i)
-                          }}
-                          onDragLeave={() => {
-                            setDragOverIndex((prev) => (prev === i ? null : prev))
-                          }}
-                          onDrop={(e) => {
-                            e.preventDefault()
-                            if (dragIndex !== null && dragIndex !== i) {
-                              reorderQueue(dragIndex, i)
-                            }
-                            setDragIndex(null)
-                            setDragOverIndex(null)
-                          }}
-                          onDragEnd={() => {
-                            setDragIndex(null)
-                            setDragOverIndex(null)
-                          }}
-                          className={cn(
-                            'group/queued flex gap-2 rounded-[10px] border border-border/50 bg-muted/30 px-2.5 py-1.5 text-[12px] text-foreground/85 shadow-minimal transition-colors',
-                            isEditing ? 'items-start' : 'items-center',
-                            isEditing && 'border-foreground/30 bg-muted/50',
-                            isDragging && 'opacity-50',
-                            isDropTarget && 'border-foreground/40 bg-foreground/5',
-                          )}
-                          title={
-                            isEditing
-                              ? undefined
-                              : `${meta.shortcut} · ${meta.hint} · drag to reorder`
-                          }
-                        >
-                          {!isEditing ? (
-                            <span
-                              className="flex size-3.5 shrink-0 cursor-grab items-center justify-center text-muted-foreground/40 opacity-0 transition-opacity hover:text-foreground/70 group-hover/queued:opacity-100 active:cursor-grabbing"
-                              aria-label="Drag to reorder"
-                              title="Drag to reorder"
+                          >
+                            {!isEditing ? (
+                              <span
+                                className="flex size-3.5 shrink-0 cursor-grab items-center justify-center text-muted-foreground/40 opacity-0 transition-opacity hover:text-foreground/70 group-hover/queued:opacity-100 active:cursor-grabbing"
+                                aria-label="Drag to reorder"
+                                title="Drag to reorder"
+                              >
+                                <GripVertical className="size-3" />
+                              </span>
+                            ) : null}
+                            <meta.Icon
+                              className={cn(
+                                'size-3.5 shrink-0',
+                                isEditing && 'mt-[3px]',
+                                meta.tint,
+                              )}
+                              aria-label={meta.label}
+                            />
+                            <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                              {isEditing ? (
+                                <textarea
+                                  autoFocus
+                                  value={editDraft}
+                                  onChange={(e) => setEditDraft(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter' && !e.shiftKey) {
+                                      e.preventDefault()
+                                      e.stopPropagation()
+                                      commitEditQueued()
+                                    } else if (e.key === 'Escape') {
+                                      e.preventDefault()
+                                      e.stopPropagation()
+                                      cancelEditQueued()
+                                    }
+                                  }}
+                                  onBlur={commitEditQueued}
+                                  rows={Math.min(6, Math.max(1, editDraft.split('\n').length))}
+                                  className="min-w-0 w-full resize-none border-0 bg-transparent p-0 text-[12px] leading-[1.45] text-foreground/95 outline-none"
+                                />
+                              ) : (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() => beginEditQueued(i)}
+                                    className="min-w-0 flex-1 truncate text-left text-muted-foreground/90 hover:text-foreground"
+                                    title="Click to edit"
+                                  >
+                                    {entry.text.replace(/\n/g, ' ') ||
+                                      (entry.attachments.length > 0 ? '(attached files)' : '')}
+                                  </button>
+                                  {entry.attachments.length > 0 ? (
+                                    <div className="flex shrink-0 items-center gap-1">
+                                      {entry.attachments.slice(0, 4).map((p) => (
+                                        <QueueAttachmentThumb key={p} path={p} />
+                                      ))}
+                                      {entry.attachments.length > 4 ? (
+                                        <span className="text-[10px] tabular-nums text-muted-foreground/70">
+                                          +{entry.attachments.length - 4}
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                  ) : null}
+                                </>
+                              )}
+                            </div>
+                            <div
+                              className={cn(
+                                'flex shrink-0 items-center gap-1 text-[10.5px] text-muted-foreground/80',
+                                isEditing && 'self-start',
+                              )}
                             >
-                              <GripVertical className="size-3" />
-                            </span>
-                          ) : null}
-                          <meta.Icon
-                            className={cn('size-3.5 shrink-0', isEditing && 'mt-[3px]', meta.tint)}
-                            aria-label={meta.label}
-                          />
-                          <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                              {modelLabel ? (
+                                <span
+                                  className="rounded-[6px] border border-border/40 bg-background/40 px-1.5 py-px"
+                                  title={`Model: ${modelLabel}`}
+                                >
+                                  {modelLabel}
+                                </span>
+                              ) : null}
+                              {thinkingLabel ? (
+                                <span
+                                  className="rounded-[6px] border border-border/40 bg-background/40 px-1.5 py-px"
+                                  title={`Thinking: ${thinkingLabel}`}
+                                >
+                                  {thinkingLabel}
+                                </span>
+                              ) : null}
+                              {permissionOption ? (
+                                <span
+                                  className={cn(
+                                    'inline-flex items-center gap-1 rounded-[6px] border border-border/40 bg-background/40 px-1.5 py-px',
+                                    permissionOption.tint,
+                                  )}
+                                  title={`Permission: ${permissionOption.label}`}
+                                >
+                                  <permissionOption.Icon className="size-2.5" />
+                                  {permissionOption.short}
+                                </span>
+                              ) : null}
+                            </div>
                             {isEditing ? (
-                              <textarea
-                                autoFocus
-                                value={editDraft}
-                                onChange={(e) => setEditDraft(e.target.value)}
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter' && !e.shiftKey) {
+                              <>
+                                <button
+                                  type="button"
+                                  onMouseDown={(e) => {
+                                    // prevent textarea blur from firing commit before this click handler
                                     e.preventDefault()
-                                    e.stopPropagation()
-                                    commitEditQueued()
-                                  } else if (e.key === 'Escape') {
-                                    e.preventDefault()
-                                    e.stopPropagation()
-                                    cancelEditQueued()
-                                  }
-                                }}
-                                onBlur={commitEditQueued}
-                                rows={Math.min(6, Math.max(1, editDraft.split('\n').length))}
-                                className="min-w-0 w-full resize-none border-0 bg-transparent p-0 text-[12px] leading-[1.45] text-foreground/95 outline-none"
-                              />
+                                  }}
+                                  onClick={commitEditQueued}
+                                  aria-label="Save edit"
+                                  title="Save (Enter)"
+                                  className="shrink-0 rounded p-0.5 text-success/80 hover:bg-foreground/10 hover:text-success"
+                                >
+                                  <Check className="size-3" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onMouseDown={(e) => e.preventDefault()}
+                                  onClick={cancelEditQueued}
+                                  aria-label="Cancel edit"
+                                  title="Cancel (Esc)"
+                                  className="shrink-0 rounded p-0.5 text-muted-foreground/60 hover:bg-foreground/10 hover:text-foreground"
+                                >
+                                  <X className="size-3" />
+                                </button>
+                              </>
                             ) : (
                               <>
                                 <button
                                   type="button"
                                   onClick={() => beginEditQueued(i)}
-                                  className="min-w-0 flex-1 truncate text-left text-muted-foreground/90 hover:text-foreground"
-                                  title="Click to edit"
+                                  aria-label="Edit queued message"
+                                  title="Edit"
+                                  className="shrink-0 rounded p-0.5 text-muted-foreground/50 opacity-0 transition-opacity hover:bg-foreground/10 hover:text-foreground group-hover/queued:opacity-100"
                                 >
-                                  {entry.text.replace(/\n/g, ' ') ||
-                                    (entry.attachments.length > 0 ? '(attached files)' : '')}
+                                  <Pencil className="size-3" />
                                 </button>
-                                {entry.attachments.length > 0 ? (
-                                  <div className="flex shrink-0 items-center gap-1">
-                                    {entry.attachments.slice(0, 4).map((p) => (
-                                      <QueueAttachmentThumb key={p} path={p} />
-                                    ))}
-                                    {entry.attachments.length > 4 ? (
-                                      <span className="text-[10px] tabular-nums text-muted-foreground/70">
-                                        +{entry.attachments.length - 4}
-                                      </span>
-                                    ) : null}
-                                  </div>
-                                ) : null}
+                                <button
+                                  type="button"
+                                  onClick={() => unqueueMessage(i)}
+                                  aria-label="Remove queued message"
+                                  className="shrink-0 rounded p-0.5 text-muted-foreground/50 hover:bg-foreground/10 hover:text-foreground"
+                                >
+                                  <X className="size-3" />
+                                </button>
                               </>
                             )}
                           </div>
-                          <div
-                            className={cn(
-                              'flex shrink-0 items-center gap-1 text-[10.5px] text-muted-foreground/80',
-                              isEditing && 'self-start',
-                            )}
-                          >
-                            {modelLabel ? (
-                              <span
-                                className="rounded-[6px] border border-border/40 bg-background/40 px-1.5 py-px"
-                                title={`Model: ${modelLabel}`}
-                              >
-                                {modelLabel}
-                              </span>
-                            ) : null}
-                            {thinkingLabel ? (
-                              <span
-                                className="rounded-[6px] border border-border/40 bg-background/40 px-1.5 py-px"
-                                title={`Thinking: ${thinkingLabel}`}
-                              >
-                                {thinkingLabel}
-                              </span>
-                            ) : null}
-                            {permissionOption ? (
-                              <span
-                                className={cn(
-                                  'inline-flex items-center gap-1 rounded-[6px] border border-border/40 bg-background/40 px-1.5 py-px',
-                                  permissionOption.tint,
-                                )}
-                                title={`Permission: ${permissionOption.label}`}
-                              >
-                                <permissionOption.Icon className="size-2.5" />
-                                {permissionOption.short}
-                              </span>
-                            ) : null}
-                          </div>
-                          {isEditing ? (
-                            <>
-                              <button
-                                type="button"
-                                onMouseDown={(e) => {
-                                  // prevent textarea blur from firing commit before this click handler
-                                  e.preventDefault()
-                                }}
-                                onClick={commitEditQueued}
-                                aria-label="Save edit"
-                                title="Save (Enter)"
-                                className="shrink-0 rounded p-0.5 text-success/80 hover:bg-foreground/10 hover:text-success"
-                              >
-                                <Check className="size-3" />
-                              </button>
-                              <button
-                                type="button"
-                                onMouseDown={(e) => e.preventDefault()}
-                                onClick={cancelEditQueued}
-                                aria-label="Cancel edit"
-                                title="Cancel (Esc)"
-                                className="shrink-0 rounded p-0.5 text-muted-foreground/60 hover:bg-foreground/10 hover:text-foreground"
-                              >
-                                <X className="size-3" />
-                              </button>
-                            </>
-                          ) : (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => beginEditQueued(i)}
-                                aria-label="Edit queued message"
-                                title="Edit"
-                                className="shrink-0 rounded p-0.5 text-muted-foreground/50 opacity-0 transition-opacity hover:bg-foreground/10 hover:text-foreground group-hover/queued:opacity-100"
-                              >
-                                <Pencil className="size-3" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => unqueueMessage(i)}
-                                aria-label="Remove queued message"
-                                className="shrink-0 rounded p-0.5 text-muted-foreground/50 hover:bg-foreground/10 hover:text-foreground"
-                              >
-                                <X className="size-3" />
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      )
-                    })}
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-            <div
-              className={cn(
-                'group/composer relative overflow-hidden rounded-[14px] border bg-background/95 shadow-middle transition-colors',
-                isComposerFocused ? 'border-foreground/25' : 'border-border/60 hover:border-border',
-              )}
-            >
-              {attachments.length > 0 ? (
-                <div className="flex flex-wrap items-center gap-1.5 border-b border-border/30 px-2.5 pb-2 pt-2">
-                  {attachments.map((p) => (
-                    <ComposerAttachmentChip key={p} path={p} onRemove={() => removeAttachment(p)} />
-                  ))}
+                        )
+                      })}
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
-              <textarea
-                ref={textareaRef}
-                value={input}
-                onChange={(event) => setInput(event.target.value)}
-                onFocus={() => setIsComposerFocused(true)}
-                onBlur={() => setIsComposerFocused(false)}
-                onKeyDown={handleKeyDown}
-                onPaste={async (event) => {
-                  const items = Array.from(event.clipboardData?.items ?? [])
-                  const imageItems = items.filter((it) => it.type.startsWith('image/'))
-                  if (imageItems.length === 0) return // fall through to default text paste
-                  event.preventDefault()
-                  const saved: string[] = []
-                  for (const item of imageItems) {
-                    const file = item.getAsFile()
-                    if (!file) continue
-                    const buf = new Uint8Array(await file.arrayBuffer())
-                    const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg')
-                    const name =
-                      file.name && file.name.trim() ? file.name : `clipboard-${Date.now()}.${ext}`
-                    try {
-                      const stored = await window.cells.app.saveTempFile(buf, name)
-                      if (stored) saved.push(stored)
-                    } catch (err) {
-                      console.error('[agent-chat] save pasted image failed', err)
-                    }
-                  }
-                  if (saved.length > 0) {
-                    setAttachments((prev) => Array.from(new Set([...prev, ...saved])))
-                  }
-                }}
-                placeholder={composerPlaceholder}
-                spellCheck={false}
-                rows={Math.min(8, Math.max(3, input.split('\n').length))}
-                className="block w-full min-h-[72px] resize-none bg-transparent px-4 pt-3.5 pb-2 text-[14px] leading-6 text-foreground placeholder:text-muted-foreground/55 outline-none border-0 focus:outline-none focus-visible:outline-none"
-              />
-              <div className="flex items-center gap-1.5 px-2 pb-2 pt-0.5">
-                <button
-                  type="button"
-                  onClick={pickAttachments}
-                  aria-label="Attach files"
-                  className="inline-flex h-7 shrink-0 items-center justify-center rounded-[8px] bg-foreground/5 px-2 text-muted-foreground/85 transition-colors hover:bg-foreground/10 hover:text-foreground"
-                  title="Attach files"
-                >
-                  <Paperclip className="size-3.5" />
-                </button>
-                <PermissionPicker
-                  value={agentWindow.permissionMode ?? getDefaultPermissionMode()}
-                  onChange={(mode: AgentPermissionMode) => {
-                    useStore.getState().syncAgentWindow(agentWindow.id, { permissionMode: mode })
-                    // Live-update the running session so the agent picks up
-                    // the new mode on the NEXT turn without needing a restart.
-                    void window.cells.agentSession
-                      .updatePermissionMode(agentWindow.id, mode)
-                      .catch((err: unknown) =>
-                        console.error('[agent-chat] updatePermissionMode failed', err),
-                      )
-                  }}
-                />
-                <ModelPicker
-                  agent={agentWindow.agent}
-                  value={agentWindow.model}
-                  contextLength={agentWindow.contextLength}
-                  onChange={(modelId) =>
-                    useStore.getState().syncAgentWindow(agentWindow.id, { model: modelId })
-                  }
-                  onContextLengthChange={(length: AgentContextLength) => {
-                    useStore.getState().syncAgentWindow(agentWindow.id, { contextLength: length })
-                    // Claude session has to be reopened to pick up / drop the
-                    // context-1m beta flag — the backend handles that inside
-                    // updateContextLength by closing the runtime.
-                    void window.cells.agentSession
-                      .updateContextLength(agentWindow.id, length)
-                      .catch((err: unknown) =>
-                        console.error('[agent-chat] updateContextLength failed', err),
-                      )
-                  }}
-                />
-                <ThinkingPicker
-                  agent={agentWindow.agent}
-                  model={agentWindow.model}
-                  value={agentWindow.thinkingLevel}
-                  onChange={(level) =>
-                    useStore.getState().syncAgentWindow(agentWindow.id, { thinkingLevel: level })
-                  }
-                />
-                <ContextUsageIndicator
-                  usage={snapshot?.usage ?? null}
-                  agent={agentWindow.agent}
-                  contextLength={agentWindow.contextLength}
-                />
-                <div className="flex-1" />
-                {!isRunning ? (
-                  <span className="hidden items-center gap-1 text-[10.5px] text-muted-foreground/60 sm:inline-flex">
-                    <Kbd className="h-[18px] min-w-[18px] rounded-[4px] bg-foreground/6 px-1 text-[10px] text-muted-foreground/80">
-                      ↵
-                    </Kbd>
-                    <span>send</span>
-                  </span>
+              <div
+                className={cn(
+                  'group/composer relative overflow-hidden rounded-[14px] border bg-background/95 shadow-middle transition-colors',
+                  isComposerFocused
+                    ? 'border-foreground/25'
+                    : 'border-border/60 hover:border-border',
+                )}
+              >
+                {attachments.length > 0 ? (
+                  <div className="flex flex-wrap items-center gap-1.5 border-b border-border/30 px-2.5 pb-2 pt-2">
+                    {attachments.map((p) => (
+                      <ComposerAttachmentChip
+                        key={p}
+                        path={p}
+                        onRemove={() => removeAttachment(p)}
+                      />
+                    ))}
+                  </div>
                 ) : null}
-                <button
-                  type="button"
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => {
-                    if (isRunning) void handleStop()
-                    else void submit()
+                <textarea
+                  ref={textareaRef}
+                  value={input}
+                  onChange={(event) => setInput(event.target.value)}
+                  onFocus={() => setIsComposerFocused(true)}
+                  onBlur={() => setIsComposerFocused(false)}
+                  onKeyDown={handleKeyDown}
+                  onPaste={async (event) => {
+                    const items = Array.from(event.clipboardData?.items ?? [])
+                    const imageItems = items.filter((it) => it.type.startsWith('image/'))
+                    if (imageItems.length === 0) return // fall through to default text paste
+                    event.preventDefault()
+                    const saved: string[] = []
+                    for (const item of imageItems) {
+                      const file = item.getAsFile()
+                      if (!file) continue
+                      const buf = new Uint8Array(await file.arrayBuffer())
+                      const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg')
+                      const name =
+                        file.name && file.name.trim() ? file.name : `clipboard-${Date.now()}.${ext}`
+                      try {
+                        const stored = await window.cells.app.saveTempFile(buf, name)
+                        if (stored) saved.push(stored)
+                      } catch (err) {
+                        console.error('[agent-chat] save pasted image failed', err)
+                      }
+                    }
+                    if (saved.length > 0) {
+                      setAttachments((prev) => Array.from(new Set([...prev, ...saved])))
+                    }
                   }}
-                  disabled={!isRunning && !canSubmit}
-                  aria-label={isRunning ? 'Stop agent' : 'Send message'}
-                  className={cn(
-                    'ml-1 inline-flex size-7 shrink-0 items-center justify-center rounded-full transition-colors',
-                    isRunning
-                      ? 'bg-amber-400/90 text-background hover:bg-amber-400'
-                      : canSubmit
-                        ? 'bg-foreground text-background shadow-minimal hover:bg-foreground/90'
-                        : 'cursor-not-allowed bg-foreground/20 text-background/70',
-                  )}
-                >
-                  {isRunning ? (
-                    <Square className="h-3 w-3 fill-current" />
-                  ) : (
-                    <ArrowUp className="h-3.5 w-3.5" />
-                  )}
-                </button>
+                  placeholder={composerPlaceholder}
+                  spellCheck={false}
+                  rows={Math.min(8, Math.max(3, input.split('\n').length))}
+                  className="block w-full min-h-[72px] resize-none bg-transparent px-4 pt-3.5 pb-2 text-[14px] leading-6 text-foreground placeholder:text-muted-foreground/55 outline-none border-0 focus:outline-none focus-visible:outline-none"
+                />
+                <div className="flex items-center gap-1.5 px-2 pb-2 pt-0.5">
+                  <button
+                    type="button"
+                    onClick={pickAttachments}
+                    aria-label="Attach files"
+                    className="inline-flex h-7 shrink-0 items-center justify-center rounded-[8px] bg-foreground/5 px-2 text-muted-foreground/85 transition-colors hover:bg-foreground/10 hover:text-foreground"
+                    title="Attach files"
+                  >
+                    <Paperclip className="size-3.5" />
+                  </button>
+                  <PermissionPicker
+                    value={agentWindow.permissionMode ?? getDefaultPermissionMode()}
+                    onChange={(mode: AgentPermissionMode) => {
+                      useStore.getState().syncAgentWindow(agentWindow.id, { permissionMode: mode })
+                      // Live-update the running session so the agent picks up
+                      // the new mode on the NEXT turn without needing a restart.
+                      void window.cells.agentSession
+                        .updatePermissionMode(agentWindow.id, mode)
+                        .catch((err: unknown) =>
+                          console.error('[agent-chat] updatePermissionMode failed', err),
+                        )
+                    }}
+                  />
+                  <ModelPicker
+                    agent={agentWindow.agent}
+                    value={agentWindow.model}
+                    contextLength={agentWindow.contextLength}
+                    onChange={(modelId) =>
+                      useStore.getState().syncAgentWindow(agentWindow.id, { model: modelId })
+                    }
+                    onContextLengthChange={(length: AgentContextLength) => {
+                      useStore.getState().syncAgentWindow(agentWindow.id, { contextLength: length })
+                      // Claude session has to be reopened to pick up / drop the
+                      // context-1m beta flag — the backend handles that inside
+                      // updateContextLength by closing the runtime.
+                      void window.cells.agentSession
+                        .updateContextLength(agentWindow.id, length)
+                        .catch((err: unknown) =>
+                          console.error('[agent-chat] updateContextLength failed', err),
+                        )
+                    }}
+                  />
+                  <ThinkingPicker
+                    agent={agentWindow.agent}
+                    model={agentWindow.model}
+                    value={agentWindow.thinkingLevel}
+                    onChange={(level) =>
+                      useStore.getState().syncAgentWindow(agentWindow.id, { thinkingLevel: level })
+                    }
+                  />
+                  <ContextUsageIndicator
+                    usage={snapshot?.usage ?? null}
+                    agent={agentWindow.agent}
+                    contextLength={agentWindow.contextLength}
+                  />
+                  <div className="flex-1" />
+                  {!isRunning ? (
+                    <span className="hidden items-center gap-1 text-[10.5px] text-muted-foreground/60 sm:inline-flex">
+                      <Kbd className="h-[18px] min-w-[18px] rounded-[4px] bg-foreground/6 px-1 text-[10px] text-muted-foreground/80">
+                        ↵
+                      </Kbd>
+                      <span>send</span>
+                    </span>
+                  ) : null}
+                  <button
+                    type="button"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => {
+                      if (isRunning) void handleStop()
+                      else void submit()
+                    }}
+                    disabled={!isRunning && !canSubmit}
+                    aria-label={isRunning ? 'Stop agent' : 'Send message'}
+                    className={cn(
+                      'ml-1 inline-flex size-7 shrink-0 items-center justify-center rounded-full transition-colors',
+                      isRunning
+                        ? 'bg-amber-400/90 text-background hover:bg-amber-400'
+                        : canSubmit
+                          ? 'bg-foreground text-background shadow-minimal hover:bg-foreground/90'
+                          : 'cursor-not-allowed bg-foreground/20 text-background/70',
+                    )}
+                  >
+                    {isRunning ? (
+                      <Square className="h-3 w-3 fill-current" />
+                    ) : (
+                      <ArrowUp className="h-3.5 w-3.5" />
+                    )}
+                  </button>
+                </div>
               </div>
             </div>
           </div>
         </div>
       </div>
+      {diffsPanelOpen ? (
+        <SessionDiffsPanel messages={messages} onClose={() => setDiffsPanelOpen(false)} />
+      ) : null}
     </div>
   )
 }

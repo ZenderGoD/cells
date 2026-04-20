@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { promises as fs, existsSync, mkdirSync, readFileSync, type Dirent } from 'node:fs'
-import { homedir, userInfo } from 'node:os'
+import { promises as fs, existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { userInfo } from 'node:os'
 import * as path from 'node:path'
 import { app, shell } from 'electron'
 import {
@@ -11,8 +11,8 @@ import {
   type SDKMessage,
   type SDKSession,
 } from '@anthropic-ai/claude-agent-sdk'
-import { Codex, type Thread, type ThreadEvent, type ThreadItem } from '@openai/codex-sdk'
 import type {
+  AgentUsageStats,
   AgentSessionMessage,
   AgentSessionRequest,
   AgentSessionSnapshot,
@@ -100,10 +100,98 @@ function normalizePermissionMode(
   return (mode ?? null) as AgentSessionRequest['permissionMode']
 }
 
-// Codex SDK doesn't surface per-model context windows, so we use a known
-// GPT-5 family capacity (272k input tokens per the public API) as the
-// denominator for the % indicator. Good enough for a rough readout.
+// Used as a last-resort fallback when the Codex app-server hasn't reported
+// the model's live context window yet.
 const CODEX_DEFAULT_CONTEXT_WINDOW = 272_000
+
+const CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS = `<collaboration_mode># Plan Mode (Conversational)
+
+You work in 3 phases, and you should chat your way to a great plan before finalizing it. A great plan is very detailed intent-wise and implementation-wise so that it can be handed to another engineer or agent to be implemented right away. It must be decision complete, where the implementer does not need to make any decisions.
+
+## Mode rules (strict)
+
+You are in Plan Mode until a developer message explicitly ends it.
+
+Plan Mode is not changed by user intent, tone, or imperative language. If a user asks for execution while still in Plan Mode, treat it as a request to plan the execution, not perform it.
+
+## Plan Mode vs update_plan tool
+
+Plan Mode is a collaboration mode that can involve requesting user input and eventually issuing a <proposed_plan> block.
+
+Separately, update_plan is a checklist/progress/TODOs tool; it does not enter or exit Plan Mode. Do not confuse it with Plan mode or try to use it while in Plan mode. If you try to use update_plan in Plan mode, it will return an error.
+
+## Execution vs. mutation in Plan Mode
+
+You may explore and execute non-mutating actions that improve the plan. You must not perform mutating actions.
+
+### Allowed (non-mutating, plan-improving)
+
+Actions that gather truth, reduce ambiguity, or validate feasibility without changing repo-tracked state. Examples:
+
+* Reading or searching files, configs, schemas, types, manifests, and docs
+* Static analysis, inspection, and repo exploration
+* Dry-run style commands when they do not edit repo-tracked files
+* Tests, builds, or checks that may write to caches or build artifacts (for example, target/, .cache/, or snapshots) so long as they do not edit repo-tracked files
+
+### Not allowed (mutating, plan-executing)
+
+Actions that implement the plan or change repo-tracked state. Examples:
+
+* Editing or writing files
+* Running formatters or linters that rewrite files
+* Applying patches, migrations, or codegen that updates repo-tracked files
+* Side-effectful commands whose purpose is to carry out the plan rather than refine it
+
+When in doubt: if the action would reasonably be described as "doing the work" rather than "planning the work," do not do it.
+
+## PHASE 1 - Ground in the environment (explore first, ask second)
+
+Begin by grounding yourself in the actual environment. Eliminate unknowns in the prompt by discovering facts, not by asking the user. Resolve all questions that can be answered through exploration or inspection. Identify missing or ambiguous details only if they cannot be derived from the environment. Silent exploration between turns is allowed and encouraged.
+
+Before asking the user any question, perform at least one targeted non-mutating exploration pass, unless no local environment or repo is available.
+
+Exception: you may ask clarifying questions about the user's prompt before exploring, ONLY if there are obvious ambiguities or contradictions in the prompt itself. However, if ambiguity might be resolved by exploring, always prefer exploring first.
+
+Do not ask questions that can be answered from the repo or system. Only ask once you have exhausted reasonable non-mutating exploration.
+
+## PHASE 2 - Intent chat (what they actually want)
+
+* Keep asking until you can clearly state: goal + success criteria, audience, in/out of scope, constraints, current state, and the key preferences/tradeoffs.
+* Bias toward questions over guessing: if any high-impact ambiguity remains, do NOT plan yet-ask.
+
+## PHASE 3 - Implementation chat (what/how we'll build)
+
+* Once intent is stable, keep asking until the spec is decision complete: approach, interfaces (APIs/schemas/I/O), data flow, edge cases/failure modes, testing + acceptance criteria, rollout/monitoring, and any migrations/compat constraints.
+
+## Asking questions
+
+Critical rules:
+
+* Strongly prefer using the request_user_input tool to ask any questions.
+* Offer only meaningful multiple-choice options; don't include filler choices that are obviously wrong or irrelevant.
+* In rare cases where an unavoidable, important question can't be expressed with reasonable multiple-choice options, you may ask it directly without the tool.
+
+Use the request_user_input tool only for decisions that materially change the plan, for confirming important assumptions, or for information that cannot be discovered via non-mutating exploration.
+
+## Finalization rule
+
+Only output the final plan when it is decision complete and leaves no decisions to the implementer.
+
+When you present the official plan, wrap it in a <proposed_plan> block so the client can render it specially.
+</collaboration_mode>`
+
+const CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS = `<collaboration_mode># Collaboration Mode: Default
+
+You are now in Default mode. Any previous instructions for other modes (e.g. Plan mode) are no longer active.
+
+Your active mode changes only when new developer instructions with a different <collaboration_mode>...</collaboration_mode> change it; user requests or tool descriptions do not change mode by themselves. Known mode names are Default and Plan.
+
+## request_user_input availability
+
+The request_user_input tool is unavailable in Default mode.
+
+In Default mode, strongly prefer making reasonable assumptions and executing the user's request rather than stopping to ask questions. If you absolutely must ask a question because the answer cannot be discovered from local context and a reasonable assumption would be risky, ask the user directly with a concise plain-text question. Never write a multiple choice question as a textual assistant message.
+</collaboration_mode>`
 
 // Extensions Anthropic accepts as image content blocks.
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp'])
@@ -206,44 +294,586 @@ export interface AgentAuthStatus {
   account?: string | null
 }
 
-function fileExists(p: string): boolean {
-  try {
-    return existsSync(p)
-  } catch {
-    return false
+const AGENT_STATUS_TIMEOUT_MS = 5_000
+const CODEX_APP_SERVER_TIMEOUT_MS = 8_000
+
+type CapturedCommandResult = {
+  stdout: string
+  stderr: string
+  code: number | null
+  signal: NodeJS.Signals | null
+}
+
+type JsonRpcId = number | string
+
+type JsonRpcResponse = {
+  id?: JsonRpcId
+  result?: unknown
+  error?: { code?: number; message?: string }
+}
+
+type CodexAppServerClient = {
+  request<TResult = unknown>(method: string, params?: Record<string, unknown>): Promise<TResult>
+  notify(method: string, params?: Record<string, unknown>): Promise<void>
+}
+
+type CodexAppServerNotification = {
+  method: string
+  params?: unknown
+}
+
+type CodexAppServerRequest = {
+  id: JsonRpcId
+  method: string
+  params?: unknown
+}
+
+type LiveCodexAppServerClient = CodexAppServerClient & {
+  close(): Promise<void>
+  isClosed(): boolean
+}
+
+function appendBoundedText(current: string, next: string, max = 16_000): string {
+  return (current + next).slice(-max)
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  return value as Record<string, unknown>
+}
+
+function asNonEmptyString(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+function parseJsonRecord(text: string): Record<string, unknown> | null {
+  const trimmed = text.trim()
+  if (!trimmed) return null
+  const candidates = [trimmed]
+  const firstBrace = trimmed.indexOf('{')
+  const lastBrace = trimmed.lastIndexOf('}')
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    candidates.push(trimmed.slice(firstBrace, lastBrace + 1))
+  }
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate)
+      const record = asRecord(parsed)
+      if (record) return record
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  return null
+}
+
+async function writeJsonLine(
+  child: ChildProcessWithoutNullStreams,
+  payload: unknown,
+): Promise<void> {
+  if (child.stdin.destroyed || !child.stdin.writable) {
+    throw new Error('stdin is not writable')
+  }
+  await new Promise<void>((resolve, reject) => {
+    child.stdin.write(`${JSON.stringify(payload)}\n`, 'utf8', (err) => {
+      if (err) reject(err)
+      else resolve()
+    })
+  })
+}
+
+async function runCapturedCommand(
+  binary: string,
+  args: string[],
+  options: { timeoutMs?: number; env?: Record<string, string | undefined> } = {},
+): Promise<CapturedCommandResult> {
+  const timeoutMs = options.timeoutMs ?? AGENT_STATUS_TIMEOUT_MS
+  return await new Promise<CapturedCommandResult>((resolve, reject) => {
+    let settled = false
+    let stdout = ''
+    let stderr = ''
+    let child: ChildProcessWithoutNullStreams
+    try {
+      child = spawn(binary, args, {
+        env: buildAgentEnv(options.env),
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+      })
+    } catch (err) {
+      reject(err)
+      return
+    }
+    const finish = (result: CapturedCommandResult | Error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (result instanceof Error) reject(result)
+      else resolve(result)
+    }
+    const timer = setTimeout(() => {
+      try {
+        child.kill('SIGKILL')
+      } catch {}
+      finish(new Error(`${path.basename(binary)} ${args.join(' ')} timed out`))
+    }, timeoutMs)
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', (chunk: string) => {
+      stdout = appendBoundedText(stdout, chunk)
+    })
+    child.stderr.on('data', (chunk: string) => {
+      stderr = appendBoundedText(stderr, chunk)
+    })
+    child.on('error', (err) => finish(err))
+    child.on('close', (code, signal) => finish({ stdout, stderr, code, signal }))
+  })
+}
+
+function buildCodexInitializeParams() {
+  return {
+    clientInfo: {
+      name: 'cells',
+      title: 'Cells',
+      version: app.getVersion(),
+    },
+    capabilities: {
+      experimentalApi: true,
+    },
   }
 }
 
-/**
- * Best-effort auth status — we can't actually probe the SDK without
- * consuming a turn, but the CLIs both drop credential files in well-known
- * paths after `login`, so presence there is a good heuristic.
- */
-export function getAgentAuthStatus(agent: 'claude' | 'codex'): AgentAuthStatus {
-  const home = process.env.HOME || ''
+function buildCodexApprovalPolicy(
+  mode: AgentSessionRequest['permissionMode'],
+): 'untrusted' | 'on-request' | 'never' {
+  if (mode === 'plan') return 'untrusted'
+  if (mode === 'ask') return 'on-request'
+  return 'never'
+}
+
+function buildCodexThreadSandbox(mode: AgentSessionRequest['permissionMode']) {
+  if (mode === 'plan') return 'read-only' as const
+  if (mode === 'bypass') return 'danger-full-access' as const
+  return 'workspace-write' as const
+}
+
+function buildCodexTurnSandboxPolicy(mode: AgentSessionRequest['permissionMode']) {
+  if (mode === 'plan') {
+    return {
+      type: 'readOnly' as const,
+      networkAccess: true,
+      access: { type: 'fullAccess' as const },
+    }
+  }
+  if (mode === 'bypass') {
+    return { type: 'dangerFullAccess' as const }
+  }
+  return {
+    type: 'workspaceWrite' as const,
+    networkAccess: true,
+    readOnlyAccess: { type: 'fullAccess' as const },
+  }
+}
+
+function buildCodexCollaborationMode(
+  mode: AgentSessionRequest['permissionMode'],
+  model: string | null | undefined,
+  thinkingLevel: AgentThinkingLevel | null | undefined,
+) {
+  const collaborationMode = mode === 'plan' ? 'plan' : 'default'
+  return {
+    mode: collaborationMode,
+    settings: {
+      ...(model ? { model } : {}),
+      reasoning_effort: codexThinkingEffort(thinkingLevel),
+      developer_instructions:
+        collaborationMode === 'plan'
+          ? CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS
+          : CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
+    },
+  }
+}
+
+function buildCodexThreadStartParams(request: AgentSessionRequest) {
+  return {
+    cwd: request.cwd ?? undefined,
+    approvalPolicy: buildCodexApprovalPolicy(request.permissionMode),
+    sandbox: buildCodexThreadSandbox(request.permissionMode),
+    ...(request.model ? { model: request.model } : {}),
+  }
+}
+
+function buildCodexTurnInput(agentText: string, imageAttachments: string[]) {
+  const input: Array<{ type: 'text'; text: string } | { type: 'localImage'; path: string }> = []
+  if (agentText.trim()) input.push({ type: 'text', text: agentText })
+  for (const p of imageAttachments) input.push({ type: 'localImage', path: p })
+  return input
+}
+
+function buildCodexTurnStartParams(
+  runtime: CodexRuntime,
+  input: string,
+  imageAttachments: string[],
+): Record<string, unknown> {
+  const request = runtime.request
+  return {
+    threadId: runtime.providerThreadId ?? runtime.snapshot.codexThreadId,
+    input: buildCodexTurnInput(input, imageAttachments),
+    approvalPolicy: buildCodexApprovalPolicy(request.permissionMode),
+    sandboxPolicy: buildCodexTurnSandboxPolicy(request.permissionMode),
+    cwd: request.cwd ?? undefined,
+    ...(request.model ? { model: request.model } : {}),
+    effort: codexThinkingEffort(request.thinkingLevel),
+    collaborationMode: buildCodexCollaborationMode(
+      request.permissionMode,
+      request.model ?? null,
+      request.thinkingLevel,
+    ),
+  }
+}
+
+function isCodexRecoverableThreadResumeError(error: unknown): boolean {
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase()
+  return (
+    message.includes('thread') &&
+    (message.includes('not found') ||
+      message.includes('does not exist') ||
+      message.includes('unknown thread') ||
+      message.includes('failed to resume'))
+  )
+}
+
+function codexQuestionResponse(answers: Record<string, string[]>): {
+  answers: Record<string, { answers: string[] }>
+} {
+  const result: Record<string, { answers: string[] }> = {}
+  for (const [key, value] of Object.entries(answers)) {
+    result[key] = { answers: value }
+  }
+  return { answers: result }
+}
+
+function buildCodexPendingApproval(
+  kind: 'command' | 'file-change',
+  payload: Record<string, unknown>,
+): {
+  kind: 'command' | 'file-change'
+  title: string
+  detail?: string | null
+  reason?: string | null
+  command?: string | null
+  cwd?: string | null
+  grantRoot?: string | null
+  canApproveForSession?: boolean
+  createdAt: number
+} {
+  const reason = asNonEmptyString(payload.reason)
+  const command = asNonEmptyString(payload.command)
+  const cwd = asNonEmptyString(payload.cwd)
+  const grantRoot = asNonEmptyString(payload.grantRoot)
+  const commandActions = Array.isArray(payload.commandActions) ? payload.commandActions : []
+  const actionSummary = commandActions
+    .map((value) => {
+      const action = asRecord(value)
+      if (!action) return null
+      const type = asNonEmptyString(action.type) || 'command'
+      const path = asNonEmptyString(action.path)
+      const query = asNonEmptyString(action.query)
+      if (path && query) return `${type} ${path} (${query})`
+      if (path) return `${type} ${path}`
+      return type
+    })
+    .filter((value): value is string => value !== null)
+
+  const detail =
+    kind === 'command'
+      ? command ||
+        (actionSummary.length > 0 ? actionSummary.slice(0, 3).join(' • ') : null) ||
+        reason
+      : grantRoot || reason
+
+  return {
+    kind,
+    title: kind === 'command' ? 'Approve command' : 'Approve file changes',
+    detail: detail ?? null,
+    reason,
+    command,
+    cwd,
+    grantRoot,
+    canApproveForSession: true,
+    createdAt: now(),
+  }
+}
+
+async function createCodexAppServerSession(
+  options: {
+    onNotification?: (notification: CodexAppServerNotification) => void | Promise<void>
+    onRequest?: (request: CodexAppServerRequest) => Promise<unknown>
+    onStderr?: (line: string) => void
+    onUnexpectedExit?: (error: Error) => void
+  } = {},
+): Promise<LiveCodexAppServerClient> {
+  const binary = getSystemCodexPath() || 'codex'
+  const child = spawn(binary, ['app-server'], {
+    env: buildAgentEnv(),
+    stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
+  })
+  let buffer = ''
+  let stderr = ''
+  let stderrRemainder = ''
+  let nextId = 0
+  let closed = false
+  let exitError: Error | null = null
+  const pending = new Map<
+    JsonRpcId,
+    { resolve: (value: unknown) => void; reject: (error: Error) => void }
+  >()
+  let resolveExit: (() => void) | null = null
+  let rejectExit: ((error: Error) => void) | null = null
+  const exitPromise = new Promise<void>((resolve, reject) => {
+    resolveExit = resolve
+    rejectExit = reject
+  })
+
+  const rejectPending = (error: Error) => {
+    for (const request of pending.values()) request.reject(error)
+    pending.clear()
+  }
+
+  const writeErrorResponse = async (id: JsonRpcId, err: unknown) => {
+    const error = err instanceof Error ? err : new Error(String(err))
+    try {
+      await writeJsonLine(child, {
+        jsonrpc: '2.0',
+        id,
+        error: { code: -32603, message: error.message || 'codex app-server request failed' },
+      })
+    } catch {}
+  }
+
+  child.stdout.setEncoding('utf8')
+  child.stderr.setEncoding('utf8')
+
+  child.stdout.on('data', (chunk: string) => {
+    buffer += chunk
+    let newline = buffer.indexOf('\n')
+    while (newline !== -1) {
+      const line = buffer.slice(0, newline).trim()
+      buffer = buffer.slice(newline + 1)
+      newline = buffer.indexOf('\n')
+      if (!line) continue
+      let message: Record<string, unknown>
+      try {
+        message = JSON.parse(line) as Record<string, unknown>
+      } catch {
+        continue
+      }
+      const method = asNonEmptyString(message.method)
+      if (method) {
+        if (message.id != null) {
+          const request: CodexAppServerRequest = {
+            id: message.id as JsonRpcId,
+            method,
+            params: message.params,
+          }
+          void Promise.resolve(options.onRequest?.(request))
+            .then(async (result) => {
+              if (closed) return
+              await writeJsonLine(child, { jsonrpc: '2.0', id: request.id, result })
+            })
+            .catch(async (err) => {
+              await writeErrorResponse(request.id, err)
+            })
+          continue
+        }
+        void Promise.resolve(options.onNotification?.({ method, params: message.params })).catch(
+          () => {},
+        )
+        continue
+      }
+      if (message.id == null) continue
+      const request = pending.get(message.id as JsonRpcId)
+      if (!request) continue
+      pending.delete(message.id as JsonRpcId)
+      const response = message as JsonRpcResponse
+      if (response.error) {
+        request.reject(
+          new Error(
+            response.error.message || `codex app-server request ${String(message.id)} failed`,
+          ),
+        )
+      } else {
+        request.resolve(response.result)
+      }
+    }
+  })
+
+  child.stderr.on('data', (chunk: string) => {
+    stderr = appendBoundedText(stderr, chunk, 4_000)
+    stderrRemainder += chunk
+    const lines = stderrRemainder.split('\n')
+    stderrRemainder = lines.pop() ?? ''
+    for (const line of lines) {
+      const trimmed = line.replace(/\r$/, '').trim()
+      if (!trimmed) continue
+      options.onStderr?.(trimmed)
+    }
+  })
+
+  child.on('error', (err) => {
+    if (closed) return
+    exitError = err instanceof Error ? err : new Error(String(err))
+    closed = true
+    rejectPending(exitError)
+    rejectExit?.(exitError)
+    options.onUnexpectedExit?.(exitError)
+  })
+
+  child.on('exit', (code, signal) => {
+    const alreadyClosed = closed
+    const detail = stderr.trim()
+    exitError =
+      exitError ||
+      new Error(
+        detail ||
+          (signal
+            ? `codex app-server exited via ${signal}`
+            : `codex app-server exited with code ${code ?? 'unknown'}`),
+      )
+    closed = true
+    rejectPending(exitError)
+    if (signal === null && code === 0) {
+      resolveExit?.()
+      return
+    }
+    rejectExit?.(exitError)
+    if (alreadyClosed) return
+    options.onUnexpectedExit?.(exitError)
+  })
+
+  const client: LiveCodexAppServerClient = {
+    request: async <TResult = unknown>(
+      method: string,
+      params: Record<string, unknown> = {},
+    ): Promise<TResult> => {
+      if (closed) throw exitError || new Error('codex app-server is closed')
+      const id = ++nextId
+      return await new Promise<TResult>((resolveRequest, rejectRequest) => {
+        pending.set(id, {
+          resolve: resolveRequest as (value: unknown) => void,
+          reject: rejectRequest,
+        })
+        void writeJsonLine(child, {
+          jsonrpc: '2.0',
+          id,
+          method,
+          params,
+        }).catch((err) => {
+          pending.delete(id)
+          rejectRequest(err instanceof Error ? err : new Error(String(err)))
+        })
+      })
+    },
+    notify: async (method: string, params: Record<string, unknown> = {}) => {
+      if (closed) throw exitError || new Error('codex app-server is closed')
+      await writeJsonLine(child, { jsonrpc: '2.0', method, params })
+    },
+    close: async () => {
+      if (closed) {
+        try {
+          await exitPromise
+        } catch {}
+        return
+      }
+      closed = true
+      try {
+        child.kill('SIGTERM')
+      } catch {}
+      const forceKill = setTimeout(() => {
+        try {
+          child.kill('SIGKILL')
+        } catch {}
+      }, 1_000)
+      try {
+        await exitPromise
+      } catch {
+        // Ignore shutdown errors when we initiated the close.
+      } finally {
+        clearTimeout(forceKill)
+      }
+    },
+    isClosed: () => closed,
+  }
+
+  await client.request('initialize', buildCodexInitializeParams())
+  await client.notify('initialized', {})
+  return client
+}
+
+async function withCodexAppServer<T>(
+  run: (client: CodexAppServerClient) => Promise<T>,
+): Promise<T> {
+  const client = await createCodexAppServerSession()
+  const timeout = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error('codex app-server timed out')), CODEX_APP_SERVER_TIMEOUT_MS),
+  )
+  try {
+    return await Promise.race([run(client), timeout])
+  } finally {
+    await client.close()
+  }
+}
+
+async function probeClaudeAuthStatus(binaryPath: string): Promise<AgentAuthStatus> {
+  const result = await runCapturedCommand(binaryPath, ['auth', 'status'])
+  const payload = parseJsonRecord(`${result.stdout}\n${result.stderr}`)
+  const loggedIn =
+    payload && typeof payload.loggedIn === 'boolean' ? (payload.loggedIn as boolean) : 'unknown'
+  return {
+    agent: 'claude',
+    binaryPath,
+    authenticated: loggedIn,
+    account: payload ? asNonEmptyString(payload.email) : null,
+  }
+}
+
+async function probeCodexAuthStatus(binaryPath: string): Promise<AgentAuthStatus> {
+  const result = await withCodexAppServer(async (client) => {
+    return await client.request('account/read', {})
+  })
+  const payload = asRecord(result)
+  const account = payload ? asRecord(payload.account) : null
+  const email = account ? asNonEmptyString(account.email) : null
+  const requiresOpenaiAuth =
+    payload && typeof payload.requiresOpenaiAuth === 'boolean'
+      ? payload.requiresOpenaiAuth
+      : undefined
+  return {
+    agent: 'codex',
+    binaryPath,
+    authenticated: account ? true : requiresOpenaiAuth === true ? false : 'unknown',
+    account: email,
+  }
+}
+
+export async function getAgentAuthStatus(agent: 'claude' | 'codex'): Promise<AgentAuthStatus> {
   if (agent === 'claude') {
     const binaryPath = getSystemClaudePath()
-    const candidates = [
-      path.join(home, '.claude', '.credentials.json'),
-      path.join(home, '.claude', 'credentials.json'),
-      path.join(home, '.config', 'claude', 'credentials.json'),
-    ]
-    return {
-      agent,
-      binaryPath,
-      authenticated: candidates.some(fileExists),
+    if (!binaryPath) return { agent, binaryPath: null, authenticated: false }
+    try {
+      return await probeClaudeAuthStatus(binaryPath)
+    } catch {
+      return { agent, binaryPath, authenticated: 'unknown' }
     }
   }
   const binaryPath = getSystemCodexPath()
-  const candidates = [
-    path.join(home, '.codex', 'auth.json'),
-    path.join(home, '.codex', 'credentials.json'),
-    path.join(home, '.config', 'codex', 'auth.json'),
-  ]
-  return {
-    agent,
-    binaryPath,
-    authenticated: candidates.some(fileExists),
+  if (!binaryPath) return { agent, binaryPath: null, authenticated: false }
+  try {
+    return await probeCodexAuthStatus(binaryPath)
+  } catch {
+    return { agent, binaryPath, authenticated: 'unknown' }
   }
 }
 
@@ -274,6 +904,32 @@ export interface CodexModelInfo {
 
 let cachedCodexModels: { at: number; list: CodexModelInfo[] } | null = null
 
+function parseCodexModelInfo(model: Record<string, unknown>): CodexModelInfo | null {
+  const id = asNonEmptyString(model.id)
+  if (!id) return null
+  const efforts = Array.isArray(model.supportedReasoningEfforts)
+    ? model.supportedReasoningEfforts
+        .map((value) => {
+          const effort = asRecord(value)
+          if (!effort) return null
+          return {
+            effort: asNonEmptyString(effort.reasoningEffort) || 'medium',
+            description: asNonEmptyString(effort.description) || '',
+          }
+        })
+        .filter((value): value is { effort: string; description: string } => value !== null)
+    : []
+  return {
+    id,
+    displayName: asNonEmptyString(model.displayName) || id,
+    description: asNonEmptyString(model.description) || '',
+    isDefault: Boolean(model.isDefault),
+    hidden: Boolean(model.hidden),
+    supportedReasoningEfforts: efforts,
+    defaultReasoningEffort: asNonEmptyString(model.defaultReasoningEffort) || 'medium',
+  }
+}
+
 /**
  * Query the Codex CLI's experimental app-server for the live model catalog
  * via JSON-RPC over stdio. The protocol is documented at
@@ -286,88 +942,22 @@ export async function listCodexModels(): Promise<CodexModelInfo[]> {
   if (cachedCodexModels && Date.now() - cachedCodexModels.at < 5 * 60_000) {
     return cachedCodexModels.list
   }
-  const binary = getSystemCodexPath() || 'codex'
-  const list = await new Promise<CodexModelInfo[]>((resolve, reject) => {
-    let settled = false
-    const child = spawn(binary, ['app-server'], { stdio: ['pipe', 'pipe', 'pipe'] })
-    let buffer = ''
+  const list = await withCodexAppServer(async (client) => {
     const models: CodexModelInfo[] = []
-    const finish = (result: CodexModelInfo[] | Error) => {
-      if (settled) return
-      settled = true
-      try {
-        child.kill()
-      } catch {}
-      if (result instanceof Error) reject(result)
-      else resolve(result)
-    }
-    const timer = setTimeout(() => finish(new Error('codex app-server timed out')), 8000)
-    child.on('error', (err) => {
-      clearTimeout(timer)
-      finish(err)
-    })
-    child.on('exit', () => {
-      clearTimeout(timer)
-      // If we closed before getting the model list, resolve empty rather than
-      // throw — the renderer falls back to the hardcoded catalog.
-      if (!settled) finish(models)
-    })
-    child.stdout.setEncoding('utf8')
-    child.stdout.on('data', (chunk: string) => {
-      buffer += chunk
-      let idx = buffer.indexOf('\n')
-      while (idx !== -1) {
-        const line = buffer.slice(0, idx).trim()
-        buffer = buffer.slice(idx + 1)
-        idx = buffer.indexOf('\n')
-        if (!line) continue
-        try {
-          const msg = JSON.parse(line)
-          if (msg.id === 2 && msg.result?.data) {
-            for (const m of msg.result.data as Array<{
-              id: string
-              displayName?: string
-              description?: string
-              hidden?: boolean
-              isDefault?: boolean
-              supportedReasoningEfforts?: Array<{ reasoningEffort: string; description?: string }>
-              defaultReasoningEffort?: string
-            }>) {
-              models.push({
-                id: m.id,
-                displayName: m.displayName || m.id,
-                description: m.description || '',
-                isDefault: !!m.isDefault,
-                hidden: !!m.hidden,
-                supportedReasoningEfforts: (m.supportedReasoningEfforts || []).map((r) => ({
-                  effort: r.reasoningEffort,
-                  description: r.description || '',
-                })),
-                defaultReasoningEffort: m.defaultReasoningEffort || 'medium',
-              })
-            }
-            clearTimeout(timer)
-            finish(models)
-          }
-        } catch {
-          // Ignore malformed lines — server can emit notifications too.
-        }
+    let cursor: string | null = null
+    do {
+      const page: {
+        data?: unknown[]
+        nextCursor?: string | null
+      } = await client.request('model/list', cursor ? { cursor } : {})
+      const data = Array.isArray(page.data) ? page.data : []
+      for (const item of data) {
+        const parsed = parseCodexModelInfo(asRecord(item) ?? {})
+        if (parsed) models.push(parsed)
       }
-    })
-    const initializeReq =
-      JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'initialize',
-        params: {
-          clientInfo: { name: 'cells', version: '0.1.0', title: null },
-          capabilities: { experimentalApi: true },
-        },
-      }) + '\n'
-    const listReq =
-      JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'model/list', params: {} }) + '\n'
-    child.stdin.write(initializeReq)
-    child.stdin.write(listReq)
+      cursor = asNonEmptyString(page.nextCursor) ?? null
+    } while (cursor)
+    return models
   })
   cachedCodexModels = { at: Date.now(), list }
   return list
@@ -597,8 +1187,8 @@ export class AgentLoginManager extends EventEmitter {
         return
       }
       if (code === 0) {
-        // Invalidate detection cache so subsequent `getAgentAuthStatus`
-        // re-reads fresh credential files written by the CLI.
+        // Subsequent auth probes hit the CLI/app-server directly, so a
+        // successful login is immediately visible on the next refresh.
         this.emit('event', { agent, phase: 'success' } satisfies LoginEvent)
       } else {
         const snippet = state.buffer.split('\n').slice(-6).join('\n').trim()
@@ -630,13 +1220,21 @@ type PlanApprovalResolver = (result: {
   updatedInput?: Record<string, unknown>
 }) => void
 
-/** Resolver for an AskUserQuestion prompt parked in `canUseTool`. We always
- *  `deny` once the user responds — the deny message carries the answers as
- *  structured text so the agent can read them from the tool_result. */
+/** Resolver for an AskUserQuestion prompt parked in `canUseTool`. Once the
+ *  user responds we hand the answers back as `updatedInput.answers`, which is
+ *  the shape the Claude SDK expects for AskUserQuestion continuation. */
 type QuestionApprovalResolver = (result: {
   behavior: 'allow' | 'deny'
   message?: string
   updatedInput?: Record<string, unknown>
+}) => void
+
+type CodexQuestionApprovalResolver = (result: {
+  answers: Record<string, { answers: string[] }>
+}) => void
+
+type CodexApprovalResolver = (result: {
+  decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel'
 }) => void
 
 interface ClaudeRuntime extends RuntimeBase {
@@ -664,15 +1262,33 @@ interface ClaudeRuntime extends RuntimeBase {
       options: Array<{ label: string; description: string; preview?: string }>
       multiSelect: boolean
     }>
+    originalInput: Record<string, unknown>
     resolve: QuestionApprovalResolver
   } | null
 }
 
 interface CodexRuntime extends RuntimeBase {
   kind: 'codex'
-  codex: Codex
-  thread: Thread
+  client: LiveCodexAppServerClient
+  providerThreadId: string | null
+  activeTurnId: string | null
   turnPromise: Promise<void> | null
+  resolveTurn: (() => void) | null
+  rejectTurn: ((error: Error) => void) | null
+  pendingQuestion: {
+    questions: Array<{
+      id: string
+      question: string
+      header: string
+      options: Array<{ label: string; description: string }>
+      multiSelect: boolean
+    }>
+    resolve: CodexQuestionApprovalResolver
+  } | null
+  pendingApproval: {
+    kind: 'command' | 'file-change'
+    resolve: CodexApprovalResolver
+  } | null
   /** Monotonic counter bumped on every `turn.started`. The Codex CLI reuses
    *  `item_0`, `item_1`, … across turns, so we prefix item ids with this
    *  counter to keep each turn's items distinct in our message list. */
@@ -753,6 +1369,41 @@ function buildAgentEnv(extra: Record<string, string | undefined> = {}) {
     if (value != null) env[key] = value
   }
   return env
+}
+
+function buildUsageStats(input: {
+  model: string | null
+  inputTokens: number
+  outputTokens: number
+  cachedInputTokens: number
+  contextWindow: number | null
+  compactsAutomatically: boolean
+}): AgentUsageStats {
+  const inputTokens = Math.max(0, Math.round(input.inputTokens))
+  const outputTokens = Math.max(0, Math.round(input.outputTokens))
+  const cachedInputTokens = Math.max(0, Math.round(input.cachedInputTokens))
+  const contextWindow =
+    input.contextWindow && Number.isFinite(input.contextWindow) && input.contextWindow > 0
+      ? Math.round(input.contextWindow)
+      : null
+  const totalProcessedTokens = inputTokens + outputTokens
+  const usedTokens =
+    totalProcessedTokens > 0
+      ? contextWindow != null
+        ? Math.min(totalProcessedTokens, contextWindow)
+        : totalProcessedTokens
+      : null
+  return {
+    model: input.model,
+    inputTokens,
+    outputTokens,
+    cachedInputTokens,
+    contextWindow,
+    usedTokens,
+    totalProcessedTokens: totalProcessedTokens > 0 ? totalProcessedTokens : null,
+    compactsAutomatically: input.compactsAutomatically,
+    updatedAt: now(),
+  }
 }
 
 function cloneSnapshot(snapshot: AgentSessionSnapshot): AgentSessionSnapshot {
@@ -840,236 +1491,179 @@ function extractClaudeToolMessages(
     }))
 }
 
-function codexItemToMessage(item: ThreadItem): AgentSessionMessage | null {
-  if (item.type === 'agent_message') {
+function codexItemStatus(value: unknown): AgentSessionMessage['status'] {
+  if (value === 'failed') return 'failed'
+  if (value === 'completed' || value === 'interrupted' || value === 'cancelled') return 'completed'
+  return 'in_progress'
+}
+
+function codexItemToMessage(item: Record<string, unknown>): AgentSessionMessage | null {
+  const itemId = asNonEmptyString(item.id)
+  const itemType = asNonEmptyString(item.type)
+  if (!itemId || !itemType) return null
+
+  if (itemType === 'agentMessage') {
     return {
-      id: item.id,
+      id: itemId,
       role: 'assistant',
-      text: item.text,
-      updatedAt: now(),
-    }
-  }
-  if (item.type === 'reasoning') {
-    return {
-      id: item.id,
-      role: 'reasoning',
-      title: 'Reasoning',
-      text: item.text,
-      updatedAt: now(),
-    }
-  }
-  if (item.type === 'command_execution') {
-    return {
-      id: item.id,
-      role: 'tool',
-      title: item.command,
-      text: item.aggregated_output || item.command,
-      status:
-        item.status === 'failed'
-          ? 'failed'
-          : item.status === 'completed'
-            ? 'completed'
-            : 'in_progress',
-      metadata: typeof item.exit_code === 'number' ? `Exit ${item.exit_code}` : 'Running command',
-      updatedAt: now(),
-    }
-  }
-  if (item.type === 'file_change') {
-    return {
-      id: item.id,
-      role: 'tool',
-      title: 'File changes',
-      text: item.changes.map((change) => `${change.kind}: ${change.path}`).join('\n'),
-      status: item.status === 'failed' ? 'failed' : 'completed',
-      updatedAt: now(),
-    }
-  }
-  if (item.type === 'mcp_tool_call') {
-    return {
-      id: item.id,
-      role: 'tool',
-      title: `${item.server}:${item.tool}`,
-      text: item.error?.message ?? compactText(item.result ?? item.arguments),
-      status:
-        item.status === 'failed'
-          ? 'failed'
-          : item.status === 'completed'
-            ? 'completed'
-            : 'in_progress',
-      updatedAt: now(),
-    }
-  }
-  if (item.type === 'web_search') {
-    return {
-      id: item.id,
-      role: 'tool',
-      title: 'Web search',
-      text: item.query,
+      text: asNonEmptyString(item.text) || '',
       status: 'completed',
       updatedAt: now(),
     }
   }
-  if (item.type === 'todo_list') {
+  if (itemType === 'reasoning') {
+    const summary = Array.isArray(item.summary)
+      ? item.summary.filter((value): value is string => typeof value === 'string')
+      : []
+    const content = Array.isArray(item.content)
+      ? item.content.filter((value): value is string => typeof value === 'string')
+      : []
     return {
-      id: item.id,
-      role: 'system',
-      title: 'Plan',
-      text: item.items.map((todo) => `${todo.completed ? '[x]' : '[ ]'} ${todo.text}`).join('\n'),
+      id: itemId,
+      role: 'reasoning',
+      title: 'Reasoning',
+      text: summary.join('\n\n').trim() || content.join('\n\n').trim(),
+      status: 'completed',
       updatedAt: now(),
     }
   }
-  if (item.type === 'error') {
+  if (itemType === 'commandExecution') {
     return {
-      id: item.id,
-      role: 'error',
-      title: 'Error',
-      text: item.message,
-      status: 'failed',
+      id: itemId,
+      role: 'tool',
+      title: asNonEmptyString(item.command) || 'Command',
+      text:
+        asNonEmptyString(item.aggregatedOutput) ||
+        asNonEmptyString(item.command) ||
+        compactText(item, ''),
+      status: codexItemStatus(item.status),
+      metadata:
+        typeof item.exitCode === 'number'
+          ? `Exit ${item.exitCode}`
+          : asNonEmptyString(item.cwd) || 'Running command',
+      updatedAt: now(),
+    }
+  }
+  if (itemType === 'fileChange') {
+    const changes = Array.isArray(item.changes) ? item.changes : []
+    return {
+      id: itemId,
+      role: 'tool',
+      title: 'File changes',
+      text: changes
+        .map((change) => {
+          const entry = asRecord(change)
+          if (!entry) return null
+          return `${asNonEmptyString(entry.kind) || 'change'}: ${asNonEmptyString(entry.path) || 'unknown'}`
+        })
+        .filter((value): value is string => Boolean(value))
+        .join('\n'),
+      status: codexItemStatus(item.status),
+      updatedAt: now(),
+    }
+  }
+  if (itemType === 'mcpToolCall') {
+    const error = asRecord(item.error)
+    return {
+      id: itemId,
+      role: 'tool',
+      title: `${asNonEmptyString(item.server) || 'mcp'}:${asNonEmptyString(item.tool) || 'tool'}`,
+      text:
+        asNonEmptyString(error?.message) ||
+        compactText(item.result ?? item.arguments, compactText(item, '')),
+      status: codexItemStatus(item.status),
+      updatedAt: now(),
+    }
+  }
+  if (itemType === 'dynamicToolCall' || itemType === 'collabAgentToolCall') {
+    return {
+      id: itemId,
+      role: 'tool',
+      title: asNonEmptyString(item.tool) || 'Tool call',
+      text:
+        asNonEmptyString(item.prompt) ||
+        compactText(item.contentItems ?? item.arguments ?? item, ''),
+      status: codexItemStatus(item.status),
+      updatedAt: now(),
+    }
+  }
+  if (itemType === 'webSearch') {
+    return {
+      id: itemId,
+      role: 'tool',
+      title: 'Web search',
+      text: asNonEmptyString(item.query) || '',
+      status: 'completed',
+      updatedAt: now(),
+    }
+  }
+  if (itemType === 'plan') {
+    return {
+      id: itemId,
+      role: 'system',
+      title: 'Plan',
+      text: asNonEmptyString(item.text) || '',
+      status: 'completed',
+      updatedAt: now(),
+    }
+  }
+  if (itemType === 'imageView') {
+    return {
+      id: itemId,
+      role: 'system',
+      title: 'Image view',
+      text: asNonEmptyString(item.path) || '',
+      status: 'completed',
+      updatedAt: now(),
+    }
+  }
+  if (itemType === 'enteredReviewMode' || itemType === 'exitedReviewMode') {
+    return {
+      id: itemId,
+      role: 'system',
+      title: itemType === 'enteredReviewMode' ? 'Review mode entered' : 'Review mode exited',
+      text: asNonEmptyString(item.review) || '',
+      status: 'completed',
+      updatedAt: now(),
+    }
+  }
+  if (itemType === 'contextCompaction') {
+    return {
+      id: itemId,
+      role: 'system',
+      title: 'Context compacted',
+      text: 'Codex compacted the thread context.',
+      status: 'completed',
       updatedAt: now(),
     }
   }
   return null
 }
 
-function flattenCodexContentBlocks(content: Array<{ type?: string; text?: string }>) {
-  return content
-    .map((item) => (typeof item?.text === 'string' ? item.text : ''))
-    .filter(Boolean)
-    .join('\n\n')
-    .trim()
+function codexMessageId(runtime: CodexRuntime, itemId: string) {
+  return `t${runtime.turnCounter}-${itemId}`
 }
 
-function codexBootstrapMessage(text: string) {
-  return (
-    text.includes('# AGENTS.md instructions for ') ||
-    text.includes('<environment_context>') ||
-    text.includes('<permissions instructions>')
-  )
-}
-
-async function findCodexTranscriptFile(threadId: string): Promise<string | null> {
-  const root = path.join(homedir(), '.codex', 'sessions')
-
-  async function walk(dir: string): Promise<string | null> {
-    let entries: Dirent[]
-    try {
-      entries = await fs.readdir(dir, { withFileTypes: true })
-    } catch {
-      return null
-    }
-
-    for (const entry of entries) {
-      const nextPath = path.join(dir, entry.name)
-      if (entry.isDirectory()) {
-        const found = await walk(nextPath)
-        if (found) return found
-        continue
-      }
-      if (entry.isFile() && entry.name.endsWith('.jsonl') && entry.name.includes(threadId)) {
-        return nextPath
-      }
-    }
-
-    return null
+function appendCodexDelta(
+  snapshot: AgentSessionSnapshot,
+  message: Pick<AgentSessionMessage, 'id' | 'role' | 'text' | 'title'>,
+) {
+  const existing = snapshot.messages.find((entry) => entry.id === message.id)
+  if (existing) {
+    existing.text = `${existing.text || ''}${message.text}`
+    existing.status = 'in_progress'
+    existing.updatedAt = now()
+    snapshot.updatedAt = now()
+    return
   }
-
-  return walk(root)
-}
-
-async function readCodexTranscript(threadId: string): Promise<AgentSessionMessage[]> {
-  const transcriptPath = await findCodexTranscriptFile(threadId)
-  if (!transcriptPath) return []
-
-  let raw: string
-  try {
-    raw = await fs.readFile(transcriptPath, 'utf8')
-  } catch {
-    return []
-  }
-
-  const messages: AgentSessionMessage[] = []
-
-  for (const line of raw.split('\n')) {
-    const trimmed = line.trim()
-    if (!trimmed) continue
-
-    let entry: any
-    try {
-      entry = JSON.parse(trimmed)
-    } catch {
-      continue
-    }
-
-    if (entry?.type !== 'response_item') continue
-    const payload = entry.payload
-    if (!payload) continue
-
-    if (payload.type === 'message') {
-      const text = flattenCodexContentBlocks(Array.isArray(payload.content) ? payload.content : [])
-      if (!text) continue
-      if (payload.role === 'user') {
-        if (codexBootstrapMessage(text)) continue
-        upsertMessage(messages, {
-          id: `${threadId}-restore-user-${messages.length}`,
-          role: 'user',
-          text,
-          updatedAt: now(),
-        })
-      } else if (payload.role === 'assistant') {
-        upsertMessage(messages, {
-          id: `${threadId}-restore-assistant-${messages.length}`,
-          role: 'assistant',
-          text,
-          updatedAt: now(),
-        })
-      }
-      continue
-    }
-
-    if (payload.type === 'reasoning') {
-      const text = Array.isArray(payload.summary)
-        ? payload.summary
-            .map((item: any) => (typeof item?.text === 'string' ? item.text : ''))
-            .filter(Boolean)
-            .join('\n\n')
-            .trim()
-        : ''
-      if (!text) continue
-      upsertMessage(messages, {
-        id: `${threadId}-restore-reasoning-${messages.length}`,
-        role: 'reasoning',
-        title: 'Reasoning',
-        text,
-        updatedAt: now(),
-      })
-      continue
-    }
-
-    if (payload.type === 'function_call') {
-      upsertMessage(messages, {
-        id: `${threadId}-call-${payload.call_id}`,
-        role: 'tool',
-        title: payload.name ?? 'Tool',
-        text: compactText(payload.arguments, ''),
-        status: 'in_progress',
-        updatedAt: now(),
-      })
-      continue
-    }
-
-    if (payload.type === 'function_call_output') {
-      upsertMessage(messages, {
-        id: `${threadId}-call-${payload.call_id}`,
-        role: 'tool',
-        title: 'Tool output',
-        text: compactText(payload.output, ''),
-        status: 'completed',
-        updatedAt: now(),
-      })
-    }
-  }
-
-  return messages
+  appendMessage(snapshot, {
+    id: message.id,
+    role: message.role,
+    title: message.title,
+    text: message.text,
+    status: 'in_progress',
+    updatedAt: now(),
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -1247,6 +1841,7 @@ export class AgentSessionService extends EventEmitter {
       // Keep the last known token accounting so the % indicator stays populated
       // across restarts (a fresh turn will overwrite it on the next 'result').
       usage: persisted?.usage ?? null,
+      pendingApproval: null,
     }
 
     if (request.agent === 'claude') {
@@ -1312,60 +1907,8 @@ export class AgentSessionService extends EventEmitter {
       return cloneSnapshot(snapshot)
     }
 
-    const codexBinary = getSystemCodexPath()
-    const codex = new Codex({
-      env: buildAgentEnv(),
-      ...(codexBinary ? { codexPathOverride: codexBinary } : {}),
-    })
     const isResumedThread = Boolean(request.codexThreadId)
-    // Map portable permission modes onto Codex's sandbox/approval policy pair.
-    //   plan    → read-only + never-approve (agent can read but not write)
-    //   ask     → workspace-write + ask-on-request
-    //   bypass  → danger-full-access + never-approve (yolo)
-    // Legacy values: 'safe' → plan, 'allow-all' → ask.
-    const codexSandbox =
-      request.permissionMode === 'plan'
-        ? ('read-only' as const)
-        : request.permissionMode === 'bypass'
-          ? ('danger-full-access' as const)
-          : ('workspace-write' as const)
-    const codexApproval =
-      request.permissionMode === 'ask' ? ('on-request' as const) : ('never' as const)
-    const threadOptions = {
-      workingDirectory: request.cwd ?? undefined,
-      sandboxMode: codexSandbox,
-      approvalPolicy: codexApproval,
-      networkAccessEnabled: true,
-      // Codex refuses to run in a non-git directory unless this is set.
-      // Home ($HOME) is the common case for "just start a general chat",
-      // so we always opt out of the repo trust check here.
-      skipGitRepoCheck: true,
-      modelReasoningEffort: codexThinkingEffort(request.thinkingLevel),
-      ...(request.model ? { model: request.model } : {}),
-    }
-    const thread = request.codexThreadId
-      ? codex.resumeThread(request.codexThreadId, threadOptions)
-      : codex.startThread(threadOptions)
-
-    const runtime: CodexRuntime = {
-      kind: 'codex',
-      request,
-      snapshot,
-      codex,
-      thread,
-      turnPromise: null,
-      closed: false,
-      turnCounter: 0,
-    }
-    if (isResumedThread && request.codexThreadId) {
-      // Prefer Codex's own rollout file when it's still around — more
-      // authoritative than our JSON snapshot. If the rollout is gone (GC'd,
-      // a fresh install, session file format changed), keep the persisted
-      // messages we already loaded above so the user doesn't see an empty
-      // chat after restarting the app.
-      const rollout = await readCodexTranscript(request.codexThreadId)
-      if (rollout.length > 0) runtime.snapshot.messages = rollout
-    }
+    const runtime = await this.createCodexRuntime(request, snapshot)
     this.runtimes.set(request.windowId, runtime)
     if (!isResumedThread && request.initialPrompt?.trim()) {
       void this.send(request.windowId, request.initialPrompt)
@@ -1416,10 +1959,8 @@ export class AgentSessionService extends EventEmitter {
         await this.updatePermissionMode(windowId, overrides.permissionMode ?? null)
       }
 
-      // Model / thinking changes require rebooting the underlying CLI session
-      // (Claude) or thread (Codex) — both only read these at construction time.
-      // Marking closed + closing the Claude session lets the existing
-      // reopen-on-send path below pick up the new config.
+      // Claude only reads model / thinking at session construction time.
+      // Codex app-server accepts both per turn, so we keep the live session.
       if (modelChanged || thinkingChanged) {
         if (runtime.kind === 'claude') {
           try {
@@ -1427,8 +1968,8 @@ export class AgentSessionService extends EventEmitter {
           } catch {
             /* idempotent */
           }
+          runtime.closed = true
         }
-        runtime.closed = true
       }
     }
 
@@ -1436,7 +1977,7 @@ export class AgentSessionService extends EventEmitter {
     // reopen it so the message history survives and we just resume the
     // underlying CLI session for the next turn.
     if (runtime.closed) {
-      runtime = this.reopenRuntime(runtime)
+      runtime = await this.reopenRuntime(runtime)
     }
 
     const normalizedAttachments = (attachments ?? []).filter(
@@ -1502,17 +2043,38 @@ export class AgentSessionService extends EventEmitter {
     }
 
     log('send.codex.dispatch', { windowId })
-    const codexInput =
-      imageAttachments.length > 0
-        ? [
-            ...imageAttachments.map((p) => ({ type: 'local_image' as const, path: p })),
-            { type: 'text' as const, text: agentText },
-          ]
-        : agentText
-    const streamed = await runtime.thread.runStreamed(codexInput)
-    runtime.turnPromise = this.consumeCodexTurn(runtime, streamed.events).finally(() => {
+    runtime.turnPromise = new Promise<void>((resolve, reject) => {
+      runtime.resolveTurn = resolve
+      runtime.rejectTurn = reject
+    }).finally(() => {
       runtime.turnPromise = null
+      runtime.resolveTurn = null
+      runtime.rejectTurn = null
     })
+    try {
+      const started: { turn?: { id?: string } } = await runtime.client.request('turn/start', {
+        ...buildCodexTurnStartParams(runtime, agentText, imageAttachments),
+      })
+      runtime.activeTurnId = asNonEmptyString(started.turn?.id) ?? runtime.activeTurnId
+      log('send.codex.dispatched', {
+        windowId,
+        threadId: runtime.providerThreadId ?? runtime.snapshot.codexThreadId,
+        turnId: runtime.activeTurnId,
+      })
+    } catch (err) {
+      runtime.rejectTurn?.(err instanceof Error ? err : new Error(String(err)))
+      runtime.snapshot.status = 'error'
+      runtime.snapshot.error = err instanceof Error ? err.message : String(err)
+      appendMessage(runtime.snapshot, {
+        id: `${runtime.snapshot.windowId}-codex-error-${now()}`,
+        role: 'error',
+        title: 'Codex',
+        text: runtime.snapshot.error,
+        status: 'failed',
+      })
+      this.emitUpdate(runtime.snapshot)
+      throw err
+    }
   }
 
   /** Stop the current turn but keep the runtime + message history around.
@@ -1539,7 +2101,30 @@ export class AgentSessionService extends EventEmitter {
         runtime.pendingQuestion = null
         runtime.snapshot.pendingQuestion = null
       }
+    } else {
+      runtime.pendingApproval?.resolve({ decision: 'cancel' })
+      runtime.pendingApproval = null
+      runtime.snapshot.pendingApproval = null
+      runtime.pendingQuestion = null
+      runtime.snapshot.pendingQuestion = null
+      if (runtime.activeTurnId && (runtime.providerThreadId || runtime.snapshot.codexThreadId)) {
+        try {
+          await runtime.client.request('turn/interrupt', {
+            threadId: runtime.providerThreadId ?? runtime.snapshot.codexThreadId,
+            turnId: runtime.activeTurnId,
+          })
+        } catch (err) {
+          log('codex.turn.interrupt.error', {
+            windowId,
+            error: err instanceof Error ? err.message : String(err),
+          })
+        }
+      }
+      runtime.activeTurnId = null
+      runtime.resolveTurn?.()
+      await runtime.client.close()
     }
+    runtime.snapshot.codexPlan = null
     runtime.snapshot.status = 'idle'
     runtime.snapshot.error = null
     this.emitUpdate(runtime.snapshot)
@@ -1558,6 +2143,14 @@ export class AgentSessionService extends EventEmitter {
         } catch {
           /* ignore */
         }
+      } else {
+        runtime.pendingApproval?.resolve({ decision: 'cancel' })
+        runtime.pendingApproval = null
+        runtime.snapshot.pendingApproval = null
+        runtime.pendingQuestion = null
+        runtime.snapshot.pendingQuestion = null
+        runtime.resolveTurn?.()
+        await runtime.client.close()
       }
       this.runtimes.delete(windowId)
     }
@@ -1591,10 +2184,8 @@ export class AgentSessionService extends EventEmitter {
     log('claude.contextLength.update', { windowId, length: length ?? null })
   }
 
-  /** Apply a permission-mode change to a running agent session. Claude's SDK
-   *  exposes `session.setPermissionMode` for live updates; Codex only reads
-   *  `approvalPolicy` at thread construction so we rebuild the thread on the
-   *  same thread id to pick up the new policy on the next turn. */
+  /** Apply a permission-mode change to a running agent session. Claude can
+   *  update live; Codex picks the new mode up on the next turn/start call. */
   async updatePermissionMode(
     windowId: string,
     mode: AgentSessionRequest['permissionMode'] | 'safe' | 'allow-all',
@@ -1616,31 +2207,12 @@ export class AgentSessionService extends EventEmitter {
       }
       return
     }
-    // Codex: rebuild the Thread on top of the existing thread id so the next
-    // turn gets the new sandbox/approval policy.
-    const req = runtime.request
-    const codexSandbox =
-      req.permissionMode === 'plan'
-        ? ('read-only' as const)
-        : req.permissionMode === 'bypass'
-          ? ('danger-full-access' as const)
-          : ('workspace-write' as const)
-    const codexApproval =
-      req.permissionMode === 'ask' ? ('on-request' as const) : ('never' as const)
-    const threadOptions = {
-      workingDirectory: req.cwd ?? undefined,
-      sandboxMode: codexSandbox,
-      approvalPolicy: codexApproval,
-      networkAccessEnabled: true,
-      skipGitRepoCheck: true,
-      modelReasoningEffort: codexThinkingEffort(req.thinkingLevel),
-      ...(req.model ? { model: req.model } : {}),
-    }
-    const threadId = runtime.snapshot.codexThreadId
-    runtime.thread = threadId
-      ? runtime.codex.resumeThread(threadId, threadOptions)
-      : runtime.codex.startThread(threadOptions)
-    log('codex.permissionMode.update', { windowId, sandbox: codexSandbox, approval: codexApproval })
+    log('codex.permissionMode.update', {
+      windowId,
+      mode: runtime.request.permissionMode ?? null,
+      approval: buildCodexApprovalPolicy(runtime.request.permissionMode),
+      sandbox: buildCodexThreadSandbox(runtime.request.permissionMode),
+    })
   }
 
   /** Shared `canUseTool` entry point for Claude sessions. Encapsulates
@@ -1692,7 +2264,7 @@ export class AgentSessionService extends EventEmitter {
           behavior: 'deny',
           message: 'Superseded by a newer question prompt.',
         })
-        runtime.pendingQuestion = { questions, resolve }
+        runtime.pendingQuestion = { questions, originalInput: normalizedInput, resolve }
         runtime.snapshot.pendingQuestion = { questions, createdAt: now() }
         runtime.snapshot.updatedAt = now()
         this.emitUpdate(runtime.snapshot)
@@ -1781,13 +2353,69 @@ export class AgentSessionService extends EventEmitter {
    *      (array of length 1 for single-select; N for multi-select).
    *    - `null` → user declined / dismissed; the agent is told and can
    *      continue with its best judgment.
-   *  We always return `behavior: 'deny'` so the agent sees our crafted
-   *  message as the tool_result — the SDK doesn't expose a way to inject
-   *  structured tool output from canUseTool, so a deny-with-body is the
-   *  pragmatic bridge the agent already knows how to parse. */
+   *  Structured answers are returned through `updatedInput.answers`, which
+   *  lets Claude continue the tool call without re-asking the question. */
   async respondQuestion(windowId: string, answers: Record<string, string[]> | null): Promise<void> {
     const runtime = this.runtimes.get(windowId)
-    if (!runtime || runtime.kind !== 'claude') return
+    if (!runtime) return
+
+    if (runtime.kind === 'claude') {
+      const pending = runtime.pendingQuestion
+      if (!pending) return
+
+      runtime.pendingQuestion = null
+      runtime.snapshot.pendingQuestion = null
+      runtime.snapshot.updatedAt = now()
+
+      if (!answers) {
+        log('claude.askUserQuestion.declined', { windowId })
+        this.emitUpdate(runtime.snapshot)
+        pending.resolve({
+          behavior: 'deny',
+          message:
+            'The user declined to answer the question(s). Continue using your best judgment, or ask again with more context.',
+        })
+        return
+      }
+
+      const normalizedAnswers: Record<string, string> = {}
+      for (const q of pending.questions) {
+        const key = 'id' in q && typeof q.id === 'string' ? q.id : q.question
+        const picked = (answers[key] ?? answers[q.question] ?? []).filter(
+          (value): value is string => typeof value === 'string' && value.trim().length > 0,
+        )
+        const normalized = q.multiSelect ? picked.join(', ') : (picked[0] ?? '')
+        if (normalized) normalizedAnswers[q.question] = normalized
+      }
+      if (Object.keys(normalizedAnswers).length < pending.questions.length) {
+        log('claude.askUserQuestion.incomplete', {
+          windowId,
+          expected: pending.questions.length,
+          actual: Object.keys(normalizedAnswers).length,
+        })
+        this.emitUpdate(runtime.snapshot)
+        pending.resolve({
+          behavior: 'deny',
+          message:
+            'The user response was incomplete. Ask the question again if you still need clarification.',
+        })
+        return
+      }
+      log('claude.askUserQuestion.answered', {
+        windowId,
+        keys: Object.keys(normalizedAnswers).length,
+      })
+      this.emitUpdate(runtime.snapshot)
+      pending.resolve({
+        behavior: 'allow',
+        updatedInput: {
+          ...pending.originalInput,
+          answers: normalizedAnswers,
+        },
+      })
+      return
+    }
+
     const pending = runtime.pendingQuestion
     if (!pending) return
 
@@ -1795,29 +2423,45 @@ export class AgentSessionService extends EventEmitter {
     runtime.snapshot.pendingQuestion = null
     runtime.snapshot.updatedAt = now()
 
-    if (!answers) {
-      log('claude.askUserQuestion.declined', { windowId })
-      this.emitUpdate(runtime.snapshot)
-      pending.resolve({
-        behavior: 'deny',
-        message:
-          'The user declined to answer the question(s). Continue using your best judgment, or ask again with more context.',
+    const normalizedAnswers: Record<string, string[]> = {}
+    for (const question of pending.questions) {
+      const picked = (answers?.[question.id] ?? answers?.[question.question] ?? []).filter(
+        (value): value is string => typeof value === 'string' && value.trim().length > 0,
+      )
+      normalizedAnswers[question.id] = picked
+    }
+    if (!answers || Object.values(normalizedAnswers).some((picked) => picked.length === 0)) {
+      log('codex.requestUserInput.incomplete', {
+        windowId,
+        expected: pending.questions.length,
+        actual: Object.values(normalizedAnswers).filter((picked) => picked.length > 0).length,
       })
+      this.emitUpdate(runtime.snapshot)
+      pending.resolve(codexQuestionResponse(normalizedAnswers))
       return
     }
-
-    const lines = pending.questions.map((q) => {
-      const picked = answers[q.question] ?? []
-      const joined = picked.length > 0 ? picked.join(', ') : '(no answer)'
-      return `- "${q.question}" → ${joined}`
-    })
-    const message = `The user answered your question(s):\n${lines.join('\n')}`
-    log('claude.askUserQuestion.answered', {
+    log('codex.requestUserInput.answered', {
       windowId,
-      keys: Object.keys(answers).length,
+      keys: Object.keys(normalizedAnswers).length,
     })
     this.emitUpdate(runtime.snapshot)
-    pending.resolve({ behavior: 'deny', message })
+    pending.resolve(codexQuestionResponse(normalizedAnswers))
+  }
+
+  async respondApproval(
+    windowId: string,
+    decision: 'accept' | 'acceptForSession' | 'decline',
+  ): Promise<void> {
+    const runtime = this.runtimes.get(windowId)
+    if (!runtime || runtime.kind !== 'codex') return
+    const pending = runtime.pendingApproval
+    if (!pending) return
+
+    runtime.pendingApproval = null
+    runtime.snapshot.pendingApproval = null
+    runtime.snapshot.updatedAt = now()
+    this.emitUpdate(runtime.snapshot)
+    pending.resolve({ decision })
   }
 
   // The v2 SDK drops the `cwd` option from SDKSessionOptions (see
@@ -1850,7 +2494,394 @@ export class AgentSessionService extends EventEmitter {
     }
   }
 
-  private reopenRuntime(runtime: Runtime): Runtime {
+  private async createCodexRuntime(
+    request: AgentSessionRequest,
+    snapshot: AgentSessionSnapshot,
+  ): Promise<CodexRuntime> {
+    const runtime = {
+      kind: 'codex',
+      request,
+      snapshot,
+      client: null as unknown as LiveCodexAppServerClient,
+      providerThreadId: snapshot.codexThreadId ?? null,
+      activeTurnId: null,
+      turnPromise: null,
+      resolveTurn: null,
+      rejectTurn: null,
+      pendingQuestion: null,
+      pendingApproval: null,
+      closed: false,
+      turnCounter: 0,
+    } satisfies CodexRuntime
+    runtime.client = await createCodexAppServerSession({
+      onNotification: (notification) => {
+        this.handleCodexNotification(runtime, notification)
+        this.emitUpdate(runtime.snapshot)
+      },
+      onRequest: async (requestEvent) => await this.handleCodexServerRequest(runtime, requestEvent),
+      onUnexpectedExit: (error) => {
+        this.handleCodexUnexpectedExit(runtime, error)
+      },
+      onStderr: (line) => {
+        log('codex.stderr', { windowId: snapshot.windowId, line })
+      },
+    })
+    await this.openCodexThread(runtime)
+    return runtime
+  }
+
+  private async openCodexThread(runtime: CodexRuntime): Promise<void> {
+    const params = buildCodexThreadStartParams(runtime.request)
+    const resumeThreadId = runtime.snapshot.codexThreadId
+    try {
+      const response: { thread?: { id?: string } } = resumeThreadId
+        ? await runtime.client.request('thread/resume', { threadId: resumeThreadId, ...params })
+        : await runtime.client.request('thread/start', params)
+      const threadId = asNonEmptyString(response.thread?.id) ?? resumeThreadId
+      runtime.providerThreadId = threadId ?? null
+      runtime.snapshot.codexThreadId = threadId ?? null
+    } catch (err) {
+      if (resumeThreadId && isCodexRecoverableThreadResumeError(err)) {
+        log('codex.resume.fallback', {
+          windowId: runtime.snapshot.windowId,
+          threadId: resumeThreadId,
+          error: err instanceof Error ? err.message : String(err),
+        })
+        runtime.snapshot.codexThreadId = null
+        runtime.providerThreadId = null
+        const response: { thread?: { id?: string } } = await runtime.client.request(
+          'thread/start',
+          params,
+        )
+        const threadId = asNonEmptyString(response.thread?.id)
+        runtime.providerThreadId = threadId ?? null
+        runtime.snapshot.codexThreadId = threadId ?? null
+        return
+      }
+      throw err
+    }
+  }
+
+  private handleCodexUnexpectedExit(runtime: CodexRuntime, error: Error) {
+    if (runtime.closed) return
+    log('codex.app-server.exit', {
+      windowId: runtime.snapshot.windowId,
+      error: error.message,
+    })
+    runtime.closed = true
+    runtime.pendingApproval?.resolve({ decision: 'cancel' })
+    runtime.pendingApproval = null
+    runtime.snapshot.pendingApproval = null
+    runtime.pendingQuestion = null
+    runtime.snapshot.pendingQuestion = null
+    runtime.activeTurnId = null
+    runtime.rejectTurn?.(error)
+    if (isCodexAuthError(error.message)) {
+      runtime.snapshot.status = 'idle'
+      runtime.snapshot.error = null
+      appendMessage(runtime.snapshot, {
+        id: `${runtime.snapshot.windowId}-codex-auth-${now()}`,
+        role: 'auth_request',
+        title: 'Sign in to Codex',
+        text: "Codex isn't signed in on this machine yet. Open a login session below — once you finish you can retry your last message.",
+        status: 'in_progress',
+        authLoginUrl: null,
+      })
+    } else {
+      runtime.snapshot.status = 'error'
+      runtime.snapshot.error = error.message
+      appendMessage(runtime.snapshot, {
+        id: `${runtime.snapshot.windowId}-codex-exit-${now()}`,
+        role: 'error',
+        title: 'Codex',
+        text: error.message,
+        status: 'failed',
+      })
+    }
+    this.emitUpdate(runtime.snapshot)
+  }
+
+  private async handleCodexServerRequest(
+    runtime: CodexRuntime,
+    request: CodexAppServerRequest,
+  ): Promise<unknown> {
+    const payload = asRecord(request.params) ?? {}
+    if (request.method === 'item/tool/requestUserInput') {
+      const rawQuestions = Array.isArray(payload.questions) ? payload.questions : []
+      const questions = rawQuestions
+        .map((value) => {
+          const item = asRecord(value)
+          if (!item) return null
+          const id = asNonEmptyString(item.id)
+          const question = asNonEmptyString(item.question)
+          if (!id || !question) return null
+          const options = Array.isArray(item.options)
+            ? item.options
+                .map((option) => {
+                  const normalized = asRecord(option)
+                  if (!normalized) return null
+                  const label = asNonEmptyString(normalized.label)
+                  if (!label) return null
+                  return {
+                    label,
+                    description: asNonEmptyString(normalized.description) || '',
+                  }
+                })
+                .filter(
+                  (option): option is { label: string; description: string } => option !== null,
+                )
+            : []
+          return {
+            id,
+            question,
+            header: asNonEmptyString(item.header) || '',
+            options,
+            multiSelect: false,
+          }
+        })
+        .filter(
+          (
+            question,
+          ): question is {
+            id: string
+            question: string
+            header: string
+            options: Array<{ label: string; description: string }>
+            multiSelect: boolean
+          } => question !== null,
+        )
+
+      log('codex.requestUserInput.pending', {
+        windowId: runtime.snapshot.windowId,
+        count: questions.length,
+      })
+
+      return await new Promise((resolve) => {
+        const fallback = codexQuestionResponse(
+          Object.fromEntries(questions.map((question) => [question.id, [] as string[]])),
+        )
+        runtime.pendingQuestion?.resolve(fallback)
+        runtime.pendingQuestion = { questions, resolve }
+        runtime.snapshot.pendingQuestion = { questions, createdAt: now() }
+        runtime.snapshot.updatedAt = now()
+        this.emitUpdate(runtime.snapshot)
+      })
+    }
+
+    if (
+      request.method === 'item/commandExecution/requestApproval' ||
+      request.method === 'item/fileChange/requestApproval'
+    ) {
+      const approval = buildCodexPendingApproval(
+        request.method === 'item/commandExecution/requestApproval' ? 'command' : 'file-change',
+        payload,
+      )
+      log('codex.requestApproval.pending', {
+        windowId: runtime.snapshot.windowId,
+        kind: approval.kind,
+      })
+      return await new Promise((resolve) => {
+        runtime.pendingApproval?.resolve({ decision: 'cancel' })
+        runtime.pendingApproval = {
+          kind: approval.kind,
+          resolve,
+        }
+        runtime.snapshot.pendingApproval = approval
+        runtime.snapshot.updatedAt = now()
+        this.emitUpdate(runtime.snapshot)
+      })
+    }
+
+    throw new Error(`Unsupported Codex app-server request: ${request.method}`)
+  }
+
+  private handleCodexNotification(runtime: CodexRuntime, notification: CodexAppServerNotification) {
+    const { method } = notification
+    const params = asRecord(notification.params)
+    log('codex.notification', {
+      windowId: runtime.snapshot.windowId,
+      method,
+      turnId:
+        asNonEmptyString(params?.turnId) ?? asNonEmptyString(asRecord(params?.turn)?.id) ?? null,
+      itemId:
+        asNonEmptyString(params?.itemId) ?? asNonEmptyString(asRecord(params?.item)?.id) ?? null,
+    })
+
+    if (method === 'thread/started') {
+      const thread = asRecord(params?.thread)
+      const threadId = asNonEmptyString(thread?.id) ?? asNonEmptyString(params?.threadId)
+      runtime.providerThreadId = threadId ?? runtime.providerThreadId
+      runtime.snapshot.codexThreadId = threadId ?? runtime.snapshot.codexThreadId
+      return
+    }
+
+    if (method === 'thread/tokenUsage/updated') {
+      const usage = asRecord(params?.tokenUsage)
+      const last = asRecord(usage?.last)
+      const total = asRecord(usage?.total)
+      if (!last) return
+      const inputTokens = typeof last.inputTokens === 'number' ? last.inputTokens : 0
+      const cachedInputTokens =
+        typeof last.cachedInputTokens === 'number' ? last.cachedInputTokens : 0
+      const outputTokens = typeof last.outputTokens === 'number' ? last.outputTokens : 0
+      const totalProcessedTokens =
+        typeof total?.totalTokens === 'number' ? total.totalTokens : inputTokens + outputTokens
+      const usedTokens =
+        typeof last.totalTokens === 'number' ? last.totalTokens : inputTokens + outputTokens
+      runtime.snapshot.usage = {
+        model: runtime.request.model || null,
+        inputTokens,
+        outputTokens,
+        cachedInputTokens,
+        contextWindow:
+          typeof usage?.modelContextWindow === 'number'
+            ? Math.round(usage.modelContextWindow)
+            : CODEX_DEFAULT_CONTEXT_WINDOW,
+        usedTokens,
+        totalProcessedTokens,
+        compactsAutomatically: true,
+        updatedAt: now(),
+      }
+      return
+    }
+
+    if (method === 'turn/started') {
+      const turn = asRecord(params?.turn)
+      runtime.turnCounter += 1
+      runtime.activeTurnId = asNonEmptyString(turn?.id) ?? runtime.activeTurnId
+      runtime.snapshot.status = 'running'
+      runtime.snapshot.error = null
+      runtime.snapshot.codexPlan = null
+      return
+    }
+
+    if (method === 'turn/plan/updated') {
+      const plan = Array.isArray(params?.plan) ? params.plan : []
+      runtime.snapshot.codexPlan = {
+        items: plan
+          .map((value) => {
+            const step = asRecord(value)
+            if (!step) return null
+            const text = asNonEmptyString(step.step)
+            if (!text) return null
+            return {
+              text,
+              completed: step.status === 'completed',
+            }
+          })
+          .filter((step): step is { text: string; completed: boolean } => step !== null),
+        updatedAt: now(),
+      }
+      return
+    }
+
+    if (method === 'turn/completed') {
+      const turn = asRecord(params?.turn)
+      const status = asNonEmptyString(turn?.status) ?? 'completed'
+      runtime.snapshot.status = status === 'failed' ? 'error' : 'idle'
+      runtime.snapshot.error =
+        status === 'failed'
+          ? asNonEmptyString(asRecord(turn?.error)?.message) || 'Codex turn failed'
+          : null
+      runtime.pendingApproval = null
+      runtime.snapshot.pendingApproval = null
+      runtime.snapshot.codexPlan = null
+      runtime.activeTurnId = null
+      for (const message of runtime.snapshot.messages) {
+        if (message.status === 'in_progress') {
+          message.status = message.role === 'error' ? 'failed' : 'completed'
+          message.updatedAt = now()
+        }
+      }
+      if (runtime.snapshot.error) {
+        appendMessage(runtime.snapshot, {
+          id: `${runtime.snapshot.windowId}-codex-turn-error-${now()}`,
+          role: 'error',
+          title: 'Codex',
+          text: runtime.snapshot.error,
+          status: 'failed',
+        })
+        runtime.rejectTurn?.(new Error(runtime.snapshot.error))
+      } else {
+        runtime.resolveTurn?.()
+      }
+      return
+    }
+
+    if (method === 'error') {
+      const message =
+        asNonEmptyString(params?.message) ||
+        asNonEmptyString(asRecord(params?.error)?.message) ||
+        'Codex failed'
+      runtime.pendingApproval = null
+      runtime.snapshot.pendingApproval = null
+      runtime.snapshot.status = 'error'
+      runtime.snapshot.error = message
+      runtime.activeTurnId = null
+      appendMessage(runtime.snapshot, {
+        id: `${runtime.snapshot.windowId}-codex-error-${now()}`,
+        role: 'error',
+        title: 'Codex',
+        text: message,
+        status: 'failed',
+      })
+      runtime.rejectTurn?.(new Error(message))
+      return
+    }
+
+    if (method === 'item/agentMessage/delta') {
+      const itemId = asNonEmptyString(params?.itemId)
+      const delta = asNonEmptyString(params?.delta)
+      if (!itemId || !delta) return
+      appendCodexDelta(runtime.snapshot, {
+        id: codexMessageId(runtime, itemId),
+        role: 'assistant',
+        title: null,
+        text: delta,
+      })
+      return
+    }
+
+    if (method === 'item/reasoning/summaryTextDelta' || method === 'item/reasoning/textDelta') {
+      const itemId = asNonEmptyString(params?.itemId)
+      const delta = asNonEmptyString(params?.delta)
+      if (!itemId || !delta) return
+      appendCodexDelta(runtime.snapshot, {
+        id: codexMessageId(runtime, itemId),
+        role: 'reasoning',
+        title: 'Reasoning',
+        text: delta,
+      })
+      return
+    }
+
+    if (
+      method === 'item/commandExecution/outputDelta' ||
+      method === 'item/fileChange/outputDelta'
+    ) {
+      const itemId = asNonEmptyString(params?.itemId)
+      const delta = asNonEmptyString(params?.delta)
+      if (!itemId || !delta) return
+      appendCodexDelta(runtime.snapshot, {
+        id: codexMessageId(runtime, itemId),
+        role: 'tool',
+        title: method === 'item/fileChange/outputDelta' ? 'File changes' : 'Command',
+        text: delta,
+      })
+      return
+    }
+
+    if (method !== 'item/started' && method !== 'item/completed') return
+    const item = asRecord(params?.item)
+    if (!item) return
+    const next = codexItemToMessage(item)
+    if (!next) return
+    next.id = codexMessageId(runtime, next.id)
+    if (method === 'item/started') next.status = 'in_progress'
+    appendMessage(runtime.snapshot, next)
+  }
+
+  private async reopenRuntime(runtime: Runtime): Promise<Runtime> {
     const windowId = runtime.snapshot.windowId
     log('reopen', { windowId, kind: runtime.kind })
     if (runtime.kind === 'claude') {
@@ -1886,29 +2917,25 @@ export class AgentSessionService extends EventEmitter {
       return runtime
     }
 
-    // Codex: rebuild the thread on top of the same codex client.
-    const req = runtime.request
-    const codexSandbox =
-      req.permissionMode === 'plan'
-        ? ('read-only' as const)
-        : req.permissionMode === 'bypass'
-          ? ('danger-full-access' as const)
-          : ('workspace-write' as const)
-    const codexApproval =
-      req.permissionMode === 'ask' ? ('on-request' as const) : ('never' as const)
-    const threadOptions = {
-      workingDirectory: req.cwd ?? undefined,
-      sandboxMode: codexSandbox,
-      approvalPolicy: codexApproval,
-      networkAccessEnabled: true,
-      skipGitRepoCheck: true,
-      modelReasoningEffort: codexThinkingEffort(req.thinkingLevel),
-      ...(req.model ? { model: req.model } : {}),
-    }
-    const threadId = runtime.snapshot.codexThreadId
-    runtime.thread = threadId
-      ? runtime.codex.resumeThread(threadId, threadOptions)
-      : runtime.codex.startThread(threadOptions)
+    runtime.client = await createCodexAppServerSession({
+      onNotification: (notification) => {
+        this.handleCodexNotification(runtime, notification)
+        this.emitUpdate(runtime.snapshot)
+      },
+      onRequest: async (requestEvent) => await this.handleCodexServerRequest(runtime, requestEvent),
+      onUnexpectedExit: (error) => {
+        this.handleCodexUnexpectedExit(runtime, error)
+      },
+      onStderr: (line) => {
+        log('codex.stderr', { windowId, line })
+      },
+    })
+    await this.openCodexThread(runtime)
+    runtime.activeTurnId = null
+    runtime.pendingApproval = null
+    runtime.snapshot.pendingApproval = null
+    runtime.pendingQuestion = null
+    runtime.snapshot.pendingQuestion = null
     runtime.closed = false
     return runtime
   }
@@ -2439,24 +3466,25 @@ export class AgentSessionService extends EventEmitter {
         if (pickEntry) {
           const [pickModel, pick] = pickEntry
           const cached = (pick.cacheReadInputTokens ?? 0) + (pick.cacheCreationInputTokens ?? 0)
-          runtime.snapshot.usage = {
+          runtime.snapshot.usage = buildUsageStats({
             model: pickModel,
             // Claude reports `inputTokens` as the NEW prompt tokens only —
             // cache reads/creations are billed in separate buckets. Fold them
-            // in here so the context-usage indicator sees the full prompt
-            // size (matches how the Claude CLI renders its own context bar).
+            // in here so `totalProcessedTokens` reflects the full prompt size.
             inputTokens: (pick.inputTokens ?? 0) + cached,
             outputTokens: pick.outputTokens ?? 0,
             cachedInputTokens: cached,
             contextWindow: pick.contextWindow ?? null,
-            updatedAt: now(),
-          }
+            compactsAutomatically: false,
+          })
           log('claude.usage', {
             windowId: runtime.snapshot.windowId,
             requested,
             picked: pickModel,
             inputTokens: runtime.snapshot.usage.inputTokens,
             outputTokens: runtime.snapshot.usage.outputTokens,
+            usedTokens: runtime.snapshot.usage.usedTokens,
+            totalProcessedTokens: runtime.snapshot.usage.totalProcessedTokens,
             contextWindow: runtime.snapshot.usage.contextWindow,
             modelCount: entries.length,
           })
@@ -2526,103 +3554,6 @@ export class AgentSessionService extends EventEmitter {
       })
       runtime.snapshot.status = 'idle'
       this.emitUpdate(runtime.snapshot)
-    }
-  }
-
-  private async consumeCodexTurn(runtime: CodexRuntime, events: AsyncGenerator<ThreadEvent>) {
-    const windowId = runtime.snapshot.windowId
-    log('codex.turn.start', { windowId })
-    let count = 0
-    try {
-      for await (const event of events) {
-        if (runtime.closed) {
-          log('codex.turn.broken-by-close', { windowId, count })
-          break
-        }
-        count += 1
-        log('codex.event', { windowId, n: count, type: (event as any).type })
-        this.handleCodexEvent(runtime, event)
-        this.emitUpdate(runtime.snapshot)
-      }
-      log('codex.turn.end', { windowId, count })
-    } catch (error) {
-      runtime.snapshot.status = 'error'
-      const rawError = error instanceof Error ? error.message : String(error)
-      runtime.snapshot.error = rawError
-      if (isCodexAuthError(rawError)) {
-        appendMessage(runtime.snapshot, {
-          id: `${runtime.snapshot.windowId}-codex-auth-${now()}`,
-          role: 'auth_request',
-          title: 'Sign in to Codex',
-          text: "Codex isn't signed in on this machine yet. Open a login session below — once you finish you can retry your last message.",
-          status: 'in_progress',
-          authLoginUrl: null,
-        })
-        runtime.snapshot.error = null
-      } else {
-        appendMessage(runtime.snapshot, {
-          id: `${runtime.snapshot.windowId}-codex-error-${now()}`,
-          role: 'error',
-          title: 'Codex',
-          text: rawError,
-          status: 'failed',
-        })
-      }
-      this.emitUpdate(runtime.snapshot)
-    }
-  }
-
-  private handleCodexEvent(runtime: CodexRuntime, event: ThreadEvent) {
-    if (event.type === 'thread.started') {
-      runtime.snapshot.codexThreadId = event.thread_id
-      return
-    }
-    if (event.type === 'turn.started') {
-      runtime.turnCounter += 1
-      runtime.snapshot.status = 'running'
-      runtime.snapshot.error = null
-      return
-    }
-    if (event.type === 'turn.completed') {
-      runtime.snapshot.status = 'idle'
-      runtime.snapshot.error = null
-      const usage = (event as any).usage as
-        | { input_tokens?: number; cached_input_tokens?: number; output_tokens?: number }
-        | undefined
-      if (usage) {
-        runtime.snapshot.usage = {
-          model: runtime.request.model || null,
-          inputTokens: usage.input_tokens ?? 0,
-          outputTokens: usage.output_tokens ?? 0,
-          cachedInputTokens: usage.cached_input_tokens ?? 0,
-          // Codex SDK doesn't expose a per-model context window; fall back to
-          // the known GPT-5 family capacity so the % indicator has a denominator.
-          contextWindow: CODEX_DEFAULT_CONTEXT_WINDOW,
-          updatedAt: now(),
-        }
-      }
-      return
-    }
-    if (event.type === 'turn.failed' || event.type === 'error') {
-      const message = event.type === 'error' ? event.message : event.error.message
-      runtime.snapshot.status = 'error'
-      runtime.snapshot.error = message
-      appendMessage(runtime.snapshot, {
-        id: `${runtime.snapshot.windowId}-turn-error-${now()}`,
-        role: 'error',
-        title: 'Codex',
-        text: message,
-        status: 'failed',
-      })
-      return
-    }
-    // Codex reuses item ids (item_0, item_1 …) across every turn — prefix
-    // with the turn counter so a new turn doesn't overwrite the previous
-    // turn's messages via upsertMessage.
-    const next = codexItemToMessage(event.item)
-    if (next) {
-      next.id = `t${runtime.turnCounter}-${next.id}`
-      appendMessage(runtime.snapshot, next)
     }
   }
 }

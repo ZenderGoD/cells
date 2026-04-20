@@ -12,6 +12,12 @@ import {
 import type { AgentSessionMessage, AgentWindowNode } from '@/types'
 import { cn } from '@/lib/utils'
 import { resolveToolIcon } from '@/lib/tool-icons'
+import {
+  diffStatsFromMessage,
+  hasDiffStats,
+  sumDiffStats,
+  type DiffStats,
+} from '@/lib/tool-diff-stats'
 import { AgentMarkdown } from './agent-markdown'
 import { LoadingIndicator, Spinner } from './agent-loading-indicator'
 
@@ -215,6 +221,22 @@ function buildActivityTree(activities: AgentSessionMessage[]): ActivityNode[] {
   return roots
 }
 
+function DiffStatsBadge({ stats, className }: { stats: DiffStats; className?: string }) {
+  if (!hasDiffStats(stats)) return null
+  return (
+    <span
+      className={cn(
+        'shrink-0 inline-flex items-center gap-1 text-[11px] tabular-nums font-medium',
+        className,
+      )}
+      title={`+${stats.additions} / -${stats.deletions}`}
+    >
+      {stats.additions > 0 ? <span className="text-emerald-400/90">+{stats.additions}</span> : null}
+      {stats.deletions > 0 ? <span className="text-rose-400/90">-{stats.deletions}</span> : null}
+    </span>
+  )
+}
+
 // Activity row — Craft layout: [status icon] [tool name] [filename pill]
 // [ · description · summary]. Depth controls left indentation so subagent
 // children nest visually.
@@ -266,6 +288,7 @@ function ActivityRow({ node, depth }: { node: ActivityNode; depth: number }) {
       ? (message.text || '').trim().split('\n')[0].slice(0, 180)
       : undefined
   const hasTrailing = !!(row.description || row.summary || assistantInline)
+  const rowDiffStats = diffStatsFromMessage(message)
 
   return (
     <div className="group/row">
@@ -285,6 +308,7 @@ function ActivityRow({ node, depth }: { node: ActivityNode; depth: number }) {
             {row.filename}
           </span>
         ) : null}
+        {rowDiffStats ? <DiffStatsBadge stats={rowDiffStats} /> : null}
         {hasTrailing ? (
           <span className="min-w-0 flex-1 truncate">
             {row.description ? (
@@ -534,36 +558,36 @@ export function AgentTurnCard({
   const [collapsed, setCollapsed] = useState(true)
   const showActivities = !collapsed
   const computedPreview = usePreviewText(activities, isStreaming, agent)
-  // First-line preview derived from the interim assistant text, used in the
-  // collapsed header when the turn is followed by more tools. Keeps the
-  // header a single line even if the original prose wrapped.
-  const leadPreview = useMemo(() => {
-    if (!leadText) return null
-    const firstLine = leadText.split('\n')[0].trim()
-    return firstLine.length > 200 ? firstLine.slice(0, 200) + '…' : firstLine
-  }, [leadText])
-  const previewText = leadPreview || computedPreview
   const tree = useMemo(() => buildActivityTree(activities), [activities])
+  const groupDiffStats = useMemo(() => sumDiffStats(activities), [activities])
+
+  const leadBlock = leadText ? (
+    <div className="agent-response select-text px-1 text-sm leading-relaxed text-foreground/85">
+      <AgentMarkdown>{leadText}</AgentMarkdown>
+    </div>
+  ) : null
 
   return (
     <div className="flex w-full justify-start">
       <div className="w-full space-y-1">
-        {/* When the turn has a demoted interim text, render the full prose
-         *  as a muted lead line so the user still sees the context even in
-         *  inline (small-turn) mode where there's no collapsed header. */}
-        {leadText && isSmallTurn ? (
-          <div className="select-text px-1 text-sm leading-relaxed text-foreground/80">
-            {leadText}
-          </div>
-        ) : null}
         {hasActivities ? (
           isSmallTurn ? (
-            <div className="space-y-0.5 px-1 py-0.5">
-              {tree.map((node) => (
-                <ActivityRow key={node.message.id} node={node} depth={0} />
-              ))}
+            // Small turns: lead text sits at its actual position — before the
+            // tool rows, since it's interim prose that preceded the calls.
+            <div className="space-y-1 px-1 py-0.5">
+              {leadBlock}
+              <div className="space-y-0.5">
+                {tree.map((node) => (
+                  <ActivityRow key={node.message.id} node={node} depth={0} />
+                ))}
+              </div>
             </div>
           ) : (
+            // Large turns: the pill is the single collapse handle for the
+            // whole group. Lead text stays visible in both states (it's the
+            // author's own prose, not part of the activity list). When
+            // expanded, the activity rows slot in after the lead text to
+            // preserve the original sequence.
             <div className="select-none">
               <button
                 type="button"
@@ -573,26 +597,31 @@ export function AgentTurnCard({
                 <span className="shrink-0 rounded-[4px] bg-background px-1.5 py-0.5 text-[10px] font-medium tabular-nums shadow-minimal">
                   {activities.length}
                 </span>
-                {isStreaming && !leadPreview ? (
+                {isStreaming ? (
                   <LoadingIndicator
-                    label={previewText}
+                    label={computedPreview}
                     showElapsed
                     className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground [&>span:nth-child(2)]:truncate"
                   />
                 ) : (
                   <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground">
-                    {previewText}
+                    {computedPreview}
                   </span>
                 )}
+                {hasDiffStats(groupDiffStats) ? (
+                  <DiffStatsBadge stats={groupDiffStats} className="ml-auto" />
+                ) : null}
                 <ChevronRight
                   className={cn(
-                    'ml-auto size-3.5 shrink-0 text-muted-foreground/70 transition-transform',
+                    'size-3.5 shrink-0 text-muted-foreground/70 transition-transform',
+                    !hasDiffStats(groupDiffStats) && 'ml-auto',
                     showActivities && 'rotate-90',
                   )}
                 />
               </button>
+              {leadBlock ? <div className="px-1 pt-1">{leadBlock}</div> : null}
               {showActivities ? (
-                <div className="ml-[13px] max-h-[360px] space-y-0.5 overflow-y-auto overscroll-contain border-l-2 border-border/40 pl-3 pr-1 py-0.5">
+                <div className="ml-[13px] mt-1 max-h-[360px] space-y-0.5 overflow-y-auto overscroll-contain border-l-2 border-border/40 pl-3 pr-1 py-0.5">
                   {tree.map((node) => (
                     <ActivityRow key={node.message.id} node={node} depth={0} />
                   ))}
@@ -600,6 +629,8 @@ export function AgentTurnCard({
               ) : null}
             </div>
           )
+        ) : leadBlock ? (
+          leadBlock
         ) : isStreaming && !hasResponse ? (
           <LoadingIndicator
             label={agent === 'claude' ? 'Claude is thinking…' : 'Codex is thinking…'}

@@ -1345,6 +1345,13 @@ ipcMain.handle(
   },
 )
 
+ipcMain.handle(
+  'agent-session:respond-approval',
+  async (_event, windowId: string, decision: 'accept' | 'acceptForSession' | 'decline') => {
+    return agentSessionService.respondApproval(windowId, decision)
+  },
+)
+
 ipcMain.handle('agent-session:list-codex-models', async () => {
   try {
     return await listCodexModels()
