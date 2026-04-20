@@ -17,6 +17,7 @@ import type {
   AgentWindowNode,
 } from '@/types'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { resolveAgentModelId } from '@/lib/agent-model-selection'
 import { cn } from '@/lib/utils'
 
 // Copied and adapted from Craft Agents OSS:
@@ -27,6 +28,8 @@ interface ModelOption {
   id: string
   label: string
   hint?: string
+  isDefault?: boolean
+  available?: boolean
   /** Effort values the model actually accepts (subset of AgentThinkingLevel). */
   supportedEfforts: AgentThinkingLevel[]
   /** Effort the SDK picks when the caller doesn't specify one. */
@@ -147,6 +150,7 @@ function fetchClaudeModels(): Promise<ModelOption[]> {
           id: m.id,
           label,
           hint: m.description || undefined,
+          available: true,
           supportedEfforts,
           defaultEffort,
         }
@@ -156,14 +160,46 @@ function fetchClaudeModels(): Promise<ModelOption[]> {
       const named = mapped.filter((m) => !/\bdefault\b/i.test(m.id))
       const liveList = named.length > 0 ? named : mapped
 
-      // Use CLAUDE_MODELS_FALLBACK as the canonical ordering base — live data
-      // overrides each entry where available, but fallback entries (e.g. Opus)
-      // are always present even if the CLI omits them due to version or tier.
+      // Extract the tier (opus/sonnet/haiku) from a model id so we can match
+      // fallback slots to live entries even when the SDK returns versioned or
+      // date-suffixed ids like "claude-sonnet-4-6-20250514".
+      const tierOf = (id: string) =>
+        id
+          .replace(/^claude-/i, '')
+          .split('-')[0]
+          .toLowerCase()
+
+      // Build two lookup tables: exact id → live model, tier → first live model
       const liveById = new Map(liveList.map((m) => [m.id, m]))
-      claudeModelsCache = [
-        ...CLAUDE_MODELS_FALLBACK.map((fb) => liveById.get(fb.id) ?? fb),
-        ...liveList.filter((m) => !CLAUDE_MODELS_FALLBACK.some((fb) => fb.id === m.id)),
-      ]
+      const liveByTier = new Map<string, ModelOption>()
+      for (const m of liveList) {
+        const t = tierOf(m.id)
+        if (!liveByTier.has(t)) liveByTier.set(t, m)
+      }
+
+      // Fallback defines canonical ordering. Prefer exact-id match, then
+      // tier match (avoids duplicates when SDK uses versioned ids), then
+      // keep the fallback entry as-is — availability is unknown, not false,
+      // so the user can still attempt to use it.
+      const coveredTiers = new Set<string>()
+      const merged = CLAUDE_MODELS_FALLBACK.map((fb) => {
+        const byId = liveById.get(fb.id)
+        if (byId) {
+          coveredTiers.add(tierOf(fb.id))
+          return byId
+        }
+        const byTier = liveByTier.get(tierOf(fb.id))
+        if (byTier) {
+          coveredTiers.add(tierOf(fb.id))
+          return byTier
+        }
+        // No live match — show as available (CLI may still accept it)
+        return fb
+      })
+
+      // Append live extras whose tier isn't covered by any fallback slot
+      const extras = liveList.filter((m) => !coveredTiers.has(tierOf(m.id)))
+      claudeModelsCache = [...merged, ...extras]
       return claudeModelsCache
     })
     .catch(() => {
@@ -238,6 +274,7 @@ function fetchCodexModels(): Promise<ModelOption[]> {
         id: string
         displayName: string
         description: string
+        isDefault: boolean
         hidden: boolean
         supportedReasoningEfforts: Array<{ effort: string; description: string }>
         defaultReasoningEffort: string
@@ -260,12 +297,16 @@ function fetchCodexModels(): Promise<ModelOption[]> {
             id: m.id,
             label: prettifyCodexModel(m.displayName || m.id),
             hint: m.description || undefined,
+            isDefault: !!m.isDefault,
             supportedEfforts: efforts.length > 0 ? efforts : ['low', 'medium', 'high', 'xhigh'],
             defaultEffort: codexEffortToLevel(m.defaultReasoningEffort || 'medium'),
             effortHints,
           }
         })
-      codexModelsCache = mapped.length > 0 ? mapped : CODEX_MODELS_FALLBACK
+      codexModelsCache =
+        mapped.length > 0
+          ? [...mapped].sort((a, b) => Number(!!b.isDefault) - Number(!!a.isDefault))
+          : CODEX_MODELS_FALLBACK
       return codexModelsCache
     })
     .catch(() => {
@@ -288,7 +329,8 @@ function findModel(
   agent: 'claude' | 'codex',
   id: string | null | undefined,
 ) {
-  return models.find((m) => m.id === (id ?? DEFAULT_MODEL[agent])) ?? models[0]
+  const resolvedId = resolveAgentModelId(agent, id, models, DEFAULT_MODEL[agent])
+  return models.find((m) => m.id === resolvedId) ?? models[0]
 }
 
 export const THINKING_LEVEL_LABEL_MAP: Record<AgentThinkingLevel, string> = {
@@ -400,10 +442,12 @@ export function ModelPicker({
         </div>
         {models.map((model) => {
           const active = model.id === current.id
+          const unavailable = model.available === false
           return (
             <button
               key={model.id}
               type="button"
+              disabled={unavailable}
               onClick={() => {
                 onChange(model.id)
                 // Moving to a model that doesn't support the 1M beta — drop
@@ -420,16 +464,18 @@ export function ModelPicker({
               }}
               className={cn(
                 'flex w-full items-start gap-2 rounded-[8px] px-2 py-1.5 text-left text-[12px] transition-colors',
-                active
-                  ? 'bg-foreground/8 text-foreground'
-                  : 'hover:bg-foreground/5 text-foreground/90',
+                unavailable
+                  ? 'cursor-not-allowed opacity-50'
+                  : active
+                    ? 'bg-foreground/8 text-foreground'
+                    : 'hover:bg-foreground/5 text-foreground/90',
               )}
             >
               <div className="min-w-0 flex-1">
                 <div className="truncate font-medium">{model.label}</div>
-                {model.hint ? (
+                {model.hint || unavailable ? (
                   <div className="truncate text-[10.5px] text-muted-foreground/70">
-                    {model.hint}
+                    {unavailable ? 'Unavailable in the current CLI/account' : model.hint}
                   </div>
                 ) : null}
               </div>
