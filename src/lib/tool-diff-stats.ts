@@ -1,4 +1,4 @@
-import type { AgentSessionMessage } from '@/types'
+import type { AgentSessionMessage } from '../types/index.ts'
 
 export interface DiffStats {
   additions: number
@@ -12,6 +12,7 @@ export interface FileDiffStats extends DiffStats {
 }
 
 const EDIT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit'])
+const FILE_CHANGE_TOOL = 'File changes'
 
 function safeParse(text: string | undefined | null): Record<string, unknown> | null {
   if (!text) return null
@@ -26,6 +27,132 @@ function safeParse(text: string | undefined | null): Record<string, unknown> | n
 function countLines(text: string): number {
   if (!text) return 0
   return text.split('\n').length
+}
+
+function normalizeDiffPath(text: string): string | null {
+  const trimmed = text.trim()
+  if (!trimmed) return null
+  const unquoted =
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+      ? trimmed.slice(1, -1)
+      : trimmed
+  if (!unquoted || unquoted === '/dev/null') return null
+  if (unquoted.startsWith('a/') || unquoted.startsWith('b/')) return unquoted.slice(2)
+  return unquoted
+}
+
+function parseSummaryFileChanges(text: string): FileDiffStats[] {
+  const byPath = new Map<string, FileDiffStats>()
+  for (const rawLine of text.replace(/\r\n/g, '\n').split('\n')) {
+    const match = rawLine.match(/^(?:add|delete|update|change):\s+(.+)$/)
+    if (!match) continue
+    const filePath = match[1]?.trim()
+    if (!filePath) continue
+    if (!byPath.has(filePath)) {
+      byPath.set(filePath, {
+        filePath,
+        additions: 0,
+        deletions: 0,
+        edits: [],
+      })
+    }
+  }
+  return Array.from(byPath.values()).sort((a, b) => a.filePath.localeCompare(b.filePath))
+}
+
+function upsertParsedFile(
+  byPath: Map<string, FileDiffStats>,
+  filePath: string | null,
+  additions: number,
+  deletions: number,
+) {
+  if (!filePath) return
+  const existing = byPath.get(filePath) ?? {
+    filePath,
+    additions: 0,
+    deletions: 0,
+    edits: [],
+  }
+  existing.additions += additions
+  existing.deletions += deletions
+  byPath.set(filePath, existing)
+}
+
+// Copied and adapted from t3code's unified-diff stat model:
+// ../t3code/apps/server/src/checkpointing/Diffs.ts
+// We keep the same per-file additions/deletions shape locally so Codex
+// session badges and file trees can consume streamed patch text directly.
+function parseUnifiedDiffFiles(diff: string): FileDiffStats[] {
+  const normalized = diff.replace(/\r\n/g, '\n').trim()
+  if (!normalized) return []
+
+  const byPath = new Map<string, FileDiffStats>()
+  let currentPath: string | null = null
+  let additions = 0
+  let deletions = 0
+  let sawPatch = false
+
+  const flush = () => {
+    if (!currentPath && additions === 0 && deletions === 0) return
+    upsertParsedFile(byPath, currentPath, additions, deletions)
+    currentPath = null
+    additions = 0
+    deletions = 0
+  }
+
+  for (const line of normalized.split('\n')) {
+    if (line.startsWith('diff --git ')) {
+      flush()
+      sawPatch = true
+      continue
+    }
+    if (line.startsWith('rename to ')) {
+      currentPath = normalizeDiffPath(line.slice('rename to '.length))
+      sawPatch = true
+      continue
+    }
+    if (line.startsWith('+++ ')) {
+      const nextPath = normalizeDiffPath(line.slice(4))
+      if (nextPath) currentPath = nextPath
+      sawPatch = true
+      continue
+    }
+    if (line.startsWith('--- ')) {
+      if (!currentPath) currentPath = normalizeDiffPath(line.slice(4))
+      sawPatch = true
+      continue
+    }
+    if (line.startsWith('+') && !line.startsWith('+++')) {
+      additions += 1
+      sawPatch = true
+      continue
+    }
+    if (line.startsWith('-') && !line.startsWith('---')) {
+      deletions += 1
+      sawPatch = true
+      continue
+    }
+    if (line.startsWith('Binary files ')) {
+      sawPatch = true
+      continue
+    }
+  }
+
+  flush()
+  if (!sawPatch) return parseSummaryFileChanges(diff)
+  return Array.from(byPath.values()).sort((a, b) => a.filePath.localeCompare(b.filePath))
+}
+
+function diffStatsFromFiles(files: FileDiffStats[]): DiffStats | null {
+  if (files.length === 0) return null
+  return files.reduce(
+    (total, file) => ({
+      additions: total.additions + file.additions,
+      deletions: total.deletions + file.deletions,
+    }),
+    { additions: 0, deletions: 0 },
+  )
 }
 
 /** Compute {additions, deletions} from an Edit/Write/MultiEdit tool input.
@@ -79,6 +206,9 @@ export function computeEditWriteDiffStats(
  *  overwritten with the tool result once the call completes. */
 export function diffStatsFromMessage(message: AgentSessionMessage): DiffStats | null {
   if (message.role !== 'tool' || !message.title) return null
+  if (message.title === FILE_CHANGE_TOOL) {
+    return diffStatsFromFiles(parseUnifiedDiffFiles(message.metadata ?? message.text))
+  }
   return computeEditWriteDiffStats(
     message.title,
     safeParse(message.metadata) ?? safeParse(message.text),
@@ -103,6 +233,20 @@ export function groupDiffsByFile(messages: AgentSessionMessage[]): FileDiffStats
   const byPath = new Map<string, FileDiffStats>()
   for (const message of messages) {
     if (message.role !== 'tool' || !message.title) continue
+    if (message.title === FILE_CHANGE_TOOL) {
+      for (const file of parseUnifiedDiffFiles(message.metadata ?? message.text)) {
+        const existing = byPath.get(file.filePath) ?? {
+          filePath: file.filePath,
+          additions: 0,
+          deletions: 0,
+          edits: [],
+        }
+        existing.additions += file.additions
+        existing.deletions += file.deletions
+        byPath.set(file.filePath, existing)
+      }
+      continue
+    }
     const input = safeParse(message.metadata) ?? safeParse(message.text)
     if (!input) continue
     const title = message.title.replace(/^mcp__[^_]+__/, '')

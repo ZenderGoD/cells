@@ -266,7 +266,7 @@ export function ProjectSwitcher() {
           animate={{ opacity: 1, scale: 1 }}
           exit={reducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.95 }}
           transition={{ duration: reducedMotion ? 0 : 0.12 }}
-          className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none"
+          className="fixed inset-0 z-[10000] flex items-center justify-center pointer-events-none"
         >
           <div
             className="bg-card/92 rounded-xl ring-1 ring-border/40 p-3 pointer-events-auto max-w-[min(98vw,800px)]"

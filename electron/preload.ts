@@ -1,8 +1,10 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type {
   AgentPermissionMode,
+  AgentMentionSearchResult,
   AgentSessionRequest,
   AgentSessionSnapshot,
+  SavedAgentSessionSummary,
   AgentThinkingLevel,
   CellsAPI,
   DaemonStatus,
@@ -241,6 +243,10 @@ const api: CellsAPI = {
       ipcRenderer.invoke('app:list-recent-files') as Promise<
         Array<{ path: string; name: string; mtime: number; source: string }>
       >,
+    searchAgentMentions: (cwd: string, query: string) =>
+      ipcRenderer.invoke('app:search-agent-mentions', cwd, query) as Promise<
+        AgentMentionSearchResult[]
+      >,
     getPathForFile: (file: File) => webUtils.getPathForFile(file),
     saveTempFile: (data: Uint8Array, filename: string) =>
       ipcRenderer.invoke('app:save-temp-file', data, filename) as Promise<string | null>,
@@ -382,6 +388,10 @@ const api: CellsAPI = {
           supportedEffortLevels: string[]
           supportsAdaptiveThinking: boolean
         }>
+      >,
+    listSavedSessions: () =>
+      ipcRenderer.invoke('agent-session:list-saved-sessions') as Promise<
+        SavedAgentSessionSummary[]
       >,
     onLoginEvent: (
       callback: (event: {

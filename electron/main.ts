@@ -24,7 +24,7 @@ import { ensureDaemon } from './daemon-lifecycle'
 import { getDaemonRestartReason, type PtyDaemonVersionInfo } from './pty-daemon-contract'
 import { PerfMonitor, type RendererPerfReport, type TerminalPerfReport } from './perf-monitor'
 import type { TerminalSessionManager } from './terminal-session-manager'
-import type { ProjectsState, TerminalSessionBackend } from '../src/types'
+import type { AgentMentionSearchResult, ProjectsState, TerminalSessionBackend } from '../src/types'
 import {
   createTerminalSessionManager,
   describeTerminalBackendRequirement,
@@ -65,7 +65,6 @@ import {
   getAgentLoginCommand,
   listClaudeModels,
   listCodexModels,
-  type AgentAuthStatus,
   type LoginEvent,
 } from './agent-session-service'
 
@@ -1055,6 +1054,193 @@ function expandHomePath(input: string) {
   return input
 }
 
+const AGENT_MENTION_ROOTS = ['.agents', '.claude', '.codex'] as const
+const MAX_AGENT_MENTION_RESULTS = 60
+const MAX_AGENT_MENTION_SCAN_ENTRIES = 2000
+
+type AgentMentionRoot = (typeof AGENT_MENTION_ROOTS)[number]
+
+function isSubsequenceMatch(target: string, query: string) {
+  if (!query) return true
+  let index = 0
+  for (const char of target) {
+    if (char === query[index]) index += 1
+    if (index === query.length) return true
+  }
+  return false
+}
+
+function resolveAgentMentionRoots(
+  cwd: string,
+): Array<{ sourceRoot: AgentMentionRoot; rootPath: string }> {
+  const resolvedCwd = path.resolve(cwd)
+  const found = new Map<AgentMentionRoot, string>()
+  let current = resolvedCwd
+
+  while (true) {
+    for (const sourceRoot of AGENT_MENTION_ROOTS) {
+      if (found.has(sourceRoot)) continue
+      const candidate = path.join(current, sourceRoot)
+      try {
+        if (fs.statSync(candidate).isDirectory()) {
+          found.set(sourceRoot, candidate)
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    if (found.size === AGENT_MENTION_ROOTS.length) break
+    const parent = path.dirname(current)
+    if (parent === current) break
+    current = parent
+  }
+
+  return AGENT_MENTION_ROOTS.flatMap((sourceRoot) => {
+    const rootPath = found.get(sourceRoot)
+    return rootPath ? [{ sourceRoot, rootPath }] : []
+  })
+}
+
+function readSkillFrontmatter(filePath: string) {
+  try {
+    const source = fs.readFileSync(filePath, 'utf8')
+    if (!source.startsWith('---\n')) return null
+    const end = source.indexOf('\n---', 4)
+    if (end < 0) return null
+    const frontmatter = source.slice(4, end).split('\n')
+    let name: string | null = null
+    let description: string | null = null
+    for (const line of frontmatter) {
+      const match = line.match(/^([a-zA-Z_-]+):\s*(.+)$/)
+      if (!match) continue
+      const [, key, value] = match
+      if (key === 'name') name = value.trim()
+      if (key === 'description') description = value.trim()
+    }
+    return { name, description }
+  } catch {
+    return null
+  }
+}
+
+function getAgentMentionScore(entry: AgentMentionSearchResult, rawQuery: string) {
+  if (!rawQuery) {
+    return entry.type === 'skill' ? 30 : entry.type === 'folder' ? 20 : 10
+  }
+
+  const query = rawQuery.trim().toLowerCase()
+  const compactQuery = query.replace(/\s+/g, '')
+  const label = entry.label.toLowerCase()
+  const relativePath = entry.relativePath.toLowerCase()
+
+  let score = 0
+  if (entry.type === 'skill') score += 30
+  if (label.startsWith(query)) score += 30
+  else if (relativePath.startsWith(query)) score += 24
+  else if (label.includes(query)) score += 18
+  else if (relativePath.includes(query)) score += 12
+  if (compactQuery && isSubsequenceMatch(relativePath.replace(/\s+/g, ''), compactQuery)) {
+    score += 8
+  }
+  return score
+}
+
+function searchAgentMentions(cwd: string, query: string): AgentMentionSearchResult[] {
+  const roots = resolveAgentMentionRoots(cwd)
+  if (roots.length === 0) return []
+
+  const candidates: Array<AgentMentionSearchResult & { score: number }> = []
+  let scannedEntries = 0
+
+  const pushCandidate = (entry: AgentMentionSearchResult) => {
+    const score = getAgentMentionScore(entry, query)
+    if (query.trim() && score <= 0) return
+    candidates.push({ ...entry, score })
+  }
+
+  for (const { sourceRoot, rootPath } of roots) {
+    pushCandidate({
+      type: 'folder',
+      label: sourceRoot,
+      relativePath: sourceRoot,
+      absolutePath: rootPath,
+      description: null,
+      sourceRoot,
+    })
+
+    const queue: Array<{ absolutePath: string; relativePath: string }> = [
+      { absolutePath: rootPath, relativePath: sourceRoot },
+    ]
+    while (queue.length > 0 && scannedEntries < MAX_AGENT_MENTION_SCAN_ENTRIES) {
+      const current = queue.shift()
+      if (!current) break
+
+      let entries: fs.Dirent[]
+      try {
+        entries = fs.readdirSync(current.absolutePath, { withFileTypes: true })
+      } catch {
+        continue
+      }
+      entries.sort((a, b) => a.name.localeCompare(b.name))
+
+      for (const entry of entries) {
+        if (scannedEntries >= MAX_AGENT_MENTION_SCAN_ENTRIES) break
+        scannedEntries += 1
+        const absolutePath = path.join(current.absolutePath, entry.name)
+        const relativePath = `${current.relativePath}/${entry.name}`
+
+        if (entry.isDirectory()) {
+          queue.push({ absolutePath, relativePath })
+          pushCandidate({
+            type: 'folder',
+            label: entry.name,
+            relativePath,
+            absolutePath,
+            description: null,
+            sourceRoot,
+          })
+          continue
+        }
+
+        if (!entry.isFile() && !entry.isSymbolicLink()) continue
+
+        if (entry.name === 'SKILL.md') {
+          const frontmatter = readSkillFrontmatter(absolutePath)
+          pushCandidate({
+            type: 'skill',
+            label: frontmatter?.name || path.basename(path.dirname(absolutePath)),
+            relativePath,
+            absolutePath,
+            description: frontmatter?.description ?? null,
+            sourceRoot,
+          })
+          continue
+        }
+
+        pushCandidate({
+          type: 'file',
+          label: entry.name,
+          relativePath,
+          absolutePath,
+          description: null,
+          sourceRoot,
+        })
+      }
+    }
+  }
+
+  candidates.sort((a, b) => {
+    if (a.score !== b.score) return b.score - a.score
+    if (a.type !== b.type) {
+      const priority = { skill: 0, file: 1, folder: 2 }
+      return priority[a.type] - priority[b.type]
+    }
+    return a.relativePath.localeCompare(b.relativePath)
+  })
+
+  return candidates.slice(0, MAX_AGENT_MENTION_RESULTS).map(({ score: _score, ...entry }) => entry)
+}
+
 ipcMain.handle(
   'app:stat-path',
   async (
@@ -1076,6 +1262,15 @@ ipcMain.handle(
 ipcMain.handle('app:reveal-path', async (_event, targetPath: string) => {
   const resolved = expandHomePath(targetPath)
   await shell.openPath(resolved)
+})
+
+ipcMain.handle('app:search-agent-mentions', async (_event, cwd: string, query: string) => {
+  try {
+    return searchAgentMentions(cwd, query)
+  } catch (error) {
+    console.warn('[app] search-agent-mentions failed', error)
+    return []
+  }
 })
 
 ipcMain.handle('app:request-quit', () => {
@@ -1386,6 +1581,15 @@ ipcMain.handle('agent-session:list-claude-models', async () => {
     return await listClaudeModels()
   } catch (err) {
     console.warn('[agent-session] list-claude-models failed', err)
+    return []
+  }
+})
+
+ipcMain.handle('agent-session:list-saved-sessions', async () => {
+  try {
+    return await agentSessionService.listSavedSessions()
+  } catch (err) {
+    console.warn('[agent-session] list-saved-sessions failed', err)
     return []
   }
 })

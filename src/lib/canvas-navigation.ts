@@ -13,6 +13,7 @@ export interface CanvasWindow {
   zIndex: number
   agent?: 'claude' | 'codex' | 'opencode' | 'pi' | null
   runtimeStatus?: TerminalRuntimeStatus | null
+  agentWindowStatus?: 'idle' | 'running' | 'error' | null
   faviconUrl?: string
 }
 
@@ -64,6 +65,7 @@ export function getCanvasWindows(
       height: agentWindow.height,
       zIndex: agentWindow.zIndex ?? index + 1,
       agent: agentWindow.agent,
+      agentWindowStatus: agentWindow.status ?? 'idle',
     })),
   ]
 }

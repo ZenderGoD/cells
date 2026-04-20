@@ -259,6 +259,7 @@ export interface AgentSessionMessage {
   title?: string | null
   metadata?: string | null
   status?: 'in_progress' | 'completed' | 'failed'
+  startedAt?: number | null
   updatedAt?: number | null
   /** Absolute paths of files the user attached to this message. Images render
    * as thumbnails inline in the bubble; the same paths are forwarded to the
@@ -366,6 +367,28 @@ export interface AgentSessionSnapshot {
   pendingQuestion?: PendingQuestionApproval | null
   pendingApproval?: PendingAgentApproval | null
   codexPlan?: CodexPlanSnapshot | null
+}
+
+export interface SavedAgentSessionSummary {
+  windowId: string
+  agent: Extract<AgentName, 'claude' | 'codex'>
+  title: string
+  cwd?: string | null
+  claudeSessionId?: string | null
+  codexThreadId?: string | null
+  model?: string | null
+  updatedAt: number
+  messageCount: number
+  lastMessageText?: string | null
+}
+
+export interface AgentMentionSearchResult {
+  type: 'skill' | 'file' | 'folder'
+  label: string
+  relativePath: string
+  absolutePath: string
+  description?: string | null
+  sourceRoot: '.agents' | '.claude' | '.codex'
 }
 
 export interface Project {
@@ -631,6 +654,7 @@ export interface CellsAPI {
         supportsAdaptiveThinking: boolean
       }>
     >
+    listSavedSessions(): Promise<SavedAgentSessionSummary[]>
     onLoginEvent(
       callback: (event: {
         agent: 'claude' | 'codex'
@@ -777,6 +801,7 @@ export interface CellsAPI {
     pickFolder(): Promise<string | null>
     pickFiles(): Promise<string[] | null>
     listRecentFiles(): Promise<Array<{ path: string; name: string; mtime: number; source: string }>>
+    searchAgentMentions(cwd: string, query: string): Promise<AgentMentionSearchResult[]>
     getPathForFile(file: File): string
     saveTempFile(data: Uint8Array, filename: string): Promise<string | null>
     pasteClipboardFiles(): Promise<string[] | null>

@@ -17,7 +17,13 @@ import type {
   AgentSessionRequest,
   AgentSessionSnapshot,
   AgentThinkingLevel,
+  SavedAgentSessionSummary,
 } from '../src/types'
+import {
+  rewriteAgentComposerMentions,
+  type AgentComposerMentionKind,
+} from '../src/lib/agent-composer-mentions'
+import { resolveAgentModelId } from '../src/lib/agent-model-selection'
 
 // Maps Cells's portable 5-tier thinking level onto each backend's primitive.
 // Mirrors Craft's THINKING_TO_EFFORT — ../craft-agents-oss/packages/shared/src/agent/thinking-levels.ts.
@@ -99,6 +105,35 @@ function normalizePermissionMode(
   if (mode === 'safe') return 'plan'
   if (mode === 'allow-all') return 'ask'
   return (mode ?? null) as AgentSessionRequest['permissionMode']
+}
+
+const AGENT_MENTION_ROOT_PREFIXES = ['.agents', '.claude', '.codex'] as const
+
+function resolveAgentComposerPath(
+  cwd: string | null | undefined,
+  _kind: AgentComposerMentionKind,
+  rawValue: string,
+): string | null {
+  const value = rawValue.trim()
+  if (!value) return null
+  if (path.isAbsolute(value)) {
+    return existsSync(value) ? value : null
+  }
+
+  const matchedPrefix = AGENT_MENTION_ROOT_PREFIXES.find(
+    (prefix) => value === prefix || value.startsWith(`${prefix}/`),
+  )
+  if (!matchedPrefix || !cwd) return null
+
+  let current = path.resolve(cwd)
+  while (true) {
+    const candidate = path.join(current, value)
+    if (existsSync(candidate)) return candidate
+    const parent = path.dirname(current)
+    if (parent === current) break
+    current = parent
+  }
+  return null
 }
 
 // Used as a last-resort fallback when the Codex app-server hasn't reported
@@ -996,6 +1031,22 @@ export interface ClaudeModelInfo {
 
 let cachedClaudeModels: { at: number; list: ClaudeModelInfo[] } | null = null
 
+async function resolveSessionModelId(
+  agent: 'claude' | 'codex',
+  requested: string | null | undefined,
+): Promise<string> {
+  try {
+    if (agent === 'codex') {
+      const models = await listCodexModels()
+      return resolveAgentModelId(agent, requested, models, DEFAULT_CODEX_MODEL)
+    }
+    const models = await listClaudeModels()
+    return resolveAgentModelId(agent, requested, models, DEFAULT_CLAUDE_MODEL)
+  } catch {
+    return requested || (agent === 'codex' ? DEFAULT_CODEX_MODEL : DEFAULT_CLAUDE_MODEL)
+  }
+}
+
 /**
  * Fetch the live Claude model catalog from the Agent SDK's control plane.
  *
@@ -1256,6 +1307,12 @@ interface ClaudeRuntime extends RuntimeBase {
   kind: 'claude'
   session: SDKSession
   streamPromise: Promise<void>
+  /** Monotonic token for the currently active Claude stream consumer. When a
+   *  stop/reopen happens quickly, the previous stream can still unwind with an
+   *  abort error after the new session has already started. We ignore any
+   *  late events/errors from older generations so they can't flip the fresh
+   *  runtime back to closed/idle. */
+  streamGeneration: number
   /** Count of consecutive auto-continuations issued without a new user turn
    *  in between. Bumped when we resume a max_turns / pause_turn stoppage,
    *  reset on every real user message. Guards against infinite resume loops
@@ -1445,7 +1502,12 @@ function appendMessage(snapshot: AgentSessionSnapshot, message: AgentSessionMess
   const needsText =
     message.role === 'assistant' || message.role === 'user' || message.role === 'reasoning'
   if (needsText && !message.text.trim()) return
-  upsertMessage(snapshot.messages, { ...message, updatedAt: message.updatedAt ?? now() })
+  const timestamp = message.updatedAt ?? now()
+  upsertMessage(snapshot.messages, {
+    ...message,
+    startedAt: message.startedAt ?? timestamp,
+    updatedAt: timestamp,
+  })
   snapshot.updatedAt = now()
 }
 
@@ -1753,37 +1815,34 @@ function loadPersistedSnapshot(windowId: string): AgentSessionSnapshot | null {
 // Coalesce rapid snapshot updates so we don't hammer the disk during
 // streaming — one write per ~150ms is plenty to keep the file fresh.
 const persistTimers = new Map<string, NodeJS.Timeout>()
+
+async function persistSnapshotNow(snapshot: AgentSessionSnapshot) {
+  const file = getPersistPath(snapshot.windowId)
+  const tmp = `${file}.tmp`
+  const serialized = JSON.stringify(snapshot)
+  await fs.writeFile(tmp, serialized, 'utf8')
+  await fs.rename(tmp, file)
+}
+
 function schedulePersist(snapshot: AgentSessionSnapshot) {
   const existing = persistTimers.get(snapshot.windowId)
   if (existing) clearTimeout(existing)
   const timer = setTimeout(() => {
     persistTimers.delete(snapshot.windowId)
-    const file = getPersistPath(snapshot.windowId)
-    const tmp = `${file}.tmp`
-    const serialized = JSON.stringify(snapshot)
-    fs.writeFile(tmp, serialized, 'utf8')
-      .then(() => fs.rename(tmp, file))
-      .catch((err) => {
-        log('persist.write.error', {
-          windowId: snapshot.windowId,
-          error: err instanceof Error ? err.message : String(err),
-        })
+    persistSnapshotNow(snapshot).catch((err) => {
+      log('persist.write.error', {
+        windowId: snapshot.windowId,
+        error: err instanceof Error ? err.message : String(err),
       })
+    })
   }, 150)
   persistTimers.set(snapshot.windowId, timer)
-}
-
-function deletePersistedSnapshot(windowId: string) {
-  const file = getPersistPath(windowId)
-  if (!existsSync(file)) return
-  fs.unlink(file).catch(() => {})
 }
 
 // Structured debug logger. Everything goes through here so the user can tell
 // us exactly where a stall is happening from the app logs. Keep single-line
 // JSON-ish payloads so they're easy to paste back.
 function log(event: string, data: Record<string, unknown> = {}) {
-  // eslint-disable-next-line no-console
   console.log(
     `[agent-session] ${event}` + (Object.keys(data).length ? ` ${JSON.stringify(data)}` : ''),
   )
@@ -1810,11 +1869,45 @@ function summarizeEvent(event: any): Record<string, unknown> {
 export class AgentSessionService extends EventEmitter {
   private runtimes = new Map<string, Runtime>()
 
+  async listSavedSessions(): Promise<SavedAgentSessionSummary[]> {
+    const entries: string[] = await fs.readdir(getPersistDir()).catch(() => [])
+    if (!entries.length) {
+      return []
+    }
+
+    return entries
+      .filter((entry) => entry.endsWith('.json'))
+      .map((entry) => loadPersistedSnapshot(path.basename(entry, '.json')))
+      .filter((snapshot): snapshot is AgentSessionSnapshot => snapshot !== null)
+      .map((snapshot) => {
+        const lastMessage = [...snapshot.messages]
+          .reverse()
+          .find((message) => typeof message.text === 'string' && message.text.trim().length > 0)
+        return {
+          windowId: snapshot.windowId,
+          agent: snapshot.agent,
+          title: snapshot.title,
+          cwd: snapshot.cwd ?? null,
+          claudeSessionId: snapshot.claudeSessionId ?? null,
+          codexThreadId: snapshot.codexThreadId ?? null,
+          model: snapshot.usage?.model ?? null,
+          updatedAt: snapshot.updatedAt,
+          messageCount: snapshot.messages.length,
+          lastMessageText: lastMessage?.text?.trim() ?? null,
+        }
+      })
+      .sort((a, b) => a.updatedAt - b.updatedAt)
+  }
+
   async ensure(request: AgentSessionRequest): Promise<AgentSessionSnapshot> {
     // Coerce legacy permission values ('safe' / 'allow-all') from older
     // saved ProjectsState so the rest of the code only has to handle the
     // current 3-mode union.
-    request = { ...request, permissionMode: normalizePermissionMode(request.permissionMode) }
+    request = {
+      ...request,
+      permissionMode: normalizePermissionMode(request.permissionMode),
+      model: await resolveSessionModelId(request.agent, request.model),
+    }
     const existing = this.runtimes.get(request.windowId)
     log('ensure', {
       windowId: request.windowId,
@@ -1910,11 +2003,12 @@ export class AgentSessionService extends EventEmitter {
         session,
         closed: false,
         streamPromise: Promise.resolve(),
+        streamGeneration: 0,
         autoContinueCount: 0,
         pendingPlanApproval: null,
         pendingQuestion: null,
       }
-      runtime.streamPromise = this.consumeClaudeStream(runtime)
+      this.startClaudeStream(runtime)
       this.runtimes.set(request.windowId, runtime)
       if (!isResumedSession && request.initialPrompt?.trim()) {
         log('claude.initialPrompt', { windowId: request.windowId })
@@ -1996,9 +2090,12 @@ export class AgentSessionService extends EventEmitter {
       runtime = await this.reopenRuntime(runtime)
     }
 
-    const normalizedAttachments = (attachments ?? []).filter(
-      (p): p is string => typeof p === 'string' && p.length > 0,
+    const rewrittenInput = rewriteAgentComposerMentions(input, (kind, value) =>
+      resolveAgentComposerPath(runtime.snapshot.cwd ?? runtime.request.cwd ?? null, kind, value),
     )
+    const normalizedAttachments = Array.from(
+      new Set([...(attachments ?? []), ...rewrittenInput.referencedPaths]),
+    ).filter((p): p is string => typeof p === 'string' && p.length > 0)
     const imageAttachments = normalizedAttachments.filter(isImagePath)
     const nonImageAttachments = normalizedAttachments.filter((p) => !isImagePath(p))
 
@@ -2008,7 +2105,8 @@ export class AgentSessionService extends EventEmitter {
     const nonImageLine = nonImageAttachments.length
       ? nonImageAttachments.map((p) => `[${p}]`).join(' ') + '\n\n'
       : ''
-    const agentText = `${nonImageLine}${input}`.trim() || input
+    const userText = rewrittenInput.text
+    const agentText = `${nonImageLine}${userText}`.trim() || userText
 
     // Real user turn — reset the auto-continue watchdog so a fresh prompt
     // gets its own three-try budget if it also bottoms out on max_turns.
@@ -2019,7 +2117,7 @@ export class AgentSessionService extends EventEmitter {
     appendMessage(runtime.snapshot, {
       id: `${windowId}-user-${now()}`,
       role: 'user',
-      text: input,
+      text: userText,
       attachments: normalizedAttachments.length > 0 ? normalizedAttachments : undefined,
       updatedAt: now(),
     })
@@ -2146,8 +2244,9 @@ export class AgentSessionService extends EventEmitter {
     this.emitUpdate(runtime.snapshot)
   }
 
-  /** Fully dispose of a runtime — drop history, terminate the process. Called
-   * when the agent window itself is removed from the store. */
+  /** Fully dispose of a runtime — terminate the live process/runtime when the
+   * agent window is removed from the store, but keep the persisted transcript
+   * so Cells can reopen the session later from search. */
   async dispose(windowId: string): Promise<void> {
     const runtime = this.runtimes.get(windowId)
     log('dispose', { windowId, hasRuntime: !!runtime })
@@ -2170,14 +2269,21 @@ export class AgentSessionService extends EventEmitter {
       }
       this.runtimes.delete(windowId)
     }
-    // Also clear the on-disk snapshot so a fresh window with the same id
-    // doesn't silently rehydrate stale history.
     const pending = persistTimers.get(windowId)
     if (pending) {
       clearTimeout(pending)
       persistTimers.delete(windowId)
     }
-    deletePersistedSnapshot(windowId)
+    if (runtime) {
+      try {
+        await persistSnapshotNow(runtime.snapshot)
+      } catch (err) {
+        log('persist.write.error', {
+          windowId,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    }
   }
 
   /** Claude-only: toggle the 1M-context-window beta. Must recreate the
@@ -2893,6 +2999,10 @@ export class AgentSessionService extends EventEmitter {
     const next = codexItemToMessage(item)
     if (!next) return
     next.id = codexMessageId(runtime, next.id)
+    if (method === 'item/completed' && next.title === 'File changes') {
+      const previous = runtime.snapshot.messages.find((message) => message.id === next.id)
+      if (previous?.text) next.metadata = previous.text
+    }
     if (method === 'item/started') next.status = 'in_progress'
     appendMessage(runtime.snapshot, next)
   }
@@ -2929,7 +3039,7 @@ export class AgentSessionService extends EventEmitter {
       )
       runtime.session = session
       runtime.closed = false
-      runtime.streamPromise = this.consumeClaudeStream(runtime)
+      this.startClaudeStream(runtime)
       return runtime
     }
 
@@ -2961,9 +3071,14 @@ export class AgentSessionService extends EventEmitter {
     this.emit('update', cloneSnapshot(snapshot))
   }
 
-  private async consumeClaudeStream(runtime: ClaudeRuntime) {
+  private startClaudeStream(runtime: ClaudeRuntime) {
+    runtime.streamGeneration += 1
+    runtime.streamPromise = this.consumeClaudeStream(runtime, runtime.streamGeneration)
+  }
+
+  private async consumeClaudeStream(runtime: ClaudeRuntime, streamGeneration: number) {
     const windowId = runtime.snapshot.windowId
-    log('claude.stream.start', { windowId })
+    log('claude.stream.start', { windowId, streamGeneration })
     // The v2 SDK's `session.stream()` returns AFTER THE FIRST `result` event —
     // see node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs (`if(yield $,$.type==="result")return`).
     // That means a single for-await loop only drains one turn. We have to
@@ -2974,6 +3089,10 @@ export class AgentSessionService extends EventEmitter {
       while (!runtime.closed) {
         let count = 0
         for await (const event of runtime.session.stream()) {
+          if (streamGeneration !== runtime.streamGeneration) {
+            log('claude.stream.stale-event', { windowId, count, totalCount, streamGeneration })
+            return
+          }
           if (runtime.closed) {
             log('claude.stream.broken-by-close', { windowId, count, totalCount })
             return
@@ -2984,18 +3103,23 @@ export class AgentSessionService extends EventEmitter {
           this.handleClaudeEvent(runtime, event)
           this.emitUpdate(runtime.snapshot)
         }
-        log('claude.stream.turn-end', { windowId, count, totalCount })
+        log('claude.stream.turn-end', { windowId, count, totalCount, streamGeneration })
         // Loop back around — the next stream() call will block on the shared
         // queryIterator until the user sends another message.
       }
-      log('claude.stream.end', { windowId, totalCount })
+      log('claude.stream.end', { windowId, totalCount, streamGeneration })
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error)
       log('claude.stream.error', {
         windowId,
         totalCount,
+        streamGeneration,
         error: errMsg,
       })
+      if (streamGeneration !== runtime.streamGeneration) {
+        log('claude.stream.stale-error', { windowId, totalCount, streamGeneration, error: errMsg })
+        return
+      }
       // Clean shutdown signals (SIGTERM/SIGKILL → exit codes 143/137, or
       // explicit "aborted" from the SDK) usually mean HMR reload or a user-
       // triggered stop. Don't surface those as errors — just mark the

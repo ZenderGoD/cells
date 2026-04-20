@@ -57,6 +57,36 @@ function baseName(p: string): string {
   return parts[parts.length - 1] ?? p
 }
 
+function formatDuration(ms: number): string {
+  const seconds = Math.floor(ms / 1000)
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  const remainingSeconds = seconds % 60
+  return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`
+}
+
+function getMessageDurationMs(message: AgentSessionMessage): number | null {
+  const startedAt = message.startedAt ?? null
+  const updatedAt = message.updatedAt ?? null
+  if (!startedAt || !updatedAt) return null
+  const elapsed = updatedAt - startedAt
+  return elapsed >= 1000 ? elapsed : null
+}
+
+function getActivitiesDurationMs(activities: AgentSessionMessage[]): number | null {
+  const startedAt = activities
+    .map((activity) => activity.startedAt ?? activity.updatedAt ?? null)
+    .filter((value): value is number => typeof value === 'number')
+    .sort((a, b) => a - b)[0]
+  const updatedAt = activities
+    .map((activity) => activity.updatedAt ?? null)
+    .filter((value): value is number => typeof value === 'number')
+    .sort((a, b) => b - a)[0]
+  if (!startedAt || !updatedAt) return null
+  const elapsed = updatedAt - startedAt
+  return elapsed >= 1000 ? elapsed : null
+}
+
 // Friendly display names for specific tools — matches Craft's getToolDisplayName.
 const TOOL_DISPLAY_NAMES: Record<string, string> = {
   Read: 'Read',
@@ -290,6 +320,8 @@ function ActivityRow({ node, depth }: { node: ActivityNode; depth: number }) {
       : undefined
   const hasTrailing = !!(row.description || row.summary || assistantInline)
   const rowDiffStats = diffStatsFromMessage(message)
+  const durationMs = getMessageDurationMs(message)
+  const isSettled = message.status === 'completed' || message.status === 'failed'
 
   return (
     <div className="group/row">
@@ -310,6 +342,11 @@ function ActivityRow({ node, depth }: { node: ActivityNode; depth: number }) {
           </span>
         ) : null}
         {rowDiffStats ? <DiffStatsBadge stats={rowDiffStats} /> : null}
+        {isSettled && durationMs ? (
+          <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground/55">
+            {formatDuration(durationMs)}
+          </span>
+        ) : null}
         {hasTrailing ? (
           <span className="min-w-0 flex-1 truncate">
             {row.description ? (
@@ -388,11 +425,13 @@ function usePreviewText(
     // dropped), we don't want to keep saying "Running Read…".
     if (!isStreaming) {
       const errorCount = activities.filter((a) => a.status === 'failed').length
+      const durationMs = getActivitiesDurationMs(activities)
       for (const a of activities) {
         const row = formatToolRow(a)
         if (row.description) return row.description
       }
-      return errorCount > 0 ? `Completed · ${errorCount} failed` : 'Completed'
+      const completedLabel = durationMs ? `Completed · ${formatDuration(durationMs)}` : 'Completed'
+      return errorCount > 0 ? `${completedLabel} · ${errorCount} failed` : completedLabel
     }
     // Streaming: prefer a running activity's description/summary
     const running = activities.find((a) => a.status === 'in_progress')

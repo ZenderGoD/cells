@@ -21,6 +21,12 @@ export interface StatusPresentation {
   projectAttention: ProjectAttention
 }
 
+export interface AgentWindowStatusPresentation {
+  label: string
+  dotClass: string
+  pillClass: string
+}
+
 const NONE: StatusPresentation = {
   ringClass: '',
   dotClass: '',
@@ -29,6 +35,30 @@ const NONE: StatusPresentation = {
   detail: '',
   details: [],
   projectAttention: null,
+}
+
+export function getAgentWindowStatusPresentation(
+  status: 'idle' | 'running' | 'error' | null | undefined,
+): AgentWindowStatusPresentation {
+  if (status === 'running') {
+    return {
+      label: 'Running',
+      pillClass: 'border-emerald-400/25 bg-emerald-500/10 text-emerald-300',
+      dotClass: 'bg-emerald-400 animate-pulse',
+    }
+  }
+  if (status === 'error') {
+    return {
+      label: 'Error',
+      pillClass: 'border-red-400/25 bg-red-500/10 text-red-300',
+      dotClass: 'bg-red-400',
+    }
+  }
+  return {
+    label: 'Idle',
+    pillClass: 'border-border/30 bg-muted/40 text-muted-foreground/80',
+    dotClass: 'bg-muted-foreground/50',
+  }
 }
 
 function buildAgentDetails(

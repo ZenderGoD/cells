@@ -51,6 +51,7 @@ import {
 import { AgentTurnCard } from './agent-turn-card'
 import { LoadingIndicator } from './agent-loading-indicator'
 import { SessionDiffsPanel } from './session-diffs-panel'
+import { InlineMentionMenu, useInlineMention } from './inline-mention-menu'
 import { sumDiffStats, hasDiffStats } from '@/lib/tool-diff-stats'
 import { cn } from '@/lib/utils'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -320,6 +321,23 @@ function ErrorBubble({ message }: { message: AgentSessionMessage }) {
 }
 
 type QueuedMessage = QueuedAgentMessage
+const ATTACHMENTS_ONLY_TEXT = '(attached files)'
+
+function sanitizeQueuedMessages(messages: QueuedMessage[]): QueuedMessage[] {
+  return messages.filter((message) => message.mode !== 'stop')
+}
+
+function getQueuedComposerText(message: QueuedMessage) {
+  return message.attachments.length > 0 && message.text === ATTACHMENTS_ONLY_TEXT
+    ? ''
+    : message.text
+}
+
+function getQueuedStoredText(text: string, attachments: string[]) {
+  const trimmed = text.trim()
+  if (trimmed) return trimmed
+  return attachments.length > 0 ? ATTACHMENTS_ONLY_TEXT : ''
+}
 
 const QUEUE_MODE_META: Record<
   QueuedMessage['mode'],
@@ -513,7 +531,7 @@ function CodexPlanBanner({ plan }: { plan: CodexPlanSnapshot }) {
   const done = plan.items.filter((item) => item.completed).length
   if (total === 0) return null
   return (
-    <div className="mb-2 rounded-[12px] border border-sky-400/25 bg-sky-500/5 px-3 py-2 text-[12px] text-foreground/90 shadow-minimal">
+    <div className="mb-2 rounded-[12px] border border-sky-300/12 bg-[linear-gradient(180deg,rgba(8,35,47,0.92),rgba(10,23,31,0.96))] px-3 py-2 text-[12px] text-foreground/90 shadow-[inset_0_1px_0_rgba(125,211,252,0.08),0_0_0_1px_rgba(12,18,24,0.35)]">
       <button
         type="button"
         onClick={() => setCollapsed((prev) => !prev)}
@@ -975,24 +993,32 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   // the window patches) and write through `syncAgentWindow` so the change
   // flows out to disk via the debounced projects-state persister.
   const queuedMessages = useMemo<QueuedMessage[]>(
-    () => agentWindow.queuedMessages ?? [],
+    () => sanitizeQueuedMessages(agentWindow.queuedMessages ?? []),
     [agentWindow.queuedMessages],
   )
   const setQueuedMessages = useCallback(
     (updater: (prev: QueuedMessage[]) => QueuedMessage[]) => {
-      const prev =
-        useStore.getState().agentWindows.find((w) => w.id === agentWindow.id)?.queuedMessages ?? []
-      const next = updater(prev)
+      const prev = sanitizeQueuedMessages(
+        useStore.getState().agentWindows.find((w) => w.id === agentWindow.id)?.queuedMessages ?? [],
+      )
+      const next = sanitizeQueuedMessages(updater(prev))
       useStore.getState().syncAgentWindow(agentWindow.id, { queuedMessages: next })
     },
     [agentWindow.id],
   )
+  useEffect(() => {
+    const raw = agentWindow.queuedMessages ?? []
+    const sanitized = sanitizeQueuedMessages(raw)
+    if (sanitized.length !== raw.length) {
+      useStore.getState().syncAgentWindow(agentWindow.id, { queuedMessages: sanitized })
+    }
+  }, [agentWindow.id, agentWindow.queuedMessages])
   // If the panel mounts with a non-empty queue, the app was quit mid-turn —
   // auto-draining would feel like the agent started itself without the user
   // asking. Hold the queue behind an explicit "Continue" button until the
   // user confirms. Once lifted, normal drain behaviour takes over.
   const [resumeGated, setResumeGated] = useState<boolean>(
-    () => (agentWindow.queuedMessages?.length ?? 0) > 0,
+    () => sanitizeQueuedMessages(agentWindow.queuedMessages ?? []).length > 0,
   )
   // Separately track mid-turn resumes: the session had an outstanding user
   // turn when the app was closed (last message is a user message with no
@@ -1004,12 +1030,12 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   // preview of the next message, mirroring AgentTurnCard's activities stripe.
   const [queueCollapsed, setQueueCollapsed] = useState(true)
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
-  const [editDraft, setEditDraft] = useState('')
   // Active drag state for queue reorder — `dragIndex` is the row being dragged,
   // `dragOverIndex` is the row currently under the pointer. Both reset on
   // drop or drag-end.
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
+  const interruptMessageRef = useRef<QueuedMessage | null>(null)
   const reorderQueue = useCallback(
     (from: number, to: number) => {
       if (from === to) return
@@ -1144,10 +1170,17 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     () => getComposerPlaceholder(agentWindow.agent),
     [agentWindow.agent],
   )
+  const inlineMention = useInlineMention({
+    inputRef: textareaRef,
+    cwd: snapshot?.cwd ?? agentWindow.cwd ?? null,
+  })
 
   const cwdDisplay = truncateCwd(snapshot?.cwd || agentWindow.cwd)
   const isRunning = snapshot?.status === 'running'
-  const canSubmit = Boolean(input.trim()) && !isRunning
+  const hasComposerPayload = Boolean(input.trim()) || attachments.length > 0
+  const canSubmit = hasComposerPayload && !isRunning
+  const isEditingQueuedMessage = editingIndex !== null
+  const canSaveQueuedEdit = isEditingQueuedMessage && hasComposerPayload
 
   const ensureSession = useCallback(async () => {
     await window.cells.agentSession.ensure({
@@ -1177,12 +1210,20 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
 
   const attachmentsRef = useRef(attachments)
   const queueRef = useRef<QueuedMessage[]>(queuedMessages)
+  const queuedEditRestoreRef = useRef<{ input: string; attachments: string[] } | null>(null)
   useEffect(() => {
     attachmentsRef.current = attachments
   }, [attachments])
   useEffect(() => {
     queueRef.current = queuedMessages
   }, [queuedMessages])
+
+  const writeComposer = useCallback((value: string, nextAttachments: string[]) => {
+    setInput(value)
+    inputRef.current = value
+    setAttachments(nextAttachments)
+    attachmentsRef.current = nextAttachments
+  }, [])
 
   // Actually ship one message to the agent. Separated from submit() so the
   // queue-flusher effect can call it too.
@@ -1227,6 +1268,20 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     }
   }, [])
 
+  const applyInlineMentionSelection = useCallback(
+    (selection: { value: string; cursorPosition: number } | null) => {
+      if (!selection) return false
+      setInput(selection.value)
+      inputRef.current = selection.value
+      window.setTimeout(() => {
+        textareaRef.current?.focus()
+        textareaRef.current?.setSelectionRange(selection.cursorPosition, selection.cursorPosition)
+      }, 0)
+      return true
+    },
+    [],
+  )
+
   const submit = useCallback(
     async (intent: 'after-turn' | 'after-tool' | 'stop' = 'after-turn') => {
       const rawValue = inputRef.current.trim()
@@ -1235,12 +1290,13 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       // Attachments travel in a separate array — images become proper
       // multimodal content blocks downstream, non-image paths get `[path]`
       // injected into the agent's text for file-read tool use.
-      const value = rawValue || '(attached files)'
+      const value = rawValue || ATTACHMENTS_ONLY_TEXT
       const running = snapshotRef.current?.status === 'running'
 
       // Drain the input optimistically so typing feels instant.
       setInput('')
       inputRef.current = ''
+      inlineMention.close()
       setAttachments([])
       attachmentsRef.current = []
 
@@ -1250,10 +1306,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         permissionMode: agentWindow.permissionMode ?? null,
       }
 
-      // Cmd+Enter: interrupt the running turn and send this message NEXT —
-      // ahead of anything else already queued. The drain effect pulls
-      // queue[0] first, so jumping to the front is how "send immediately"
-      // is expressed in terms of the existing queue.
+      // Cmd+Enter is an immediate interrupt/retry path, not a normal queued
+      // follow-up. Keep it out of the persisted queue so it does not survive
+      // project switches or restarts, and send it before any after-turn/tool
+      // messages once the runtime flips back to idle.
       if (intent === 'stop' && running) {
         const entry: QueuedMessage = {
           text: value,
@@ -1261,8 +1317,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
           mode: 'stop',
           ...settings,
         }
-        setQueuedMessages((q) => [entry, ...q])
-        queueRef.current = [entry, ...queueRef.current]
+        interruptMessageRef.current = entry
         void handleStop()
         return
       }
@@ -1286,17 +1341,16 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       try {
         await sendToAgent(value, pinned)
       } catch (err) {
-        setInput(value)
-        inputRef.current = value
-        setAttachments(pinned)
-        attachmentsRef.current = pinned
+        writeComposer(value, pinned)
         console.error('[agent-chat] send failed', err)
       }
     },
     [
       sendToAgent,
       handleStop,
+      inlineMention,
       setQueuedMessages,
+      writeComposer,
       agentWindow.model,
       agentWindow.thinkingLevel,
       agentWindow.permissionMode,
@@ -1305,40 +1359,77 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
 
   const unqueueMessage = useCallback(
     (index: number) => {
+      if (editingIndex === index) {
+        const restore = queuedEditRestoreRef.current
+        queuedEditRestoreRef.current = null
+        setEditingIndex(null)
+        writeComposer(restore?.input ?? '', restore?.attachments ?? [])
+      }
       setQueuedMessages((q) => q.filter((_, i) => i !== index))
-      setEditingIndex((current) => {
-        if (current === null) return current
-        if (current === index) return null
-        return current > index ? current - 1 : current
-      })
+      setEditingIndex((current) => (current !== null && current > index ? current - 1 : current))
     },
-    [setQueuedMessages],
+    [editingIndex, setQueuedMessages, writeComposer],
   )
 
   const beginEditQueued = useCallback(
     (index: number) => {
       const entry = queuedMessages[index]
       if (!entry) return
+      if (editingIndex === null) {
+        queuedEditRestoreRef.current = {
+          input: inputRef.current,
+          attachments: [...attachmentsRef.current],
+        }
+      }
       setEditingIndex(index)
-      setEditDraft(entry.text)
+      writeComposer(getQueuedComposerText(entry), [...entry.attachments])
       setQueueCollapsed(false)
+      window.setTimeout(() => textareaRef.current?.focus(), 0)
     },
-    [queuedMessages],
+    [editingIndex, queuedMessages, writeComposer],
   )
 
   const commitEditQueued = useCallback(() => {
     if (editingIndex === null) return
-    const index = editingIndex
-    const draft = editDraft.trim()
-    setQueuedMessages((q) => q.map((m, i) => (i === index ? { ...m, text: draft || m.text } : m)))
+    const nextText = getQueuedStoredText(inputRef.current, attachmentsRef.current)
+    if (!nextText) return
+    const nextAttachments = [...attachmentsRef.current]
+    setQueuedMessages((q) =>
+      q.map((m, i) =>
+        i === editingIndex ? { ...m, text: nextText, attachments: nextAttachments } : m,
+      ),
+    )
+    const restore = queuedEditRestoreRef.current
+    queuedEditRestoreRef.current = null
     setEditingIndex(null)
-    setEditDraft('')
-  }, [editDraft, editingIndex, setQueuedMessages])
+    writeComposer(restore?.input ?? '', restore?.attachments ?? [])
+  }, [editingIndex, setQueuedMessages, writeComposer])
 
   const cancelEditQueued = useCallback(() => {
+    const restore = queuedEditRestoreRef.current
+    queuedEditRestoreRef.current = null
     setEditingIndex(null)
-    setEditDraft('')
-  }, [])
+    writeComposer(restore?.input ?? '', restore?.attachments ?? [])
+  }, [writeComposer])
+
+  const sendQueuedImmediately = useCallback(
+    (index: number) => {
+      const entry = queuedMessages[index]
+      if (!entry) return
+      if (editingIndex === index) {
+        const restore = queuedEditRestoreRef.current
+        queuedEditRestoreRef.current = null
+        setEditingIndex(null)
+        writeComposer(restore?.input ?? '', restore?.attachments ?? [])
+      }
+      interruptMessageRef.current = { ...entry, mode: 'stop' }
+      setQueuedMessages((q) => q.filter((_, i) => i !== index))
+      setResumeGated(false)
+      setMidTurnDetected(false)
+      if (snapshotRef.current?.status === 'running') void handleStop()
+    },
+    [editingIndex, handleStop, queuedMessages, setQueuedMessages, writeComposer],
+  )
 
   // Drain the queue whenever the agent flips back to idle. Pop the front
   // item OPTIMISTICALLY before dispatching — if sendToAgent throws we push
@@ -1374,6 +1465,19 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   useEffect(() => {
     queueFrontModeRef.current = queuedMessages[0]?.mode ?? null
   }, [queuedMessages])
+  const toggleQueuedMode = useCallback(
+    (index: number) => {
+      setQueuedMessages((q) =>
+        q.map((entry, i) => {
+          if (i !== index) return entry
+          const nextMode = entry.mode === 'after-tool' ? 'after-turn' : 'after-tool'
+          if (i === 0) queueFrontModeRef.current = nextMode
+          return { ...entry, mode: nextMode }
+        }),
+      )
+    },
+    [setQueuedMessages],
+  )
   useEffect(() => {
     if (snapshot?.status !== 'running') afterToolFiredRef.current = false
   }, [snapshot?.status])
@@ -1397,12 +1501,34 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   }, [snapshot?.messages, snapshot?.status, handleStop])
   useEffect(() => {
     if (snapshot?.status !== 'idle') return
-    if (queuedMessages.length === 0) return
     if (resumeGated) return
     if (sendingQueuedRef.current) return
     if (awaitingRunningRef.current) return
     sendingQueuedRef.current = true
     awaitingRunningRef.current = true
+    if (interruptMessageRef.current) {
+      const next = interruptMessageRef.current
+      interruptMessageRef.current = null
+      void sendToAgent(next.text, next.attachments, {
+        model: next.model,
+        thinkingLevel: next.thinkingLevel,
+        permissionMode: next.permissionMode,
+      })
+        .catch((err) => {
+          console.error('[agent-chat] interrupt send failed', err)
+          interruptMessageRef.current = next
+          awaitingRunningRef.current = false
+        })
+        .finally(() => {
+          sendingQueuedRef.current = false
+        })
+      return
+    }
+    if (queuedMessages.length === 0) {
+      sendingQueuedRef.current = false
+      awaitingRunningRef.current = false
+      return
+    }
     const next = queuedMessages[0]
     // Clear the ref synchronously so the after-tool watcher immediately sees
     // no pending mode — React's batched state update for setQueuedMessages
@@ -1429,8 +1555,22 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if (event.nativeEvent.isComposing || event.keyCode === 229) return
+      if (inlineMention.open) {
+        const mentionResult = inlineMention.handleKeyDown(event.nativeEvent)
+        if (mentionResult) {
+          if (mentionResult !== 'handled') applyInlineMentionSelection(mentionResult)
+          event.stopPropagation()
+          return
+        }
+      }
       if (event.key !== 'Enter') return
       if (event.shiftKey) return // Shift+Enter → newline
+      if (editingIndex !== null) {
+        event.preventDefault()
+        event.stopPropagation()
+        commitEditQueued()
+        return
+      }
       // Cmd+Enter: interrupt the running turn and send this message next.
       if (event.metaKey) {
         event.preventDefault()
@@ -1450,7 +1590,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       event.stopPropagation()
       void submit('after-turn')
     },
-    [submit, handleStop],
+    [applyInlineMentionSelection, commitEditQueued, editingIndex, inlineMention, submit],
   )
 
   const absorbDroppedImages = useCallback(async (dataTransfer: DataTransfer) => {
@@ -1489,12 +1629,22 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (document.activeElement !== textareaRef.current) return
+      if (inlineMention.open) {
+        const mentionResult = inlineMention.handleKeyDown(event)
+        if (mentionResult) {
+          if (mentionResult !== 'handled') applyInlineMentionSelection(mentionResult)
+          event.stopPropagation()
+          return
+        }
+      }
       if (event.key !== 'Enter') return
       if (event.shiftKey) return
       if ((event as any).isComposing || event.keyCode === 229) return
       event.preventDefault()
       event.stopPropagation()
-      if (event.metaKey) {
+      if (editingIndex !== null) {
+        commitEditQueued()
+      } else if (event.metaKey) {
         void submit('stop')
       } else if (event.altKey) {
         void submit('after-tool')
@@ -1504,7 +1654,14 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     }
     window.addEventListener('keydown', onKeyDown, true)
     return () => window.removeEventListener('keydown', onKeyDown, true)
-  }, [submit, handleStop, agentWindow.id])
+  }, [
+    agentWindow.id,
+    applyInlineMentionSelection,
+    commitEditQueued,
+    editingIndex,
+    inlineMention,
+    submit,
+  ])
 
   const messages = useMemo(() => snapshot?.messages ?? [], [snapshot?.messages])
   const hasMessages = messages.length > 0
@@ -1812,87 +1969,61 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                             }}
                             className={cn(
                               'group/queued flex gap-2 rounded-[10px] border border-border/50 bg-muted/30 px-2.5 py-1.5 text-[12px] text-foreground/85 shadow-minimal transition-colors',
-                              isEditing ? 'items-start' : 'items-center',
-                              isEditing && 'border-foreground/30 bg-muted/50',
+                              'items-center',
+                              isEditing && 'border-cyan-400/35 bg-cyan-500/5',
                               isDragging && 'opacity-50',
                               isDropTarget && 'border-foreground/40 bg-foreground/5',
                             )}
                             title={
-                              isEditing
-                                ? undefined
-                                : `${meta.shortcut} · ${meta.hint} · drag to reorder`
+                              isEditing ? 'Editing in composer' : `${meta.shortcut} · ${meta.hint}`
                             }
                           >
-                            {!isEditing ? (
-                              <span
-                                className="flex size-3.5 shrink-0 cursor-grab items-center justify-center text-muted-foreground/40 opacity-0 transition-opacity hover:text-foreground/70 group-hover/queued:opacity-100 active:cursor-grabbing"
-                                aria-label="Drag to reorder"
-                                title="Drag to reorder"
-                              >
-                                <GripVertical className="size-3" />
-                              </span>
-                            ) : null}
-                            <meta.Icon
+                            <span
                               className={cn(
-                                'size-3.5 shrink-0',
-                                isEditing && 'mt-[3px]',
-                                meta.tint,
+                                'flex size-3.5 shrink-0 cursor-grab items-center justify-center text-muted-foreground/40 opacity-0 transition-opacity hover:text-foreground/70 group-hover/queued:opacity-100 active:cursor-grabbing',
+                                isEditing && 'opacity-100 text-cyan-300/80',
                               )}
-                              aria-label={meta.label}
-                            />
-                            <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                              {isEditing ? (
-                                <textarea
-                                  autoFocus
-                                  value={editDraft}
-                                  onChange={(e) => setEditDraft(e.target.value)}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter' && !e.shiftKey) {
-                                      e.preventDefault()
-                                      e.stopPropagation()
-                                      commitEditQueued()
-                                    } else if (e.key === 'Escape') {
-                                      e.preventDefault()
-                                      e.stopPropagation()
-                                      cancelEditQueued()
-                                    }
-                                  }}
-                                  onBlur={commitEditQueued}
-                                  rows={Math.min(6, Math.max(1, editDraft.split('\n').length))}
-                                  className="min-w-0 w-full resize-none border-0 bg-transparent p-0 text-[12px] leading-[1.45] text-foreground/95 outline-none"
-                                />
-                              ) : (
-                                <>
-                                  <button
-                                    type="button"
-                                    onClick={() => beginEditQueued(i)}
-                                    className="min-w-0 flex-1 truncate text-left text-muted-foreground/90 hover:text-foreground"
-                                    title="Click to edit"
-                                  >
-                                    {entry.text.replace(/\n/g, ' ') ||
-                                      (entry.attachments.length > 0 ? '(attached files)' : '')}
-                                  </button>
-                                  {entry.attachments.length > 0 ? (
-                                    <div className="flex shrink-0 items-center gap-1">
-                                      {entry.attachments.slice(0, 4).map((p) => (
-                                        <QueueAttachmentThumb key={p} path={p} />
-                                      ))}
-                                      {entry.attachments.length > 4 ? (
-                                        <span className="text-[10px] tabular-nums text-muted-foreground/70">
-                                          +{entry.attachments.length - 4}
-                                        </span>
-                                      ) : null}
-                                    </div>
-                                  ) : null}
-                                </>
-                              )}
-                            </div>
-                            <div
-                              className={cn(
-                                'flex shrink-0 items-center gap-1 text-[10.5px] text-muted-foreground/80',
-                                isEditing && 'self-start',
-                              )}
+                              aria-label="Drag to reorder"
+                              title="Drag to reorder"
                             >
+                              <GripVertical className="size-3" />
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => toggleQueuedMode(i)}
+                              aria-label={`Change queue mode from ${meta.label}`}
+                              title={`${meta.label} · click to switch queue mode`}
+                              className="shrink-0 rounded-[6px] p-0.5 hover:bg-foreground/10"
+                            >
+                              <meta.Icon className={cn('size-3.5 shrink-0', meta.tint)} />
+                            </button>
+                            <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => beginEditQueued(i)}
+                                className={cn(
+                                  'min-w-0 flex-1 truncate text-left text-muted-foreground/90 hover:text-foreground',
+                                  isEditing && 'text-cyan-100',
+                                )}
+                                title={isEditing ? 'Editing in composer' : 'Edit in composer'}
+                              >
+                                {entry.text.replace(/\n/g, ' ') ||
+                                  (entry.attachments.length > 0 ? ATTACHMENTS_ONLY_TEXT : '')}
+                              </button>
+                              {entry.attachments.length > 0 ? (
+                                <div className="flex shrink-0 items-center gap-1">
+                                  {entry.attachments.slice(0, 4).map((p) => (
+                                    <QueueAttachmentThumb key={p} path={p} />
+                                  ))}
+                                  {entry.attachments.length > 4 ? (
+                                    <span className="text-[10px] tabular-nums text-muted-foreground/70">
+                                      +{entry.attachments.length - 4}
+                                    </span>
+                                  ) : null}
+                                </div>
+                              ) : null}
+                            </div>
+                            <div className="flex shrink-0 items-center gap-1 text-[10.5px] text-muted-foreground/80">
                               {modelLabel ? (
                                 <span
                                   className="rounded-[6px] border border-border/40 bg-background/40 px-1.5 py-px"
@@ -1922,53 +2053,32 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                                 </span>
                               ) : null}
                             </div>
-                            {isEditing ? (
-                              <>
-                                <button
-                                  type="button"
-                                  onMouseDown={(e) => {
-                                    // prevent textarea blur from firing commit before this click handler
-                                    e.preventDefault()
-                                  }}
-                                  onClick={commitEditQueued}
-                                  aria-label="Save edit"
-                                  title="Save (Enter)"
-                                  className="shrink-0 rounded p-0.5 text-success/80 hover:bg-foreground/10 hover:text-success"
-                                >
-                                  <Check className="size-3" />
-                                </button>
-                                <button
-                                  type="button"
-                                  onMouseDown={(e) => e.preventDefault()}
-                                  onClick={cancelEditQueued}
-                                  aria-label="Cancel edit"
-                                  title="Cancel (Esc)"
-                                  className="shrink-0 rounded p-0.5 text-muted-foreground/60 hover:bg-foreground/10 hover:text-foreground"
-                                >
-                                  <X className="size-3" />
-                                </button>
-                              </>
-                            ) : (
-                              <>
-                                <button
-                                  type="button"
-                                  onClick={() => beginEditQueued(i)}
-                                  aria-label="Edit queued message"
-                                  title="Edit"
-                                  className="shrink-0 rounded p-0.5 text-muted-foreground/50 opacity-0 transition-opacity hover:bg-foreground/10 hover:text-foreground group-hover/queued:opacity-100"
-                                >
-                                  <Pencil className="size-3" />
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => unqueueMessage(i)}
-                                  aria-label="Remove queued message"
-                                  className="shrink-0 rounded p-0.5 text-muted-foreground/50 hover:bg-foreground/10 hover:text-foreground"
-                                >
-                                  <X className="size-3" />
-                                </button>
-                              </>
-                            )}
+                            <button
+                              type="button"
+                              onClick={() => sendQueuedImmediately(i)}
+                              aria-label="Send queued message now"
+                              title="Send now"
+                              className="shrink-0 rounded p-0.5 text-muted-foreground/50 opacity-0 transition-opacity hover:bg-foreground/10 hover:text-foreground group-hover/queued:opacity-100"
+                            >
+                              <ArrowUp className="size-3" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => beginEditQueued(i)}
+                              aria-label="Edit queued message"
+                              title="Edit"
+                              className="shrink-0 rounded p-0.5 text-muted-foreground/50 opacity-0 transition-opacity hover:bg-foreground/10 hover:text-foreground group-hover/queued:opacity-100"
+                            >
+                              <Pencil className="size-3" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => unqueueMessage(i)}
+                              aria-label="Remove queued message"
+                              className="shrink-0 rounded p-0.5 text-muted-foreground/50 hover:bg-foreground/10 hover:text-foreground"
+                            >
+                              <X className="size-3" />
+                            </button>
                           </div>
                         )
                       })}
@@ -1984,6 +2094,23 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                     : 'border-border/60 hover:border-border',
                 )}
               >
+                {isEditingQueuedMessage ? (
+                  <div className="flex items-center justify-between gap-3 border-b border-cyan-400/20 bg-cyan-500/6 px-3 py-2 text-[11.5px]">
+                    <div className="min-w-0">
+                      <span className="font-medium text-cyan-100">Editing queued message</span>
+                      <span className="ml-1.5 text-muted-foreground/80">
+                        Save updates back into the queue.
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={cancelEditQueued}
+                      className="shrink-0 rounded-[6px] px-2 py-1 text-muted-foreground/75 transition-colors hover:bg-foreground/10 hover:text-foreground"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                ) : null}
                 {attachments.length > 0 ? (
                   <div className="flex flex-wrap items-center gap-1.5 border-b border-border/30 px-2.5 pb-2 pt-2">
                     {attachments.map((p) => (
@@ -1998,7 +2125,14 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                 <textarea
                   ref={textareaRef}
                   value={input}
-                  onChange={(event) => setInput(event.target.value)}
+                  onChange={(event) => {
+                    const nextValue = event.target.value
+                    setInput(nextValue)
+                    inlineMention.handleInputChange(
+                      nextValue,
+                      event.target.selectionStart ?? nextValue.length,
+                    )
+                  }}
                   onFocus={() => setIsComposerFocused(true)}
                   onBlur={() => setIsComposerFocused(false)}
                   onKeyDown={handleKeyDown}
@@ -2026,10 +2160,23 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                       setAttachments((prev) => Array.from(new Set([...prev, ...saved])))
                     }
                   }}
-                  placeholder={composerPlaceholder}
+                  placeholder={
+                    isEditingQueuedMessage ? 'Edit queued message…' : composerPlaceholder
+                  }
                   spellCheck={false}
                   rows={Math.min(8, Math.max(3, input.split('\n').length))}
                   className="block w-full min-h-[72px] resize-none bg-transparent px-4 pt-3.5 pb-2 text-[14px] leading-6 text-foreground placeholder:text-muted-foreground/55 outline-none border-0 focus:outline-none focus-visible:outline-none"
+                />
+                <InlineMentionMenu
+                  open={inlineMention.open}
+                  items={inlineMention.items}
+                  position={inlineMention.position}
+                  selectedIndex={inlineMention.selectedIndex}
+                  onHover={inlineMention.setSelectedIndex}
+                  onClose={inlineMention.close}
+                  onSelect={(item) => {
+                    applyInlineMentionSelection(inlineMention.selectItem(item))
+                  }}
                 />
                 <div className="flex items-center gap-1.5 px-2 pb-2 pt-0.5">
                   <button
@@ -2087,7 +2234,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                     contextLength={agentWindow.contextLength}
                   />
                   <div className="flex-1" />
-                  {!isRunning ? (
+                  {!isRunning && !isEditingQueuedMessage ? (
                     <span className="hidden items-center gap-1 text-[10.5px] text-muted-foreground/60 sm:inline-flex">
                       <Kbd className="h-[18px] min-w-[18px] rounded-[4px] bg-foreground/6 px-1 text-[10px] text-muted-foreground/80">
                         ↵
@@ -2095,30 +2242,49 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                       <span>send</span>
                     </span>
                   ) : null}
-                  <button
-                    type="button"
-                    onMouseDown={(event) => event.preventDefault()}
-                    onClick={() => {
-                      if (isRunning) void handleStop()
-                      else void submit()
-                    }}
-                    disabled={!isRunning && !canSubmit}
-                    aria-label={isRunning ? 'Stop agent' : 'Send message'}
-                    className={cn(
-                      'ml-1 inline-flex size-7 shrink-0 items-center justify-center rounded-full transition-colors',
-                      isRunning
-                        ? 'bg-amber-400/90 text-background hover:bg-amber-400'
-                        : canSubmit
-                          ? 'bg-foreground text-background shadow-minimal hover:bg-foreground/90'
-                          : 'cursor-not-allowed bg-foreground/20 text-background/70',
-                    )}
-                  >
-                    {isRunning ? (
-                      <Square className="h-3 w-3 fill-current" />
-                    ) : (
-                      <ArrowUp className="h-3.5 w-3.5" />
-                    )}
-                  </button>
+                  {isEditingQueuedMessage ? (
+                    <button
+                      type="button"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={commitEditQueued}
+                      disabled={!canSaveQueuedEdit}
+                      aria-label="Save queued message"
+                      className={cn(
+                        'ml-1 inline-flex h-7 shrink-0 items-center gap-1 rounded-[8px] px-2.5 text-[11.5px] font-medium transition-colors',
+                        canSaveQueuedEdit
+                          ? 'bg-cyan-400/90 text-background shadow-minimal hover:bg-cyan-400'
+                          : 'cursor-not-allowed bg-foreground/10 text-muted-foreground/60',
+                      )}
+                    >
+                      <Check className="size-3.5" />
+                      Save
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => {
+                        if (isRunning) void handleStop()
+                        else void submit()
+                      }}
+                      disabled={!isRunning && !canSubmit}
+                      aria-label={isRunning ? 'Stop agent' : 'Send message'}
+                      className={cn(
+                        'ml-1 inline-flex size-7 shrink-0 items-center justify-center rounded-full transition-colors',
+                        isRunning
+                          ? 'bg-amber-400/90 text-background hover:bg-amber-400'
+                          : canSubmit
+                            ? 'bg-foreground text-background shadow-minimal hover:bg-foreground/90'
+                            : 'cursor-not-allowed bg-foreground/20 text-background/70',
+                      )}
+                    >
+                      {isRunning ? (
+                        <Square className="h-3 w-3 fill-current" />
+                      ) : (
+                        <ArrowUp className="h-3.5 w-3.5" />
+                      )}
+                    </button>
+                  )}
                 </div>
               </div>
             </div>

@@ -7,6 +7,7 @@ import {
   ChevronDown,
   ChevronUp,
   Code,
+  GitBranch,
   Globe,
   LayoutGrid,
   Download,
@@ -46,6 +47,7 @@ import { AgentIcon } from '../agent-icon'
 import { inferAgentFromTitle } from '@/lib/agent-command'
 import { hapticNudge, hapticSuccess, hapticBuzz } from '@/lib/haptics'
 import {
+  getAgentWindowStatusPresentation,
   getProjectRuntimeAttention,
   getStatusPresentation,
   type ProjectAttention,
@@ -70,6 +72,35 @@ function shortenUrl(url?: string): string {
   } catch {
     return url
   }
+}
+
+function shortenPath(path: string): string {
+  return path.replace(/^\/Users\/[^/]+/, '~')
+}
+
+function getAgentLocationLabel(
+  cwd: string | null | undefined,
+  worktrees: Array<{ path: string; branch: string; isBare?: boolean }>,
+): string | null {
+  if (!cwd) return null
+  const normalizedCwd = cwd.replace(/\\/g, '/')
+  const matchingWorktree = worktrees
+    .filter((worktree) => !worktree.isBare)
+    .filter(
+      (worktree) =>
+        normalizedCwd === worktree.path || normalizedCwd.startsWith(`${worktree.path}/`),
+    )
+    .sort((left, right) => right.path.length - left.path.length)[0]
+
+  if (matchingWorktree) {
+    const relativePath = normalizedCwd.slice(matchingWorktree.path.length).replace(/^\/+/, '')
+    return relativePath ? `${matchingWorktree.branch} · ${relativePath}` : matchingWorktree.branch
+  }
+
+  const shortened = shortenPath(normalizedCwd)
+  const segments = shortened.split('/').filter(Boolean)
+  if (segments.length === 0) return shortened
+  return segments.length === 1 ? segments[0] : segments.slice(-2).join('/')
 }
 
 function ProjectTab({
@@ -311,6 +342,7 @@ export function StatusBar() {
   )
   const projects = useStore((s) => s.projects)
   const activeProjectId = useStore((s) => s.activeProjectId)
+  const worktrees = useStore((s) => s.worktrees)
   const switchProject = useStore((s) => s.switchProject)
   const reorderProjects = useStore((s) => s.reorderProjects)
   const snapEnabled = useStore((s) => s.snapEnabled)
@@ -938,25 +970,9 @@ export function StatusBar() {
             const awTitle =
               aw.customTitle || aw.title || (aw.agent === 'claude' ? 'Claude Code' : 'Codex')
             const awStatus = aw.status || 'idle'
+            const awLocation = getAgentLocationLabel(aw.cwd ?? null, worktrees)
             const isEditingAgentTitle = editingTitleForAgentId === focusedAgentWindowId
-            const awStatusPill =
-              awStatus === 'running'
-                ? {
-                    label: 'Running',
-                    pillClass: 'border-emerald-400/25 bg-emerald-500/10 text-emerald-300',
-                    dotClass: 'bg-emerald-400 animate-pulse',
-                  }
-                : awStatus === 'error'
-                  ? {
-                      label: 'Error',
-                      pillClass: 'border-red-400/25 bg-red-500/10 text-red-300',
-                      dotClass: 'bg-red-400',
-                    }
-                  : {
-                      label: 'Idle',
-                      pillClass: 'border-border/30 bg-muted/40 text-muted-foreground/80',
-                      dotClass: 'bg-muted-foreground/50',
-                    }
+            const awStatusPill = getAgentWindowStatusPresentation(awStatus)
             return (
               <div className="flex-1 flex items-center gap-2 px-3 min-w-0 no-drag">
                 <AgentIcon agent={aw.agent} className="h-3 w-3 shrink-0" size={12} />
@@ -1001,6 +1017,15 @@ export function StatusBar() {
                     {awTitle}
                   </span>
                 )}
+                {awLocation ? (
+                  <span
+                    className="inline-flex min-w-0 max-w-52 shrink items-center gap-1 rounded-full border border-border/25 bg-background/35 px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground/70"
+                    title={shortenPath(aw.cwd ?? awLocation)}
+                  >
+                    <GitBranch className="h-2.5 w-2.5 shrink-0 opacity-70" />
+                    <span className="truncate">{awLocation}</span>
+                  </span>
+                ) : null}
                 <span
                   className={cn(
                     'inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] leading-none',

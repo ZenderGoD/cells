@@ -179,26 +179,27 @@ function fetchClaudeModels(): Promise<ModelOption[]> {
 
       // Fallback defines canonical ordering. Prefer exact-id match, then
       // tier match (avoids duplicates when SDK uses versioned ids), then
-      // keep the fallback entry as-is — availability is unknown, not false,
-      // so the user can still attempt to use it.
-      const coveredTiers = new Set<string>()
+      // keep the fallback entry visible-but-disabled so unsupported models
+      // never become the implicit current selection.
+      const usedLiveIds = new Set<string>()
       const merged = CLAUDE_MODELS_FALLBACK.map((fb) => {
         const byId = liveById.get(fb.id)
         if (byId) {
-          coveredTiers.add(tierOf(fb.id))
+          usedLiveIds.add(byId.id)
           return byId
         }
         const byTier = liveByTier.get(tierOf(fb.id))
         if (byTier) {
-          coveredTiers.add(tierOf(fb.id))
+          usedLiveIds.add(byTier.id)
           return byTier
         }
-        // No live match — show as available (CLI may still accept it)
-        return fb
+        return { ...fb, available: false }
       })
 
-      // Append live extras whose tier isn't covered by any fallback slot
-      const extras = liveList.filter((m) => !coveredTiers.has(tierOf(m.id)))
+      // Append live models not already slotted into a fallback position.
+      // Filter by id (not tier) so variants like "Sonnet (1M context)" still
+      // appear even when the base sonnet slot was already filled.
+      const extras = liveList.filter((m) => !usedLiveIds.has(m.id))
       claudeModelsCache = [...merged, ...extras]
       return claudeModelsCache
     })

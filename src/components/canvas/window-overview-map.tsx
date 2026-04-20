@@ -3,7 +3,7 @@ import { Globe, TerminalSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { getCanvasBounds, type CanvasRect, type CanvasWindow } from '@/lib/canvas-navigation'
 import { AgentIcon } from '@/components/agent-icon'
-import { getStatusPresentation } from '@/lib/status-indicator'
+import { getAgentWindowStatusPresentation, getStatusPresentation } from '@/lib/status-indicator'
 
 interface WindowOverviewMapProps {
   windows: CanvasWindow[]
@@ -198,8 +198,14 @@ export function WindowOverviewMap({
           const canShowIcon = minDim >= 8
           const iconSize = Math.max(6, Math.min(minDim * 0.55, 14))
           const canDrag = !!onMove
-          const status = getStatusPresentation(window.runtimeStatus, { agent: window.agent })
-          const statusClass = status.ringClass
+          const runtimeStatus = getStatusPresentation(window.runtimeStatus, { agent: window.agent })
+          const agentWindowStatus =
+            window.type === 'agent'
+              ? getAgentWindowStatusPresentation(window.agentWindowStatus)
+              : null
+          const statusClass = runtimeStatus.ringClass
+          const indicatorDotClass = agentWindowStatus?.dotClass || runtimeStatus.dotClass
+          const statusTitle = agentWindowStatus?.label || runtimeStatus.detail
           const statusDotClass = minDim >= 14 ? 'size-2' : 'size-1.5'
           const sharedClassName = cn(
             'absolute flex items-center justify-center border transition-[transform,background-color,border-color,opacity,box-shadow] duration-150',
@@ -226,15 +232,15 @@ export function WindowOverviewMap({
                 onPointerDown={canDrag ? (e) => handlePointerDown(e, window) : undefined}
                 onPointerMove={canDrag ? (e) => handlePointerMove(e, window) : undefined}
                 onPointerUp={canDrag ? (e) => handlePointerUp(e, window) : undefined}
-                title={`${window.type === 'browser' ? 'Browser' : window.agent ? `Agent (${window.agent})` : 'Terminal'}: ${window.title}${status.detail ? ` — ${status.detail}` : ''}`}
+                title={`${window.type === 'browser' ? 'Browser' : window.agent ? `Agent (${window.agent})` : 'Terminal'}: ${window.title}${statusTitle ? ` — ${statusTitle}` : ''}`}
               >
                 {canShowIcon && <WindowIcon window={window} iconSize={iconSize} />}
-                {status.dotClass ? (
+                {indicatorDotClass ? (
                   <span
                     className={cn(
                       'pointer-events-none absolute right-0.5 top-0.5 rounded-full shadow-[0_0_0_1px_rgba(0,0,0,0.22)]',
                       statusDotClass,
-                      status.dotClass,
+                      indicatorDotClass,
                     )}
                   />
                 ) : null}
@@ -248,12 +254,12 @@ export function WindowOverviewMap({
           return (
             <div key={window.id} className={sharedClassName} style={rectStyle}>
               {canShowIcon && <WindowIcon window={window} iconSize={iconSize} />}
-              {status.dotClass ? (
+              {indicatorDotClass ? (
                 <span
                   className={cn(
                     'pointer-events-none absolute right-0.5 top-0.5 rounded-full shadow-[0_0_0_1px_rgba(0,0,0,0.22)]',
                     statusDotClass,
-                    status.dotClass,
+                    indicatorDotClass,
                   )}
                 />
               ) : null}

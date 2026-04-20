@@ -61,6 +61,7 @@ import { Logo } from './logo'
 import { Kbd } from './ui/kbd'
 import { showToast } from './toast'
 import { hapticNudge, hapticSuccess } from '@/lib/haptics'
+import type { SavedAgentSessionSummary } from '@/types'
 
 const AGENT_OPTIONS = [
   { id: 'claude', label: 'Claude Code' },
@@ -395,6 +396,18 @@ function getAttachmentIcon(name: string) {
   return FileText
 }
 
+function formatRelativeTime(timestamp: number) {
+  const deltaMs = Math.max(0, Date.now() - timestamp)
+  const deltaMinutes = Math.floor(deltaMs / 60_000)
+  if (deltaMinutes < 1) return 'just now'
+  if (deltaMinutes < 60) return `${deltaMinutes}m ago`
+  const deltaHours = Math.floor(deltaMinutes / 60)
+  if (deltaHours < 24) return `${deltaHours}h ago`
+  const deltaDays = Math.floor(deltaHours / 24)
+  if (deltaDays < 7) return `${deltaDays}d ago`
+  return new Date(timestamp).toLocaleDateString()
+}
+
 export function CommandPalette() {
   const [open, setOpen] = useState(false)
   const [cmdHeld, setCmdHeld] = useState(false)
@@ -406,6 +419,7 @@ export function CommandPalette() {
   const [recentFiles, setRecentFiles] = useState<
     Array<{ path: string; name: string; mtime: number; source: string }>
   >([])
+  const [savedSessions, setSavedSessions] = useState<SavedAgentSessionSummary[]>([])
   const [shellHistory, setShellHistory] = useState<string[]>([])
   const [cmdkValue, setCmdkValue] = useState('')
   const cmdkValueRef = useRef(cmdkValue)
@@ -501,6 +515,9 @@ export function CommandPalette() {
       ...terminals.map((t) => t.customTitle || t.title || ''),
       ...browsers.map((b) => `${b.title ?? ''} ${b.url ?? ''}`),
       ...agentWindows.map((a) => a.customTitle || a.title || ''),
+      ...savedSessions.map(
+        (session) => `${session.title ?? ''} ${session.cwd ?? ''} ${session.lastMessageText ?? ''}`,
+      ),
       ...projects.map((p) => p.name || ''),
       ...availableAgents.map(({ label }) => `New ${label} window`),
       // Fixed Actions entries — keep aligned with the Actions CommandGroup
@@ -514,6 +531,13 @@ export function CommandPalette() {
     ]
     return candidates.some((label) => label && fuzzyMatch(label))
   })()
+
+  const openAgentWindowIds = new Set(
+    projects.flatMap((project) => (project.agentWindows ?? []).map((window) => window.id)),
+  )
+  const closedSavedSessions = savedSessions.filter(
+    (session) => !openAgentWindowIds.has(session.windowId),
+  )
 
   const addAttachments = useCallback(async (paths: string[]) => {
     const newAttachments = paths.map((p) => ({
@@ -611,6 +635,10 @@ export function CommandPalette() {
       window.cells.app
         .getShellHistory()
         .then(setShellHistory)
+        .catch(() => {})
+      window.cells.agentSession
+        .listSavedSessions()
+        .then(setSavedSessions)
         .catch(() => {})
     }
   }, [open, agentAliases, agentPaths, enabledAgents])
@@ -1098,6 +1126,47 @@ export function CommandPalette() {
                         <Logo className="h-4 w-4 text-muted-foreground" />
                       )}
                       {t.title}
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              </>
+            )}
+
+            {closedSavedSessions.length > 0 && (
+              <>
+                <CommandSeparator />
+                <CommandGroup heading="Saved Sessions">
+                  {closedSavedSessions.map((session) => (
+                    <CommandItem
+                      key={session.windowId}
+                      value={`saved-session ${session.agent} ${session.title} ${session.cwd ?? ''} ${session.lastMessageText ?? ''}`}
+                      onSelect={() =>
+                        runAction(() =>
+                          useStore.getState().addAgentWindow(session.agent, {
+                            id: session.windowId,
+                            title: session.title,
+                            cwd: session.cwd ?? null,
+                            claudeSessionId: session.claudeSessionId ?? null,
+                            codexThreadId: session.codexThreadId ?? null,
+                            model: session.model ?? null,
+                          }),
+                        )
+                      }
+                    >
+                      <AgentIcon
+                        agent={session.agent}
+                        className="text-muted-foreground"
+                        size={16}
+                      />
+                      <span className="min-w-0 flex-1 truncate">{session.title}</span>
+                      {session.cwd ? (
+                        <span className="max-w-40 truncate text-[10px] text-muted-foreground/40">
+                          {session.cwd.replace(/^\/Users\/[^/]+/, '~')}
+                        </span>
+                      ) : null}
+                      <span className="ml-2 shrink-0 text-[10px] text-muted-foreground/40">
+                        {formatRelativeTime(session.updatedAt)}
+                      </span>
                     </CommandItem>
                   ))}
                 </CommandGroup>

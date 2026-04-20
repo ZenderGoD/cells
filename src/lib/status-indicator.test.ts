@@ -2,9 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import type { AgentName, AgentRuntimeState, TerminalRuntimeStatus } from '@/types'
 
-const { getProjectRuntimeAttention, getStatusPresentation } = await import(
-  new URL('./status-indicator.ts', import.meta.url).href
-)
+const { getAgentWindowStatusPresentation, getProjectRuntimeAttention, getStatusPresentation } =
+  await import(new URL('./status-indicator.ts', import.meta.url).href)
 
 function makeAgentStatus(
   agent: AgentName,
@@ -132,6 +131,23 @@ test('getStatusPresentation returns an empty presentation when there is no runti
     details: [],
     projectAttention: null,
   })
+})
+
+test('getAgentWindowStatusPresentation maps idle, running, and error to shared agent-window styles', () => {
+  const idle = getAgentWindowStatusPresentation('idle')
+  assert.equal(idle.label, 'Idle')
+  assert.match(idle.dotClass, /muted/)
+  assert.match(idle.pillClass, /muted/)
+
+  const running = getAgentWindowStatusPresentation('running')
+  assert.equal(running.label, 'Running')
+  assert.match(running.dotClass, /emerald/)
+  assert.match(running.pillClass, /emerald/)
+
+  const error = getAgentWindowStatusPresentation('error')
+  assert.equal(error.label, 'Error')
+  assert.match(error.dotClass, /red/)
+  assert.match(error.pillClass, /red/)
 })
 
 test('getStatusPresentation supports legacy fallback agent and process states', () => {

@@ -219,7 +219,20 @@ interface StoreState {
   panToBrowser(id: string): void
   addAgentWindow(
     agent: Extract<AgentName, 'claude' | 'codex'>,
-    options?: { title?: string; cwd?: string | null; initialPrompt?: string | null },
+    options?: {
+      id?: string
+      title?: string
+      customTitle?: string | null
+      cwd?: string | null
+      initialPrompt?: string | null
+      claudeSessionId?: string | null
+      codexThreadId?: string | null
+      model?: string | null
+      permissionMode?: import('../types').AgentPermissionMode | null
+      thinkingLevel?: import('../types').AgentThinkingLevel | null
+      contextLength?: import('../types').AgentContextLength | null
+      createdAt?: number | null
+    },
   ): AgentWindowNode
   removeAgentWindow(id: string): void
   moveAgentWindow(id: string, x: number, y: number): void
@@ -3344,7 +3357,17 @@ export const useStore = create<StoreState>((set, get) => ({
   // ---- Agent window actions ----
 
   addAgentWindow(agent, options) {
-    const id = nanoid(8)
+    const requestedId = options?.id ?? null
+    const existing = requestedId
+      ? get().agentWindows.find((entry) => entry.id === requestedId)
+      : null
+    if (existing) {
+      get().bringAgentWindowToFront(existing.id)
+      get().snapToAgentWindow(existing.id)
+      return existing
+    }
+
+    const id = requestedId ?? nanoid(8)
     const newZ = get().topZIndex + 1
     const { terminals, browsers, agentWindows, focusHistory } = get()
     const width = window.innerWidth - TERMINAL_PAD * 2
@@ -3369,12 +3392,19 @@ export const useStore = create<StoreState>((set, get) => ({
       width,
       height,
       title: options?.title ?? (agent === 'claude' ? 'Claude Code' : 'Codex'),
+      customTitle: options?.customTitle ?? null,
       cwd: options?.cwd ?? get().getActiveProjectPath() ?? null,
       initialPrompt: options?.initialPrompt ?? null,
+      claudeSessionId: options?.claudeSessionId ?? null,
+      codexThreadId: options?.codexThreadId ?? null,
+      model: options?.model ?? null,
+      permissionMode: options?.permissionMode ?? null,
+      thinkingLevel: options?.thinkingLevel ?? null,
+      contextLength: options?.contextLength ?? null,
       status: 'idle',
       error: null,
       zIndex: newZ,
-      createdAt: Date.now(),
+      createdAt: options?.createdAt ?? Date.now(),
     }
 
     set((s) => ({
