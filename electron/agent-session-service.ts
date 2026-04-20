@@ -25,12 +25,15 @@ import type {
 //   Codex  — maps to `modelReasoningEffort` ('off' → 'minimal' per Codex SDK).
 function claudeThinkingOptions(level: AgentThinkingLevel | null | undefined, model: string) {
   const isHaiku = /haiku/i.test(model)
-  const effortMap: Record<Exclude<AgentThinkingLevel, 'off'>, 'low' | 'medium' | 'high'> = {
+  const effortMap: Record<
+    Exclude<AgentThinkingLevel, 'off'>,
+    'low' | 'medium' | 'high' | 'xhigh' | 'max'
+  > = {
     low: 'low',
     medium: 'medium',
     high: 'high',
-    max: 'high',
-    xhigh: 'high',
+    max: 'max',
+    xhigh: 'xhigh',
   }
   if (!level || level === 'off') {
     return isHaiku ? { maxThinkingTokens: 0 as const } : { thinking: { type: 'disabled' as const } }

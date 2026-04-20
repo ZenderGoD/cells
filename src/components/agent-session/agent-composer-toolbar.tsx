@@ -37,15 +37,15 @@ interface ModelOption {
 
 // Fallback used before the live `claude` Agent-SDK `supportedModels()` call
 // resolves (or if it fails — CLI not installed, not logged in, offline).
-// Matches the SDK's authoritative `supportedEffortLevels` shape — Haiku
-// drops the `max` tier since its token-budget cap sits below what 'max'
-// would request.
+// Mirrors what the SDK returns for each model today; Haiku reports no
+// `supportsEffort` so its supportedEfforts list is empty (thinking picker
+// hides for that model).
 const CLAUDE_MODELS_FALLBACK: ModelOption[] = [
   {
     id: 'claude-opus-4-7',
     label: 'Opus 4.7',
     hint: 'Most capable for complex work',
-    supportedEfforts: ['off', 'low', 'medium', 'high', 'max'],
+    supportedEfforts: ['off', 'low', 'medium', 'high', 'xhigh', 'max'],
     defaultEffort: 'medium',
   },
   {
@@ -59,8 +59,8 @@ const CLAUDE_MODELS_FALLBACK: ModelOption[] = [
     id: 'claude-haiku-4-5-20251001',
     label: 'Haiku 4.5',
     hint: 'Fastest for quick answers',
-    supportedEfforts: ['off', 'low', 'medium', 'high'],
-    defaultEffort: 'low',
+    supportedEfforts: [],
+    defaultEffort: 'off',
   },
 ]
 
@@ -84,10 +84,10 @@ function prettifyClaudeModel(raw: string): string {
   return (tier + version).trim()
 }
 
-// Normalises a raw effort string from the SDK (typed
-// `'low' | 'medium' | 'high' | 'max'`, but we widen to string so any
-// CLI-only additions like 'xhigh' pass through) onto our portable
-// `AgentThinkingLevel` union.
+// Normalises a raw effort string from the SDK's
+// `ModelInfo.supportedEffortLevels` onto our portable `AgentThinkingLevel`
+// union. Kept as a string-in / union-out filter so any future CLI-only
+// additions pass through without a type-level edit.
 function claudeEffortToLevel(effort: string): AgentThinkingLevel | null {
   switch (effort) {
     case 'low':
@@ -124,13 +124,16 @@ function fetchClaudeModels(): Promise<ModelOption[]> {
         const efforts = (m.supportedEffortLevels || [])
           .map(claudeEffortToLevel)
           .filter((v): v is AgentThinkingLevel => v != null)
-        // Haiku's budget cap sits below 'max', so the SDK omits it. We always
-        // prepend 'off' — it maps to `thinking: { type: 'disabled' }` and the
-        // SDK never enumerates it as an effort level.
-        const supportedEfforts: AgentThinkingLevel[] = ['off', ...efforts]
+        // Models without `supportsEffort` (Haiku today) expose no effort
+        // knobs, so we leave supportedEfforts empty and the ThinkingPicker
+        // hides itself. For models that do support effort we prepend 'off'
+        // (maps to `thinking: { type: 'disabled' }` — the SDK never lists
+        // it in `supportedEffortLevels`).
+        const supportedEfforts: AgentThinkingLevel[] =
+          m.supportsEffort && efforts.length > 0 ? ['off', ...efforts] : []
         const defaultEffort: AgentThinkingLevel = efforts.includes('medium')
           ? 'medium'
-          : (efforts[0] ?? 'medium')
+          : (efforts[0] ?? 'off')
         // The SDK sometimes returns a generic displayName like
         // "Default (recommended)" for aliased entries — prefer the concrete
         // model id prettified so the picker shows "Opus 4.7" rather than
