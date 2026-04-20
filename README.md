@@ -44,6 +44,10 @@ Navigate between nodes on the canvas with configurable Ctrl+Tab snapping — no 
 
 ![Zoomed-out view of multiple nodes on the infinite canvas](docs/screenshots/canvas-overview.png)
 
+## Credits
+
+The in-canvas agent chat — message grouping, turn card, markdown rendering, composer toolbar, and most of the chat UX — is adapted from [Craft Agents OSS](https://github.com/lukilabs/craft-agents-oss). Files that pull from it have a header comment pointing at the upstream source.
+
 ## Status
 
 Cells is early-stage software. Expect fast iteration, rough edges, and occasional breaking changes between tagged releases.
