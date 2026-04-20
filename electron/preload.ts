@@ -341,6 +341,19 @@ const api: CellsAPI = {
       ipcRenderer.invoke('agent-session:update-permission-mode', windowId, mode) as Promise<void>,
     updateContextLength: (windowId: string, length: 'default' | 'extended' | null) =>
       ipcRenderer.invoke('agent-session:update-context-length', windowId, length) as Promise<void>,
+    respondPlan: (
+      windowId: string,
+      decision: 'auto-accept' | 'ask' | 'reject',
+      feedback?: string,
+    ) =>
+      ipcRenderer.invoke(
+        'agent-session:respond-plan',
+        windowId,
+        decision,
+        feedback,
+      ) as Promise<void>,
+    respondQuestion: (windowId: string, answers: Record<string, string[]> | null) =>
+      ipcRenderer.invoke('agent-session:respond-question', windowId, answers) as Promise<void>,
     listCodexModels: () =>
       ipcRenderer.invoke('agent-session:list-codex-models') as Promise<
         Array<{

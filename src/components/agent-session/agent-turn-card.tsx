@@ -517,9 +517,10 @@ function ResponseCard({ responses }: { responses: AgentSessionMessage[] }) {
 export function AgentTurnCard({ activities, responses, agent, isStreaming }: AgentTurnCardProps) {
   const hasActivities = activities.length > 0
   const hasResponse = responses.some((r) => r.text.trim().length > 0)
-  // Activities stripe collapses by default — the preview pill already shows
-  // the count + current status, so the long child list shouldn't push the
-  // response card off-screen. User can click to expand.
+  // Small turns (≤3 activities) render inline so the user sees each step at a
+  // glance. Larger turns collapse behind a count badge to keep the response
+  // card visible without scrolling past a long tool list.
+  const isSmallTurn = activities.length <= 3
   const [collapsed, setCollapsed] = useState(true)
   const showActivities = !collapsed
   const previewText = usePreviewText(activities, isStreaming, agent)
@@ -529,41 +530,49 @@ export function AgentTurnCard({ activities, responses, agent, isStreaming }: Age
     <div className="flex w-full justify-start">
       <div className="w-full space-y-1">
         {hasActivities ? (
-          <div className="select-none">
-            <button
-              type="button"
-              onClick={() => setCollapsed((v) => !v)}
-              className="flex w-full items-center gap-2 rounded-[8px] px-2.5 py-1.5 text-left transition-colors hover:bg-foreground/5 focus:outline-none"
-            >
-              <ChevronRight
-                className={cn(
-                  'size-3.5 shrink-0 text-muted-foreground/70 transition-transform',
-                  showActivities && 'rotate-90',
-                )}
-              />
-              <span className="-ml-0.5 shrink-0 rounded-[4px] bg-background px-1.5 py-0.5 text-[10px] font-medium tabular-nums shadow-minimal">
-                {activities.length}
-              </span>
-              {isStreaming ? (
-                <LoadingIndicator
-                  label={previewText}
-                  showElapsed
-                  className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground [&>span:nth-child(2)]:truncate"
-                />
-              ) : (
-                <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground">
-                  {previewText}
+          isSmallTurn ? (
+            <div className="space-y-0.5 px-1 py-0.5">
+              {tree.map((node) => (
+                <ActivityRow key={node.message.id} node={node} depth={0} />
+              ))}
+            </div>
+          ) : (
+            <div className="select-none">
+              <button
+                type="button"
+                onClick={() => setCollapsed((v) => !v)}
+                className="flex w-full items-center gap-2 rounded-[8px] px-2.5 py-1.5 text-left transition-colors hover:bg-foreground/5 focus:outline-none"
+              >
+                <span className="shrink-0 rounded-[4px] bg-background px-1.5 py-0.5 text-[10px] font-medium tabular-nums shadow-minimal">
+                  {activities.length}
                 </span>
-              )}
-            </button>
-            {showActivities ? (
-              <div className="ml-[13px] max-h-[360px] space-y-0.5 overflow-y-auto overscroll-contain border-l-2 border-border/40 pl-3 pr-1 py-0.5">
-                {tree.map((node) => (
-                  <ActivityRow key={node.message.id} node={node} depth={0} />
-                ))}
-              </div>
-            ) : null}
-          </div>
+                {isStreaming ? (
+                  <LoadingIndicator
+                    label={previewText}
+                    showElapsed
+                    className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground [&>span:nth-child(2)]:truncate"
+                  />
+                ) : (
+                  <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground">
+                    {previewText}
+                  </span>
+                )}
+                <ChevronRight
+                  className={cn(
+                    'ml-auto size-3.5 shrink-0 text-muted-foreground/70 transition-transform',
+                    showActivities && 'rotate-90',
+                  )}
+                />
+              </button>
+              {showActivities ? (
+                <div className="ml-[13px] max-h-[360px] space-y-0.5 overflow-y-auto overscroll-contain border-l-2 border-border/40 pl-3 pr-1 py-0.5">
+                  {tree.map((node) => (
+                    <ActivityRow key={node.message.id} node={node} depth={0} />
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          )
         ) : isStreaming && !hasResponse ? (
           <LoadingIndicator
             label={agent === 'claude' ? 'Claude is thinking…' : 'Codex is thinking…'}

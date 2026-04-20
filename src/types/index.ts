@@ -169,6 +169,26 @@ export type AgentPermissionMode = 'plan' | 'ask' | 'bypass'
  */
 export type AgentThinkingLevel = 'off' | 'low' | 'medium' | 'high' | 'max' | 'xhigh'
 
+/** A user message queued while the agent was running. Persisted on the
+ *  AgentWindowNode so the queue survives app restart. */
+export interface QueuedAgentMessage {
+  text: string
+  attachments: string[]
+  /**
+   * How this message should interrupt the in-flight turn:
+   * - 'after-turn' (↩): wait for the current turn to finish naturally.
+   * - 'after-tool' (⌥↩): cut in after the next tool call completes.
+   * - 'stop' (⌘↩): interrupt immediately.
+   */
+  mode: 'after-turn' | 'after-tool' | 'stop'
+  /** Snapshot of the selected model/thinking/permission at queue time.
+   *  Forwarded as overrides so the queued message runs against the settings
+   *  the user chose when enqueuing, not whatever is currently active. */
+  model: string | null
+  thinkingLevel: AgentThinkingLevel | null
+  permissionMode: AgentPermissionMode | null
+}
+
 export interface AgentWindowNode {
   id: string
   agent: Extract<AgentName, 'claude' | 'codex'>
@@ -193,6 +213,10 @@ export interface AgentWindowNode {
    *  When 'default' (or null), the regular 200k window is used. */
   contextLength?: AgentContextLength | null
   createdAt?: number | null
+  /** Messages the user queued while a prior turn was in flight. Persisted so
+   *  they survive app restart — the chat panel drains them in order on the
+   *  next idle. */
+  queuedMessages?: QueuedAgentMessage[]
 }
 
 /** Context-window variant the user has selected. Only 'extended' (1M) and
@@ -262,6 +286,39 @@ export interface AgentSessionRequest {
   contextLength?: AgentContextLength | null
 }
 
+/** When the Claude agent invokes `ExitPlanMode` and we're waiting for the
+ *  user to approve/reject the plan. The backend holds the `canUseTool`
+ *  promise open; the UI renders a banner and calls `respondPlan` with
+ *  the user's choice to resolve it. Cleared the moment the user responds. */
+export interface PendingPlanApproval {
+  /** Markdown plan body the agent produced. */
+  plan: string
+  /** Unix ms when the plan landed; lets the UI show "prepared N s ago". */
+  createdAt: number
+}
+
+/** One choice in an AskUserQuestion prompt. Mirrors the SDK's option shape. */
+export interface PendingQuestionOption {
+  label: string
+  description: string
+  preview?: string
+}
+
+/** One question in an AskUserQuestion prompt. */
+export interface PendingQuestion {
+  question: string
+  header: string
+  options: PendingQuestionOption[]
+  multiSelect: boolean
+}
+
+/** Backend-held snapshot of the AskUserQuestion invocation. The renderer
+ *  displays a Q&A banner and calls `respondQuestion` to resolve. */
+export interface PendingQuestionApproval {
+  questions: PendingQuestion[]
+  createdAt: number
+}
+
 export interface AgentSessionSnapshot {
   windowId: string
   agent: Extract<AgentName, 'claude' | 'codex'>
@@ -274,6 +331,8 @@ export interface AgentSessionSnapshot {
   updatedAt: number
   messages: AgentSessionMessage[]
   usage?: AgentUsageStats | null
+  pendingPlanApproval?: PendingPlanApproval | null
+  pendingQuestion?: PendingQuestionApproval | null
 }
 
 export interface Project {
@@ -502,6 +561,16 @@ export interface CellsAPI {
     cancelLogin(agent: 'claude' | 'codex'): Promise<void>
     updatePermissionMode(windowId: string, mode: AgentPermissionMode | null): Promise<void>
     updateContextLength(windowId: string, length: AgentContextLength | null): Promise<void>
+    respondPlan(
+      windowId: string,
+      decision: 'auto-accept' | 'ask' | 'reject',
+      feedback?: string,
+    ): Promise<void>
+    /** Resolve an AskUserQuestion prompt with the user's answers.
+     *  Key = original question text (matches SDK output schema).
+     *  Value = array of chosen option labels (single entry for single-select).
+     *  Pass `null` to cancel the prompt (treated as declined). */
+    respondQuestion(windowId: string, answers: Record<string, string[]> | null): Promise<void>
     listCodexModels(): Promise<
       Array<{
         id: string

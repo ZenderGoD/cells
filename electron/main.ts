@@ -1326,6 +1326,25 @@ ipcMain.handle(
   },
 )
 
+ipcMain.handle(
+  'agent-session:respond-plan',
+  async (
+    _event,
+    windowId: string,
+    decision: 'auto-accept' | 'ask' | 'reject',
+    feedback?: string,
+  ) => {
+    return agentSessionService.respondPlan(windowId, decision, feedback)
+  },
+)
+
+ipcMain.handle(
+  'agent-session:respond-question',
+  async (_event, windowId: string, answers: Record<string, string[]> | null) => {
+    return agentSessionService.respondQuestion(windowId, answers)
+  },
+)
+
 ipcMain.handle('agent-session:list-codex-models', async () => {
   try {
     return await listCodexModels()

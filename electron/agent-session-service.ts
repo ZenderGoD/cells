@@ -83,6 +83,12 @@ const DEFAULT_CLAUDE_MODEL = process.env.CELLS_CLAUDE_MODEL || 'claude-sonnet-4-
 // `SDKSessionOptions.betas`.
 const CLAUDE_CONTEXT_1M_BETA = 'context-1m-2025-08-07' as const
 
+// Upper bound on consecutive silent auto-continuations per user turn. If a
+// single prompt keeps hitting `max_turns` after this many retries, stop and
+// leave the session idle so the user can take over — avoids pinning a model
+// that's genuinely stuck in a loop.
+const CLAUDE_AUTO_CONTINUE_CAP = 3
+
 // Fold legacy ('safe' / 'allow-all') values from older saved sessions into
 // the current 3-mode set so the rest of the service only has to reason about
 // 'plan' | 'ask' | 'bypass'.
@@ -616,10 +622,50 @@ interface RuntimeBase {
   closed: boolean
 }
 
+/** A `canUseTool` callback resolver held open while the user decides
+ *  whether to approve, reject, or refine a plan produced by ExitPlanMode. */
+type PlanApprovalResolver = (result: {
+  behavior: 'allow' | 'deny'
+  message?: string
+  updatedInput?: Record<string, unknown>
+}) => void
+
+/** Resolver for an AskUserQuestion prompt parked in `canUseTool`. We always
+ *  `deny` once the user responds — the deny message carries the answers as
+ *  structured text so the agent can read them from the tool_result. */
+type QuestionApprovalResolver = (result: {
+  behavior: 'allow' | 'deny'
+  message?: string
+  updatedInput?: Record<string, unknown>
+}) => void
+
 interface ClaudeRuntime extends RuntimeBase {
   kind: 'claude'
   session: SDKSession
   streamPromise: Promise<void>
+  /** Count of consecutive auto-continuations issued without a new user turn
+   *  in between. Bumped when we resume a max_turns / pause_turn stoppage,
+   *  reset on every real user message. Guards against infinite resume loops
+   *  if the model is truly stuck. */
+  autoContinueCount: number
+  /** Set while the agent has called `ExitPlanMode` and we're blocking the
+   *  `canUseTool` return until the user picks approve / reject from the UI. */
+  pendingPlanApproval: {
+    plan: string
+    originalInput: Record<string, unknown>
+    resolve: PlanApprovalResolver
+  } | null
+  /** Set while the agent has called `AskUserQuestion` and we're blocking the
+   *  `canUseTool` return until the user submits answers from the banner. */
+  pendingQuestion: {
+    questions: Array<{
+      question: string
+      header: string
+      options: Array<{ label: string; description: string; preview?: string }>
+      multiSelect: boolean
+    }>
+    resolve: QuestionApprovalResolver
+  } | null
 }
 
 interface CodexRuntime extends RuntimeBase {
@@ -1198,6 +1244,9 @@ export class AgentSessionService extends EventEmitter {
       codexThreadId: request.codexThreadId ?? persisted?.codexThreadId ?? null,
       updatedAt: now(),
       messages: persisted?.messages ?? [],
+      // Keep the last known token accounting so the % indicator stays populated
+      // across restarts (a fresh turn will overwrite it on the next 'result').
+      usage: persisted?.usage ?? null,
     }
 
     if (request.agent === 'claude') {
@@ -1224,29 +1273,8 @@ export class AgentSessionService extends EventEmitter {
           CLAUDE_AGENT_SDK_CLIENT_APP: 'cells',
           ...(request.cwd ? { PWD: request.cwd } : {}),
         }),
-        canUseTool: async (toolName: string, input: any) => {
-          const mode = this.runtimes.get(request.windowId)?.request.permissionMode
-          // Safe mode: block anything that can write to the filesystem or
-          // execute shell. Matches the read-only posture the UI advertises
-          // without using the SDK's 'plan' permissionMode (which primes
-          // Claude to refuse edits even after we swap it out).
-          if (mode === 'plan' && CLAUDE_WRITE_TOOLS.has(toolName)) {
-            return {
-              behavior: 'deny' as const,
-              message: `Cells is in Plan mode — ${toolName} is blocked. Switch to Ask or Yolo to allow writes.`,
-            }
-          }
-          log('claude.canUseTool', {
-            windowId: request.windowId,
-            toolName,
-            mode: mode ?? null,
-            inputKeys: input ? Object.keys(input) : [],
-          })
-          return {
-            behavior: 'allow' as const,
-            updatedInput: (input ?? {}) as Record<string, unknown>,
-          }
-        },
+        canUseTool: (toolName: string, input: any) =>
+          this.handleClaudeCanUseTool(request.windowId, toolName, input),
         ...claudeThinkingOptions(request.thinkingLevel, request.model || DEFAULT_CLAUDE_MODEL),
         ...(claudeBinary ? { pathToClaudeCodeExecutable: claudeBinary } : {}),
         ...(request.contextLength === 'extended' ? { betas: [CLAUDE_CONTEXT_1M_BETA] } : {}),
@@ -1271,6 +1299,9 @@ export class AgentSessionService extends EventEmitter {
         session,
         closed: false,
         streamPromise: Promise.resolve(),
+        autoContinueCount: 0,
+        pendingPlanApproval: null,
+        pendingQuestion: null,
       }
       runtime.streamPromise = this.consumeClaudeStream(runtime)
       this.runtimes.set(request.windowId, runtime)
@@ -1422,6 +1453,12 @@ export class AgentSessionService extends EventEmitter {
       : ''
     const agentText = `${nonImageLine}${input}`.trim() || input
 
+    // Real user turn — reset the auto-continue watchdog so a fresh prompt
+    // gets its own three-try budget if it also bottoms out on max_turns.
+    if (runtime.kind === 'claude') {
+      runtime.autoContinueCount = 0
+    }
+
     appendMessage(runtime.snapshot, {
       id: `${windowId}-user-${now()}`,
       role: 'user',
@@ -1490,6 +1527,17 @@ export class AgentSessionService extends EventEmitter {
         runtime.session.close()
       } catch {
         /* idempotent */
+      }
+      // Drop any dangling plan approval — the SDK process is gone, so the
+      // canUseTool promise cannot be resolved usefully. Leaving it in the
+      // snapshot would show a zombie banner the user can't act on.
+      if (runtime.pendingPlanApproval) {
+        runtime.pendingPlanApproval = null
+        runtime.snapshot.pendingPlanApproval = null
+      }
+      if (runtime.pendingQuestion) {
+        runtime.pendingQuestion = null
+        runtime.snapshot.pendingQuestion = null
       }
     }
     runtime.snapshot.status = 'idle'
@@ -1595,6 +1643,183 @@ export class AgentSessionService extends EventEmitter {
     log('codex.permissionMode.update', { windowId, sandbox: codexSandbox, approval: codexApproval })
   }
 
+  /** Shared `canUseTool` entry point for Claude sessions. Encapsulates
+   *  (a) plan-mode write blocks, and (b) the ExitPlanMode intercept that
+   *  parks the tool-use until the user taps Approve/Reject in the UI. */
+  private handleClaudeCanUseTool(
+    windowId: string,
+    toolName: string,
+    input: any,
+  ): Promise<{
+    behavior: 'allow' | 'deny'
+    message?: string
+    updatedInput?: Record<string, unknown>
+  }> {
+    const runtime = this.runtimes.get(windowId)
+    const mode = runtime?.request.permissionMode
+    if (mode === 'plan' && CLAUDE_WRITE_TOOLS.has(toolName)) {
+      return Promise.resolve({
+        behavior: 'deny',
+        message: `Cells is in Plan mode — ${toolName} is blocked. Switch to Ask or Yolo to allow writes.`,
+      })
+    }
+    if (toolName === 'AskUserQuestion' && runtime?.kind === 'claude') {
+      const normalizedInput = (input ?? {}) as Record<string, unknown>
+      const rawQuestions = Array.isArray(normalizedInput.questions)
+        ? (normalizedInput.questions as unknown[])
+        : []
+      const questions = rawQuestions.map((q) => {
+        const item = (q ?? {}) as Record<string, unknown>
+        const options = Array.isArray(item.options) ? (item.options as unknown[]) : []
+        return {
+          question: typeof item.question === 'string' ? item.question : '',
+          header: typeof item.header === 'string' ? item.header : '',
+          multiSelect: Boolean(item.multiSelect),
+          options: options.map((o) => {
+            const opt = (o ?? {}) as Record<string, unknown>
+            return {
+              label: typeof opt.label === 'string' ? opt.label : '',
+              description: typeof opt.description === 'string' ? opt.description : '',
+              preview: typeof opt.preview === 'string' ? opt.preview : undefined,
+            }
+          }),
+        }
+      })
+      log('claude.askUserQuestion.pending', { windowId, count: questions.length })
+      return new Promise((resolve) => {
+        // Supersede any older pending question so the tool_use doesn't hang.
+        runtime.pendingQuestion?.resolve({
+          behavior: 'deny',
+          message: 'Superseded by a newer question prompt.',
+        })
+        runtime.pendingQuestion = { questions, resolve }
+        runtime.snapshot.pendingQuestion = { questions, createdAt: now() }
+        runtime.snapshot.updatedAt = now()
+        this.emitUpdate(runtime.snapshot)
+      })
+    }
+    if (toolName === 'ExitPlanMode' && runtime?.kind === 'claude') {
+      const normalizedInput = (input ?? {}) as Record<string, unknown>
+      // The SDK type says ExitPlanModeInput is just `{ allowedPrompts?: ... }`
+      // + extra props, but in practice Claude Code passes the plan markdown
+      // as `input.plan`. Fall back to scraping the most recent assistant
+      // message if the agent ever omits it, so the banner never shows blank.
+      let plan = typeof normalizedInput.plan === 'string' ? (normalizedInput.plan as string) : ''
+      if (!plan.trim()) {
+        const recentAssistant = [...runtime.snapshot.messages]
+          .reverse()
+          .find((m) => m.role === 'assistant' && m.text.trim().length > 0)
+        if (recentAssistant) plan = recentAssistant.text
+      }
+      log('claude.exitPlanMode.pending', { windowId, planLength: plan.length })
+      return new Promise((resolve) => {
+        // If a previous pending approval somehow survived, resolve it as
+        // denied so the prior tool-use gets a response.
+        runtime.pendingPlanApproval?.resolve({
+          behavior: 'deny',
+          message: 'Superseded by a newer plan proposal.',
+        })
+        runtime.pendingPlanApproval = { plan, originalInput: normalizedInput, resolve }
+        runtime.snapshot.pendingPlanApproval = { plan, createdAt: now() }
+        runtime.snapshot.updatedAt = now()
+        this.emitUpdate(runtime.snapshot)
+      })
+    }
+    log('claude.canUseTool', {
+      windowId,
+      toolName,
+      mode: mode ?? null,
+      inputKeys: input ? Object.keys(input) : [],
+    })
+    return Promise.resolve({
+      behavior: 'allow',
+      updatedInput: (input ?? {}) as Record<string, unknown>,
+    })
+  }
+
+  /** Resolve a pending ExitPlanMode approval with the user's choice.
+   *    - 'auto-accept' → switch permission mode to `bypass` + allow
+   *    - 'ask'         → switch permission mode to `ask` + allow
+   *    - 'reject'      → deny so the agent returns to planning
+   *  Feedback (optional) is forwarded verbatim in the deny message so the
+   *  agent can revise the plan around the user's concerns. */
+  async respondPlan(
+    windowId: string,
+    decision: 'auto-accept' | 'ask' | 'reject',
+    feedback?: string,
+  ): Promise<void> {
+    const runtime = this.runtimes.get(windowId)
+    if (!runtime || runtime.kind !== 'claude') return
+    const pending = runtime.pendingPlanApproval
+    if (!pending) return
+
+    runtime.pendingPlanApproval = null
+    runtime.snapshot.pendingPlanApproval = null
+    runtime.snapshot.updatedAt = now()
+
+    if (decision === 'reject') {
+      const trimmed = feedback?.trim()
+      const message = trimmed
+        ? `The user rejected the plan. Their feedback: ${trimmed}\n\nPlease revise the plan based on the feedback — do not start implementing.`
+        : 'The user rejected the plan. Please refine it further — do not start implementing.'
+      log('claude.exitPlanMode.reject', { windowId, hasFeedback: Boolean(trimmed) })
+      this.emitUpdate(runtime.snapshot)
+      pending.resolve({ behavior: 'deny', message })
+      return
+    }
+
+    const nextMode: AgentSessionRequest['permissionMode'] =
+      decision === 'auto-accept' ? 'bypass' : 'ask'
+    log('claude.exitPlanMode.approve', { windowId, nextMode })
+    await this.updatePermissionMode(windowId, nextMode)
+    this.emitUpdate(runtime.snapshot)
+    pending.resolve({ behavior: 'allow', updatedInput: pending.originalInput })
+  }
+
+  /** Resolve a pending AskUserQuestion prompt.
+   *    - `answers` map: key = original question text, value = chosen labels
+   *      (array of length 1 for single-select; N for multi-select).
+   *    - `null` → user declined / dismissed; the agent is told and can
+   *      continue with its best judgment.
+   *  We always return `behavior: 'deny'` so the agent sees our crafted
+   *  message as the tool_result — the SDK doesn't expose a way to inject
+   *  structured tool output from canUseTool, so a deny-with-body is the
+   *  pragmatic bridge the agent already knows how to parse. */
+  async respondQuestion(windowId: string, answers: Record<string, string[]> | null): Promise<void> {
+    const runtime = this.runtimes.get(windowId)
+    if (!runtime || runtime.kind !== 'claude') return
+    const pending = runtime.pendingQuestion
+    if (!pending) return
+
+    runtime.pendingQuestion = null
+    runtime.snapshot.pendingQuestion = null
+    runtime.snapshot.updatedAt = now()
+
+    if (!answers) {
+      log('claude.askUserQuestion.declined', { windowId })
+      this.emitUpdate(runtime.snapshot)
+      pending.resolve({
+        behavior: 'deny',
+        message:
+          'The user declined to answer the question(s). Continue using your best judgment, or ask again with more context.',
+      })
+      return
+    }
+
+    const lines = pending.questions.map((q) => {
+      const picked = answers[q.question] ?? []
+      const joined = picked.length > 0 ? picked.join(', ') : '(no answer)'
+      return `- "${q.question}" → ${joined}`
+    })
+    const message = `The user answered your question(s):\n${lines.join('\n')}`
+    log('claude.askUserQuestion.answered', {
+      windowId,
+      keys: Object.keys(answers).length,
+    })
+    this.emitUpdate(runtime.snapshot)
+    pending.resolve({ behavior: 'deny', message })
+  }
+
   // The v2 SDK drops the `cwd` option from SDKSessionOptions (see
   // node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs — the `hz` class
   // constructs its ProcessTransport without forwarding cwd). To make the
@@ -1643,19 +1868,8 @@ export class AgentSessionService extends EventEmitter {
           CLAUDE_AGENT_SDK_CLIENT_APP: 'cells',
           ...(req.cwd ? { PWD: req.cwd } : {}),
         }),
-        canUseTool: async (toolName: string, input: any) => {
-          const mode = this.runtimes.get(windowId)?.request.permissionMode
-          if (mode === 'plan' && CLAUDE_WRITE_TOOLS.has(toolName)) {
-            return {
-              behavior: 'deny' as const,
-              message: `Cells is in Plan mode — ${toolName} is blocked. Switch to Ask or Yolo to allow writes.`,
-            }
-          }
-          return {
-            behavior: 'allow' as const,
-            updatedInput: (input ?? {}) as Record<string, unknown>,
-          }
-        },
+        canUseTool: (toolName: string, input: any) =>
+          this.handleClaudeCanUseTool(windowId, toolName, input),
         ...claudeThinkingOptions(req.thinkingLevel, req.model || DEFAULT_CLAUDE_MODEL),
         ...(claudeBinary ? { pathToClaudeCodeExecutable: claudeBinary } : {}),
         ...(req.contextLength === 'extended' ? { betas: [CLAUDE_CONTEXT_1M_BETA] } : {}),
@@ -2209,18 +2423,46 @@ export class AgentSessionService extends EventEmitter {
         | undefined
       if (modelUsage) {
         const requested = runtime.request.model || DEFAULT_CLAUDE_MODEL
-        const pick = modelUsage[requested] ?? Object.values(modelUsage)[0]
-        if (pick) {
+        // Prefer the exact model match; if the SDK aliased the id, fall back
+        // to the entry with the largest prompt (main conversation beats any
+        // sidechain/subagent usage reported alongside it).
+        const entries = Object.entries(modelUsage)
+        const pickEntry =
+          entries.find(([key]) => key === requested) ??
+          entries.sort(
+            ([, a], [, b]) =>
+              b.inputTokens +
+              b.cacheReadInputTokens +
+              b.cacheCreationInputTokens -
+              (a.inputTokens + a.cacheReadInputTokens + a.cacheCreationInputTokens),
+          )[0]
+        if (pickEntry) {
+          const [pickModel, pick] = pickEntry
+          const cached = (pick.cacheReadInputTokens ?? 0) + (pick.cacheCreationInputTokens ?? 0)
           runtime.snapshot.usage = {
-            model: requested,
-            inputTokens: pick.inputTokens ?? 0,
+            model: pickModel,
+            // Claude reports `inputTokens` as the NEW prompt tokens only —
+            // cache reads/creations are billed in separate buckets. Fold them
+            // in here so the context-usage indicator sees the full prompt
+            // size (matches how the Claude CLI renders its own context bar).
+            inputTokens: (pick.inputTokens ?? 0) + cached,
             outputTokens: pick.outputTokens ?? 0,
-            cachedInputTokens:
-              (pick.cacheReadInputTokens ?? 0) + (pick.cacheCreationInputTokens ?? 0),
+            cachedInputTokens: cached,
             contextWindow: pick.contextWindow ?? null,
             updatedAt: now(),
           }
+          log('claude.usage', {
+            windowId: runtime.snapshot.windowId,
+            requested,
+            picked: pickModel,
+            inputTokens: runtime.snapshot.usage.inputTokens,
+            outputTokens: runtime.snapshot.usage.outputTokens,
+            contextWindow: runtime.snapshot.usage.contextWindow,
+            modelCount: entries.length,
+          })
         }
+      } else {
+        log('claude.usage.missing', { windowId: runtime.snapshot.windowId })
       }
       // Safety net: if any tool rows are still marked in_progress after the
       // turn finished (tool_result event was dropped or mis-matched),
@@ -2232,6 +2474,58 @@ export class AgentSessionService extends EventEmitter {
           m.updatedAt = now()
         }
       }
+      // Auto-continue if the SDK bailed mid-agentic-loop. The Claude SDK
+      // emits `terminal_reason: 'max_turns'` when its internal tool-call
+      // loop hits the cap, and `stop_reason: 'pause_turn'` is how adaptive
+      // thinking chunks long reasoning — in either case the model wanted
+      // to keep going. We silently resubmit a "continue" turn up to
+      // `CLAUDE_AUTO_CONTINUE_CAP` times per user message so a single
+      // complex request doesn't grind to a halt. Any real send() resets
+      // the counter; a user-initiated close() flips `runtime.closed` so
+      // we don't fight the stop button.
+      const terminalReason = (event as any).terminal_reason as string | undefined
+      const stopReason = (event as any).stop_reason as string | null | undefined
+      const shouldAutoContinue =
+        !runtime.closed &&
+        (terminalReason === 'max_turns' || stopReason === 'pause_turn') &&
+        runtime.autoContinueCount < CLAUDE_AUTO_CONTINUE_CAP
+      if (shouldAutoContinue) {
+        runtime.autoContinueCount += 1
+        log('claude.auto-continue', {
+          windowId: runtime.snapshot.windowId,
+          attempt: runtime.autoContinueCount,
+          terminalReason: terminalReason ?? null,
+          stopReason: stopReason ?? null,
+        })
+        // Microtask so the current result-event handler finishes
+        // (status → idle, emitUpdate) before the next turn flips it back
+        // to running. Avoids a visible flicker and lets schedulePersist
+        // checkpoint the in-between state.
+        queueMicrotask(() => {
+          void this.autoContinueClaude(runtime)
+        })
+      }
+    }
+  }
+
+  /** Re-arm the Claude session with a minimal "continue" prompt when the
+   *  agentic loop stopped prematurely (max_turns / pause_turn). Bypasses
+   *  `send()` so we don't append a visible user bubble — the resumption
+   *  should feel like the original turn just kept going. */
+  private async autoContinueClaude(runtime: ClaudeRuntime): Promise<void> {
+    if (runtime.closed) return
+    runtime.snapshot.status = 'running'
+    runtime.snapshot.error = null
+    this.emitUpdate(runtime.snapshot)
+    try {
+      await runtime.session.send('continue')
+    } catch (err) {
+      log('claude.auto-continue.error', {
+        windowId: runtime.snapshot.windowId,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      runtime.snapshot.status = 'idle'
+      this.emitUpdate(runtime.snapshot)
     }
   }
 

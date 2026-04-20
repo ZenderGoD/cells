@@ -6,8 +6,11 @@ import {
   Clock,
   FastForward,
   Folder,
+  HelpCircle,
+  MessageSquare,
   Paperclip,
   Pencil,
+  ShieldCheck,
   Square,
   X,
   Zap,
@@ -19,6 +22,8 @@ import type {
   AgentSessionSnapshot,
   AgentThinkingLevel,
   AgentWindowNode,
+  PendingQuestion,
+  QueuedAgentMessage,
 } from '@/types'
 import { useStore } from '@/lib/store'
 import { AgentIcon } from '@/components/agent-icon'
@@ -91,23 +96,34 @@ function AttachmentThumbnail({ path }: { path: string }) {
     }
   }, [path])
   const name = path.split('/').pop() || path
+  const open = () => {
+    void window.cells.app.revealPath(path).catch(() => {})
+  }
   if (!url) {
     return (
-      <div
-        className="flex h-16 w-16 shrink-0 items-center justify-center rounded-[8px] bg-foreground/10 text-[10px] text-muted-foreground/70"
-        title={path}
+      <button
+        type="button"
+        onClick={open}
+        title={`Open ${path}`}
+        className="flex h-16 w-16 shrink-0 items-center justify-center rounded-[8px] bg-foreground/10 text-[10px] text-muted-foreground/70 transition-opacity hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-foreground/30"
       >
         <Paperclip className="size-3.5" />
-      </div>
+      </button>
     )
   }
   return (
-    <img
-      src={url}
-      alt={name}
-      title={path}
-      className="h-16 w-16 shrink-0 rounded-[8px] border border-border/30 object-cover"
-    />
+    <button
+      type="button"
+      onClick={open}
+      title={`Open ${path}`}
+      className="shrink-0 rounded-[8px] transition-opacity hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-foreground/30"
+    >
+      <img
+        src={url}
+        alt={name}
+        className="h-16 w-16 rounded-[8px] border border-border/30 object-cover"
+      />
+    </button>
   )
 }
 
@@ -120,6 +136,98 @@ function AttachmentPill({ path }: { path: string }) {
     >
       <Paperclip className="size-3" />
       <span className="truncate max-w-[180px] font-mono">{name}</span>
+    </span>
+  )
+}
+
+// Tiny inline thumbnail used inside queued-message rows where horizontal
+// space is at a premium. Shows a 16px image preview for image attachments
+// and a paperclip icon for anything else.
+function QueueAttachmentThumb({ path }: { path: string }) {
+  const name = path.split('/').pop() || path
+  const isImage = isImagePath(path)
+  const [url, setUrl] = useState<string | null>(null)
+  useEffect(() => {
+    if (!isImage) return
+    let cancelled = false
+    window.cells.app
+      .fileThumbnail(path)
+      .then((resolved) => {
+        if (!cancelled) setUrl(resolved)
+      })
+      .catch(() => {
+        if (!cancelled) setUrl(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [path, isImage])
+  if (isImage && url) {
+    return (
+      <img
+        src={url}
+        alt=""
+        title={name}
+        className="size-4 shrink-0 rounded-[3px] border border-border/40 object-cover"
+      />
+    )
+  }
+  return (
+    <span
+      title={name}
+      className="inline-flex size-4 shrink-0 items-center justify-center rounded-[3px] border border-border/40 bg-foreground/5 text-muted-foreground/80"
+    >
+      <Paperclip className="size-2.5" />
+    </span>
+  )
+}
+
+// Composer chip — small (single-line) thumbnail for images, paperclip for
+// everything else. Rendered above the textarea so the user sees what they
+// attached before typing. Uses the same `fileThumbnail` IPC that the
+// larger user-bubble preview uses, so the cache is shared.
+function ComposerAttachmentChip({ path, onRemove }: { path: string; onRemove: () => void }) {
+  const name = path.split('/').pop() || path
+  const isImage = isImagePath(path)
+  const [url, setUrl] = useState<string | null>(null)
+  useEffect(() => {
+    if (!isImage) return
+    let cancelled = false
+    window.cells.app
+      .fileThumbnail(path)
+      .then((resolved) => {
+        if (!cancelled) setUrl(resolved)
+      })
+      .catch(() => {
+        if (!cancelled) setUrl(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [path, isImage])
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-[6px] bg-foreground/5 py-0.5 pl-1 pr-1 text-[11px] text-muted-foreground/90"
+      title={path}
+    >
+      {isImage && url ? (
+        <img
+          src={url}
+          alt=""
+          className="size-5 shrink-0 rounded-[4px] border border-border/30 object-cover"
+        />
+      ) : (
+        <Paperclip className="ml-1 size-3" />
+      )}
+      <span className="max-w-[180px] truncate font-mono">{name}</span>
+      <button
+        type="button"
+        onClick={onRemove}
+        aria-label={`Remove ${name}`}
+        className="ml-0.5 rounded p-0.5 text-muted-foreground/60 hover:bg-foreground/10 hover:text-foreground"
+      >
+        <X className="size-3" />
+      </button>
     </span>
   )
 }
@@ -181,27 +289,7 @@ function ErrorBubble({ message }: { message: AgentSessionMessage }) {
   )
 }
 
-interface QueuedMessage {
-  text: string
-  attachments: string[]
-  /**
-   * How this message was enqueued:
-   * - 'after-turn' (↩ while running): wait for the current turn to finish
-   *   naturally, then send.
-   * - 'after-tool' (⌥↩): interrupt the agent after the next tool call
-   *   completes — don't wait through a long turn, but don't cut off a
-   *   running tool either.
-   * - 'stop' (⌘↩): interrupt now and send this instead.
-   */
-  mode: 'after-turn' | 'after-tool' | 'stop'
-  /** Snapshot of the selected model/thinking/permission at queue time.
-   *  The drain effect forwards these as overrides to the backend so the
-   *  queued message actually runs against the settings the user picked when
-   *  they hit ⌥↩ / ⌘↩ — even if the user has since changed them in the UI. */
-  model: string | null
-  thinkingLevel: AgentThinkingLevel | null
-  permissionMode: AgentPermissionMode | null
-}
+type QueuedMessage = QueuedAgentMessage
 
 const QUEUE_MODE_META: Record<
   QueuedMessage['mode'],
@@ -338,6 +426,292 @@ function PendingTurnIndicator({ agent }: { agent: AgentWindowNode['agent'] }) {
   )
 }
 
+// Banner shown above the composer while Claude has called ExitPlanMode and
+// is waiting on the user's decision. Mirrors the Claude Code CLI's three
+// prompt options verbatim: auto-accept, manually approve, or keep planning.
+function PlanApprovalBanner({ windowId }: { windowId: string }) {
+  const [busy, setBusy] = useState<'auto-accept' | 'ask' | 'reject' | null>(null)
+  const [showFeedback, setShowFeedback] = useState(false)
+  const [feedback, setFeedback] = useState('')
+  const respond = useCallback(
+    async (decision: 'auto-accept' | 'ask' | 'reject', note?: string) => {
+      if (busy) return
+      setBusy(decision)
+      try {
+        await window.cells.agentSession.respondPlan(windowId, decision, note)
+        // Backend flipped its own permission mode — mirror that into the
+        // zustand store so the PermissionPicker chip updates immediately
+        // instead of drifting out of sync until the user touches it.
+        if (decision === 'auto-accept') {
+          useStore.getState().syncAgentWindow(windowId, { permissionMode: 'bypass' })
+        } else if (decision === 'ask') {
+          useStore.getState().syncAgentWindow(windowId, { permissionMode: 'ask' })
+        }
+      } catch (err) {
+        console.error('[agent-chat] respondPlan failed', err)
+      } finally {
+        setBusy(null)
+      }
+    },
+    [busy, windowId],
+  )
+  const optionClass =
+    'flex w-full items-start gap-2 rounded-[10px] border border-border/60 bg-background/60 px-3 py-2 text-left text-[12px] transition-colors hover:border-foreground/30 hover:bg-foreground/5 disabled:cursor-wait disabled:opacity-60'
+  return (
+    <div className="mb-2 rounded-[12px] border border-emerald-400/25 bg-emerald-500/5 px-3 py-2.5 text-[12px] text-foreground/90 shadow-minimal">
+      <div className="mb-2 flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-emerald-300/90">
+        <ShieldCheck className="size-3.5" />
+        <span>Would you like to proceed?</span>
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <button
+          type="button"
+          disabled={!!busy}
+          onClick={() => void respond('auto-accept')}
+          className={cn(optionClass, 'hover:border-emerald-400/60 hover:bg-emerald-500/10')}
+        >
+          <span className="mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded-full bg-emerald-500/20 text-[10px] font-medium text-emerald-300/90">
+            1
+          </span>
+          <span className="flex flex-1 flex-col gap-0.5">
+            <span className="font-medium text-foreground">
+              {busy === 'auto-accept' ? 'Starting…' : 'Yes, and auto-accept edits'}
+            </span>
+            <span className="text-[11px] text-muted-foreground/80">
+              Switch to Yolo — Claude runs tools without asking.
+            </span>
+          </span>
+          <Zap className="mt-0.5 size-3.5 shrink-0 text-emerald-300/80" />
+        </button>
+        <button
+          type="button"
+          disabled={!!busy}
+          onClick={() => void respond('ask')}
+          className={optionClass}
+        >
+          <span className="mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded-full bg-foreground/10 text-[10px] font-medium text-foreground/80">
+            2
+          </span>
+          <span className="flex flex-1 flex-col gap-0.5">
+            <span className="font-medium text-foreground">
+              {busy === 'ask' ? 'Starting…' : 'Yes, and manually approve edits'}
+            </span>
+            <span className="text-[11px] text-muted-foreground/80">
+              Switch to Ask — approve each write/bash individually.
+            </span>
+          </span>
+          <Check className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/70" />
+        </button>
+        <button
+          type="button"
+          disabled={!!busy}
+          onClick={() => setShowFeedback((v) => !v)}
+          className={optionClass}
+        >
+          <span className="mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded-full bg-foreground/10 text-[10px] font-medium text-foreground/80">
+            3
+          </span>
+          <span className="flex flex-1 flex-col gap-0.5">
+            <span className="font-medium text-foreground">No, keep planning</span>
+            <span className="text-[11px] text-muted-foreground/80">
+              Stay in Plan mode
+              {showFeedback ? ' — add feedback below' : ' — optionally add feedback'}.
+            </span>
+          </span>
+          <MessageSquare className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/70" />
+        </button>
+      </div>
+      {showFeedback ? (
+        <div className="mt-2 space-y-1.5">
+          <textarea
+            value={feedback}
+            onChange={(e) => setFeedback(e.target.value)}
+            rows={2}
+            placeholder="What should Claude change about the plan? (optional)"
+            className="block w-full resize-none rounded-[8px] border border-border/50 bg-background/80 px-2.5 py-1.5 text-[12px] text-foreground placeholder:text-muted-foreground/60 outline-none focus:border-foreground/30"
+          />
+          <div className="flex justify-end gap-1.5">
+            <button
+              type="button"
+              disabled={!!busy}
+              onClick={() => {
+                setShowFeedback(false)
+                setFeedback('')
+              }}
+              className="rounded-[6px] px-2 py-1 text-[11.5px] text-muted-foreground/70 hover:bg-foreground/5 hover:text-foreground disabled:cursor-wait disabled:opacity-60"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={!!busy}
+              onClick={() => void respond('reject', feedback)}
+              className="rounded-[6px] bg-foreground px-2.5 py-1 text-[11.5px] font-medium text-background transition-colors hover:bg-foreground/90 disabled:cursor-wait disabled:opacity-60"
+            >
+              {busy === 'reject' ? 'Sending…' : feedback.trim() ? 'Send feedback' : 'Keep planning'}
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+// Banner shown above the composer while Claude has called AskUserQuestion and
+// is waiting on the user's answers. One group per question, rendered as radio
+// (single-select) or checkbox (multi-select) lists. Submitting sends the
+// answers back through canUseTool; Dismiss tells the agent to proceed
+// without the input.
+function QuestionBanner({
+  windowId,
+  questions,
+}: {
+  windowId: string
+  questions: PendingQuestion[]
+}) {
+  const [selections, setSelections] = useState<Record<string, string[]>>(() => {
+    const init: Record<string, string[]> = {}
+    for (const q of questions) init[q.question] = []
+    return init
+  })
+  const [busy, setBusy] = useState<'submit' | 'cancel' | null>(null)
+
+  const toggle = useCallback((q: PendingQuestion, label: string) => {
+    setSelections((prev) => {
+      const current = prev[q.question] ?? []
+      if (q.multiSelect) {
+        const has = current.includes(label)
+        const next = has ? current.filter((x) => x !== label) : [...current, label]
+        return { ...prev, [q.question]: next }
+      }
+      return { ...prev, [q.question]: [label] }
+    })
+  }, [])
+
+  const canSubmit = questions.every((q) => (selections[q.question]?.length ?? 0) > 0)
+
+  const submit = useCallback(async () => {
+    if (busy || !canSubmit) return
+    setBusy('submit')
+    try {
+      await window.cells.agentSession.respondQuestion(windowId, selections)
+    } catch (err) {
+      console.error('[agent-chat] respondQuestion failed', err)
+    } finally {
+      setBusy(null)
+    }
+  }, [busy, canSubmit, selections, windowId])
+
+  const cancel = useCallback(async () => {
+    if (busy) return
+    setBusy('cancel')
+    try {
+      await window.cells.agentSession.respondQuestion(windowId, null)
+    } catch (err) {
+      console.error('[agent-chat] respondQuestion cancel failed', err)
+    } finally {
+      setBusy(null)
+    }
+  }, [busy, windowId])
+
+  return (
+    <div className="mb-2 rounded-[12px] border border-sky-400/25 bg-sky-500/5 px-3 py-2.5 text-[12px] text-foreground/90 shadow-minimal">
+      <div className="mb-2 flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-sky-300/90">
+        <HelpCircle className="size-3.5" />
+        <span>
+          {questions.length === 1
+            ? 'Claude needs an answer'
+            : `Claude needs ${questions.length} answers`}
+        </span>
+      </div>
+      <div className="flex flex-col gap-3">
+        {questions.map((q) => {
+          const selected = selections[q.question] ?? []
+          return (
+            <div key={q.question} className="flex flex-col gap-1.5">
+              <div className="flex items-center gap-2">
+                {q.header ? (
+                  <span className="shrink-0 rounded-[4px] bg-background px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-foreground/70 shadow-minimal">
+                    {q.header}
+                  </span>
+                ) : null}
+                <span className="text-[12.5px] font-medium text-foreground">{q.question}</span>
+                {q.multiSelect ? (
+                  <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground/60">
+                    Multi-select
+                  </span>
+                ) : null}
+              </div>
+              <div className="flex flex-col gap-1">
+                {q.options.map((opt) => {
+                  const isSelected = selected.includes(opt.label)
+                  return (
+                    <button
+                      key={opt.label}
+                      type="button"
+                      disabled={!!busy}
+                      onClick={() => toggle(q, opt.label)}
+                      className={cn(
+                        'flex w-full items-start gap-2 rounded-[10px] border px-3 py-2 text-left text-[12px] transition-colors disabled:cursor-wait disabled:opacity-60',
+                        isSelected
+                          ? 'border-sky-400/60 bg-sky-500/10'
+                          : 'border-border/60 bg-background/60 hover:border-foreground/30 hover:bg-foreground/5',
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          'mt-0.5 inline-flex size-4 shrink-0 items-center justify-center',
+                          q.multiSelect ? 'rounded-[4px]' : 'rounded-full',
+                          isSelected
+                            ? 'bg-sky-500/80 text-background'
+                            : 'border border-border/70 bg-background/60',
+                        )}
+                      >
+                        {isSelected ? <Check className="size-2.5" /> : null}
+                      </span>
+                      <span className="flex flex-1 flex-col gap-0.5">
+                        <span className="font-medium text-foreground">{opt.label}</span>
+                        {opt.description ? (
+                          <span className="text-[11px] text-muted-foreground/80">
+                            {opt.description}
+                          </span>
+                        ) : null}
+                        {opt.preview ? (
+                          <pre className="mt-1 max-h-[120px] overflow-auto whitespace-pre-wrap break-words rounded-[6px] border border-border/40 bg-background/60 px-2 py-1 font-mono text-[11px] leading-[1.45] text-foreground/75">
+                            {opt.preview}
+                          </pre>
+                        ) : null}
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+      <div className="mt-2.5 flex items-center justify-end gap-1.5">
+        <button
+          type="button"
+          disabled={!!busy}
+          onClick={() => void cancel()}
+          className="rounded-[6px] px-2 py-1 text-[11.5px] text-muted-foreground/80 hover:bg-foreground/5 hover:text-foreground disabled:cursor-wait disabled:opacity-60"
+        >
+          {busy === 'cancel' ? 'Dismissing…' : 'Skip'}
+        </button>
+        <button
+          type="button"
+          disabled={!!busy || !canSubmit}
+          onClick={() => void submit()}
+          className="rounded-[6px] bg-sky-500 px-2.5 py-1 text-[11.5px] font-medium text-background transition-colors hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {busy === 'submit' ? 'Sending…' : 'Send answer'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function GroupRenderer({
   group,
   agent,
@@ -375,7 +749,42 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const [input, setInput] = useState('')
   const [isComposerFocused, setIsComposerFocused] = useState(false)
   const [attachments, setAttachments] = useState<string[]>([])
-  const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([])
+  // Queue is persisted on the AgentWindowNode so it survives app restart.
+  // Read straight from the prop (zustand re-renders this component whenever
+  // the window patches) and write through `syncAgentWindow` so the change
+  // flows out to disk via the debounced projects-state persister.
+  const queuedMessages = useMemo<QueuedMessage[]>(
+    () => agentWindow.queuedMessages ?? [],
+    [agentWindow.queuedMessages],
+  )
+  const setQueuedMessages = useCallback(
+    (updater: (prev: QueuedMessage[]) => QueuedMessage[]) => {
+      const prev =
+        useStore.getState().agentWindows.find((w) => w.id === agentWindow.id)?.queuedMessages ?? []
+      const next = updater(prev)
+      useStore.getState().syncAgentWindow(agentWindow.id, { queuedMessages: next })
+    },
+    [agentWindow.id],
+  )
+  // If the panel mounts with a non-empty queue, the app was quit mid-turn —
+  // auto-draining would feel like the agent started itself without the user
+  // asking. Hold the queue behind an explicit "Continue" button until the
+  // user confirms. Once lifted, normal drain behaviour takes over.
+  const [resumeGated, setResumeGated] = useState<boolean>(
+    () => (agentWindow.queuedMessages?.length ?? 0) > 0,
+  )
+  // Separately track mid-turn resumes: the session had an outstanding user
+  // turn when the app was closed (last message is a user message with no
+  // completed assistant response). Surfaces the Continue banner even when
+  // the queue is empty so the user can decide whether to resume.
+  const [midTurnDetected, setMidTurnDetected] = useState(false)
+  const midTurnAppliedRef = useRef(false)
+  useEffect(() => {
+    // If the user removes every queued message manually we don't want to keep
+    // gating future queues — lift the gate once the queue empties, unless a
+    // mid-turn banner is still being offered.
+    if (queuedMessages.length === 0 && resumeGated && !midTurnDetected) setResumeGated(false)
+  }, [queuedMessages.length, resumeGated, midTurnDetected])
   // Queue list collapses by default — the header already shows count + a
   // preview of the next message, mirroring AgentTurnCard's activities stripe.
   const [queueCollapsed, setQueueCollapsed] = useState(true)
@@ -403,6 +812,23 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     const sync = (next: AgentSessionSnapshot) => {
       if (cancelled || next.windowId !== agentWindow.id) return
       setSnapshot(next)
+      // First snapshot after mount: detect mid-turn resumes so the drain
+      // effect stays gated until the user presses Continue. A session is
+      // mid-turn when the last message is a user message (no assistant reply
+      // followed) or any tool/reasoning row is still in_progress.
+      if (!midTurnAppliedRef.current) {
+        midTurnAppliedRef.current = true
+        const msgs = next.messages
+        if (msgs.length > 0) {
+          const tail = msgs[msgs.length - 1]
+          const tailIsUser = tail.role === 'user'
+          const hasPending = msgs.some((m) => m.status === 'in_progress')
+          if (tailIsUser || hasPending) {
+            setMidTurnDetected(true)
+            setResumeGated(true)
+          }
+        }
+      }
       const shouldClearInitialPrompt =
         Boolean(agentWindow.initialPrompt) &&
         (next.messages.some((message) => message.role === 'user') ||
@@ -591,9 +1017,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         permissionMode: agentWindow.permissionMode ?? null,
       }
 
-      // Cmd+Enter: interrupt the running turn and send this message next.
-      // The after-tool watcher below also ends up calling handleStop(), so
-      // stop + after-tool converge on the same drain path once idle.
+      // Cmd+Enter: interrupt the running turn and send this message NEXT —
+      // ahead of anything else already queued. The drain effect pulls
+      // queue[0] first, so jumping to the front is how "send immediately"
+      // is expressed in terms of the existing queue.
       if (intent === 'stop' && running) {
         const entry: QueuedMessage = {
           text: value,
@@ -601,8 +1028,8 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
           mode: 'stop',
           ...settings,
         }
-        setQueuedMessages((q) => [...q, entry])
-        queueRef.current = [...queueRef.current, entry]
+        setQueuedMessages((q) => [entry, ...q])
+        queueRef.current = [entry, ...queueRef.current]
         void handleStop()
         return
       }
@@ -726,6 +1153,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   useEffect(() => {
     if (snapshot?.status !== 'idle') return
     if (queuedMessages.length === 0) return
+    if (resumeGated) return
     if (sendingQueuedRef.current) return
     if (awaitingRunningRef.current) return
     sendingQueuedRef.current = true
@@ -750,17 +1178,11 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       .finally(() => {
         sendingQueuedRef.current = false
       })
-  }, [queuedMessages, sendToAgent, snapshot?.status])
+  }, [queuedMessages, resumeGated, sendToAgent, snapshot?.status])
 
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if (event.nativeEvent.isComposing || event.keyCode === 229) return
-      if (event.key === 'Escape' && snapshotRef.current?.status === 'running') {
-        event.preventDefault()
-        event.stopPropagation()
-        void handleStop()
-        return
-      }
       if (event.key !== 'Enter') return
       if (event.shiftKey) return // Shift+Enter → newline
       // Cmd+Enter: interrupt the running turn and send this message next.
@@ -820,21 +1242,6 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   // Capture-phase fallback for ancestors that swallow keydown.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      // Esc → stop the running turn. Works from anywhere inside the agent
-      // window (textarea, body, etc.) as long as this window is focused.
-      if (
-        event.key === 'Escape' &&
-        !event.metaKey &&
-        !event.ctrlKey &&
-        !event.shiftKey &&
-        useStore.getState().focusedAgentWindowId === agentWindow.id &&
-        snapshotRef.current?.status === 'running'
-      ) {
-        event.preventDefault()
-        event.stopPropagation()
-        void handleStop()
-        return
-      }
       if (document.activeElement !== textareaRef.current) return
       if (event.key !== 'Enter') return
       if (event.shiftKey) return
@@ -976,6 +1383,60 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                 {snapshot.error}
               </div>
             ) : null}
+            {snapshot?.pendingPlanApproval ? (
+              <PlanApprovalBanner windowId={agentWindow.id} />
+            ) : null}
+            {snapshot?.pendingQuestion ? (
+              <QuestionBanner
+                windowId={agentWindow.id}
+                questions={snapshot.pendingQuestion.questions}
+              />
+            ) : null}
+            {resumeGated && (queuedMessages.length > 0 || midTurnDetected) ? (
+              <div className="mb-2 flex items-center gap-2 rounded-[10px] border border-amber-400/25 bg-amber-400/5 px-2.5 py-1.5 text-[12px] text-foreground/90 shadow-minimal">
+                <Clock className="size-3.5 shrink-0 text-amber-400/90" />
+                <span className="min-w-0 flex-1 truncate text-muted-foreground/90">
+                  {queuedMessages.length > 0
+                    ? queuedMessages.length === 1
+                      ? '1 message queued from your last session.'
+                      : `${queuedMessages.length} messages queued from your last session.`
+                    : 'Your last session ended mid-turn.'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setResumeGated(false)
+                    setMidTurnDetected(false)
+                    if (queuedMessages.length > 0) {
+                      setQueueCollapsed(false)
+                    } else {
+                      void sendToAgent('Please continue where you left off.', [], {
+                        model: agentWindow.model ?? null,
+                        thinkingLevel: agentWindow.thinkingLevel ?? null,
+                        permissionMode: agentWindow.permissionMode ?? null,
+                      })
+                    }
+                  }}
+                  className="inline-flex shrink-0 items-center gap-1 rounded-[8px] bg-amber-400/90 px-2.5 py-1 text-[11.5px] font-medium text-background transition-colors hover:bg-amber-400"
+                >
+                  <ArrowUp className="size-3" />
+                  Continue
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (queuedMessages.length > 0) setQueuedMessages(() => [])
+                    setResumeGated(false)
+                    setMidTurnDetected(false)
+                  }}
+                  aria-label={queuedMessages.length > 0 ? 'Discard queued messages' : 'Dismiss'}
+                  className="shrink-0 rounded p-1 text-muted-foreground/60 hover:bg-foreground/10 hover:text-foreground"
+                  title={queuedMessages.length > 0 ? 'Discard queued messages' : 'Dismiss'}
+                >
+                  <X className="size-3.5" />
+                </button>
+              </div>
+            ) : null}
             {queuedMessages.length > 0 ? (
               <div className="mb-2 select-none">
                 <button
@@ -984,13 +1445,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                   className="flex w-full items-center gap-2 rounded-[8px] px-2 py-1 text-left transition-colors hover:bg-foreground/5 focus:outline-none"
                   title={queueCollapsed ? 'Show queued messages' : 'Hide queued messages'}
                 >
-                  <ChevronRight
-                    className={cn(
-                      'size-3.5 shrink-0 text-muted-foreground/70 transition-transform',
-                      !queueCollapsed && 'rotate-90',
-                    )}
-                  />
-                  <span className="-ml-0.5 shrink-0 rounded-[4px] bg-background px-1.5 py-0.5 text-[10px] font-medium tabular-nums shadow-minimal">
+                  <span className="shrink-0 rounded-[4px] bg-background px-1.5 py-0.5 text-[10px] font-medium tabular-nums shadow-minimal">
                     {queuedMessages.length}
                   </span>
                   {(() => {
@@ -1004,13 +1459,17 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                     )
                   })()}
                   <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground">
-                    {queuedMessages.length === 1
-                      ? queuedMessages[0].text.replace(/\n/g, ' ') || '(attached files)'
-                      : `${queuedMessages.length} queued · ${queuedMessages[0].text.replace(/\n/g, ' ') || '(attached files)'}`}
+                    {queuedMessages[0].text.replace(/\n/g, ' ') || '(attached files)'}
                   </span>
+                  <ChevronRight
+                    className={cn(
+                      'ml-auto size-3.5 shrink-0 text-muted-foreground/70 transition-transform',
+                      !queueCollapsed && 'rotate-90',
+                    )}
+                  />
                 </button>
                 {!queueCollapsed ? (
-                  <div className="mt-1 flex max-h-[260px] flex-col gap-1 overflow-y-auto overscroll-contain pr-0.5">
+                  <div className="mt-1 flex max-h-[108px] flex-col gap-1 overflow-y-auto overscroll-contain pr-0.5">
                     {queuedMessages.map((entry, i) => {
                       const meta = QUEUE_MODE_META[entry.mode]
                       const modelLabel = entry.model
@@ -1028,16 +1487,17 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                         <div
                           key={`${i}-${entry.text.slice(0, 16)}`}
                           className={cn(
-                            'group/queued flex items-start gap-2 rounded-[10px] border border-border/50 bg-muted/30 px-2.5 py-1.5 text-[12px] text-foreground/85 shadow-minimal',
+                            'group/queued flex gap-2 rounded-[10px] border border-border/50 bg-muted/30 px-2.5 py-1.5 text-[12px] text-foreground/85 shadow-minimal',
+                            isEditing ? 'items-start' : 'items-center',
                             isEditing && 'border-foreground/30 bg-muted/50',
                           )}
                           title={isEditing ? undefined : `${meta.shortcut} · ${meta.hint}`}
                         >
                           <meta.Icon
-                            className={cn('mt-[3px] size-3.5 shrink-0', meta.tint)}
+                            className={cn('size-3.5 shrink-0', isEditing && 'mt-[3px]', meta.tint)}
                             aria-label={meta.label}
                           />
-                          <div className="min-w-0 flex-1">
+                          <div className="flex min-w-0 flex-1 items-center gap-1.5">
                             {isEditing ? (
                               <textarea
                                 autoFocus
@@ -1059,20 +1519,37 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                                 className="min-w-0 w-full resize-none border-0 bg-transparent p-0 text-[12px] leading-[1.45] text-foreground/95 outline-none"
                               />
                             ) : (
-                              <button
-                                type="button"
-                                onClick={() => beginEditQueued(i)}
-                                className="block w-full min-w-0 truncate text-left text-muted-foreground/90 hover:text-foreground"
-                                title="Click to edit"
-                              >
-                                {entry.text.replace(/\n/g, ' ')}
-                                {entry.attachments.length > 0
-                                  ? ` · ${entry.attachments.length} attachment${entry.attachments.length === 1 ? '' : 's'}`
-                                  : ''}
-                              </button>
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => beginEditQueued(i)}
+                                  className="min-w-0 flex-1 truncate text-left text-muted-foreground/90 hover:text-foreground"
+                                  title="Click to edit"
+                                >
+                                  {entry.text.replace(/\n/g, ' ') ||
+                                    (entry.attachments.length > 0 ? '(attached files)' : '')}
+                                </button>
+                                {entry.attachments.length > 0 ? (
+                                  <div className="flex shrink-0 items-center gap-1">
+                                    {entry.attachments.slice(0, 4).map((p) => (
+                                      <QueueAttachmentThumb key={p} path={p} />
+                                    ))}
+                                    {entry.attachments.length > 4 ? (
+                                      <span className="text-[10px] tabular-nums text-muted-foreground/70">
+                                        +{entry.attachments.length - 4}
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                ) : null}
+                              </>
                             )}
                           </div>
-                          <div className="flex shrink-0 items-center gap-1 self-start text-[10.5px] text-muted-foreground/80">
+                          <div
+                            className={cn(
+                              'flex shrink-0 items-center gap-1 text-[10.5px] text-muted-foreground/80',
+                              isEditing && 'self-start',
+                            )}
+                          >
                             {modelLabel ? (
                               <span
                                 className="rounded-[6px] border border-border/40 bg-background/40 px-1.5 py-px"
@@ -1162,6 +1639,13 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                 isComposerFocused ? 'border-foreground/25' : 'border-border/60 hover:border-border',
               )}
             >
+              {attachments.length > 0 ? (
+                <div className="flex flex-wrap items-center gap-1.5 border-b border-border/30 px-2.5 pb-2 pt-2">
+                  {attachments.map((p) => (
+                    <ComposerAttachmentChip key={p} path={p} onRemove={() => removeAttachment(p)} />
+                  ))}
+                </div>
+              ) : null}
               <textarea
                 ref={textareaRef}
                 value={input}
@@ -1198,31 +1682,6 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                 rows={Math.min(8, Math.max(3, input.split('\n').length))}
                 className="block w-full min-h-[72px] resize-none bg-transparent px-4 pt-3.5 pb-2 text-[14px] leading-6 text-foreground placeholder:text-muted-foreground/55 outline-none border-0 focus:outline-none focus-visible:outline-none"
               />
-              {attachments.length > 0 ? (
-                <div className="flex flex-wrap items-center gap-1.5 border-t border-border/30 px-2.5 pt-2">
-                  {attachments.map((p) => {
-                    const name = p.split('/').pop() || p
-                    return (
-                      <span
-                        key={p}
-                        className="inline-flex items-center gap-1 rounded-[6px] bg-foreground/5 pl-2 pr-1 py-0.5 text-[11px] text-muted-foreground/90"
-                        title={p}
-                      >
-                        <Paperclip className="size-3" />
-                        <span className="truncate max-w-[180px] font-mono">{name}</span>
-                        <button
-                          type="button"
-                          onClick={() => removeAttachment(p)}
-                          aria-label={`Remove ${name}`}
-                          className="ml-0.5 rounded p-0.5 text-muted-foreground/60 hover:bg-foreground/10 hover:text-foreground"
-                        >
-                          <X className="size-3" />
-                        </button>
-                      </span>
-                    )
-                  })}
-                </div>
-              ) : null}
               <div className="flex items-center gap-1.5 px-2 pb-2 pt-0.5">
                 <button
                   type="button"
@@ -1279,21 +1738,14 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                   contextLength={agentWindow.contextLength}
                 />
                 <div className="flex-1" />
-                {isRunning ? (
-                  <span className="hidden items-center gap-1 text-[10.5px] text-amber-300/90 sm:inline-flex">
-                    <Kbd className="h-[18px] min-w-[18px] rounded-[4px] bg-amber-400/15 px-1 text-[10px] text-amber-200">
-                      esc
-                    </Kbd>
-                    <span>to stop</span>
-                  </span>
-                ) : (
+                {!isRunning ? (
                   <span className="hidden items-center gap-1 text-[10.5px] text-muted-foreground/60 sm:inline-flex">
                     <Kbd className="h-[18px] min-w-[18px] rounded-[4px] bg-foreground/6 px-1 text-[10px] text-muted-foreground/80">
                       ↵
                     </Kbd>
                     <span>send</span>
                   </span>
-                )}
+                ) : null}
                 <button
                   type="button"
                   onMouseDown={(event) => event.preventDefault()}
