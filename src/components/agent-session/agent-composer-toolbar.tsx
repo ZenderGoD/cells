@@ -6,7 +6,6 @@ import {
   Gauge,
   Infinity as InfinityIcon,
   Shield,
-  ShieldAlert,
   ShieldCheck,
   ShieldOff,
 } from 'lucide-react'
@@ -633,10 +632,10 @@ export const PERMISSION_MODE_OPTIONS: Array<{
   tint: string
 }> = [
   {
-    id: 'safe',
-    label: 'Explore',
-    short: 'Explore',
-    hint: 'Read-only — agent can look but cannot change anything.',
+    id: 'plan',
+    label: 'Plan',
+    short: 'Plan',
+    hint: 'Read-only planning — agent can look and reason but cannot write files or run commands.',
     Icon: Shield,
     tint: 'text-sky-400',
   },
@@ -649,17 +648,9 @@ export const PERMISSION_MODE_OPTIONS: Array<{
     tint: 'text-amber-400',
   },
   {
-    id: 'allow-all',
-    label: 'Execute',
-    short: 'Execute',
-    hint: 'Agent auto-accepts edits but still prompts for shell commands.',
-    Icon: ShieldAlert,
-    tint: 'text-emerald-400',
-  },
-  {
     id: 'bypass',
-    label: 'Bypass permissions',
-    short: 'Bypass',
+    label: 'Bypass (yolo)',
+    short: 'Yolo',
     hint: 'Nothing is gated — every tool runs without confirmation. Use in sandboxed worktrees only.',
     Icon: ShieldOff,
     tint: 'text-rose-400',
@@ -667,7 +658,18 @@ export const PERMISSION_MODE_OPTIONS: Array<{
 ]
 
 export function getDefaultPermissionMode(): AgentPermissionMode {
-  return 'allow-all'
+  return 'ask'
+}
+
+// Older windows were saved with 'safe' / 'allow-all'; fold them into the
+// current 3-mode set so existing sessions keep working without a migration.
+function coerceLegacyPermissionMode(
+  value: AgentPermissionMode | 'safe' | 'allow-all' | null | undefined,
+): AgentPermissionMode {
+  if (value === 'safe') return 'plan'
+  if (value === 'allow-all') return 'ask'
+  if (value === 'plan' || value === 'ask' || value === 'bypass') return value
+  return getDefaultPermissionMode()
 }
 
 interface PermissionPickerProps {
@@ -677,9 +679,9 @@ interface PermissionPickerProps {
 
 export function PermissionPicker({ value, onChange }: PermissionPickerProps) {
   const [open, setOpen] = useState(false)
+  const coerced = coerceLegacyPermissionMode(value as any)
   const current =
-    PERMISSION_MODE_OPTIONS.find((m) => m.id === (value ?? getDefaultPermissionMode())) ??
-    PERMISSION_MODE_OPTIONS[2]
+    PERMISSION_MODE_OPTIONS.find((m) => m.id === coerced) ?? PERMISSION_MODE_OPTIONS[1]
   const Icon = current.Icon
   return (
     <Popover open={open} onOpenChange={setOpen}>

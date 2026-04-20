@@ -149,12 +149,14 @@ export type AgentModel = string
 
 /**
  * Permission presets portable across Claude + Codex.
- *   safe       — read-only preview, nothing is written
- *   ask        — agent asks before every write / command
- *   allow-all  — agent runs tools freely (auto-accept edits, skip prompts)
- *   bypass     — nothing is gated, no confirmations ever
+ *   plan    — read-only planning; agent can look but cannot write or run commands
+ *   ask     — agent asks before every write / command
+ *   bypass  — yolo; nothing is gated, no confirmations ever
+ *
+ * Legacy values ('safe', 'allow-all') from older sessions are coerced into
+ * this set at the UI and backend boundaries ('safe' → 'plan', 'allow-all' → 'ask').
  */
-export type AgentPermissionMode = 'safe' | 'ask' | 'allow-all' | 'bypass'
+export type AgentPermissionMode = 'plan' | 'ask' | 'bypass'
 
 /**
  * Matches Craft's `ThinkingLevel` (../craft-agents-oss/packages/shared/src/agent/thinking-levels.ts).

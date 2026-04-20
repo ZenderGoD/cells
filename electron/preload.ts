@@ -336,7 +336,7 @@ const api: CellsAPI = {
       ipcRenderer.invoke('agent-session:cancel-login', agent) as Promise<void>,
     updatePermissionMode: (
       windowId: string,
-      mode: 'safe' | 'ask' | 'allow-all' | 'bypass' | null,
+      mode: 'plan' | 'ask' | 'bypass' | 'safe' | 'allow-all' | null,
     ) =>
       ipcRenderer.invoke('agent-session:update-permission-mode', windowId, mode) as Promise<void>,
     updateContextLength: (windowId: string, length: 'default' | 'extended' | null) =>

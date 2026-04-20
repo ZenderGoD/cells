@@ -1212,10 +1212,10 @@ export class AgentSessionService extends EventEmitter {
           // execute shell. Matches the read-only posture the UI advertises
           // without using the SDK's 'plan' permissionMode (which primes
           // Claude to refuse edits even after we swap it out).
-          if (mode === 'safe' && CLAUDE_WRITE_TOOLS.has(toolName)) {
+          if ((mode === 'plan' || mode === 'safe') && CLAUDE_WRITE_TOOLS.has(toolName)) {
             return {
               behavior: 'deny' as const,
-              message: `Cells is in Explore mode — ${toolName} is blocked. Switch to Ask / Execute / Bypass to allow writes.`,
+              message: `Cells is in Plan mode — ${toolName} is blocked. Switch to Ask or Yolo to allow writes.`,
             }
           }
           log('claude.canUseTool', {
@@ -1270,12 +1270,12 @@ export class AgentSessionService extends EventEmitter {
     })
     const isResumedThread = Boolean(request.codexThreadId)
     // Map portable permission modes onto Codex's sandbox/approval policy pair.
-    //   safe       → read-only + never-approve
-    //   ask        → workspace-write + ask-on-request
-    //   allow-all  → workspace-write + never-approve (writes OK, no network)
-    //   bypass     → danger-full-access + never-approve (nothing gated)
+    //   plan    → read-only + never-approve (agent can read but not write)
+    //   ask     → workspace-write + ask-on-request
+    //   bypass  → danger-full-access + never-approve (yolo)
+    // Legacy values: 'safe' → plan, 'allow-all' → ask.
     const codexSandbox =
-      request.permissionMode === 'safe'
+      request.permissionMode === 'plan' || request.permissionMode === 'safe'
         ? ('read-only' as const)
         : request.permissionMode === 'bypass'
           ? ('danger-full-access' as const)
@@ -1537,7 +1537,7 @@ export class AgentSessionService extends EventEmitter {
     if (!runtime) return
     runtime.request.permissionMode = mode ?? null
     if (runtime.kind === 'claude') {
-      const next = mode === 'safe' ? 'plan' : 'default'
+      const next = mode === 'plan' || mode === 'safe' ? 'plan' : 'default'
       try {
         await (runtime.session as any).setPermissionMode?.(next)
         log('claude.permissionMode.update', { windowId, mode: next })
@@ -1553,7 +1553,7 @@ export class AgentSessionService extends EventEmitter {
     // turn gets the new sandbox/approval policy.
     const req = runtime.request
     const codexSandbox =
-      req.permissionMode === 'safe'
+      req.permissionMode === 'plan' || req.permissionMode === 'safe'
         ? ('read-only' as const)
         : req.permissionMode === 'bypass'
           ? ('danger-full-access' as const)
@@ -1626,10 +1626,10 @@ export class AgentSessionService extends EventEmitter {
         }),
         canUseTool: async (toolName: string, input: any) => {
           const mode = this.runtimes.get(windowId)?.request.permissionMode
-          if (mode === 'safe' && CLAUDE_WRITE_TOOLS.has(toolName)) {
+          if ((mode === 'plan' || mode === 'safe') && CLAUDE_WRITE_TOOLS.has(toolName)) {
             return {
               behavior: 'deny' as const,
-              message: `Cells is in Explore mode — ${toolName} is blocked. Switch to Ask / Execute / Bypass to allow writes.`,
+              message: `Cells is in Plan mode — ${toolName} is blocked. Switch to Ask or Yolo to allow writes.`,
             }
           }
           return {
@@ -1656,7 +1656,7 @@ export class AgentSessionService extends EventEmitter {
     // Codex: rebuild the thread on top of the same codex client.
     const req = runtime.request
     const codexSandbox =
-      req.permissionMode === 'safe'
+      req.permissionMode === 'plan' || req.permissionMode === 'safe'
         ? ('read-only' as const)
         : req.permissionMode === 'bypass'
           ? ('danger-full-access' as const)

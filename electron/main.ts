@@ -1308,7 +1308,13 @@ ipcMain.handle('agent-session:cancel-login', (_event, agent: 'claude' | 'codex')
 
 ipcMain.handle(
   'agent-session:update-permission-mode',
-  async (_event, windowId: string, mode: 'safe' | 'ask' | 'allow-all' | 'bypass' | null) => {
+  async (
+    _event,
+    windowId: string,
+    // Accepts the current 3-mode set plus legacy values ('safe', 'allow-all')
+    // which the service coerces into 'plan' / 'ask'.
+    mode: 'plan' | 'ask' | 'bypass' | 'safe' | 'allow-all' | null,
+  ) => {
     return agentSessionService.updatePermissionMode(windowId, mode)
   },
 )
