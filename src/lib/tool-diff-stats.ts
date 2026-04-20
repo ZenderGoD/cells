@@ -74,10 +74,15 @@ export function computeEditWriteDiffStats(
   return null
 }
 
-/** Extract diff stats from a single tool message. */
+/** Extract diff stats from a single tool message.
+ *  Prefers `metadata` (the preserved original input) over `text`, which gets
+ *  overwritten with the tool result once the call completes. */
 export function diffStatsFromMessage(message: AgentSessionMessage): DiffStats | null {
   if (message.role !== 'tool' || !message.title) return null
-  return computeEditWriteDiffStats(message.title, safeParse(message.text))
+  return computeEditWriteDiffStats(
+    message.title,
+    safeParse(message.metadata) ?? safeParse(message.text),
+  )
 }
 
 /** Sum {additions, deletions} across a list of tool messages. */
@@ -98,7 +103,7 @@ export function groupDiffsByFile(messages: AgentSessionMessage[]): FileDiffStats
   const byPath = new Map<string, FileDiffStats>()
   for (const message of messages) {
     if (message.role !== 'tool' || !message.title) continue
-    const input = safeParse(message.text)
+    const input = safeParse(message.metadata) ?? safeParse(message.text)
     if (!input) continue
     const title = message.title.replace(/^mcp__[^_]+__/, '')
     if (!EDIT_TOOLS.has(title)) continue

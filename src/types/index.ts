@@ -250,6 +250,7 @@ export type AgentSessionMessageRole =
   | 'system'
   | 'error'
   | 'auth_request'
+  | 'compaction'
 
 export interface AgentSessionMessage {
   id: string

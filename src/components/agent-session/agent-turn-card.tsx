@@ -14,6 +14,7 @@ import { cn } from '@/lib/utils'
 import { resolveToolIcon } from '@/lib/tool-icons'
 import {
   diffStatsFromMessage,
+  groupDiffsByFile,
   hasDiffStats,
   sumDiffStats,
   type DiffStats,
@@ -295,11 +296,11 @@ function ActivityRow({ node, depth }: { node: ActivityNode; depth: number }) {
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
-        className="flex w-full items-center gap-2 rounded-[6px] px-1 py-0.5 text-left text-[13px] text-muted-foreground transition-colors hover:bg-foreground/5"
+        className="flex w-full min-w-0 overflow-hidden items-center gap-2 rounded-[6px] px-1 py-0.5 text-left text-[13px] text-muted-foreground transition-colors hover:bg-foreground/5"
         style={{ paddingLeft: `${4 + depth * 12}px` }}
       >
         <StatusIcon message={message} customIconUrl={resolvedTool?.iconUrl} />
-        <span className="shrink-0">{displayName}</span>
+        <span className="shrink truncate">{displayName}</span>
         {row.filename ? (
           <span
             className="shrink-0 rounded-[4px] bg-background px-1.5 py-0.5 text-[11px] text-foreground/70 shadow-minimal"
@@ -542,6 +543,64 @@ function ResponseCard({ responses }: { responses: AgentSessionMessage[] }) {
   )
 }
 
+function ChangedFilesSection({ activities }: { activities: AgentSessionMessage[] }) {
+  const [open, setOpen] = useState(false)
+  const files = useMemo(() => groupDiffsByFile(activities), [activities])
+  if (files.length === 0) return null
+  const totals = files.reduce(
+    (acc, f) => ({
+      additions: acc.additions + f.additions,
+      deletions: acc.deletions + f.deletions,
+    }),
+    { additions: 0, deletions: 0 },
+  )
+  return (
+    <div className="mt-1 select-none">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-1.5 rounded-[6px] px-1 py-0.5 text-left text-[12px] text-muted-foreground/70 transition-colors hover:bg-foreground/5"
+      >
+        <ChevronRight className={cn('size-3 shrink-0 transition-transform', open && 'rotate-90')} />
+        <span className="shrink-0">
+          {files.length} {files.length === 1 ? 'file' : 'files'} changed
+        </span>
+        <span className="ml-1 inline-flex items-center gap-1 tabular-nums">
+          {totals.additions > 0 && <span className="text-emerald-400/80">+{totals.additions}</span>}
+          {totals.deletions > 0 && <span className="text-rose-400/80">-{totals.deletions}</span>}
+        </span>
+      </button>
+      {open ? (
+        <div className="ml-4 mt-0.5 space-y-px">
+          {files.map((f) => {
+            const name = f.filePath.split('/').pop() ?? f.filePath
+            const dir = f.filePath.includes('/')
+              ? f.filePath.slice(0, f.filePath.lastIndexOf('/'))
+              : null
+            return (
+              <div
+                key={f.filePath}
+                className="flex items-center gap-1.5 py-0.5 text-[11.5px] text-muted-foreground/80"
+                title={f.filePath}
+              >
+                <FileText className="size-3 shrink-0 opacity-50" />
+                <span className="truncate font-medium">{name}</span>
+                {dir ? (
+                  <span className="shrink-0 truncate text-muted-foreground/40">{dir}</span>
+                ) : null}
+                <span className="ml-auto inline-flex shrink-0 items-center gap-1 tabular-nums text-[11px]">
+                  {f.additions > 0 && <span className="text-emerald-400/80">+{f.additions}</span>}
+                  {f.deletions > 0 && <span className="text-rose-400/80">-{f.deletions}</span>}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 export function AgentTurnCard({
   activities,
   responses,
@@ -551,10 +610,10 @@ export function AgentTurnCard({
 }: AgentTurnCardProps) {
   const hasActivities = activities.length > 0
   const hasResponse = responses.some((r) => r.text.trim().length > 0)
-  // Small turns (≤3 activities) render inline so the user sees each step at a
-  // glance. Larger turns collapse behind a count badge to keep the response
+  // Small turns (<3 activities) render inline so the user sees each step at a
+  // glance. Turns of 3+ collapse behind a count badge to keep the response
   // card visible without scrolling past a long tool list.
-  const isSmallTurn = activities.length <= 3
+  const isSmallTurn = activities.length < 3
   const [collapsed, setCollapsed] = useState(true)
   const showActivities = !collapsed
   const computedPreview = usePreviewText(activities, isStreaming, agent)
@@ -589,6 +648,7 @@ export function AgentTurnCard({
             // expanded, the activity rows slot in after the lead text to
             // preserve the original sequence.
             <div className="select-none">
+              {leadBlock ? <div className="px-1 pb-1">{leadBlock}</div> : null}
               <button
                 type="button"
                 onClick={() => setCollapsed((v) => !v)}
@@ -619,7 +679,6 @@ export function AgentTurnCard({
                   )}
                 />
               </button>
-              {leadBlock ? <div className="px-1 pt-1">{leadBlock}</div> : null}
               {showActivities ? (
                 <div className="ml-[13px] mt-1 max-h-[360px] space-y-0.5 overflow-y-auto overscroll-contain border-l-2 border-border/40 pl-3 pr-1 py-0.5">
                   {tree.map((node) => (
@@ -640,6 +699,7 @@ export function AgentTurnCard({
         ) : null}
 
         {hasResponse ? <ResponseCard responses={responses} /> : null}
+        {!isStreaming ? <ChangedFilesSection activities={activities} /> : null}
       </div>
     </div>
   )

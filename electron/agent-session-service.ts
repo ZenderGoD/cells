@@ -1484,6 +1484,7 @@ function extractClaudeToolMessages(
       role: 'tool' as const,
       title: item.name ?? 'Tool',
       text: compactText(item.input),
+      metadata: compactText(item.input),
       status: 'in_progress' as const,
       updatedAt: now(),
       toolUseId: item.id ?? null,
@@ -3067,6 +3068,9 @@ export class AgentSessionService extends EventEmitter {
           role: 'tool',
           title: tool.name ?? 'Tool',
           text: compactText(tool.input ?? {}),
+          // Preserve original input in metadata so diff-stats survive the
+          // text field being overwritten with the tool result later.
+          metadata: compactText(tool.input ?? {}),
           status: 'in_progress',
           updatedAt: now(),
           toolUseId: tool.id,
@@ -3347,6 +3351,49 @@ export class AgentSessionService extends EventEmitter {
       }
       return
     }
+    if (
+      event.type === 'system' &&
+      (event as any).subtype === 'status' &&
+      (event as any).status === 'compacting'
+    ) {
+      appendMessage(runtime.snapshot, {
+        id: `compaction-${runtime.snapshot.windowId}-${now()}`,
+        role: 'compaction',
+        text: 'Compacting context…',
+        status: 'in_progress',
+        updatedAt: now(),
+      })
+      return
+    }
+    if (event.type === 'system' && (event as any).subtype === 'compact_boundary') {
+      const existing = runtime.snapshot.messages.find(
+        (m) => m.role === 'compaction' && m.status === 'in_progress',
+      )
+      if (existing) {
+        existing.status = 'completed'
+        existing.text = 'Context compacted'
+        existing.updatedAt = now()
+      } else {
+        appendMessage(runtime.snapshot, {
+          id: `compaction-${runtime.snapshot.windowId}-${now()}`,
+          role: 'compaction',
+          text: 'Context compacted',
+          status: 'completed',
+          updatedAt: now(),
+        })
+      }
+      // Reset the stale usage so the context indicator clears until the next
+      // result event reports the actual post-compaction token count.
+      if (runtime.snapshot.usage) {
+        runtime.snapshot.usage = {
+          ...runtime.snapshot.usage,
+          usedTokens: null,
+          totalProcessedTokens: null,
+          updatedAt: now(),
+        }
+      }
+      return
+    }
     if (event.type === 'system' && (event as any).subtype === 'session_state_changed') {
       const state = (event as any).state
       runtime.snapshot.status =
@@ -3475,7 +3522,7 @@ export class AgentSessionService extends EventEmitter {
             outputTokens: pick.outputTokens ?? 0,
             cachedInputTokens: cached,
             contextWindow: pick.contextWindow ?? null,
-            compactsAutomatically: false,
+            compactsAutomatically: true,
           })
           log('claude.usage', {
             windowId: runtime.snapshot.windowId,

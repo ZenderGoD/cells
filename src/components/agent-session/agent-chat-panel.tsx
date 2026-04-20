@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowUp,
   Check,
+  CheckCircle2,
   ChevronRight,
   Circle,
   Clock,
@@ -11,6 +12,7 @@ import {
   GripVertical,
   HelpCircle,
   ListTodo,
+  Loader2,
   MessageSquare,
   Paperclip,
   Pencil,
@@ -286,6 +288,24 @@ function SystemLine({ message }: { message: AgentSessionMessage }) {
   )
 }
 
+function CompactionLine({ message }: { message: AgentSessionMessage }) {
+  const isRunning = message.status === 'in_progress'
+  return (
+    <div className="flex items-center gap-2 px-3 py-1 text-[12px] text-muted-foreground/70 select-none">
+      <span className="h-px flex-1 bg-border/30" />
+      <span className="flex shrink-0 items-center gap-1.5">
+        {isRunning ? (
+          <Loader2 className="size-3 animate-spin" />
+        ) : (
+          <CheckCircle2 className="size-3 text-green-500/60" />
+        )}
+        <span>{message.text}</span>
+      </span>
+      <span className="h-px flex-1 bg-border/30" />
+    </div>
+  )
+}
+
 function ErrorBubble({ message }: { message: AgentSessionMessage }) {
   return (
     <div className="flex w-full justify-start">
@@ -344,6 +364,7 @@ type ChatGroup =
   | { kind: 'error'; key: string; message: AgentSessionMessage }
   | { kind: 'auth'; key: string; message: AgentSessionMessage }
   | { kind: 'system'; key: string; message: AgentSessionMessage }
+  | { kind: 'compaction'; key: string; message: AgentSessionMessage }
 
 /**
  * Group messages into Craft-style turns:
@@ -401,6 +422,10 @@ function groupMessages(messages: AgentSessionMessage[]): ChatGroup[] {
       case 'auth_request':
         flushPending()
         groups.push({ kind: 'auth', key: message.id, message })
+        break
+      case 'compaction':
+        flushPending()
+        groups.push({ kind: 'compaction', key: message.id, message })
         break
       case 'assistant':
       case 'reasoning':
@@ -933,6 +958,8 @@ function GroupRenderer({
       return <AgentAuthCard message={group.message} agent={agent} />
     case 'system':
       return <SystemLine message={group.message} />
+    case 'compaction':
+      return <CompactionLine message={group.message} />
     default:
       return null
   }
@@ -1369,11 +1396,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     sendingQueuedRef.current = true
     awaitingRunningRef.current = true
     const next = queuedMessages[0]
-    // Defer the state update a microtask so we don't invoke setState
-    // synchronously inside the effect (cascading-renders rule).
-    queueMicrotask(() => {
-      setQueuedMessages((q) => q.slice(1))
-    })
+    // Remove the message before sendToAgent so the after-tool watcher sees an
+    // empty queue the moment the new turn starts (avoids a race where the new
+    // turn completes a tool before the state update lands).
+    setQueuedMessages((q) => q.slice(1))
     void sendToAgent(next.text, next.attachments, {
       model: next.model,
       thinkingLevel: next.thinkingLevel,

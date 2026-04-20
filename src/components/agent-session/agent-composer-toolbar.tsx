@@ -151,7 +151,10 @@ function fetchClaudeModels(): Promise<ModelOption[]> {
           defaultEffort,
         }
       })
-      claudeModelsCache = mapped
+      // Filter out generic alias entries (id = "default" etc.) when concrete
+      // named models are also present — the alias adds no picker value.
+      const named = mapped.filter((m) => !/\bdefault\b/i.test(m.id))
+      claudeModelsCache = named.length > 0 ? named : mapped
       return claudeModelsCache
     })
     .catch(() => {
@@ -170,7 +173,7 @@ const CODEX_MODELS_FALLBACK: ModelOption[] = [
     id: 'gpt-5-codex',
     label: 'GPT-5 Codex',
     hint: 'Default — fastest for coding',
-    supportedEfforts: ['low', 'medium', 'high', 'max'],
+    supportedEfforts: ['low', 'medium', 'high', 'xhigh'],
     defaultEffort: 'medium',
   },
 ]
@@ -199,17 +202,16 @@ function prettifyCodexModel(raw: string): string {
 }
 
 // Maps the Codex CLI's reasoning-effort strings onto Cells's portable
-// `AgentThinkingLevel` so the unified picker can render both agents the same
-// way. 'minimal' → 'off', 'xhigh' → 'max'.
+// `AgentThinkingLevel`. 'minimal' → 'off'; 'xhigh' stays 'xhigh' (Codex's
+// top level — distinct from Claude's 'max').
 function codexEffortToLevel(effort: string): AgentThinkingLevel {
   switch (effort) {
     case 'minimal':
       return 'off'
-    case 'xhigh':
-      return 'max'
     case 'low':
     case 'medium':
     case 'high':
+    case 'xhigh':
       return effort
     default:
       return 'medium'
@@ -249,7 +251,7 @@ function fetchCodexModels(): Promise<ModelOption[]> {
             id: m.id,
             label: prettifyCodexModel(m.displayName || m.id),
             hint: m.description || undefined,
-            supportedEfforts: efforts.length > 0 ? efforts : ['low', 'medium', 'high', 'max'],
+            supportedEfforts: efforts.length > 0 ? efforts : ['low', 'medium', 'high', 'xhigh'],
             defaultEffort: codexEffortToLevel(m.defaultReasoningEffort || 'medium'),
             effortHints,
           }
