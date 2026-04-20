@@ -80,6 +80,17 @@ const DEFAULT_CLAUDE_MODEL = process.env.CELLS_CLAUDE_MODEL || 'claude-sonnet-4-
 // `SDKSessionOptions.betas`.
 const CLAUDE_CONTEXT_1M_BETA = 'context-1m-2025-08-07' as const
 
+// Fold legacy ('safe' / 'allow-all') values from older saved sessions into
+// the current 3-mode set so the rest of the service only has to reason about
+// 'plan' | 'ask' | 'bypass'.
+function normalizePermissionMode(
+  mode: AgentSessionRequest['permissionMode'] | 'safe' | 'allow-all' | null | undefined,
+): AgentSessionRequest['permissionMode'] {
+  if (mode === 'safe') return 'plan'
+  if (mode === 'allow-all') return 'ask'
+  return (mode ?? null) as AgentSessionRequest['permissionMode']
+}
+
 // Codex SDK doesn't surface per-model context windows, so we use a known
 // GPT-5 family capacity (272k input tokens per the public API) as the
 // denominator for the % indicator. Good enough for a rough readout.
@@ -1141,6 +1152,10 @@ export class AgentSessionService extends EventEmitter {
   private runtimes = new Map<string, Runtime>()
 
   async ensure(request: AgentSessionRequest): Promise<AgentSessionSnapshot> {
+    // Coerce legacy permission values ('safe' / 'allow-all') from older
+    // saved ProjectsState so the rest of the code only has to handle the
+    // current 3-mode union.
+    request = { ...request, permissionMode: normalizePermissionMode(request.permissionMode) }
     const existing = this.runtimes.get(request.windowId)
     log('ensure', {
       windowId: request.windowId,
@@ -1212,7 +1227,7 @@ export class AgentSessionService extends EventEmitter {
           // execute shell. Matches the read-only posture the UI advertises
           // without using the SDK's 'plan' permissionMode (which primes
           // Claude to refuse edits even after we swap it out).
-          if ((mode === 'plan' || mode === 'safe') && CLAUDE_WRITE_TOOLS.has(toolName)) {
+          if (mode === 'plan' && CLAUDE_WRITE_TOOLS.has(toolName)) {
             return {
               behavior: 'deny' as const,
               message: `Cells is in Plan mode — ${toolName} is blocked. Switch to Ask or Yolo to allow writes.`,
@@ -1275,7 +1290,7 @@ export class AgentSessionService extends EventEmitter {
     //   bypass  → danger-full-access + never-approve (yolo)
     // Legacy values: 'safe' → plan, 'allow-all' → ask.
     const codexSandbox =
-      request.permissionMode === 'plan' || request.permissionMode === 'safe'
+      request.permissionMode === 'plan'
         ? ('read-only' as const)
         : request.permissionMode === 'bypass'
           ? ('danger-full-access' as const)
@@ -1531,13 +1546,14 @@ export class AgentSessionService extends EventEmitter {
    *  same thread id to pick up the new policy on the next turn. */
   async updatePermissionMode(
     windowId: string,
-    mode: AgentSessionRequest['permissionMode'],
+    mode: AgentSessionRequest['permissionMode'] | 'safe' | 'allow-all',
   ): Promise<void> {
     const runtime = this.runtimes.get(windowId)
     if (!runtime) return
+    mode = normalizePermissionMode(mode)
     runtime.request.permissionMode = mode ?? null
     if (runtime.kind === 'claude') {
-      const next = mode === 'plan' || mode === 'safe' ? 'plan' : 'default'
+      const next = mode === 'plan' ? 'plan' : 'default'
       try {
         await (runtime.session as any).setPermissionMode?.(next)
         log('claude.permissionMode.update', { windowId, mode: next })
@@ -1553,7 +1569,7 @@ export class AgentSessionService extends EventEmitter {
     // turn gets the new sandbox/approval policy.
     const req = runtime.request
     const codexSandbox =
-      req.permissionMode === 'plan' || req.permissionMode === 'safe'
+      req.permissionMode === 'plan'
         ? ('read-only' as const)
         : req.permissionMode === 'bypass'
           ? ('danger-full-access' as const)
@@ -1626,7 +1642,7 @@ export class AgentSessionService extends EventEmitter {
         }),
         canUseTool: async (toolName: string, input: any) => {
           const mode = this.runtimes.get(windowId)?.request.permissionMode
-          if ((mode === 'plan' || mode === 'safe') && CLAUDE_WRITE_TOOLS.has(toolName)) {
+          if (mode === 'plan' && CLAUDE_WRITE_TOOLS.has(toolName)) {
             return {
               behavior: 'deny' as const,
               message: `Cells is in Plan mode — ${toolName} is blocked. Switch to Ask or Yolo to allow writes.`,
@@ -1656,7 +1672,7 @@ export class AgentSessionService extends EventEmitter {
     // Codex: rebuild the thread on top of the same codex client.
     const req = runtime.request
     const codexSandbox =
-      req.permissionMode === 'plan' || req.permissionMode === 'safe'
+      req.permissionMode === 'plan'
         ? ('read-only' as const)
         : req.permissionMode === 'bypass'
           ? ('danger-full-access' as const)
