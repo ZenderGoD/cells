@@ -1365,6 +1365,15 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   // interrupt once per running-turn (reset when the turn ends).
   const seenCompletedToolsRef = useRef<Set<string>>(new Set())
   const afterToolFiredRef = useRef(false)
+  // Mirror of queuedMessages[0].mode kept as a mutable ref so the watcher
+  // always reads the CURRENT value, not the stale closure. React's batched
+  // state updates mean queuedMessages in the effect closure can lag behind
+  // reality by one render — this ref is cleared synchronously at drain time
+  // so the watcher never sees the stale 'after-tool' mode on the new turn.
+  const queueFrontModeRef = useRef<QueuedMessage['mode'] | null>(queuedMessages[0]?.mode ?? null)
+  useEffect(() => {
+    queueFrontModeRef.current = queuedMessages[0]?.mode ?? null
+  }, [queuedMessages])
   useEffect(() => {
     if (snapshot?.status !== 'running') afterToolFiredRef.current = false
   }, [snapshot?.status])
@@ -1382,11 +1391,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     if (!hasNewCompletion) return
     if (snapshot?.status !== 'running') return
     if (afterToolFiredRef.current) return
-    const front = queuedMessages[0]
-    if (!front || front.mode !== 'after-tool') return
+    if (queueFrontModeRef.current !== 'after-tool') return
     afterToolFiredRef.current = true
     void handleStop()
-  }, [snapshot?.messages, snapshot?.status, queuedMessages, handleStop])
+  }, [snapshot?.messages, snapshot?.status, handleStop])
   useEffect(() => {
     if (snapshot?.status !== 'idle') return
     if (queuedMessages.length === 0) return
@@ -1396,9 +1404,11 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     sendingQueuedRef.current = true
     awaitingRunningRef.current = true
     const next = queuedMessages[0]
-    // Remove the message before sendToAgent so the after-tool watcher sees an
-    // empty queue the moment the new turn starts (avoids a race where the new
-    // turn completes a tool before the state update lands).
+    // Clear the ref synchronously so the after-tool watcher immediately sees
+    // no pending mode — React's batched state update for setQueuedMessages
+    // would otherwise leave queuedMessages stale in the closure long enough
+    // for the watcher to fire handleStop() on the new turn.
+    queueFrontModeRef.current = queuedMessages[1]?.mode ?? null
     setQueuedMessages((q) => q.slice(1))
     void sendToAgent(next.text, next.attachments, {
       model: next.model,
@@ -1647,29 +1657,29 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
               ) : null}
               {snapshot?.codexPlan ? <CodexPlanBanner plan={snapshot.codexPlan} /> : null}
               {hasDiffStats(sessionDiffStats) ? (
-                <button
-                  type="button"
-                  onClick={() => setDiffsPanelOpen((v) => !v)}
-                  className={cn(
-                    'mb-2 flex w-full items-center gap-2 rounded-[10px] border border-border/40 bg-background/60 px-2.5 py-1.5 text-[12px] text-foreground/85 shadow-minimal transition-colors hover:border-foreground/30 hover:bg-foreground/5',
-                    diffsPanelOpen && 'border-foreground/40 bg-foreground/5',
-                  )}
-                  title="Show session diffs"
-                >
-                  <FileText className="size-3.5 shrink-0 text-muted-foreground/80" />
-                  <span className="min-w-0 flex-1 text-left text-muted-foreground/90">
-                    Session diffs
-                  </span>
-                  <span className="shrink-0 text-[11px] tabular-nums">
-                    {sessionDiffStats.additions > 0 ? (
-                      <span className="text-emerald-400/90">+{sessionDiffStats.additions}</span>
-                    ) : null}
-                    {sessionDiffStats.additions > 0 && sessionDiffStats.deletions > 0 ? ' ' : ''}
-                    {sessionDiffStats.deletions > 0 ? (
-                      <span className="text-rose-400/90">-{sessionDiffStats.deletions}</span>
-                    ) : null}
-                  </span>
-                </button>
+                <div className="mb-2 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => setDiffsPanelOpen((v) => !v)}
+                    className={cn(
+                      'inline-flex items-center gap-1.5 rounded-[6px] border border-border/40 bg-background/60 px-2 py-0.5 text-[11px] text-muted-foreground/80 transition-colors hover:border-foreground/20 hover:bg-foreground/5',
+                      diffsPanelOpen && 'border-foreground/30 bg-foreground/5 text-foreground/90',
+                    )}
+                    title="Show session diffs"
+                  >
+                    <FileText className="size-3 shrink-0" />
+                    <span className="tabular-nums">
+                      {sessionDiffStats.additions > 0 ? (
+                        <span className="text-emerald-400/80">+{sessionDiffStats.additions}</span>
+                      ) : null}
+                      {sessionDiffStats.additions > 0 && sessionDiffStats.deletions > 0 ? ' ' : ''}
+                      {sessionDiffStats.deletions > 0 ? (
+                        <span className="text-rose-400/80">-{sessionDiffStats.deletions}</span>
+                      ) : null}
+                    </span>
+                    <span>diffs</span>
+                  </button>
+                </div>
               ) : null}
               {resumeGated && (queuedMessages.length > 0 || midTurnDetected) ? (
                 <div className="mb-2 flex items-center gap-2 rounded-[10px] border border-amber-400/25 bg-amber-400/5 px-2.5 py-1.5 text-[12px] text-foreground/90 shadow-minimal">

@@ -76,6 +76,7 @@ function codexThinkingEffort(
 
 // Matches Craft's authoritative model list — ../craft-agents-oss/packages/shared/src/config/models.ts
 const DEFAULT_CLAUDE_MODEL = process.env.CELLS_CLAUDE_MODEL || 'claude-sonnet-4-6'
+const DEFAULT_CODEX_MODEL = process.env.CELLS_CODEX_MODEL || 'gpt-5-codex'
 
 // Claude Agent SDK beta flag that opts the prompt into the 1M-token context
 // window. Documented in `@anthropic-ai/claude-agent-sdk` as `SdkBeta =
@@ -500,7 +501,7 @@ function buildCodexThreadStartParams(request: AgentSessionRequest) {
     cwd: request.cwd ?? undefined,
     approvalPolicy: buildCodexApprovalPolicy(request.permissionMode),
     sandbox: buildCodexThreadSandbox(request.permissionMode),
-    ...(request.model ? { model: request.model } : {}),
+    model: request.model || DEFAULT_CODEX_MODEL,
   }
 }
 
@@ -523,11 +524,11 @@ function buildCodexTurnStartParams(
     approvalPolicy: buildCodexApprovalPolicy(request.permissionMode),
     sandboxPolicy: buildCodexTurnSandboxPolicy(request.permissionMode),
     cwd: request.cwd ?? undefined,
-    ...(request.model ? { model: request.model } : {}),
+    model: request.model || DEFAULT_CODEX_MODEL,
     effort: codexThinkingEffort(request.thinkingLevel),
     collaborationMode: buildCodexCollaborationMode(
       request.permissionMode,
-      request.model ?? null,
+      request.model || DEFAULT_CODEX_MODEL,
       request.thinkingLevel,
     ),
   }
