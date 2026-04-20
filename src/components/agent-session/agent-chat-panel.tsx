@@ -6,6 +6,7 @@ import {
   Clock,
   FastForward,
   Folder,
+  GripVertical,
   HelpCircle,
   MessageSquare,
   Paperclip,
@@ -790,6 +791,24 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const [queueCollapsed, setQueueCollapsed] = useState(true)
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
   const [editDraft, setEditDraft] = useState('')
+  // Active drag state for queue reorder — `dragIndex` is the row being dragged,
+  // `dragOverIndex` is the row currently under the pointer. Both reset on
+  // drop or drag-end.
+  const [dragIndex, setDragIndex] = useState<number | null>(null)
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
+  const reorderQueue = useCallback(
+    (from: number, to: number) => {
+      if (from === to) return
+      setQueuedMessages((prev) => {
+        if (from < 0 || from >= prev.length || to < 0 || to >= prev.length) return prev
+        const next = [...prev]
+        const [moved] = next.splice(from, 1)
+        next.splice(to, 0, moved)
+        return next
+      })
+    },
+    [setQueuedMessages],
+  )
   const scrollViewportRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -1483,16 +1502,66 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                         ? PERMISSION_MODE_OPTIONS.find((o) => o.id === entry.permissionMode)
                         : null
                       const isEditing = editingIndex === i
+                      const isDragging = dragIndex === i
+                      const isDropTarget =
+                        dragOverIndex === i && dragIndex !== null && dragIndex !== i
                       return (
                         <div
                           key={`${i}-${entry.text.slice(0, 16)}`}
+                          draggable={!isEditing}
+                          onDragStart={(e) => {
+                            if (isEditing) return
+                            setDragIndex(i)
+                            e.dataTransfer.effectAllowed = 'move'
+                            try {
+                              e.dataTransfer.setData('text/plain', String(i))
+                            } catch {
+                              // Safari may throw if dataTransfer is locked; drag still works.
+                            }
+                          }}
+                          onDragOver={(e) => {
+                            if (dragIndex === null || dragIndex === i) return
+                            e.preventDefault()
+                            e.dataTransfer.dropEffect = 'move'
+                            if (dragOverIndex !== i) setDragOverIndex(i)
+                          }}
+                          onDragLeave={() => {
+                            setDragOverIndex((prev) => (prev === i ? null : prev))
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault()
+                            if (dragIndex !== null && dragIndex !== i) {
+                              reorderQueue(dragIndex, i)
+                            }
+                            setDragIndex(null)
+                            setDragOverIndex(null)
+                          }}
+                          onDragEnd={() => {
+                            setDragIndex(null)
+                            setDragOverIndex(null)
+                          }}
                           className={cn(
-                            'group/queued flex gap-2 rounded-[10px] border border-border/50 bg-muted/30 px-2.5 py-1.5 text-[12px] text-foreground/85 shadow-minimal',
+                            'group/queued flex gap-2 rounded-[10px] border border-border/50 bg-muted/30 px-2.5 py-1.5 text-[12px] text-foreground/85 shadow-minimal transition-colors',
                             isEditing ? 'items-start' : 'items-center',
                             isEditing && 'border-foreground/30 bg-muted/50',
+                            isDragging && 'opacity-50',
+                            isDropTarget && 'border-foreground/40 bg-foreground/5',
                           )}
-                          title={isEditing ? undefined : `${meta.shortcut} · ${meta.hint}`}
+                          title={
+                            isEditing
+                              ? undefined
+                              : `${meta.shortcut} · ${meta.hint} · drag to reorder`
+                          }
                         >
+                          {!isEditing ? (
+                            <span
+                              className="flex size-3.5 shrink-0 cursor-grab items-center justify-center text-muted-foreground/40 opacity-0 transition-opacity hover:text-foreground/70 group-hover/queued:opacity-100 active:cursor-grabbing"
+                              aria-label="Drag to reorder"
+                              title="Drag to reorder"
+                            >
+                              <GripVertical className="size-3" />
+                            </span>
+                          ) : null}
                           <meta.Icon
                             className={cn('size-3.5 shrink-0', isEditing && 'mt-[3px]', meta.tint)}
                             aria-label={meta.label}
