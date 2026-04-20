@@ -154,7 +154,16 @@ function fetchClaudeModels(): Promise<ModelOption[]> {
       // Filter out generic alias entries (id = "default" etc.) when concrete
       // named models are also present — the alias adds no picker value.
       const named = mapped.filter((m) => !/\bdefault\b/i.test(m.id))
-      claudeModelsCache = named.length > 0 ? named : mapped
+      const liveList = named.length > 0 ? named : mapped
+
+      // Use CLAUDE_MODELS_FALLBACK as the canonical ordering base — live data
+      // overrides each entry where available, but fallback entries (e.g. Opus)
+      // are always present even if the CLI omits them due to version or tier.
+      const liveById = new Map(liveList.map((m) => [m.id, m]))
+      claudeModelsCache = [
+        ...CLAUDE_MODELS_FALLBACK.map((fb) => liveById.get(fb.id) ?? fb),
+        ...liveList.filter((m) => !CLAUDE_MODELS_FALLBACK.some((fb) => fb.id === m.id)),
+      ]
       return claudeModelsCache
     })
     .catch(() => {
