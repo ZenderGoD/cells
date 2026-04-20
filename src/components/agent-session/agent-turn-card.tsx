@@ -651,10 +651,6 @@ export function AgentTurnCard({
 }: AgentTurnCardProps) {
   const hasActivities = activities.length > 0
   const hasResponse = responses.some((r) => r.text.trim().length > 0)
-  // Small turns (<3 activities) render inline so the user sees each step at a
-  // glance. Turns of 3+ collapse behind a count badge to keep the response
-  // card visible without scrolling past a long tool list.
-  const isSmallTurn = activities.length < 3
   const [collapsed, setCollapsed] = useState(true)
   const showActivities = !collapsed
   const computedPreview = usePreviewText(activities, isStreaming, agent)
@@ -671,64 +667,48 @@ export function AgentTurnCard({
     <div className="flex w-full justify-start">
       <div className="w-full space-y-1">
         {hasActivities ? (
-          isSmallTurn ? (
-            // Small turns: lead text sits at its actual position — before the
-            // tool rows, since it's interim prose that preceded the calls.
-            <div className="space-y-1 px-1 py-0.5">
-              {leadBlock}
-              <div className="space-y-0.5">
+          // Tool activity always stays grouped behind a single collapse handle.
+          // This keeps the transcript rhythm consistent even for one-off calls.
+          <div className="select-none">
+            {leadBlock ? <div className="px-1 pb-1">{leadBlock}</div> : null}
+            <button
+              type="button"
+              onClick={() => setCollapsed((v) => !v)}
+              className="flex w-full items-center gap-2 rounded-[8px] px-2.5 py-1.5 text-left transition-colors hover:bg-foreground/5 focus:outline-none"
+            >
+              <span className="shrink-0 rounded-[4px] bg-background px-1.5 py-0.5 text-[10px] font-medium tabular-nums shadow-minimal">
+                {activities.length}
+              </span>
+              {isStreaming ? (
+                <LoadingIndicator
+                  label={computedPreview}
+                  showElapsed
+                  className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground [&>span:nth-child(2)]:truncate"
+                />
+              ) : (
+                <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground">
+                  {computedPreview}
+                </span>
+              )}
+              {hasDiffStats(groupDiffStats) ? (
+                <DiffStatsBadge stats={groupDiffStats} className="ml-auto" />
+              ) : null}
+              <ChevronRight
+                className={cn(
+                  'size-3.5 shrink-0 text-muted-foreground/70 transition-transform',
+                  !hasDiffStats(groupDiffStats) && 'ml-auto',
+                  showActivities && 'rotate-90',
+                )}
+              />
+            </button>
+            {showActivities ? (
+              <div className="ml-[13px] mt-1 max-h-[360px] space-y-0.5 overflow-y-auto overscroll-contain border-l-2 border-border/40 pl-3 pr-1 py-0.5">
                 {tree.map((node) => (
                   <ActivityRow key={node.message.id} node={node} depth={0} />
                 ))}
               </div>
-            </div>
-          ) : (
-            // Large turns: the pill is the single collapse handle for the
-            // whole group. Lead text stays visible in both states (it's the
-            // author's own prose, not part of the activity list). When
-            // expanded, the activity rows slot in after the lead text to
-            // preserve the original sequence.
-            <div className="select-none">
-              {leadBlock ? <div className="px-1 pb-1">{leadBlock}</div> : null}
-              <button
-                type="button"
-                onClick={() => setCollapsed((v) => !v)}
-                className="flex w-full items-center gap-2 rounded-[8px] px-2.5 py-1.5 text-left transition-colors hover:bg-foreground/5 focus:outline-none"
-              >
-                <span className="shrink-0 rounded-[4px] bg-background px-1.5 py-0.5 text-[10px] font-medium tabular-nums shadow-minimal">
-                  {activities.length}
-                </span>
-                {isStreaming ? (
-                  <LoadingIndicator
-                    label={computedPreview}
-                    showElapsed
-                    className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground [&>span:nth-child(2)]:truncate"
-                  />
-                ) : (
-                  <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground">
-                    {computedPreview}
-                  </span>
-                )}
-                {hasDiffStats(groupDiffStats) ? (
-                  <DiffStatsBadge stats={groupDiffStats} className="ml-auto" />
-                ) : null}
-                <ChevronRight
-                  className={cn(
-                    'size-3.5 shrink-0 text-muted-foreground/70 transition-transform',
-                    !hasDiffStats(groupDiffStats) && 'ml-auto',
-                    showActivities && 'rotate-90',
-                  )}
-                />
-              </button>
-              {showActivities ? (
-                <div className="ml-[13px] mt-1 max-h-[360px] space-y-0.5 overflow-y-auto overscroll-contain border-l-2 border-border/40 pl-3 pr-1 py-0.5">
-                  {tree.map((node) => (
-                    <ActivityRow key={node.message.id} node={node} depth={0} />
-                  ))}
-                </div>
-              ) : null}
-            </div>
-          )
+            ) : null}
+          </div>
         ) : leadBlock ? (
           leadBlock
         ) : isStreaming && !hasResponse ? (
