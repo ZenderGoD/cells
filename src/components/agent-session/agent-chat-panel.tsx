@@ -1,9 +1,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowUp, Folder, Paperclip, Square, X } from 'lucide-react'
+import {
+  ArrowUp,
+  Check,
+  ChevronRight,
+  Clock,
+  FastForward,
+  Folder,
+  Paperclip,
+  Pencil,
+  Square,
+  X,
+  Zap,
+} from 'lucide-react'
 import type {
+  AgentContextLength,
   AgentPermissionMode,
   AgentSessionMessage,
   AgentSessionSnapshot,
+  AgentThinkingLevel,
   AgentWindowNode,
 } from '@/types'
 import { useStore } from '@/lib/store'
@@ -11,7 +25,16 @@ import { AgentIcon } from '@/components/agent-icon'
 import { AgentEmptyStateHint } from './agent-empty-state-hint'
 import { AgentMarkdown } from './agent-markdown'
 import { AgentAuthCard } from './agent-auth-card'
-import { ModelPicker, PermissionPicker, getDefaultPermissionMode } from './agent-composer-toolbar'
+import {
+  ContextUsageIndicator,
+  ModelPicker,
+  PERMISSION_MODE_OPTIONS,
+  PermissionPicker,
+  THINKING_LEVEL_LABEL_MAP,
+  ThinkingPicker,
+  getDefaultPermissionMode,
+  prettifyModelId,
+} from './agent-composer-toolbar'
 import { AgentTurnCard } from './agent-turn-card'
 import { LoadingIndicator } from './agent-loading-indicator'
 import { cn } from '@/lib/utils'
@@ -43,13 +66,93 @@ function truncateCwd(cwd: string | null | undefined) {
   return cwd
 }
 
+const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp'])
+
+function isImagePath(p: string): boolean {
+  const i = p.lastIndexOf('.')
+  if (i < 0) return false
+  return IMAGE_EXTENSIONS.has(p.slice(i).toLowerCase())
+}
+
+function AttachmentThumbnail({ path }: { path: string }) {
+  const [url, setUrl] = useState<string | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    window.cells.app
+      .fileThumbnail(path)
+      .then((resolved) => {
+        if (!cancelled) setUrl(resolved)
+      })
+      .catch(() => {
+        if (!cancelled) setUrl(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [path])
+  const name = path.split('/').pop() || path
+  if (!url) {
+    return (
+      <div
+        className="flex h-16 w-16 shrink-0 items-center justify-center rounded-[8px] bg-foreground/10 text-[10px] text-muted-foreground/70"
+        title={path}
+      >
+        <Paperclip className="size-3.5" />
+      </div>
+    )
+  }
+  return (
+    <img
+      src={url}
+      alt={name}
+      title={path}
+      className="h-16 w-16 shrink-0 rounded-[8px] border border-border/30 object-cover"
+    />
+  )
+}
+
+function AttachmentPill({ path }: { path: string }) {
+  const name = path.split('/').pop() || path
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-[6px] bg-foreground/5 px-2 py-0.5 text-[11px] text-muted-foreground/90"
+      title={path}
+    >
+      <Paperclip className="size-3" />
+      <span className="truncate max-w-[180px] font-mono">{name}</span>
+    </span>
+  )
+}
+
 function UserBubble({ message }: { message: AgentSessionMessage }) {
   // Deliberately tighter than Craft's bubble — the user asked for a more
   // compact message pill than Craft's (px-4 py-2.5 text-sm with wider max-w).
+  const attachments = message.attachments ?? []
+  const images = attachments.filter(isImagePath)
+  const others = attachments.filter((p) => !isImagePath(p))
+  const hasText = message.text.trim().length > 0
   return (
     <div className="mt-8 flex w-full justify-end">
-      <div className="max-w-[78%] break-words rounded-[10px] bg-foreground/5 px-3 py-1.5 text-[13px] leading-[1.45] text-foreground select-text">
-        <AgentMarkdown inline>{message.text}</AgentMarkdown>
+      <div className="flex max-w-[78%] flex-col items-end gap-1.5 select-text">
+        {images.length > 0 ? (
+          <div className="flex flex-wrap justify-end gap-1.5">
+            {images.map((p) => (
+              <AttachmentThumbnail key={p} path={p} />
+            ))}
+          </div>
+        ) : null}
+        {hasText ? (
+          <div className="break-words rounded-[10px] bg-foreground/5 px-3 py-1.5 text-[13px] leading-[1.45] text-foreground">
+            <AgentMarkdown inline>{message.text}</AgentMarkdown>
+          </div>
+        ) : null}
+        {others.length > 0 ? (
+          <div className="flex flex-wrap justify-end gap-1">
+            {others.map((p) => (
+              <AttachmentPill key={p} path={p} />
+            ))}
+          </div>
+        ) : null}
       </div>
     </div>
   )
@@ -76,6 +179,55 @@ function ErrorBubble({ message }: { message: AgentSessionMessage }) {
       </div>
     </div>
   )
+}
+
+interface QueuedMessage {
+  text: string
+  attachments: string[]
+  /**
+   * How this message was enqueued:
+   * - 'after-turn' (↩ while running): wait for the current turn to finish
+   *   naturally, then send.
+   * - 'after-tool' (⌥↩): interrupt the agent after the next tool call
+   *   completes — don't wait through a long turn, but don't cut off a
+   *   running tool either.
+   * - 'stop' (⌘↩): interrupt now and send this instead.
+   */
+  mode: 'after-turn' | 'after-tool' | 'stop'
+  /** Snapshot of the selected model/thinking/permission at queue time.
+   *  The drain effect forwards these as overrides to the backend so the
+   *  queued message actually runs against the settings the user picked when
+   *  they hit ⌥↩ / ⌘↩ — even if the user has since changed them in the UI. */
+  model: string | null
+  thinkingLevel: AgentThinkingLevel | null
+  permissionMode: AgentPermissionMode | null
+}
+
+const QUEUE_MODE_META: Record<
+  QueuedMessage['mode'],
+  { Icon: typeof Zap; tint: string; shortcut: string; hint: string; label: string }
+> = {
+  stop: {
+    Icon: Zap,
+    tint: 'text-rose-400/90',
+    shortcut: '⌘↩',
+    label: 'Interrupt',
+    hint: 'Interrupt the agent now and send this next.',
+  },
+  'after-tool': {
+    Icon: FastForward,
+    tint: 'text-violet-400/90',
+    shortcut: '⌥↩',
+    label: 'After next tool',
+    hint: 'Send as soon as the next tool call finishes — don’t cut off a running tool.',
+  },
+  'after-turn': {
+    Icon: Clock,
+    tint: 'text-amber-400/90',
+    shortcut: '↩',
+    label: 'After this turn',
+    hint: 'Send after the current turn finishes naturally.',
+  },
 }
 
 type ChatGroup =
@@ -151,18 +303,14 @@ function groupMessages(messages: AgentSessionMessage[]): ChatGroup[] {
       case 'reasoning':
       case 'tool':
       case 'system': {
-        // Preserve chronological order of assistant preamble vs tool activity.
-        // If the model streams text BEFORE any tool call (e.g. "Let me find
-        // your tmux config."), we close the preamble as its own
-        // response-only card, then start a new turn for the tool + final
-        // answer. That way the preamble renders above the tool stripe the
-        // way the user saw it arrive, not below it.
-        if (
-          message.role !== 'assistant' &&
-          pending &&
-          pending.responses.length > 0 &&
-          pending.activities.length === 0
-        ) {
+        // Preserve chronological order of assistant text vs tool activity.
+        // Whenever a non-assistant message (tool / reasoning / system) arrives
+        // after any assistant response has already landed in the current turn,
+        // close that turn and open a new one. Without this, a sequence like
+        // [tool, tool, text, tool, tool] would collapse both tool pairs into
+        // a single activities stripe above one response — the second pair
+        // needs to render BELOW the text, not merged with the first pair.
+        if (message.role !== 'assistant' && pending && pending.responses.length > 0) {
           flushPending()
         }
         if (!pending) pending = { activities: [], responses: [] }
@@ -227,7 +375,12 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const [input, setInput] = useState('')
   const [isComposerFocused, setIsComposerFocused] = useState(false)
   const [attachments, setAttachments] = useState<string[]>([])
-  const [queuedMessages, setQueuedMessages] = useState<string[]>([])
+  const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([])
+  // Queue list collapses by default — the header already shows count + a
+  // preview of the next message, mirroring AgentTurnCard's activities stripe.
+  const [queueCollapsed, setQueueCollapsed] = useState(true)
+  const [editingIndex, setEditingIndex] = useState<number | null>(null)
+  const [editDraft, setEditDraft] = useState('')
   const scrollViewportRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -279,6 +432,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         model: agentWindow.model ?? null,
         permissionMode: agentWindow.permissionMode ?? null,
         thinkingLevel: agentWindow.thinkingLevel ?? null,
+        contextLength: agentWindow.contextLength ?? null,
       })
       .then(sync)
 
@@ -299,6 +453,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     agentWindow.model,
     agentWindow.permissionMode,
     agentWindow.thinkingLevel,
+    agentWindow.contextLength,
   ])
 
   useEffect(() => {
@@ -362,7 +517,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   ])
 
   const attachmentsRef = useRef(attachments)
-  const queueRef = useRef<string[]>(queuedMessages)
+  const queueRef = useRef<QueuedMessage[]>(queuedMessages)
   useEffect(() => {
     attachmentsRef.current = attachments
   }, [attachments])
@@ -373,8 +528,17 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   // Actually ship one message to the agent. Separated from submit() so the
   // queue-flusher effect can call it too.
   const sendToAgent = useCallback(
-    async (value: string) => {
-      const trySend = () => window.cells.agentSession.send(windowIdRef.current, value)
+    async (
+      value: string,
+      attachments: string[],
+      overrides?: {
+        model?: string | null
+        thinkingLevel?: AgentThinkingLevel | null
+        permissionMode?: AgentPermissionMode | null
+      },
+    ) => {
+      const trySend = () =>
+        window.cells.agentSession.send(windowIdRef.current, value, attachments, overrides)
       try {
         await trySend()
       } catch (err) {
@@ -394,71 +558,6 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     [ensureSession],
   )
 
-  const submit = useCallback(async () => {
-    const rawValue = inputRef.current.trim()
-    const pinned = attachmentsRef.current
-    if (!rawValue && pinned.length === 0) return
-    // Craft emits attachments inline as `[path]` references so the agent can
-    // open them via the file-read tool.
-    const attachmentLine = pinned.length ? pinned.map((p) => `[${p}]`).join(' ') + '\n\n' : ''
-    const value = `${attachmentLine}${rawValue}`.trim()
-    if (!value) return
-
-    // Drain the input optimistically so typing feels instant.
-    setInput('')
-    inputRef.current = ''
-    setAttachments([])
-    attachmentsRef.current = []
-
-    // If the agent is mid-turn, queue the message — it'll fire as soon as the
-    // current turn finishes. This matches Craft's behavior.
-    if (snapshotRef.current?.status === 'running') {
-      setQueuedMessages((q) => [...q, value])
-      queueRef.current = [...queueRef.current, value]
-      return
-    }
-
-    try {
-      await sendToAgent(value)
-    } catch (err) {
-      setInput(value)
-      inputRef.current = value
-      console.error('[agent-chat] send failed', err)
-    }
-  }, [sendToAgent])
-
-  const unqueueMessage = useCallback((index: number) => {
-    setQueuedMessages((q) => q.filter((_, i) => i !== index))
-  }, [])
-
-  // Drain the queue whenever the agent flips back to idle. Pop the front
-  // item OPTIMISTICALLY before dispatching — if sendToAgent throws we push
-  // it back. Prior version removed-on-success but sendToAgent resolves after
-  // the agent flips to `running`, which the user could read as "the queue
-  // item is still there even though the agent already started it".
-  const sendingQueuedRef = useRef(false)
-  useEffect(() => {
-    if (snapshot?.status !== 'idle') return
-    if (queuedMessages.length === 0) return
-    if (sendingQueuedRef.current) return
-    sendingQueuedRef.current = true
-    const next = queuedMessages[0]
-    // Defer the state update a microtask so we don't invoke setState
-    // synchronously inside the effect (cascading-renders rule).
-    queueMicrotask(() => {
-      setQueuedMessages((q) => q.slice(1))
-    })
-    void sendToAgent(next)
-      .catch((err) => {
-        console.error('[agent-chat] queued send failed', err)
-        // Put it back at the front so the user can retry / see it.
-        setQueuedMessages((q) => [next, ...q])
-      })
-      .finally(() => {
-        sendingQueuedRef.current = false
-      })
-  }, [queuedMessages, sendToAgent, snapshot?.status])
-
   const handleStop = useCallback(async () => {
     try {
       // v2 SDKSession has no interrupt; closing the session is the only way
@@ -468,6 +567,190 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       console.error('[agent-chat] stop failed', err)
     }
   }, [])
+
+  const submit = useCallback(
+    async (intent: 'after-turn' | 'after-tool' | 'stop' = 'after-turn') => {
+      const rawValue = inputRef.current.trim()
+      const pinned = attachmentsRef.current
+      if (!rawValue && pinned.length === 0) return
+      // Attachments travel in a separate array — images become proper
+      // multimodal content blocks downstream, non-image paths get `[path]`
+      // injected into the agent's text for file-read tool use.
+      const value = rawValue || '(attached files)'
+      const running = snapshotRef.current?.status === 'running'
+
+      // Drain the input optimistically so typing feels instant.
+      setInput('')
+      inputRef.current = ''
+      setAttachments([])
+      attachmentsRef.current = []
+
+      const settings = {
+        model: agentWindow.model ?? null,
+        thinkingLevel: agentWindow.thinkingLevel ?? null,
+        permissionMode: agentWindow.permissionMode ?? null,
+      }
+
+      // Cmd+Enter: interrupt the running turn and send this message next.
+      // The after-tool watcher below also ends up calling handleStop(), so
+      // stop + after-tool converge on the same drain path once idle.
+      if (intent === 'stop' && running) {
+        const entry: QueuedMessage = {
+          text: value,
+          attachments: pinned,
+          mode: 'stop',
+          ...settings,
+        }
+        setQueuedMessages((q) => [...q, entry])
+        queueRef.current = [...queueRef.current, entry]
+        void handleStop()
+        return
+      }
+
+      // Option+Enter (after-tool) and plain Enter (after-turn) both queue the
+      // message — they only differ in when the drain fires. after-tool
+      // triggers a stop the moment a tool call completes; after-turn simply
+      // waits for the turn to end naturally.
+      if ((intent === 'after-tool' || intent === 'after-turn') && running) {
+        const entry: QueuedMessage = {
+          text: value,
+          attachments: pinned,
+          mode: intent,
+          ...settings,
+        }
+        setQueuedMessages((q) => [...q, entry])
+        queueRef.current = [...queueRef.current, entry]
+        return
+      }
+
+      try {
+        await sendToAgent(value, pinned)
+      } catch (err) {
+        setInput(value)
+        inputRef.current = value
+        setAttachments(pinned)
+        attachmentsRef.current = pinned
+        console.error('[agent-chat] send failed', err)
+      }
+    },
+    [
+      sendToAgent,
+      handleStop,
+      agentWindow.model,
+      agentWindow.thinkingLevel,
+      agentWindow.permissionMode,
+    ],
+  )
+
+  const unqueueMessage = useCallback((index: number) => {
+    setQueuedMessages((q) => q.filter((_, i) => i !== index))
+    setEditingIndex((current) => {
+      if (current === null) return current
+      if (current === index) return null
+      return current > index ? current - 1 : current
+    })
+  }, [])
+
+  const beginEditQueued = useCallback(
+    (index: number) => {
+      const entry = queuedMessages[index]
+      if (!entry) return
+      setEditingIndex(index)
+      setEditDraft(entry.text)
+      setQueueCollapsed(false)
+    },
+    [queuedMessages],
+  )
+
+  const commitEditQueued = useCallback(() => {
+    if (editingIndex === null) return
+    const index = editingIndex
+    const draft = editDraft.trim()
+    setQueuedMessages((q) => q.map((m, i) => (i === index ? { ...m, text: draft || m.text } : m)))
+    setEditingIndex(null)
+    setEditDraft('')
+  }, [editDraft, editingIndex])
+
+  const cancelEditQueued = useCallback(() => {
+    setEditingIndex(null)
+    setEditDraft('')
+  }, [])
+
+  // Drain the queue whenever the agent flips back to idle. Pop the front
+  // item OPTIMISTICALLY before dispatching — if sendToAgent throws we push
+  // it back. Prior version removed-on-success but sendToAgent resolves after
+  // the agent flips to `running`, which the user could read as "the queue
+  // item is still there even though the agent already started it".
+  //
+  // `awaitingRunningRef` gates back-to-back sends: after we fire a queued
+  // message, `sendToAgent()` can resolve before the backend emits the
+  // `session_state_changed → running` event. Without this gate the effect
+  // would re-fire on the next `queuedMessages` change while status is still
+  // `idle`, shipping a second message before the first one's turn has even
+  // started. We clear the gate once we actually observe the running signal.
+  const sendingQueuedRef = useRef(false)
+  const awaitingRunningRef = useRef(false)
+  useEffect(() => {
+    if (snapshot?.status === 'running') awaitingRunningRef.current = false
+  }, [snapshot?.status])
+
+  // after-tool watcher: when the front-of-queue entry is waiting for a tool
+  // boundary, fire a stop the moment any tool message flips to completed
+  // after it was enqueued. Track seen completed tool ids so a single tool
+  // end doesn't fire stop twice; gate on `afterToolFiredRef` so we only
+  // interrupt once per running-turn (reset when the turn ends).
+  const seenCompletedToolsRef = useRef<Set<string>>(new Set())
+  const afterToolFiredRef = useRef(false)
+  useEffect(() => {
+    if (snapshot?.status !== 'running') afterToolFiredRef.current = false
+  }, [snapshot?.status])
+  useEffect(() => {
+    const msgs = snapshot?.messages
+    if (!msgs) return
+    const nextSeen = new Set<string>()
+    let hasNewCompletion = false
+    for (const m of msgs) {
+      if (m.role !== 'tool' || m.status !== 'completed') continue
+      nextSeen.add(m.id)
+      if (!seenCompletedToolsRef.current.has(m.id)) hasNewCompletion = true
+    }
+    seenCompletedToolsRef.current = nextSeen
+    if (!hasNewCompletion) return
+    if (snapshot?.status !== 'running') return
+    if (afterToolFiredRef.current) return
+    const front = queuedMessages[0]
+    if (!front || front.mode !== 'after-tool') return
+    afterToolFiredRef.current = true
+    void handleStop()
+  }, [snapshot?.messages, snapshot?.status, queuedMessages, handleStop])
+  useEffect(() => {
+    if (snapshot?.status !== 'idle') return
+    if (queuedMessages.length === 0) return
+    if (sendingQueuedRef.current) return
+    if (awaitingRunningRef.current) return
+    sendingQueuedRef.current = true
+    awaitingRunningRef.current = true
+    const next = queuedMessages[0]
+    // Defer the state update a microtask so we don't invoke setState
+    // synchronously inside the effect (cascading-renders rule).
+    queueMicrotask(() => {
+      setQueuedMessages((q) => q.slice(1))
+    })
+    void sendToAgent(next.text, next.attachments, {
+      model: next.model,
+      thinkingLevel: next.thinkingLevel,
+      permissionMode: next.permissionMode,
+    })
+      .catch((err) => {
+        console.error('[agent-chat] queued send failed', err)
+        // Put it back at the front so the user can retry / see it.
+        setQueuedMessages((q) => [next, ...q])
+        awaitingRunningRef.current = false
+      })
+      .finally(() => {
+        sendingQueuedRef.current = false
+      })
+  }, [queuedMessages, sendToAgent, snapshot?.status])
 
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -479,13 +762,60 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         return
       }
       if (event.key !== 'Enter') return
-      if (event.shiftKey || event.altKey) return
+      if (event.shiftKey) return // Shift+Enter → newline
+      // Cmd+Enter: interrupt the running turn and send this message next.
+      if (event.metaKey) {
+        event.preventDefault()
+        event.stopPropagation()
+        void submit('stop')
+        return
+      }
+      // Option+Enter: send after the next tool call completes.
+      if (event.altKey) {
+        event.preventDefault()
+        event.stopPropagation()
+        void submit('after-tool')
+        return
+      }
+      // Plain Enter (while running): queue until the turn finishes naturally.
       event.preventDefault()
       event.stopPropagation()
-      void submit()
+      void submit('after-turn')
     },
     [submit, handleStop],
   )
+
+  const absorbDroppedImages = useCallback(async (dataTransfer: DataTransfer) => {
+    const files = Array.from(dataTransfer.files)
+    const images = files.filter((f) => f.type.startsWith('image/'))
+    if (images.length === 0) return
+    const saved: string[] = []
+    for (const file of images) {
+      // Finder / native drags: we already have a path on disk, no need to
+      // copy into the temp dir.
+      try {
+        const existing = window.cells.app.getPathForFile(file)
+        if (existing) {
+          saved.push(existing)
+          continue
+        }
+      } catch {
+        // getPathForFile throws for cross-app / in-memory blobs — fall through
+      }
+      try {
+        const buf = new Uint8Array(await file.arrayBuffer())
+        const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg')
+        const name = file.name && file.name.trim() ? file.name : `drop-${Date.now()}.${ext}`
+        const stored = await window.cells.app.saveTempFile(buf, name)
+        if (stored) saved.push(stored)
+      } catch (err) {
+        console.error('[agent-chat] save dropped image failed', err)
+      }
+    }
+    if (saved.length > 0) {
+      setAttachments((prev) => Array.from(new Set([...prev, ...saved])))
+    }
+  }, [])
 
   // Capture-phase fallback for ancestors that swallow keydown.
   useEffect(() => {
@@ -507,11 +837,17 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       }
       if (document.activeElement !== textareaRef.current) return
       if (event.key !== 'Enter') return
-      if (event.shiftKey || event.altKey) return
+      if (event.shiftKey) return
       if ((event as any).isComposing || event.keyCode === 229) return
       event.preventDefault()
       event.stopPropagation()
-      void submit()
+      if (event.metaKey) {
+        void submit('stop')
+      } else if (event.altKey) {
+        void submit('after-tool')
+      } else {
+        void submit('after-turn')
+      }
     }
     window.addEventListener('keydown', onKeyDown, true)
     return () => window.removeEventListener('keydown', onKeyDown, true)
@@ -532,7 +868,23 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     isRunning && (groups.length === 0 || groups[groups.length - 1].kind !== 'turn')
 
   return (
-    <div className="agent-chat-panel flex h-full min-h-0 flex-col" data-focus-zone="chat">
+    <div
+      className="agent-chat-panel flex h-full min-h-0 flex-col"
+      data-focus-zone="chat"
+      onDragOver={(event) => {
+        if (event.dataTransfer?.types.includes('Files')) {
+          event.preventDefault()
+          event.stopPropagation()
+          event.dataTransfer.dropEffect = 'copy'
+        }
+      }}
+      onDrop={(event) => {
+        if (!event.dataTransfer?.types.includes('Files')) return
+        event.preventDefault()
+        event.stopPropagation()
+        void absorbDroppedImages(event.dataTransfer)
+      }}
+    >
       <div className="relative flex min-h-0 flex-1 flex-col">
         <div
           className="min-h-0 flex-1"
@@ -576,6 +928,25 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                     )}
                   </div>
                   <AgentEmptyStateHint />
+                  <div className="mt-1 flex flex-col items-stretch gap-1 text-[11.5px] text-muted-foreground/70">
+                    {(['stop', 'after-tool', 'after-turn'] as const).map((mode) => {
+                      const meta = QUEUE_MODE_META[mode]
+                      return (
+                        <div
+                          key={mode}
+                          className="flex items-center justify-between gap-3 rounded-[8px] border border-border/40 bg-background/40 px-2.5 py-1 shadow-minimal"
+                        >
+                          <div className="flex items-center gap-1.5">
+                            <meta.Icon className={cn('size-3.5 shrink-0', meta.tint)} />
+                            <span className="text-foreground/80">{meta.label}</span>
+                          </div>
+                          <Kbd className="h-[18px] min-w-[18px] rounded-[4px] bg-foreground/6 px-1 text-[10px] text-muted-foreground/80">
+                            {meta.shortcut}
+                          </Kbd>
+                        </div>
+                      )
+                    })}
+                  </div>
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -603,6 +974,186 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
             {snapshot?.error ? (
               <div className="mb-2 rounded-[12px] border border-red-500/25 bg-red-500/8 px-3 py-2 text-[12px] text-red-300 shadow-minimal">
                 {snapshot.error}
+              </div>
+            ) : null}
+            {queuedMessages.length > 0 ? (
+              <div className="mb-2 select-none">
+                <button
+                  type="button"
+                  onClick={() => setQueueCollapsed((v) => !v)}
+                  className="flex w-full items-center gap-2 rounded-[8px] px-2 py-1 text-left transition-colors hover:bg-foreground/5 focus:outline-none"
+                  title={queueCollapsed ? 'Show queued messages' : 'Hide queued messages'}
+                >
+                  <ChevronRight
+                    className={cn(
+                      'size-3.5 shrink-0 text-muted-foreground/70 transition-transform',
+                      !queueCollapsed && 'rotate-90',
+                    )}
+                  />
+                  <span className="-ml-0.5 shrink-0 rounded-[4px] bg-background px-1.5 py-0.5 text-[10px] font-medium tabular-nums shadow-minimal">
+                    {queuedMessages.length}
+                  </span>
+                  {(() => {
+                    const next = queuedMessages[0]
+                    const meta = QUEUE_MODE_META[next.mode]
+                    return (
+                      <meta.Icon
+                        className={cn('size-3.5 shrink-0', meta.tint)}
+                        aria-label={meta.label}
+                      />
+                    )
+                  })()}
+                  <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground">
+                    {queuedMessages.length === 1
+                      ? queuedMessages[0].text.replace(/\n/g, ' ') || '(attached files)'
+                      : `${queuedMessages.length} queued · ${queuedMessages[0].text.replace(/\n/g, ' ') || '(attached files)'}`}
+                  </span>
+                </button>
+                {!queueCollapsed ? (
+                  <div className="mt-1 flex max-h-[260px] flex-col gap-1 overflow-y-auto overscroll-contain pr-0.5">
+                    {queuedMessages.map((entry, i) => {
+                      const meta = QUEUE_MODE_META[entry.mode]
+                      const modelLabel = entry.model
+                        ? prettifyModelId(agentWindow.agent, entry.model)
+                        : null
+                      const thinkingLabel =
+                        entry.thinkingLevel && entry.thinkingLevel !== 'off'
+                          ? THINKING_LEVEL_LABEL_MAP[entry.thinkingLevel]
+                          : null
+                      const permissionOption = entry.permissionMode
+                        ? PERMISSION_MODE_OPTIONS.find((o) => o.id === entry.permissionMode)
+                        : null
+                      const isEditing = editingIndex === i
+                      return (
+                        <div
+                          key={`${i}-${entry.text.slice(0, 16)}`}
+                          className={cn(
+                            'group/queued flex items-start gap-2 rounded-[10px] border border-border/50 bg-muted/30 px-2.5 py-1.5 text-[12px] text-foreground/85 shadow-minimal',
+                            isEditing && 'border-foreground/30 bg-muted/50',
+                          )}
+                          title={isEditing ? undefined : `${meta.shortcut} · ${meta.hint}`}
+                        >
+                          <meta.Icon
+                            className={cn('mt-[3px] size-3.5 shrink-0', meta.tint)}
+                            aria-label={meta.label}
+                          />
+                          <div className="min-w-0 flex-1">
+                            {isEditing ? (
+                              <textarea
+                                autoFocus
+                                value={editDraft}
+                                onChange={(e) => setEditDraft(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' && !e.shiftKey) {
+                                    e.preventDefault()
+                                    e.stopPropagation()
+                                    commitEditQueued()
+                                  } else if (e.key === 'Escape') {
+                                    e.preventDefault()
+                                    e.stopPropagation()
+                                    cancelEditQueued()
+                                  }
+                                }}
+                                onBlur={commitEditQueued}
+                                rows={Math.min(6, Math.max(1, editDraft.split('\n').length))}
+                                className="min-w-0 w-full resize-none border-0 bg-transparent p-0 text-[12px] leading-[1.45] text-foreground/95 outline-none"
+                              />
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => beginEditQueued(i)}
+                                className="block w-full min-w-0 truncate text-left text-muted-foreground/90 hover:text-foreground"
+                                title="Click to edit"
+                              >
+                                {entry.text.replace(/\n/g, ' ')}
+                                {entry.attachments.length > 0
+                                  ? ` · ${entry.attachments.length} attachment${entry.attachments.length === 1 ? '' : 's'}`
+                                  : ''}
+                              </button>
+                            )}
+                          </div>
+                          <div className="flex shrink-0 items-center gap-1 self-start text-[10.5px] text-muted-foreground/80">
+                            {modelLabel ? (
+                              <span
+                                className="rounded-[6px] border border-border/40 bg-background/40 px-1.5 py-px"
+                                title={`Model: ${modelLabel}`}
+                              >
+                                {modelLabel}
+                              </span>
+                            ) : null}
+                            {thinkingLabel ? (
+                              <span
+                                className="rounded-[6px] border border-border/40 bg-background/40 px-1.5 py-px"
+                                title={`Thinking: ${thinkingLabel}`}
+                              >
+                                {thinkingLabel}
+                              </span>
+                            ) : null}
+                            {permissionOption ? (
+                              <span
+                                className={cn(
+                                  'inline-flex items-center gap-1 rounded-[6px] border border-border/40 bg-background/40 px-1.5 py-px',
+                                  permissionOption.tint,
+                                )}
+                                title={`Permission: ${permissionOption.label}`}
+                              >
+                                <permissionOption.Icon className="size-2.5" />
+                                {permissionOption.short}
+                              </span>
+                            ) : null}
+                          </div>
+                          {isEditing ? (
+                            <>
+                              <button
+                                type="button"
+                                onMouseDown={(e) => {
+                                  // prevent textarea blur from firing commit before this click handler
+                                  e.preventDefault()
+                                }}
+                                onClick={commitEditQueued}
+                                aria-label="Save edit"
+                                title="Save (Enter)"
+                                className="shrink-0 rounded p-0.5 text-success/80 hover:bg-foreground/10 hover:text-success"
+                              >
+                                <Check className="size-3" />
+                              </button>
+                              <button
+                                type="button"
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={cancelEditQueued}
+                                aria-label="Cancel edit"
+                                title="Cancel (Esc)"
+                                className="shrink-0 rounded p-0.5 text-muted-foreground/60 hover:bg-foreground/10 hover:text-foreground"
+                              >
+                                <X className="size-3" />
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => beginEditQueued(i)}
+                                aria-label="Edit queued message"
+                                title="Edit"
+                                className="shrink-0 rounded p-0.5 text-muted-foreground/50 opacity-0 transition-opacity hover:bg-foreground/10 hover:text-foreground group-hover/queued:opacity-100"
+                              >
+                                <Pencil className="size-3" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => unqueueMessage(i)}
+                                aria-label="Remove queued message"
+                                className="shrink-0 rounded p-0.5 text-muted-foreground/50 hover:bg-foreground/10 hover:text-foreground"
+                              >
+                                <X className="size-3" />
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                ) : null}
               </div>
             ) : null}
             <div
@@ -698,13 +1249,34 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                 <ModelPicker
                   agent={agentWindow.agent}
                   value={agentWindow.model}
-                  thinkingLevel={agentWindow.thinkingLevel}
+                  contextLength={agentWindow.contextLength}
                   onChange={(modelId) =>
                     useStore.getState().syncAgentWindow(agentWindow.id, { model: modelId })
                   }
-                  onThinkingChange={(level) =>
+                  onContextLengthChange={(length: AgentContextLength) => {
+                    useStore.getState().syncAgentWindow(agentWindow.id, { contextLength: length })
+                    // Claude session has to be reopened to pick up / drop the
+                    // context-1m beta flag — the backend handles that inside
+                    // updateContextLength by closing the runtime.
+                    void window.cells.agentSession
+                      .updateContextLength(agentWindow.id, length)
+                      .catch((err: unknown) =>
+                        console.error('[agent-chat] updateContextLength failed', err),
+                      )
+                  }}
+                />
+                <ThinkingPicker
+                  agent={agentWindow.agent}
+                  model={agentWindow.model}
+                  value={agentWindow.thinkingLevel}
+                  onChange={(level) =>
                     useStore.getState().syncAgentWindow(agentWindow.id, { thinkingLevel: level })
                   }
+                />
+                <ContextUsageIndicator
+                  usage={snapshot?.usage ?? null}
+                  agent={agentWindow.agent}
+                  contextLength={agentWindow.contextLength}
                 />
                 <div className="flex-1" />
                 {isRunning ? (
@@ -748,30 +1320,6 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                 </button>
               </div>
             </div>
-            {queuedMessages.length > 0 ? (
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {queuedMessages.map((text, i) => (
-                  <span
-                    key={`${i}-${text.slice(0, 16)}`}
-                    className="inline-flex max-w-full items-center gap-1.5 rounded-[8px] border border-amber-500/25 bg-amber-500/8 pl-2 pr-1 py-1 text-[11px] text-amber-200"
-                    title={text}
-                  >
-                    <span className="shrink-0 text-[9px] font-semibold uppercase tracking-[0.14em] text-amber-300/80">
-                      queued
-                    </span>
-                    <span className="truncate max-w-[320px]">{text.replace(/\n/g, ' ')}</span>
-                    <button
-                      type="button"
-                      onClick={() => unqueueMessage(i)}
-                      aria-label="Remove queued message"
-                      className="ml-0.5 rounded p-0.5 text-amber-300/80 hover:bg-amber-500/15 hover:text-amber-100"
-                    >
-                      <X className="size-3" />
-                    </button>
-                  </span>
-                ))}
-              </div>
-            ) : null}
           </div>
         </div>
       </div>

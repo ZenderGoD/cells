@@ -62,6 +62,7 @@ import {
   agentLoginManager,
   getAgentAuthStatus,
   getAgentLoginCommand,
+  listClaudeModels,
   listCodexModels,
   type AgentAuthStatus,
   type LoginEvent,
@@ -1265,9 +1266,18 @@ ipcMain.handle('agent-session:ensure', (_event, request) => {
   return agentSessionService.ensure(request)
 })
 
-ipcMain.handle('agent-session:send', (_event, windowId: string, input: string) => {
-  return agentSessionService.send(windowId, input)
-})
+ipcMain.handle(
+  'agent-session:send',
+  (
+    _event,
+    windowId: string,
+    input: string,
+    attachments?: string[],
+    overrides?: Parameters<typeof agentSessionService.send>[3],
+  ) => {
+    return agentSessionService.send(windowId, input, attachments, overrides)
+  },
+)
 
 ipcMain.handle('agent-session:close', (_event, windowId: string) => {
   // Stop the current turn but keep the runtime + messages around so the
@@ -1303,11 +1313,27 @@ ipcMain.handle(
   },
 )
 
+ipcMain.handle(
+  'agent-session:update-context-length',
+  async (_event, windowId: string, length: 'default' | 'extended' | null) => {
+    return agentSessionService.updateContextLength(windowId, length)
+  },
+)
+
 ipcMain.handle('agent-session:list-codex-models', async () => {
   try {
     return await listCodexModels()
   } catch (err) {
     console.warn('[agent-session] list-codex-models failed', err)
+    return []
+  }
+})
+
+ipcMain.handle('agent-session:list-claude-models', async () => {
+  try {
+    return await listClaudeModels()
+  } catch (err) {
+    console.warn('[agent-session] list-claude-models failed', err)
     return []
   }
 })

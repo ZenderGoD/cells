@@ -16,11 +16,8 @@ import { useStore, consumePendingCommand, consumePendingWorktreePath } from '@/l
 import { DEFAULT_TERMINAL_CURSOR_SETTINGS, type TerminalCursorStyle } from '@/lib/terminal-cursor'
 import { isServerOwnedTerminalBackend } from '@/lib/terminal-session-backend'
 import { DEFAULT_TERMINAL_SCROLLBACK_LINES } from '@/lib/terminal-scrollback'
-import {
-  LOCAL_PATH_RE,
-  extractLocalPathCandidate,
-  looksLikeOpenablePath,
-} from '@/lib/terminal-links'
+import { activateLink } from '@/lib/activate-link'
+import { LOCAL_PATH_RE, looksLikeOpenablePath } from '@/lib/terminal-links'
 import { sanitizeBackendLeakedTitle } from '@/lib/terminal-title'
 import {
   getTerminalIndexedColor,
@@ -965,29 +962,6 @@ class LocalPathLinkProvider implements ILinkProvider {
   }
 
   dispose() {}
-}
-
-async function openLocalPath(pathCandidate: string) {
-  try {
-    const result = await window.cells.app.statPath(pathCandidate)
-    if (result.kind === 'missing') {
-      // Nothing to open — silently drop. Could surface a toast later.
-      return
-    }
-    if (result.kind === 'file') {
-      await window.cells.app.revealPath(result.resolved)
-      return
-    }
-    // Directory — check the user preference.
-    const directoryTarget = useStore.getState().directoryLinkTarget
-    if (directoryTarget === 'terminal') {
-      useStore.getState().addTerminalInWorktree('', undefined, result.resolved)
-      return
-    }
-    await window.cells.app.revealPath(result.resolved)
-  } catch {
-    // Ignore IPC failures — the click just won't do anything.
-  }
 }
 
 function replaceLinkProviders(term: Terminal, providers: ILinkProvider[]) {
@@ -2915,40 +2889,9 @@ export function CellTerminal({
       fitAddonRef.current = fitAddon
       syncTerminalState(term)
 
-      // Register link providers — wraps built-in providers with custom activate
-      // that routes links based on user settings (system browser vs built-in)
-      const activateLink = (url: string) => {
-        const pathCandidate = extractLocalPathCandidate(url)
-        if (pathCandidate) {
-          void openLocalPath(pathCandidate)
-          return
-        }
-
-        const state = useStore.getState()
-        const rules = state.linkRules
-        // Check link rules first (most specific match wins)
-        for (const rule of rules) {
-          try {
-            if (new RegExp(rule.pattern, 'i').test(url)) {
-              if (rule.target === 'system') {
-                window.cells.app.openExternal(url)
-              } else {
-                state.addBrowserWithUrl(url, rule.projectId ?? null)
-              }
-              return
-            }
-          } catch {
-            // Invalid regex, skip
-          }
-        }
-        // Fall back to default behavior
-        if (state.terminalLinkTarget === 'browser') {
-          state.addBrowserWithUrl(url, state.terminalLinkProjectId)
-        } else {
-          window.cells.app.openExternal(url)
-        }
-      }
-
+      // Register link providers — wrap built-in providers so clicked links go
+      // through the shared `activateLink` helper (linkRules → terminalLinkTarget
+      // → openExternal), the same one agent markdown uses.
       const wrapProvider = (provider: ILinkProvider): ILinkProvider => ({
         provideLinks(y, callback) {
           provider.provideLinks(y, (links) => {

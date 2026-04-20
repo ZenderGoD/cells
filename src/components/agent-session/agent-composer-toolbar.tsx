@@ -3,12 +3,20 @@ import {
   Brain,
   Check,
   ChevronDown,
+  Gauge,
+  Infinity as InfinityIcon,
   Shield,
   ShieldAlert,
   ShieldCheck,
   ShieldOff,
 } from 'lucide-react'
-import type { AgentPermissionMode, AgentThinkingLevel, AgentWindowNode } from '@/types'
+import type {
+  AgentContextLength,
+  AgentPermissionMode,
+  AgentThinkingLevel,
+  AgentUsageStats,
+  AgentWindowNode,
+} from '@/types'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
 
@@ -28,14 +36,12 @@ interface ModelOption {
   effortHints?: Partial<Record<AgentThinkingLevel, string>>
 }
 
-// Claude model catalog, sourced from the Claude Agent SDK `ModelInfo` type
-// — node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts `supportedEffortLevels`.
-// The SDK's authoritative union is `('low' | 'medium' | 'high' | 'max')[]`
-// plus an `off` option (we always offer, since it maps to
-// `thinking: { type: 'disabled' }`). Haiku drops the `max` tier because its
-// adaptive-thinking path is unavailable and its token-budget cap sits below
-// what 'max' would request.
-const CLAUDE_MODELS: ModelOption[] = [
+// Fallback used before the live `claude` Agent-SDK `supportedModels()` call
+// resolves (or if it fails — CLI not installed, not logged in, offline).
+// Matches the SDK's authoritative `supportedEffortLevels` shape — Haiku
+// drops the `max` tier since its token-budget cap sits below what 'max'
+// would request.
+const CLAUDE_MODELS_FALLBACK: ModelOption[] = [
   {
     id: 'claude-opus-4-7',
     label: 'Opus 4.7',
@@ -58,6 +64,103 @@ const CLAUDE_MODELS: ModelOption[] = [
     defaultEffort: 'low',
   },
 ]
+
+// Process-level cache so opening a second Claude window doesn't respawn the
+// CLI just to re-query the same catalog.
+let claudeModelsCache: ModelOption[] | null = null
+let claudeModelsPromise: Promise<ModelOption[]> | null = null
+
+// Prettify a Claude model id into a picker label when the SDK doesn't
+// provide a displayName. Turns "claude-opus-4-7" into "Opus 4.7",
+// "claude-haiku-4-5-20251001" into "Haiku 4.5".
+function prettifyClaudeModel(raw: string): string {
+  const s = raw.trim()
+  if (/[A-Z]/.test(s)) return s
+  const stripped = s.replace(/^claude-/i, '')
+  // Tier name up to the first version segment: "opus-4-7-something" → "opus"
+  const m = stripped.match(/^([a-z]+)-?(\d[\d-]*)?/i)
+  if (!m) return stripped
+  const tier = m[1].charAt(0).toUpperCase() + m[1].slice(1)
+  const version = m[2] ? ' ' + m[2].replace(/-/g, '.').replace(/\.0+$/, '') : ''
+  return (tier + version).trim()
+}
+
+// Normalises a raw effort string from the SDK (typed
+// `'low' | 'medium' | 'high' | 'max'`, but we widen to string so any
+// CLI-only additions like 'xhigh' pass through) onto our portable
+// `AgentThinkingLevel` union.
+function claudeEffortToLevel(effort: string): AgentThinkingLevel | null {
+  switch (effort) {
+    case 'low':
+    case 'medium':
+    case 'high':
+    case 'max':
+    case 'xhigh':
+      return effort as AgentThinkingLevel
+    default:
+      return null
+  }
+}
+
+function fetchClaudeModels(): Promise<ModelOption[]> {
+  if (claudeModelsCache) return Promise.resolve(claudeModelsCache)
+  if (claudeModelsPromise) return claudeModelsPromise
+  const api = (window as any).cells?.agentSession?.listClaudeModels
+  if (typeof api !== 'function') return Promise.resolve(CLAUDE_MODELS_FALLBACK)
+  claudeModelsPromise = (
+    api() as Promise<
+      Array<{
+        id: string
+        displayName: string
+        description: string
+        supportsEffort: boolean
+        supportedEffortLevels: string[]
+        supportsAdaptiveThinking: boolean
+      }>
+    >
+  )
+    .then((list) => {
+      if (!Array.isArray(list) || list.length === 0) return CLAUDE_MODELS_FALLBACK
+      const mapped = list.map<ModelOption>((m) => {
+        const efforts = (m.supportedEffortLevels || [])
+          .map(claudeEffortToLevel)
+          .filter((v): v is AgentThinkingLevel => v != null)
+        // Haiku's budget cap sits below 'max', so the SDK omits it. We always
+        // prepend 'off' — it maps to `thinking: { type: 'disabled' }` and the
+        // SDK never enumerates it as an effort level.
+        const supportedEfforts: AgentThinkingLevel[] = ['off', ...efforts]
+        const defaultEffort: AgentThinkingLevel = efforts.includes('medium')
+          ? 'medium'
+          : (efforts[0] ?? 'medium')
+        // The SDK sometimes returns a generic displayName like
+        // "Default (recommended)" for aliased entries — prefer the concrete
+        // model id prettified so the picker shows "Opus 4.7" rather than
+        // the opaque alias label.
+        const isGenericDisplayName =
+          !m.displayName || /\b(default|recommended)\b/i.test(m.displayName)
+        const label = isGenericDisplayName
+          ? prettifyClaudeModel(m.id)
+          : prettifyClaudeModel(m.displayName)
+        return {
+          id: m.id,
+          label,
+          hint: m.description || undefined,
+          supportedEfforts,
+          defaultEffort,
+        }
+      })
+      claudeModelsCache = mapped
+      return claudeModelsCache
+    })
+    .catch(() => {
+      claudeModelsCache = CLAUDE_MODELS_FALLBACK
+      return claudeModelsCache
+    })
+    .finally(() => {
+      claudeModelsPromise = null
+    }) as Promise<ModelOption[]>
+  return claudeModelsPromise
+}
 
 // Fallback used before the live `codex app-server` `model/list` call resolves.
 const CODEX_MODELS_FALLBACK: ModelOption[] = [
@@ -175,13 +278,20 @@ function findModel(
   return models.find((m) => m.id === (id ?? DEFAULT_MODEL[agent])) ?? models[0]
 }
 
-const THINKING_LEVEL_LABEL: Record<AgentThinkingLevel, string> = {
+export const THINKING_LEVEL_LABEL_MAP: Record<AgentThinkingLevel, string> = {
   off: 'Off',
   low: 'Low',
   medium: 'Medium',
   high: 'High',
   max: 'Max',
+  xhigh: 'Extra-high',
 }
+
+export function prettifyModelId(agent: 'claude' | 'codex', id: string): string {
+  return agent === 'codex' ? prettifyCodexModel(id) : prettifyClaudeModel(id)
+}
+
+const THINKING_LEVEL_LABEL = THINKING_LEVEL_LABEL_MAP
 
 const THINKING_FALLBACK_HINT: Record<AgentThinkingLevel, string> = {
   off: 'No extended reasoning',
@@ -189,50 +299,64 @@ const THINKING_FALLBACK_HINT: Record<AgentThinkingLevel, string> = {
   medium: 'Balanced speed and depth',
   high: 'Deep reasoning for complex tasks',
   max: 'Maximum effort reasoning',
+  xhigh: 'Extra-high effort reasoning',
+}
+
+// Matches Claude Sonnet 4 / 4.5 ids — the only models that accept the
+// context-1m beta flag. Opus / Haiku / Codex all ignore it.
+function modelSupportsExtendedContext(
+  agent: AgentWindowNode['agent'],
+  modelId: string | null | undefined,
+): boolean {
+  if (agent !== 'claude' || !modelId) return false
+  return /^claude-sonnet-4/i.test(modelId)
 }
 
 interface ModelPickerProps {
   agent: AgentWindowNode['agent']
   value: string | null | undefined
-  thinkingLevel: AgentThinkingLevel | null | undefined
+  contextLength?: AgentContextLength | null | undefined
   onChange: (value: string) => void
-  onThinkingChange: (value: AgentThinkingLevel) => void
+  onContextLengthChange?: (value: AgentContextLength) => void
 }
 
-// Unified model + thinking picker — mirrors Craft's FreeFormInput dropdown
-// (../craft-agents-oss/apps/electron/src/renderer/components/app-shell/input/FreeFormInput.tsx
-// ~lines 1905-2100). The popover lists models, then a "Thinking" section
-// whose options are scoped to the CURRENT model's `supportedEfforts` (pulled
-// from the Codex app-server `model/list` response and the Claude Agent SDK
-// `ModelInfo.supportedEffortLevels`). The trigger shows "<Model> · <Effort>"
-// so the selected thinking level is always visible without opening the menu.
+// Model-only picker. Thinking has its own popover (see `ThinkingPicker`) so
+// the two controls can live side-by-side in the composer toolbar. For Claude
+// Sonnet 4/4.5 the popover also exposes a "1M context window" toggle that
+// wires through to the context-1m-2025-08-07 beta flag on the backend.
 export function ModelPicker({
   agent,
   value,
-  thinkingLevel,
+  contextLength,
   onChange,
-  onThinkingChange,
+  onContextLengthChange,
 }: ModelPickerProps) {
   const [open, setOpen] = useState(false)
   const [codexModels, setCodexModels] = useState<ModelOption[]>(
     () => codexModelsCache ?? CODEX_MODELS_FALLBACK,
   )
+  const [claudeModels, setClaudeModels] = useState<ModelOption[]>(
+    () => claudeModelsCache ?? CLAUDE_MODELS_FALLBACK,
+  )
   useEffect(() => {
-    if (agent !== 'codex') return
     let cancelled = false
-    void fetchCodexModels().then((list) => {
-      if (!cancelled) setCodexModels(list)
-    })
+    if (agent === 'codex') {
+      void fetchCodexModels().then((list) => {
+        if (!cancelled) setCodexModels(list)
+      })
+    } else {
+      void fetchClaudeModels().then((list) => {
+        if (!cancelled) setClaudeModels(list)
+      })
+    }
     return () => {
       cancelled = true
     }
   }, [agent])
-  const models = agent === 'claude' ? CLAUDE_MODELS : codexModels
+  const models = agent === 'claude' ? claudeModels : codexModels
   const current = findModel(models, agent, value)
-  const effectiveThinking: AgentThinkingLevel =
-    thinkingLevel && current.supportedEfforts.includes(thinkingLevel)
-      ? thinkingLevel
-      : current.defaultEffort
+  const supportsExtended = modelSupportsExtendedContext(agent, current.id)
+  const isExtended = supportsExtended && contextLength === 'extended'
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -241,13 +365,18 @@ export function ModelPicker({
           <button
             type="button"
             className="inline-flex h-7 min-w-0 shrink-0 items-center gap-1.5 rounded-[8px] bg-foreground/5 px-2 text-[11px] text-foreground/85 transition-colors hover:bg-foreground/10"
-            title={`Model: ${current.label} · Thinking: ${THINKING_LEVEL_LABEL[effectiveThinking]}`}
+            title={isExtended ? `Model: ${current.label} · 1M context` : `Model: ${current.label}`}
           >
             <span className="truncate font-medium">{current.label}</span>
-            <span className="inline-flex items-center gap-1 rounded-[4px] bg-foreground/8 px-1 py-px text-[10px] font-medium text-foreground/80">
-              <Brain className="size-2.5 text-violet-300/90" />
-              {THINKING_LEVEL_LABEL[effectiveThinking]}
-            </span>
+            {isExtended ? (
+              <span
+                className="inline-flex items-center gap-0.5 rounded-[4px] bg-sky-400/15 px-1 py-px text-[9.5px] font-semibold text-sky-300"
+                title="1M context window (Sonnet beta)"
+              >
+                <InfinityIcon className="size-2.5" />
+                1M
+              </span>
+            ) : null}
             <ChevronDown className="size-3 text-muted-foreground/70" />
           </button>
         }
@@ -264,10 +393,15 @@ export function ModelPicker({
               type="button"
               onClick={() => {
                 onChange(model.id)
-                // If the new model doesn't support the current thinking level,
-                // drop to its default. Matches Craft behaviour.
-                if (thinkingLevel && !model.supportedEfforts.includes(thinkingLevel)) {
-                  onThinkingChange(model.defaultEffort)
+                // Moving to a model that doesn't support the 1M beta — drop
+                // the extended flag so we don't send an unknown beta header
+                // on the next session.
+                if (
+                  onContextLengthChange &&
+                  contextLength === 'extended' &&
+                  !modelSupportsExtendedContext(agent, model.id)
+                ) {
+                  onContextLengthChange('default')
                 }
                 setOpen(false)
               }}
@@ -290,22 +424,32 @@ export function ModelPicker({
             </button>
           )
         })}
-        {current.supportedEfforts.length > 0 ? (
+        {supportsExtended && onContextLengthChange ? (
           <>
             <div className="my-1 h-px bg-border/60" />
             <div className="mb-1 flex items-center gap-1.5 px-2 pt-1 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
-              <Brain className="size-3 text-violet-300/80" />
-              Thinking
+              <InfinityIcon className="size-3 text-sky-300/80" />
+              Context window
             </div>
-            {current.supportedEfforts.map((level) => {
-              const active = level === effectiveThinking
-              const hint = current.effortHints?.[level] ?? THINKING_FALLBACK_HINT[level]
+            {[
+              {
+                id: 'default' as const,
+                label: '200k (standard)',
+                hint: 'Normal context — fastest, cheapest.',
+              },
+              {
+                id: 'extended' as const,
+                label: '1M (beta)',
+                hint: 'Anthropic context-1m beta. Applies on next send — session reopens.',
+              },
+            ].map((opt) => {
+              const active = (contextLength ?? 'default') === opt.id
               return (
                 <button
-                  key={level}
+                  key={opt.id}
                   type="button"
                   onClick={() => {
-                    onThinkingChange(level)
+                    onContextLengthChange(opt.id)
                     setOpen(false)
                   }}
                   className={cn(
@@ -316,10 +460,10 @@ export function ModelPicker({
                   )}
                 >
                   <div className="min-w-0 flex-1">
-                    <div className="truncate font-medium">{THINKING_LEVEL_LABEL[level]}</div>
-                    {hint ? (
-                      <div className="truncate text-[10.5px] text-muted-foreground/70">{hint}</div>
-                    ) : null}
+                    <div className="truncate font-medium">{opt.label}</div>
+                    <div className="truncate text-[10.5px] text-muted-foreground/70">
+                      {opt.hint}
+                    </div>
                   </div>
                   {active ? <Check className="mt-0.5 size-3.5 text-foreground" /> : null}
                 </button>
@@ -329,6 +473,154 @@ export function ModelPicker({
         ) : null}
       </PopoverContent>
     </Popover>
+  )
+}
+
+interface ThinkingPickerProps {
+  agent: AgentWindowNode['agent']
+  model: string | null | undefined
+  value: AgentThinkingLevel | null | undefined
+  onChange: (value: AgentThinkingLevel) => void
+}
+
+// Standalone thinking-effort picker. Scoped to the CURRENT model's
+// `supportedEfforts` (pulled from the Codex app-server `model/list` response
+// and the Claude Agent SDK `ModelInfo.supportedEffortLevels`).
+export function ThinkingPicker({ agent, model, value, onChange }: ThinkingPickerProps) {
+  const [open, setOpen] = useState(false)
+  const [codexModels, setCodexModels] = useState<ModelOption[]>(
+    () => codexModelsCache ?? CODEX_MODELS_FALLBACK,
+  )
+  const [claudeModels, setClaudeModels] = useState<ModelOption[]>(
+    () => claudeModelsCache ?? CLAUDE_MODELS_FALLBACK,
+  )
+  useEffect(() => {
+    let cancelled = false
+    if (agent === 'codex') {
+      void fetchCodexModels().then((list) => {
+        if (!cancelled) setCodexModels(list)
+      })
+    } else {
+      void fetchClaudeModels().then((list) => {
+        if (!cancelled) setClaudeModels(list)
+      })
+    }
+    return () => {
+      cancelled = true
+    }
+  }, [agent])
+  const models = agent === 'claude' ? claudeModels : codexModels
+  const current = findModel(models, agent, model)
+  const effective: AgentThinkingLevel =
+    value && current.supportedEfforts.includes(value) ? value : current.defaultEffort
+  if (current.supportedEfforts.length === 0) return null
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={
+          <button
+            type="button"
+            className="inline-flex h-7 min-w-0 shrink-0 items-center gap-1.5 rounded-[8px] bg-foreground/5 px-2 text-[11px] text-foreground/85 transition-colors hover:bg-foreground/10"
+            title={`Thinking: ${THINKING_LEVEL_LABEL[effective]}`}
+          >
+            <Brain className="size-3 text-violet-300/90" />
+            <span className="truncate font-medium">{THINKING_LEVEL_LABEL[effective]}</span>
+            <ChevronDown className="size-3 text-muted-foreground/70" />
+          </button>
+        }
+      />
+      <PopoverContent align="start" side="top" sideOffset={6} className="w-60 p-1">
+        <div className="mb-1 flex items-center gap-1.5 px-2 pt-1 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
+          <Brain className="size-3 text-violet-300/80" />
+          Thinking
+        </div>
+        {current.supportedEfforts.map((level) => {
+          const active = level === effective
+          const hint = current.effortHints?.[level] ?? THINKING_FALLBACK_HINT[level]
+          return (
+            <button
+              key={level}
+              type="button"
+              onClick={() => {
+                onChange(level)
+                setOpen(false)
+              }}
+              className={cn(
+                'flex w-full items-start gap-2 rounded-[8px] px-2 py-1.5 text-left text-[12px] transition-colors',
+                active
+                  ? 'bg-foreground/8 text-foreground'
+                  : 'hover:bg-foreground/5 text-foreground/90',
+              )}
+            >
+              <div className="min-w-0 flex-1">
+                <div className="truncate font-medium">{THINKING_LEVEL_LABEL[level]}</div>
+                {hint ? (
+                  <div className="truncate text-[10.5px] text-muted-foreground/70">{hint}</div>
+                ) : null}
+              </div>
+              {active ? <Check className="mt-0.5 size-3.5 text-foreground" /> : null}
+            </button>
+          )
+        })}
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+interface ContextUsageIndicatorProps {
+  usage: AgentUsageStats | null | undefined
+  agent: AgentWindowNode['agent']
+  contextLength: AgentContextLength | null | undefined
+}
+
+// Known-at-design-time context windows used when `usage.contextWindow` isn't
+// available yet (pre-first-turn). Real value comes from the SDK after the
+// first turn completes. Claude 1M beta is handled separately.
+const CONTEXT_WINDOW_FALLBACK: Record<'claude' | 'codex', number> = {
+  claude: 200_000,
+  codex: 272_000,
+}
+
+function formatTokens(n: number): string {
+  if (n < 1_000) return String(n)
+  if (n < 10_000) return `${(n / 1_000).toFixed(1)}k`
+  if (n < 1_000_000) return `${Math.round(n / 1_000)}k`
+  return `${(n / 1_000_000).toFixed(2)}M`
+}
+
+// Rolling "% of context used" readout that sits next to the model picker.
+// Hidden when no usage has been reported yet (first-turn case) so the
+// composer doesn't light up empty percentages.
+export function ContextUsageIndicator({ usage, agent, contextLength }: ContextUsageIndicatorProps) {
+  if (!usage) return null
+  const used = usage.inputTokens + usage.outputTokens
+  if (used <= 0) return null
+  const fromSdk = usage.contextWindow && usage.contextWindow > 0 ? usage.contextWindow : null
+  const fallback =
+    agent === 'claude' && contextLength === 'extended' ? 1_000_000 : CONTEXT_WINDOW_FALLBACK[agent]
+  const limit = fromSdk ?? fallback
+  const pct = Math.min(100, Math.round((used / limit) * 100))
+  const tint =
+    pct >= 90
+      ? 'text-rose-300 bg-rose-500/10'
+      : pct >= 70
+        ? 'text-amber-300 bg-amber-500/10'
+        : 'text-muted-foreground/85 bg-foreground/5'
+  return (
+    <span
+      className={cn(
+        'inline-flex h-7 shrink-0 items-center gap-1.5 rounded-[8px] px-2 text-[11px] font-medium tabular-nums',
+        tint,
+      )}
+      title={`Context: ${used.toLocaleString()} / ${limit.toLocaleString()} tokens`}
+    >
+      <Gauge className="size-3" />
+      {pct}%
+      <span className="text-muted-foreground/70">
+        {formatTokens(used)}/{formatTokens(limit)}
+      </span>
+    </span>
   )
 }
 

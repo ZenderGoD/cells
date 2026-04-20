@@ -557,7 +557,7 @@ export function AgentTurnCard({ activities, responses, agent, isStreaming }: Age
               )}
             </button>
             {showActivities ? (
-              <div className="ml-[13px] space-y-0.5 border-l-2 border-border/40 pl-3 pr-1 py-0.5">
+              <div className="ml-[13px] max-h-[360px] space-y-0.5 overflow-y-auto overscroll-contain border-l-2 border-border/40 pl-3 pr-1 py-0.5">
                 {tree.map((node) => (
                   <ActivityRow key={node.message.id} node={node} depth={0} />
                 ))}

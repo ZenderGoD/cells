@@ -5,6 +5,7 @@ import { homedir, userInfo } from 'node:os'
 import * as path from 'node:path'
 import { app, shell } from 'electron'
 import {
+  query,
   unstable_v2_createSession,
   unstable_v2_resumeSession,
   type SDKMessage,
@@ -29,6 +30,7 @@ function claudeThinkingOptions(level: AgentThinkingLevel | null | undefined, mod
     medium: 'medium',
     high: 'high',
     max: 'high',
+    xhigh: 'high',
   }
   if (!level || level === 'off') {
     return isHaiku ? { maxThinkingTokens: 0 as const } : { thinking: { type: 'disabled' as const } }
@@ -39,6 +41,7 @@ function claudeThinkingOptions(level: AgentThinkingLevel | null | undefined, mod
       medium: 4000,
       high: 6000,
       max: 8000,
+      xhigh: 8000,
     }
     return { maxThinkingTokens: budgets[level] }
   }
@@ -56,6 +59,7 @@ function codexThinkingEffort(
     case 'high':
       return 'high'
     case 'max':
+    case 'xhigh':
       return 'xhigh'
     case 'medium':
     default:
@@ -69,6 +73,65 @@ function codexThinkingEffort(
 
 // Matches Craft's authoritative model list — ../craft-agents-oss/packages/shared/src/config/models.ts
 const DEFAULT_CLAUDE_MODEL = process.env.CELLS_CLAUDE_MODEL || 'claude-sonnet-4-6'
+
+// Claude Agent SDK beta flag that opts the prompt into the 1M-token context
+// window. Documented in `@anthropic-ai/claude-agent-sdk` as `SdkBeta =
+// 'context-1m-2025-08-07'` and only applies to Sonnet 4 / 4.5. Passed via
+// `SDKSessionOptions.betas`.
+const CLAUDE_CONTEXT_1M_BETA = 'context-1m-2025-08-07' as const
+
+// Codex SDK doesn't surface per-model context windows, so we use a known
+// GPT-5 family capacity (272k input tokens per the public API) as the
+// denominator for the % indicator. Good enough for a rough readout.
+const CODEX_DEFAULT_CONTEXT_WINDOW = 272_000
+
+// Extensions Anthropic accepts as image content blocks.
+const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp'])
+
+function isImagePath(filePath: string): boolean {
+  return IMAGE_EXTENSIONS.has(path.extname(filePath).toLowerCase())
+}
+
+function imageMediaType(filePath: string): 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp' {
+  const ext = path.extname(filePath).toLowerCase()
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg'
+  if (ext === '.gif') return 'image/gif'
+  if (ext === '.webp') return 'image/webp'
+  return 'image/png'
+}
+
+type ClaudeImageMediaType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp'
+type ClaudeImageBlock = {
+  type: 'image'
+  source: { type: 'base64'; media_type: ClaudeImageMediaType; data: string }
+}
+
+// Read local image files and wrap them as Anthropic image content blocks.
+// The Claude Agent SDK's `session.send(SDKUserMessage)` path forwards
+// `message.content` straight to the Messages API, so base64 source is the
+// simplest portable form — no URL hosting required.
+async function buildClaudeImageBlocks(paths: string[]): Promise<ClaudeImageBlock[]> {
+  const blocks: ClaudeImageBlock[] = []
+  for (const p of paths) {
+    try {
+      const buf = await fs.readFile(p)
+      blocks.push({
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: imageMediaType(p),
+          data: buf.toString('base64'),
+        },
+      })
+    } catch (err) {
+      log('claude.image.readFailed', {
+        path: p,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+  return blocks
+}
 
 // Claude tools that can write, execute, or otherwise modify the host. Safe
 // mode denies these in canUseTool; other modes let them through.
@@ -288,6 +351,94 @@ export async function listCodexModels(): Promise<CodexModelInfo[]> {
   })
   cachedCodexModels = { at: Date.now(), list }
   return list
+}
+
+export interface ClaudeModelInfo {
+  id: string
+  displayName: string
+  description: string
+  /** Whether the model accepts an `effort` parameter at all. */
+  supportsEffort: boolean
+  /**
+   * Raw effort names the SDK/CLI reports for this model. We keep this as
+   * `string[]` (not the SDK's typed union) so any runtime-only values — the
+   * CLI adds new tiers ahead of the TypeScript declarations — surface in the
+   * picker without a type-level edit.
+   */
+  supportedEffortLevels: string[]
+  supportsAdaptiveThinking: boolean
+}
+
+let cachedClaudeModels: { at: number; list: ClaudeModelInfo[] } | null = null
+
+/**
+ * Fetch the live Claude model catalog from the Agent SDK's control plane.
+ *
+ * We call `query()` in streaming-input mode with an async iterable that
+ * never yields — that spawns the Claude Code subprocess and gives us access
+ * to the `Query.supportedModels()` control method, but no user message is
+ * ever sent so the turn budget isn't touched. The `SDKSession` we use for
+ * real sessions (unstable_v2_*) doesn't expose control methods, which is why
+ * we drop to the lower-level `query()` here. Results are cached for 5
+ * minutes so opening the picker repeatedly doesn't respawn the CLI.
+ */
+export async function listClaudeModels(): Promise<ClaudeModelInfo[]> {
+  if (cachedClaudeModels && Date.now() - cachedClaudeModels.at < 5 * 60_000) {
+    return cachedClaudeModels.list
+  }
+  const claudeBinary = getSystemClaudePath()
+  let releasePrompt: () => void = () => {}
+  const promptDone = new Promise<void>((resolve) => {
+    releasePrompt = resolve
+  })
+  // A prompt iterable that never yields — we only need the Query's control
+  // plane (supportedModels), never a user turn. Implemented by hand instead
+  // of as an async generator so ESLint's require-yield doesn't fire.
+  const prompt: AsyncIterable<never> = {
+    [Symbol.asyncIterator]() {
+      return {
+        async next() {
+          await promptDone
+          return { value: undefined as never, done: true as const }
+        },
+      }
+    },
+  }
+  const q = query({
+    prompt,
+    options: {
+      env: buildAgentEnv({ CLAUDE_AGENT_SDK_CLIENT_APP: 'cells' }),
+      ...(claudeBinary ? { pathToClaudeCodeExecutable: claudeBinary } : {}),
+    },
+  })
+  try {
+    const timer = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('claude supportedModels timed out')), 10_000),
+    )
+    const raw = (await Promise.race([q.supportedModels(), timer])) as Array<{
+      value: string
+      displayName?: string
+      description?: string
+      supportsEffort?: boolean
+      supportedEffortLevels?: string[]
+      supportsAdaptiveThinking?: boolean
+    }>
+    const mapped: ClaudeModelInfo[] = raw.map((m) => ({
+      id: m.value,
+      displayName: m.displayName || m.value,
+      description: m.description || '',
+      supportsEffort: !!m.supportsEffort,
+      supportedEffortLevels: (m.supportedEffortLevels as string[] | undefined) ?? [],
+      supportsAdaptiveThinking: !!m.supportsAdaptiveThinking,
+    }))
+    cachedClaudeModels = { at: Date.now(), list: mapped }
+    return mapped
+  } finally {
+    releasePrompt()
+    try {
+      q.close()
+    } catch {}
+  }
 }
 
 export type LoginPhase = 'starting' | 'awaiting_browser' | 'success' | 'failed' | 'cancelled'
@@ -1080,6 +1231,7 @@ export class AgentSessionService extends EventEmitter {
         },
         ...claudeThinkingOptions(request.thinkingLevel, request.model || DEFAULT_CLAUDE_MODEL),
         ...(claudeBinary ? { pathToClaudeCodeExecutable: claudeBinary } : {}),
+        ...(request.contextLength === 'extended' ? { betas: [CLAUDE_CONTEXT_1M_BETA] } : {}),
       }
       log('claude.create', {
         windowId: request.windowId,
@@ -1172,7 +1324,16 @@ export class AgentSessionService extends EventEmitter {
     return cloneSnapshot(snapshot)
   }
 
-  async send(windowId: string, input: string): Promise<void> {
+  async send(
+    windowId: string,
+    input: string,
+    attachments?: string[],
+    overrides?: {
+      model?: AgentSessionRequest['model']
+      thinkingLevel?: AgentSessionRequest['thinkingLevel']
+      permissionMode?: AgentSessionRequest['permissionMode']
+    },
+  ): Promise<void> {
     let runtime = this.runtimes.get(windowId)
     log('send.begin', {
       windowId,
@@ -1180,8 +1341,47 @@ export class AgentSessionService extends EventEmitter {
       closed: runtime?.closed ?? null,
       kind: runtime?.kind ?? null,
       inputLength: input.length,
+      attachmentCount: attachments?.length ?? 0,
+      overrides: overrides ?? null,
     })
     if (!runtime) throw new Error(`Missing agent session for ${windowId}`)
+
+    // Apply queued-message overrides (captured at queue time) so the next
+    // turn runs with the model / thinking / permission that were selected
+    // when the user queued this message, not whatever is active now.
+    if (overrides) {
+      const req = runtime.request
+      const modelChanged =
+        overrides.model !== undefined && (overrides.model ?? null) !== (req.model ?? null)
+      const thinkingChanged =
+        overrides.thinkingLevel !== undefined &&
+        (overrides.thinkingLevel ?? null) !== (req.thinkingLevel ?? null)
+      const permissionChanged =
+        overrides.permissionMode !== undefined &&
+        (overrides.permissionMode ?? null) !== (req.permissionMode ?? null)
+
+      if (modelChanged) req.model = overrides.model ?? null
+      if (thinkingChanged) req.thinkingLevel = overrides.thinkingLevel ?? null
+
+      if (permissionChanged) {
+        await this.updatePermissionMode(windowId, overrides.permissionMode ?? null)
+      }
+
+      // Model / thinking changes require rebooting the underlying CLI session
+      // (Claude) or thread (Codex) — both only read these at construction time.
+      // Marking closed + closing the Claude session lets the existing
+      // reopen-on-send path below pick up the new config.
+      if (modelChanged || thinkingChanged) {
+        if (runtime.kind === 'claude') {
+          try {
+            runtime.session.close()
+          } catch {
+            /* idempotent */
+          }
+        }
+        runtime.closed = true
+      }
+    }
 
     // If the runtime was closed (user hit Stop) but not disposed, transparently
     // reopen it so the message history survives and we just resume the
@@ -1190,10 +1390,25 @@ export class AgentSessionService extends EventEmitter {
       runtime = this.reopenRuntime(runtime)
     }
 
+    const normalizedAttachments = (attachments ?? []).filter(
+      (p): p is string => typeof p === 'string' && p.length > 0,
+    )
+    const imageAttachments = normalizedAttachments.filter(isImagePath)
+    const nonImageAttachments = normalizedAttachments.filter((p) => !isImagePath(p))
+
+    // Non-image attachments stay as `[path]` text references so the agent can
+    // open them with its file-read tool. Images are promoted to a proper
+    // content block below so the model sees the pixels, not a filename.
+    const nonImageLine = nonImageAttachments.length
+      ? nonImageAttachments.map((p) => `[${p}]`).join(' ') + '\n\n'
+      : ''
+    const agentText = `${nonImageLine}${input}`.trim() || input
+
     appendMessage(runtime.snapshot, {
       id: `${windowId}-user-${now()}`,
       role: 'user',
       text: input,
+      attachments: normalizedAttachments.length > 0 ? normalizedAttachments : undefined,
       updatedAt: now(),
     })
     runtime.snapshot.status = 'running'
@@ -1203,7 +1418,19 @@ export class AgentSessionService extends EventEmitter {
     if (runtime.kind === 'claude') {
       log('send.claude.dispatch', { windowId })
       try {
-        await runtime.session.send(input)
+        if (imageAttachments.length > 0) {
+          const blocks = await buildClaudeImageBlocks(imageAttachments)
+          await runtime.session.send({
+            type: 'user',
+            parent_tool_use_id: null,
+            message: {
+              role: 'user',
+              content: [...blocks, { type: 'text', text: agentText }],
+            },
+          })
+        } else {
+          await runtime.session.send(agentText)
+        }
         log('send.claude.dispatched', { windowId })
       } catch (err) {
         log('send.claude.error', {
@@ -1220,7 +1447,14 @@ export class AgentSessionService extends EventEmitter {
     }
 
     log('send.codex.dispatch', { windowId })
-    const streamed = await runtime.thread.runStreamed(input)
+    const codexInput =
+      imageAttachments.length > 0
+        ? [
+            ...imageAttachments.map((p) => ({ type: 'local_image' as const, path: p })),
+            { type: 'text' as const, text: agentText },
+          ]
+        : agentText
+    const streamed = await runtime.thread.runStreamed(codexInput)
     runtime.turnPromise = this.consumeCodexTurn(runtime, streamed.events).finally(() => {
       runtime.turnPromise = null
     })
@@ -1269,6 +1503,26 @@ export class AgentSessionService extends EventEmitter {
       persistTimers.delete(windowId)
     }
     deletePersistedSnapshot(windowId)
+  }
+
+  /** Claude-only: toggle the 1M-context-window beta. Must recreate the
+   *  session since `betas` is only read at construction time. Mark closed so
+   *  the next send() transparently reopens with the new beta flag. */
+  async updateContextLength(
+    windowId: string,
+    length: AgentSessionRequest['contextLength'],
+  ): Promise<void> {
+    const runtime = this.runtimes.get(windowId)
+    if (!runtime) return
+    runtime.request.contextLength = length ?? null
+    if (runtime.kind !== 'claude') return
+    try {
+      runtime.session.close()
+    } catch {
+      /* idempotent */
+    }
+    runtime.closed = true
+    log('claude.contextLength.update', { windowId, length: length ?? null })
   }
 
   /** Apply a permission-mode change to a running agent session. Claude's SDK
@@ -1385,6 +1639,7 @@ export class AgentSessionService extends EventEmitter {
         },
         ...claudeThinkingOptions(req.thinkingLevel, req.model || DEFAULT_CLAUDE_MODEL),
         ...(claudeBinary ? { pathToClaudeCodeExecutable: claudeBinary } : {}),
+        ...(req.contextLength === 'extended' ? { betas: [CLAUDE_CONTEXT_1M_BETA] } : {}),
       }
       const sessionId = runtime.snapshot.claudeSessionId
       const session = this.withCwd(req.cwd, () =>
@@ -1916,6 +2171,38 @@ export class AgentSessionService extends EventEmitter {
     if (event.type === 'result') {
       runtime.snapshot.status = 'idle'
       runtime.snapshot.error = null
+      // Capture token accounting so the renderer can display
+      // "X% · used / contextWindow". `modelUsage` is keyed by model id —
+      // pick the entry matching the runtime's model (or fall back to the
+      // first one if the SDK aliased the id).
+      const result = event as any
+      const modelUsage = result.modelUsage as
+        | Record<
+            string,
+            {
+              inputTokens: number
+              outputTokens: number
+              cacheReadInputTokens: number
+              cacheCreationInputTokens: number
+              contextWindow: number
+            }
+          >
+        | undefined
+      if (modelUsage) {
+        const requested = runtime.request.model || DEFAULT_CLAUDE_MODEL
+        const pick = modelUsage[requested] ?? Object.values(modelUsage)[0]
+        if (pick) {
+          runtime.snapshot.usage = {
+            model: requested,
+            inputTokens: pick.inputTokens ?? 0,
+            outputTokens: pick.outputTokens ?? 0,
+            cachedInputTokens:
+              (pick.cacheReadInputTokens ?? 0) + (pick.cacheCreationInputTokens ?? 0),
+            contextWindow: pick.contextWindow ?? null,
+            updatedAt: now(),
+          }
+        }
+      }
       // Safety net: if any tool rows are still marked in_progress after the
       // turn finished (tool_result event was dropped or mis-matched),
       // close them out so the UI doesn't keep spinning. Assistant text
@@ -1986,6 +2273,21 @@ export class AgentSessionService extends EventEmitter {
     if (event.type === 'turn.completed') {
       runtime.snapshot.status = 'idle'
       runtime.snapshot.error = null
+      const usage = (event as any).usage as
+        | { input_tokens?: number; cached_input_tokens?: number; output_tokens?: number }
+        | undefined
+      if (usage) {
+        runtime.snapshot.usage = {
+          model: runtime.request.model || null,
+          inputTokens: usage.input_tokens ?? 0,
+          outputTokens: usage.output_tokens ?? 0,
+          cachedInputTokens: usage.cached_input_tokens ?? 0,
+          // Codex SDK doesn't expose a per-model context window; fall back to
+          // the known GPT-5 family capacity so the % indicator has a denominator.
+          contextWindow: CODEX_DEFAULT_CONTEXT_WINDOW,
+          updatedAt: now(),
+        }
+      }
       return
     }
     if (event.type === 'turn.failed' || event.type === 'error') {

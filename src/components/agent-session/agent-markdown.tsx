@@ -1,6 +1,7 @@
 import { memo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { activateLink } from '@/lib/activate-link'
 import { cn } from '@/lib/utils'
 
 // Copied and adapted from Craft Agents OSS:
@@ -14,7 +15,6 @@ interface AgentMarkdownProps {
   className?: string
   /** Inline mode collapses block spacing for short messages. */
   inline?: boolean
-  onUrlClick?: (url: string) => void
 }
 
 const components = {
@@ -22,6 +22,15 @@ const components = {
     <a
       {...props}
       href={href}
+      onClick={(e: React.MouseEvent<HTMLAnchorElement>) => {
+        // Route through the same activation logic as terminal links so
+        // linkRules / terminalLinkTarget / directoryLinkTarget are honored.
+        if (!href) return
+        // Let modifier-click fall through to the default handler.
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+        e.preventDefault()
+        activateLink(href)
+      }}
       target="_blank"
       rel="noreferrer noopener"
       className="text-foreground underline underline-offset-2 decoration-foreground/35 hover:decoration-foreground"

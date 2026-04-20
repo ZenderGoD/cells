@@ -12,7 +12,6 @@ import {
   Download,
   Eye,
   EyeOff,
-  Folder,
   Loader2,
   Magnet,
   ArrowUpRight,
@@ -1002,15 +1001,6 @@ export function StatusBar() {
                     {awTitle}
                   </span>
                 )}
-                {aw.cwd ? (
-                  <span
-                    className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border/30 bg-muted/30 px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground/80"
-                    title={aw.cwd}
-                  >
-                    <Folder className="h-2.5 w-2.5" />
-                    <span className="max-w-40 truncate">{aw.cwd.replace(/^.*\//, '')}</span>
-                  </span>
-                ) : null}
                 <span
                   className={cn(
                     'inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] leading-none',

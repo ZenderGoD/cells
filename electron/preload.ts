@@ -1,7 +1,9 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type {
+  AgentPermissionMode,
   AgentSessionRequest,
   AgentSessionSnapshot,
+  AgentThinkingLevel,
   CellsAPI,
   DaemonStatus,
   PerfEventRecord,
@@ -308,8 +310,16 @@ const api: CellsAPI = {
   agentSession: {
     ensure: (request: AgentSessionRequest) =>
       ipcRenderer.invoke('agent-session:ensure', request) as Promise<AgentSessionSnapshot>,
-    send: (windowId: string, input: string) =>
-      ipcRenderer.invoke('agent-session:send', windowId, input),
+    send: (
+      windowId: string,
+      input: string,
+      attachments?: string[],
+      overrides?: {
+        model?: string | null
+        thinkingLevel?: AgentThinkingLevel | null
+        permissionMode?: AgentPermissionMode | null
+      },
+    ) => ipcRenderer.invoke('agent-session:send', windowId, input, attachments, overrides),
     close: (windowId: string) => ipcRenderer.invoke('agent-session:close', windowId),
     dispose: (windowId: string) => ipcRenderer.invoke('agent-session:dispose', windowId),
     getAuth: (agent: 'claude' | 'codex') =>
@@ -329,6 +339,8 @@ const api: CellsAPI = {
       mode: 'safe' | 'ask' | 'allow-all' | 'bypass' | null,
     ) =>
       ipcRenderer.invoke('agent-session:update-permission-mode', windowId, mode) as Promise<void>,
+    updateContextLength: (windowId: string, length: 'default' | 'extended' | null) =>
+      ipcRenderer.invoke('agent-session:update-context-length', windowId, length) as Promise<void>,
     listCodexModels: () =>
       ipcRenderer.invoke('agent-session:list-codex-models') as Promise<
         Array<{
@@ -339,6 +351,17 @@ const api: CellsAPI = {
           hidden: boolean
           supportedReasoningEfforts: Array<{ effort: string; description: string }>
           defaultReasoningEffort: string
+        }>
+      >,
+    listClaudeModels: () =>
+      ipcRenderer.invoke('agent-session:list-claude-models') as Promise<
+        Array<{
+          id: string
+          displayName: string
+          description: string
+          supportsEffort: boolean
+          supportedEffortLevels: string[]
+          supportsAdaptiveThinking: boolean
         }>
       >,
     onLoginEvent: (

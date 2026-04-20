@@ -163,8 +163,9 @@ export type AgentPermissionMode = 'safe' | 'ask' | 'allow-all' | 'bypass'
  *   medium  — balanced (default)
  *   high    — deep reasoning
  *   max     — absolute maximum effort
+ *   xhigh   — Codex-side extra-high tier (surfaced when the CLI reports it)
  */
-export type AgentThinkingLevel = 'off' | 'low' | 'medium' | 'high' | 'max'
+export type AgentThinkingLevel = 'off' | 'low' | 'medium' | 'high' | 'max' | 'xhigh'
 
 export interface AgentWindowNode {
   id: string
@@ -186,7 +187,29 @@ export interface AgentWindowNode {
   permissionMode?: AgentPermissionMode | null
   thinkingLevel?: AgentThinkingLevel | null
   fastMode?: boolean | null
+  /** Claude-only: opt into the 1M-token context-window beta (Sonnet 4/4.5).
+   *  When 'default' (or null), the regular 200k window is used. */
+  contextLength?: AgentContextLength | null
   createdAt?: number | null
+}
+
+/** Context-window variant the user has selected. Only 'extended' (1M) and
+ *  'default' (whatever the model's native window is) are meaningful today;
+ *  Claude Sonnet 4/4.5 is the only model that accepts 'extended'. */
+export type AgentContextLength = 'default' | 'extended'
+
+/** Rolling per-session token accounting, sourced from the agent's last
+ *  turn-completion event. `contextWindow` is the model's actual max
+ *  prompt-token capacity as reported by the SDK (Claude) or a known fallback
+ *  (Codex). `inputTokens` already includes cached tokens — it's the full
+ *  prompt the model saw. */
+export interface AgentUsageStats {
+  model: string | null
+  inputTokens: number
+  outputTokens: number
+  cachedInputTokens: number
+  contextWindow: number | null
+  updatedAt: number
 }
 
 export type AgentSessionMessageRole =
@@ -206,6 +229,10 @@ export interface AgentSessionMessage {
   metadata?: string | null
   status?: 'in_progress' | 'completed' | 'failed'
   updatedAt?: number | null
+  /** Absolute paths of files the user attached to this message. Images render
+   * as thumbnails inline in the bubble; the same paths are forwarded to the
+   * agent as proper multimodal content blocks rather than `[path]` strings. */
+  attachments?: string[]
   /** Only set for role='auth_request' — loginUrl the user needs to open. */
   authLoginUrl?: string | null
   /** Claude Agent SDK tool_use_id of this message's parent Task/Agent tool, if
@@ -230,6 +257,7 @@ export interface AgentSessionRequest {
   permissionMode?: AgentPermissionMode | null
   thinkingLevel?: AgentThinkingLevel | null
   fastMode?: boolean | null
+  contextLength?: AgentContextLength | null
 }
 
 export interface AgentSessionSnapshot {
@@ -243,6 +271,7 @@ export interface AgentSessionSnapshot {
   codexThreadId?: string | null
   updatedAt: number
   messages: AgentSessionMessage[]
+  usage?: AgentUsageStats | null
 }
 
 export interface Project {
@@ -449,7 +478,16 @@ export interface CellsAPI {
   }
   agentSession: {
     ensure(request: AgentSessionRequest): Promise<AgentSessionSnapshot>
-    send(windowId: string, input: string): Promise<void>
+    send(
+      windowId: string,
+      input: string,
+      attachments?: string[],
+      overrides?: {
+        model?: string | null
+        thinkingLevel?: AgentThinkingLevel | null
+        permissionMode?: AgentPermissionMode | null
+      },
+    ): Promise<void>
     close(windowId: string): Promise<void>
     dispose(windowId: string): Promise<void>
     getAuth(agent: 'claude' | 'codex'): Promise<{
@@ -461,6 +499,7 @@ export interface CellsAPI {
     startLogin(agent: 'claude' | 'codex'): Promise<void>
     cancelLogin(agent: 'claude' | 'codex'): Promise<void>
     updatePermissionMode(windowId: string, mode: AgentPermissionMode | null): Promise<void>
+    updateContextLength(windowId: string, length: AgentContextLength | null): Promise<void>
     listCodexModels(): Promise<
       Array<{
         id: string
@@ -470,6 +509,16 @@ export interface CellsAPI {
         hidden: boolean
         supportedReasoningEfforts: Array<{ effort: string; description: string }>
         defaultReasoningEffort: string
+      }>
+    >
+    listClaudeModels(): Promise<
+      Array<{
+        id: string
+        displayName: string
+        description: string
+        supportsEffort: boolean
+        supportedEffortLevels: string[]
+        supportsAdaptiveThinking: boolean
       }>
     >
     onLoginEvent(
