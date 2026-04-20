@@ -55,6 +55,10 @@ import { LoadingIndicator } from './agent-loading-indicator'
 import { SessionDiffsPanel } from './session-diffs-panel'
 import { InlineMentionMenu, useInlineMention } from './inline-mention-menu'
 import { sumDiffStats, hasDiffStats } from '@/lib/tool-diff-stats'
+import {
+  deriveAgentSessionWindowStatus,
+  getInFlightAgentMessages,
+} from '@/lib/agent-session-activity'
 import { cn } from '@/lib/utils'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Kbd } from '@/components/ui/kbd'
@@ -94,6 +98,100 @@ function formatRelativeTime(timestamp: number) {
   const deltaDays = Math.floor(deltaHours / 24)
   if (deltaDays < 7) return `${deltaDays}d ago`
   return new Date(timestamp).toLocaleDateString()
+}
+
+function formatElapsedMs(startedAt: number | null | undefined) {
+  if (!startedAt) return null
+  const elapsedMs = Math.max(0, Date.now() - startedAt)
+  const elapsedSeconds = Math.floor(elapsedMs / 1000)
+  if (elapsedSeconds < 60) return `${elapsedSeconds}s`
+  const minutes = Math.floor(elapsedSeconds / 60)
+  const seconds = elapsedSeconds % 60
+  if (minutes < 60) return `${minutes}m ${seconds}s`
+  const hours = Math.floor(minutes / 60)
+  const remainingMinutes = minutes % 60
+  return `${hours}h ${remainingMinutes}m`
+}
+
+function parseJsonObject(raw: string | null | undefined): Record<string, unknown> | null {
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null
+  } catch {
+    return null
+  }
+}
+
+function getActivityPreview(message: AgentSessionMessage) {
+  const metadata = parseJsonObject(message.metadata)
+  const textObject = parseJsonObject(message.text)
+  const command =
+    typeof metadata?.command === 'string'
+      ? metadata.command
+      : typeof textObject?.command === 'string'
+        ? textObject.command
+        : null
+  const description =
+    typeof metadata?.description === 'string'
+      ? metadata.description
+      : typeof textObject?.description === 'string'
+        ? textObject.description
+        : null
+  const cwd =
+    typeof metadata?.cwd === 'string'
+      ? metadata.cwd
+      : typeof textObject?.cwd === 'string'
+        ? textObject.cwd
+        : typeof message.metadata === 'string' && message.metadata.startsWith('/')
+          ? message.metadata
+          : null
+  const previewSource =
+    description ||
+    command ||
+    message.text.split('\n').find((line) => line.trim().length > 0) ||
+    message.title ||
+    'Working'
+  return {
+    preview: previewSource.length > 160 ? `${previewSource.slice(0, 160)}…` : previewSource,
+    cwd,
+  }
+}
+
+function normalizeFsPath(value: string | null | undefined) {
+  if (!value) return null
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  return trimmed.length > 1 ? trimmed.replace(/\/+$/, '') : trimmed
+}
+
+function isPathWithin(
+  candidatePath: string | null | undefined,
+  rootPath: string | null | undefined,
+) {
+  const candidate = normalizeFsPath(candidatePath)
+  const root = normalizeFsPath(rootPath)
+  if (!candidate || !root) return false
+  return candidate === root || candidate.startsWith(`${root}/`)
+}
+
+function filterRecentSessionsForProject(
+  sessions: RecentAgentSessionSummary[],
+  projectPath: string | null | undefined,
+  worktrees: Array<{ path: string; isBare?: boolean }>,
+) {
+  const roots = Array.from(
+    new Set(
+      [
+        normalizeFsPath(projectPath),
+        ...worktrees
+          .filter((worktree) => !worktree.isBare)
+          .map((worktree) => normalizeFsPath(worktree.path)),
+      ].filter((value): value is string => Boolean(value)),
+    ),
+  )
+  if (roots.length === 0) return sessions
+  return sessions.filter((session) => roots.some((root) => isPathWithin(session.cwd, root)))
 }
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp'])
@@ -962,6 +1060,105 @@ function QuestionBanner({
   )
 }
 
+function BackgroundActivityBanner({
+  agent,
+  activities,
+  onStop,
+}: {
+  agent: AgentWindowNode['agent']
+  activities: AgentSessionMessage[]
+  onStop: () => void
+}) {
+  const oldestStartedAt = activities.reduce<number | null>((oldest, activity) => {
+    const startedAt = activity.startedAt ?? activity.updatedAt ?? null
+    if (!startedAt) return oldest
+    return oldest == null ? startedAt : Math.min(oldest, startedAt)
+  }, null)
+  const elapsed = formatElapsedMs(oldestStartedAt)
+
+  return (
+    <div className="mb-2 rounded-[12px] border border-cyan-400/20 bg-cyan-500/5 px-3 py-2.5 text-[12px] text-foreground/90 shadow-minimal">
+      <div className="flex items-center gap-2">
+        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+          <Loader2 className="size-3.5 shrink-0 animate-spin text-cyan-300/90" />
+          <div className="min-w-0">
+            <div className="truncate text-[12.5px] font-medium text-foreground">
+              {activities.length === 1
+                ? `${getAgentDisplayName(agent)} is still running in the background`
+                : `${getAgentDisplayName(agent)} still has ${activities.length} background tasks running`}
+            </div>
+            <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground/80">
+              <span>
+                The transcript is idle, but this {getAgentDisplayName(agent).toLowerCase()} session
+                still has live work attached.
+              </span>
+              {elapsed ? (
+                <>
+                  <span className="opacity-40">·</span>
+                  <span>{elapsed}</span>
+                </>
+              ) : null}
+            </div>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onStop}
+          className="inline-flex shrink-0 items-center gap-1 rounded-[8px] bg-amber-400/90 px-2.5 py-1 text-[11.5px] font-medium text-background transition-colors hover:bg-amber-400"
+        >
+          <Square className="size-3 fill-current" />
+          Stop
+        </button>
+      </div>
+      <div className="mt-2 flex flex-col gap-1.5">
+        {activities.slice(0, 3).map((activity) => {
+          const details = getActivityPreview(activity)
+          return (
+            <div
+              key={activity.id}
+              className="flex items-start gap-2 rounded-[10px] border border-cyan-400/10 bg-background/35 px-2.5 py-2"
+            >
+              <Clock className="mt-0.5 size-3.5 shrink-0 text-cyan-300/75" />
+              <div className="min-w-0 flex-1">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="truncate text-[12px] font-medium text-foreground">
+                    {activity.title || 'Activity'}
+                  </span>
+                  {activity.startedAt ? (
+                    <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground/60">
+                      {formatElapsedMs(activity.startedAt)}
+                    </span>
+                  ) : null}
+                </div>
+                <div className="mt-0.5 line-clamp-2 text-[11.5px] leading-[1.45] text-muted-foreground/85">
+                  {details.preview}
+                </div>
+                <div className="mt-1 flex items-center gap-1.5 text-[10.5px] text-muted-foreground/65">
+                  <span>
+                    Updated{' '}
+                    {activity.updatedAt ? formatRelativeTime(activity.updatedAt) : 'just now'}
+                  </span>
+                  {details.cwd ? (
+                    <>
+                      <span className="opacity-40">·</span>
+                      <span className="truncate">{truncateCwd(details.cwd)}</span>
+                    </>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          )
+        })}
+        {activities.length > 3 ? (
+          <div className="px-1 text-[10.5px] text-muted-foreground/65">
+            +{activities.length - 3} more active {activities.length - 3 === 1 ? 'task' : 'tasks'}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
 function GroupRenderer({
   group,
   agent,
@@ -1002,6 +1199,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const [input, setInput] = useState('')
   const [isComposerFocused, setIsComposerFocused] = useState(false)
   const [attachments, setAttachments] = useState<string[]>([])
+  const activeProjectPath = useStore(
+    (state) => state.projects.find((project) => project.id === state.activeProjectId)?.path ?? null,
+  )
+  const worktrees = useStore((state) => state.worktrees)
   // Queue is persisted on the AgentWindowNode so it survives app restart.
   // Read straight from the prop (zustand re-renders this component whenever
   // the window patches) and write through `syncAgentWindow` so the change
@@ -1112,7 +1313,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       useStore.getState().syncAgentWindow(agentWindow.id, {
         title: next.title,
         cwd: next.cwd ?? agentWindow.cwd ?? null,
-        status: next.status,
+        status: deriveAgentSessionWindowStatus(next),
         error: next.error ?? null,
         claudeSessionId: next.claudeSessionId ?? null,
         codexThreadId: next.codexThreadId ?? null,
@@ -1190,8 +1391,21 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     cwd: snapshot?.cwd ?? agentWindow.cwd ?? null,
   })
 
+  const messages = useMemo(() => snapshot?.messages ?? [], [snapshot?.messages])
   const cwdDisplay = truncateCwd(snapshot?.cwd || agentWindow.cwd)
-  const isRunning = snapshot?.status === 'running'
+  const backgroundActivities = useMemo(() => getInFlightAgentMessages(messages), [messages])
+  const hasMessages = messages.length > 0
+  const filteredRecentSessions = useMemo(
+    () =>
+      filterRecentSessionsForProject(
+        recentSessions,
+        activeProjectPath ?? snapshot?.cwd ?? agentWindow.cwd ?? null,
+        worktrees,
+      ),
+    [activeProjectPath, agentWindow.cwd, recentSessions, snapshot?.cwd, worktrees],
+  )
+  const hasBackgroundActivity = backgroundActivities.length > 0
+  const isRunning = deriveAgentSessionWindowStatus(snapshot) === 'running'
   const hasComposerPayload = Boolean(input.trim()) || attachments.length > 0
   const canSubmit = hasComposerPayload && !isRunning
   const isEditingQueuedMessage = editingIndex !== null
@@ -1678,8 +1892,6 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     submit,
   ])
 
-  const messages = useMemo(() => snapshot?.messages ?? [], [snapshot?.messages])
-  const hasMessages = messages.length > 0
   useEffect(() => {
     if (hasMessages) return
     let cancelled = false
@@ -1775,7 +1987,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
             >
               <div className="mx-auto min-h-full max-w-3xl py-6">
                 {!hasMessages ? (
-                  <div className="flex min-h-[360px] flex-col items-center justify-center gap-6 py-10">
+                  <div className="flex min-h-[360px] flex-col items-center justify-center gap-4 py-8">
                     <div className="relative flex size-14 items-center justify-center rounded-[16px] border border-border/60 bg-background/85 shadow-middle">
                       <AgentIcon agent={agentWindow.agent} className="size-7" />
                       <span
@@ -1803,61 +2015,16 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                       )}
                     </div>
                     <AgentEmptyStateHint />
-                    {recentSessions.length > 0 ? (
-                      <div className="w-full max-w-xl rounded-[12px] border border-border/45 bg-background/55 p-2 shadow-minimal">
-                        <div className="flex items-center gap-1.5 px-1 pb-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground/65">
-                          <History className="size-3.5" />
-                          Recent Sessions
-                        </div>
-                        <div className="flex flex-col gap-1">
-                          {recentSessions.map((session) => (
-                            <button
-                              key={`${session.origin}:${session.windowId ?? session.nativeId ?? session.title}`}
-                              type="button"
-                              onClick={() => openRecentSession(session)}
-                              className="flex items-center gap-3 rounded-[10px] border border-border/35 bg-background/45 px-3 py-2 text-left transition-colors hover:border-foreground/15 hover:bg-foreground/5"
-                            >
-                              <AgentIcon agent={session.agent} className="size-4 shrink-0" />
-                              <div className="min-w-0 flex-1">
-                                <div className="flex items-center gap-2">
-                                  <span className="truncate text-[12.5px] font-medium text-foreground/90">
-                                    {session.title}
-                                  </span>
-                                  <span className="shrink-0 rounded-[6px] border border-border/35 bg-background/50 px-1.5 py-0.5 text-[10px] text-muted-foreground/70">
-                                    {session.sourceLabel}
-                                  </span>
-                                </div>
-                                <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground/65">
-                                  {session.cwd ? (
-                                    <span className="truncate font-mono">
-                                      {truncateCwd(session.cwd)}
-                                    </span>
-                                  ) : null}
-                                  <span className="shrink-0">
-                                    {formatRelativeTime(session.updatedAt)}
-                                  </span>
-                                </div>
-                              </div>
-                              <span className="shrink-0 text-[11px] text-muted-foreground/70">
-                                {session.origin === 'cells' ? 'Open' : 'Import'}
-                              </span>
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    ) : null}
-                    <div className="mt-1 flex flex-col items-stretch gap-1 text-[11.5px] text-muted-foreground/70">
+                    <div className="flex w-full max-w-xl flex-wrap items-center justify-center gap-1.5 text-[11px] text-muted-foreground/70">
                       {(['stop', 'after-tool', 'after-turn'] as const).map((mode) => {
                         const meta = QUEUE_MODE_META[mode]
                         return (
                           <div
                             key={mode}
-                            className="flex items-center justify-between gap-3 rounded-[8px] border border-border/40 bg-background/40 px-2.5 py-1 shadow-minimal"
+                            className="inline-flex items-center gap-1.5 rounded-[999px] bg-background/35 px-2.5 py-1"
                           >
-                            <div className="flex items-center gap-1.5">
-                              <meta.Icon className={cn('size-3.5 shrink-0', meta.tint)} />
-                              <span className="text-foreground/80">{meta.label}</span>
-                            </div>
+                            <meta.Icon className={cn('size-3.5 shrink-0', meta.tint)} />
+                            <span className="text-foreground/80">{meta.label}</span>
                             <Kbd className="h-[18px] min-w-[18px] rounded-[4px] bg-foreground/6 px-1 text-[10px] text-muted-foreground/80">
                               {meta.shortcut}
                             </Kbd>
@@ -1865,6 +2032,55 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                         )
                       })}
                     </div>
+                    {filteredRecentSessions.length > 0 ? (
+                      <div className="w-full max-w-xl">
+                        <div className="flex items-center gap-1.5 px-1 pb-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground/65">
+                          <History className="size-3.5" />
+                          Recent Sessions
+                        </div>
+                        <div className="relative">
+                          <ScrollArea className="max-h-[250px] w-full" viewportClassName="pr-2">
+                            <div className="flex flex-col gap-0.5 pb-2">
+                              {filteredRecentSessions.map((session) => (
+                                <button
+                                  key={`${session.origin}:${session.windowId ?? session.nativeId ?? session.title}`}
+                                  type="button"
+                                  onClick={() => openRecentSession(session)}
+                                  className="flex items-center gap-3 rounded-[10px] px-2.5 py-2 text-left transition-colors hover:bg-foreground/5"
+                                >
+                                  <AgentIcon agent={session.agent} className="size-4 shrink-0" />
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex items-center gap-2">
+                                      <span className="truncate text-[12.5px] font-medium text-foreground/90">
+                                        {session.title}
+                                      </span>
+                                      <span className="shrink-0 rounded-[6px] border border-border/35 bg-background/50 px-1.5 py-0.5 text-[10px] text-muted-foreground/70">
+                                        {session.sourceLabel}
+                                      </span>
+                                    </div>
+                                    <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground/65">
+                                      {session.cwd ? (
+                                        <span className="truncate font-mono">
+                                          {truncateCwd(session.cwd)}
+                                        </span>
+                                      ) : null}
+                                      <span className="shrink-0">
+                                        {formatRelativeTime(session.updatedAt)}
+                                      </span>
+                                    </div>
+                                  </div>
+                                  <span className="shrink-0 text-[11px] text-muted-foreground/70">
+                                    {session.origin === 'cells' ? 'Open' : 'Import'}
+                                  </span>
+                                </button>
+                              ))}
+                            </div>
+                          </ScrollArea>
+                          <div className="pointer-events-none absolute inset-x-0 top-0 h-8 bg-gradient-to-b from-background via-background/95 to-transparent" />
+                          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-background via-background/95 to-transparent" />
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 ) : (
                   <div className="space-y-3">
@@ -1988,36 +2204,50 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
               ) : null}
               {queuedMessages.length > 0 ? (
                 <div className="mb-2 select-none">
-                  <button
-                    type="button"
-                    onClick={() => setQueueCollapsed((v) => !v)}
-                    className="flex w-full items-center gap-2 rounded-[8px] px-2 py-1 text-left transition-colors hover:bg-foreground/5 focus:outline-none"
-                    title={queueCollapsed ? 'Show queued messages' : 'Hide queued messages'}
-                  >
-                    <span className="shrink-0 rounded-[4px] bg-background px-1.5 py-0.5 text-[10px] font-medium tabular-nums shadow-minimal">
-                      {queuedMessages.length}
-                    </span>
-                    {(() => {
-                      const next = queuedMessages[0]
-                      const meta = QUEUE_MODE_META[next.mode]
-                      return (
+                  {(() => {
+                    const forceQueueExpanded = queuedMessages.length === 1
+                    const next = queuedMessages[0]
+                    const meta = QUEUE_MODE_META[next.mode]
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!forceQueueExpanded) setQueueCollapsed((v) => !v)
+                        }}
+                        className={cn(
+                          'flex w-full items-center gap-2 rounded-[8px] px-2 py-1 text-left transition-colors focus:outline-none',
+                          !forceQueueExpanded && 'hover:bg-foreground/5',
+                        )}
+                        title={
+                          forceQueueExpanded
+                            ? meta.label
+                            : queueCollapsed
+                              ? 'Show queued messages'
+                              : 'Hide queued messages'
+                        }
+                      >
+                        <span className="shrink-0 rounded-[4px] bg-background px-1.5 py-0.5 text-[10px] font-medium tabular-nums shadow-minimal">
+                          {queuedMessages.length}
+                        </span>
                         <meta.Icon
                           className={cn('size-3.5 shrink-0', meta.tint)}
                           aria-label={meta.label}
                         />
-                      )
-                    })()}
-                    <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground">
-                      {queuedMessages[0].text.replace(/\n/g, ' ') || '(attached files)'}
-                    </span>
-                    <ChevronRight
-                      className={cn(
-                        'ml-auto size-3.5 shrink-0 text-muted-foreground/70 transition-transform',
-                        !queueCollapsed && 'rotate-90',
-                      )}
-                    />
-                  </button>
-                  {!queueCollapsed ? (
+                        <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground">
+                          {next.text.replace(/\n/g, ' ') || '(attached files)'}
+                        </span>
+                        {!forceQueueExpanded ? (
+                          <ChevronRight
+                            className={cn(
+                              'ml-auto size-3.5 shrink-0 text-muted-foreground/70 transition-transform',
+                              !queueCollapsed && 'rotate-90',
+                            )}
+                          />
+                        ) : null}
+                      </button>
+                    )
+                  })()}
+                  {!queueCollapsed || queuedMessages.length === 1 ? (
                     <div className="mt-1 flex max-h-[108px] flex-col gap-1 overflow-y-auto overscroll-contain pr-0.5">
                       {queuedMessages.map((entry, i) => {
                         const meta = QUEUE_MODE_META[entry.mode]
@@ -2188,6 +2418,15 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                     </div>
                   ) : null}
                 </div>
+              ) : null}
+              {hasBackgroundActivity && snapshot?.status !== 'running' ? (
+                <BackgroundActivityBanner
+                  agent={agentWindow.agent}
+                  activities={backgroundActivities}
+                  onStop={() => {
+                    void handleStop()
+                  }}
+                />
               ) : null}
               <div
                 className={cn(

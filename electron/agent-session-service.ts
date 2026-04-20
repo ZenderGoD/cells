@@ -25,6 +25,11 @@ import {
   type AgentComposerMentionKind,
 } from '../src/lib/agent-composer-mentions'
 import { resolveAgentModelId } from '../src/lib/agent-model-selection'
+import {
+  inferAgentSessionTitle,
+  isPlaceholderAgentSessionTitle,
+  sanitizeImportedClaudeUserText,
+} from '../src/lib/agent-session-title'
 
 // Maps Cells's portable 5-tier thinking level onto each backend's primitive.
 // Mirrors Craft's THINKING_TO_EFFORT — ../craft-agents-oss/packages/shared/src/agent/thinking-levels.ts.
@@ -1509,6 +1514,12 @@ function appendMessage(snapshot: AgentSessionSnapshot, message: AgentSessionMess
     startedAt: message.startedAt ?? timestamp,
     updatedAt: timestamp,
   })
+  if (
+    (message.role === 'user' || snapshot.messages.length === 1) &&
+    isPlaceholderAgentSessionTitle(snapshot.agent, snapshot.title)
+  ) {
+    snapshot.title = inferAgentSessionTitle(snapshot.agent, snapshot.messages)
+  }
   snapshot.updatedAt = now()
 }
 
@@ -1883,6 +1894,45 @@ function summarizeSessionText(value: string | null | undefined, fallback: string
   return trimmed.length > 120 ? `${trimmed.slice(0, 117)}...` : trimmed
 }
 
+function parseTimestampLike(value: unknown) {
+  if (typeof value === 'number') return toTimestampMs(value)
+  if (typeof value !== 'string' || !value.trim()) return now()
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : now()
+}
+
+function flattenClaudeToolResultText(content: unknown): string {
+  if (typeof content === 'string') return content.trim()
+  if (!Array.isArray(content)) return ''
+  return content
+    .map((part) => {
+      const item = part as { type?: unknown; text?: unknown }
+      return typeof item.text === 'string' &&
+        (item.type === 'input_text' || item.type === 'output_text' || item.type == null)
+        ? item.text
+        : ''
+    })
+    .filter(Boolean)
+    .join('\n\n')
+    .trim()
+}
+
+function flattenCodexMessageText(content: unknown): string {
+  if (typeof content === 'string') return content.trim()
+  if (!Array.isArray(content)) return ''
+  return content
+    .map((part) => {
+      const item = part as { type?: unknown; text?: unknown }
+      return typeof item.text === 'string' &&
+        (item.type === 'input_text' || item.type === 'output_text' || item.type == null)
+        ? item.text
+        : ''
+    })
+    .filter(Boolean)
+    .join('\n\n')
+    .trim()
+}
+
 function collectClaudeNativeSessionFiles(rootDir: string) {
   if (!existsSync(rootDir)) return [] as Array<{ filePath: string; updatedAt: number }>
   const files: Array<{ filePath: string; updatedAt: number }> = []
@@ -1917,6 +1967,108 @@ function collectClaudeNativeSessionFiles(rootDir: string) {
   return files.sort((a, b) => b.updatedAt - a.updatedAt)
 }
 
+function findClaudeNativeSessionFile(sessionId: string): string | null {
+  return (
+    collectClaudeNativeSessionFiles(CLAUDE_NATIVE_PROJECTS_DIR).find(
+      (entry) => path.basename(entry.filePath, '.jsonl') === sessionId,
+    )?.filePath ?? null
+  )
+}
+
+function readClaudeNativeSessionMessages(filePath: string): AgentSessionMessage[] {
+  try {
+    const source = readFileSync(filePath, 'utf8')
+    const lines = source.split('\n')
+    const messages: AgentSessionMessage[] = []
+    const toolMessages = new Map<string, AgentSessionMessage>()
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index]?.trim()
+      if (!line) continue
+      const parsed = JSON.parse(line) as {
+        type?: unknown
+        uuid?: unknown
+        timestamp?: unknown
+        isSidechain?: unknown
+        toolUseResult?: unknown
+        message?: { content?: unknown }
+      }
+      if (parsed.isSidechain) continue
+      const updatedAt = parseTimestampLike(parsed.timestamp)
+      const contentBlocks = Array.isArray(parsed.message?.content) ? parsed.message.content : []
+
+      if (parsed.type === 'user') {
+        const toolResultBlocks = contentBlocks.filter((block: any) => block?.type === 'tool_result')
+        if (toolResultBlocks.length > 0) {
+          for (const block of toolResultBlocks) {
+            const toolUseId = asNonEmptyString(block?.tool_use_id)
+            const resultText = flattenClaudeToolResultText(block?.content)
+            const summary = resultText.split('\n').slice(0, 8).join('\n').trim()
+            if (!summary && !toolUseId) continue
+            const existing = toolUseId ? toolMessages.get(toolUseId) : null
+            if (existing) {
+              existing.text = summary || existing.text
+              existing.status = block?.is_error ? 'failed' : 'completed'
+              existing.updatedAt = updatedAt
+            } else {
+              const message: AgentSessionMessage = {
+                id: toolUseId ? `tool-${toolUseId}` : `claude-import-tool-result-${index}`,
+                role: 'tool',
+                title: 'Tool result',
+                text: summary,
+                status: block?.is_error ? 'failed' : 'completed',
+                updatedAt,
+                startedAt: updatedAt,
+                toolUseId: toolUseId ?? null,
+              }
+              messages.push(message)
+              if (toolUseId) toolMessages.set(toolUseId, message)
+            }
+          }
+          continue
+        }
+
+        const text = sanitizeImportedClaudeUserText(flattenClaudeUserText(parsed.message))
+        if (!text) continue
+        messages.push({
+          id: typeof parsed.uuid === 'string' ? parsed.uuid : `claude-import-user-${index}`,
+          role: 'user',
+          text,
+          status: 'completed',
+          updatedAt,
+        })
+        continue
+      }
+
+      if (parsed.type === 'assistant') {
+        const text = flattenClaudeText(parsed.message)
+        if (text) {
+          messages.push({
+            id: typeof parsed.uuid === 'string' ? parsed.uuid : `claude-import-assistant-${index}`,
+            role: 'assistant',
+            text,
+            status: 'completed',
+            updatedAt,
+          })
+        }
+        const tools = extractClaudeToolMessages(parsed.message, `claude-import-${index}`, null).map(
+          (message) => ({
+            ...message,
+            startedAt: updatedAt,
+            updatedAt,
+          }),
+        )
+        for (const tool of tools) {
+          messages.push(tool)
+          if (tool.toolUseId) toolMessages.set(tool.toolUseId, tool)
+        }
+      }
+    }
+    return messages
+  } catch {
+    return []
+  }
+}
+
 function readClaudeNativeSessionSummary(filePath: string): RecentAgentSessionSummary | null {
   const sessionId = path.basename(filePath, '.jsonl')
   try {
@@ -1934,20 +2086,7 @@ function readClaudeNativeSessionSummary(filePath: string): RecentAgentSessionSum
         message?: { role?: unknown; content?: unknown }
       }
       if (!cwd && typeof parsed.cwd === 'string' && parsed.cwd.trim()) cwd = parsed.cwd
-      const content = parsed.message?.content
-      const userText =
-        typeof content === 'string'
-          ? content
-          : Array.isArray(content)
-            ? content
-                .map((part) =>
-                  typeof (part as { text?: unknown }).text === 'string'
-                    ? (part as { text: string }).text
-                    : '',
-                )
-                .filter(Boolean)
-                .join(' ')
-            : null
+      const userText = sanitizeImportedClaudeUserText(flattenClaudeUserText(parsed.message))
       if (parsed.type === 'user' && userText?.trim()) {
         const summary = summarizeSessionText(userText, `Claude session ${sessionId.slice(0, 8)}`)
         if (!title) title = summary
@@ -1974,6 +2113,130 @@ function readClaudeNativeSessionSummary(filePath: string): RecentAgentSessionSum
   } catch {
     return null
   }
+}
+
+function lookupCodexRolloutPath(threadId: string): string | null {
+  const rows = readSqliteRows(
+    CODEX_NATIVE_STATE_DB,
+    `select rollout_path from threads where id = '${threadId.replace(/'/g, "''")}' limit 1`,
+  )
+  return rows[0]?.[0] || null
+}
+
+function readCodexNativeSessionMessages(threadId: string): AgentSessionMessage[] {
+  const rolloutPath = lookupCodexRolloutPath(threadId)
+  if (!rolloutPath || !existsSync(rolloutPath)) return []
+  try {
+    const source = readFileSync(rolloutPath, 'utf8')
+    const lines = source.split('\n')
+    const messages: AgentSessionMessage[] = []
+    const toolMessages = new Map<string, AgentSessionMessage>()
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index]?.trim()
+      if (!line) continue
+      const parsed = JSON.parse(line) as {
+        type?: unknown
+        timestamp?: unknown
+        payload?: Record<string, unknown>
+      }
+      const updatedAt = parseTimestampLike(parsed.timestamp)
+      const payload = parsed.payload ?? {}
+      if (parsed.type !== 'response_item') continue
+
+      if (payload.type === 'message') {
+        const role = asNonEmptyString(payload.role)
+        const text = sanitizeImportedClaudeUserText(flattenCodexMessageText(payload.content))
+        if (!text || role === 'developer' || role === 'system') continue
+        messages.push({
+          id: `codex-import-${role ?? 'message'}-${threadId}-${index}`,
+          role: role === 'assistant' ? 'assistant' : 'user',
+          text,
+          status: 'completed',
+          updatedAt,
+        })
+        continue
+      }
+
+      if (payload.type === 'reasoning') {
+        const summary = Array.isArray(payload.summary)
+          ? payload.summary
+              .filter((entry): entry is string => typeof entry === 'string')
+              .join('\n\n')
+              .trim()
+          : ''
+        if (!summary) continue
+        messages.push({
+          id: `codex-import-reasoning-${threadId}-${index}`,
+          role: 'reasoning',
+          title: 'Reasoning',
+          text: summary,
+          status: 'completed',
+          updatedAt,
+        })
+        continue
+      }
+
+      if (payload.type === 'function_call' || payload.type === 'custom_tool_call') {
+        const callId = asNonEmptyString(payload.call_id)
+        if (!callId) continue
+        const inputText =
+          payload.type === 'function_call'
+            ? compactText(payload.arguments, '')
+            : compactText(payload.input, '')
+        const message: AgentSessionMessage = {
+          id: `tool-${callId}`,
+          role: 'tool',
+          title: asNonEmptyString(payload.name) || 'Tool call',
+          text: inputText,
+          metadata: inputText || null,
+          status: payload.status === 'completed' ? 'completed' : 'in_progress',
+          startedAt: updatedAt,
+          updatedAt,
+        }
+        messages.push(message)
+        toolMessages.set(callId, message)
+        continue
+      }
+
+      if (payload.type === 'function_call_output' || payload.type === 'custom_tool_call_output') {
+        const callId = asNonEmptyString(payload.call_id)
+        if (!callId) continue
+        const outputText = compactText(payload.output, '')
+        const existing = toolMessages.get(callId)
+        if (existing) {
+          existing.text = outputText || existing.text
+          existing.status = 'completed'
+          existing.updatedAt = updatedAt
+        } else {
+          messages.push({
+            id: `tool-${callId}`,
+            role: 'tool',
+            title: 'Tool result',
+            text: outputText,
+            status: 'completed',
+            startedAt: updatedAt,
+            updatedAt,
+          })
+        }
+      }
+    }
+    return messages
+  } catch {
+    return []
+  }
+}
+
+function loadNativeImportMessages(request: AgentSessionRequest, snapshot: AgentSessionSnapshot) {
+  if (snapshot.messages.length > 0) return snapshot.messages
+  if (request.agent === 'claude' && snapshot.claudeSessionId) {
+    const filePath = findClaudeNativeSessionFile(snapshot.claudeSessionId)
+    if (!filePath) return snapshot.messages
+    return readClaudeNativeSessionMessages(filePath)
+  }
+  if (request.agent === 'codex' && snapshot.codexThreadId) {
+    return readCodexNativeSessionMessages(snapshot.codexThreadId)
+  }
+  return snapshot.messages
 }
 
 function readSqliteRows(dbPath: string, queryText: string) {
@@ -2152,6 +2415,11 @@ export class AgentSessionService extends EventEmitter {
       // across restarts (a fresh turn will overwrite it on the next 'result').
       usage: persisted?.usage ?? null,
       pendingApproval: null,
+    }
+    snapshot.messages = loadNativeImportMessages(request, snapshot)
+    if (snapshot.messages.length > 0) {
+      snapshot.updatedAt =
+        snapshot.messages[snapshot.messages.length - 1]?.updatedAt ?? snapshot.updatedAt
     }
 
     if (request.agent === 'claude') {
