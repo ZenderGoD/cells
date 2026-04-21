@@ -1608,6 +1608,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     [visibleMessages],
   )
   const hasMessages = visibleMessages.length > 0
+  const isLoadingSnapshot = !visibleSnapshot
   const filteredRecentSessions = useMemo(
     () =>
       filterRecentSessionsForProject(
@@ -2248,7 +2249,25 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
               viewportClassName="rounded-none"
             >
               <div className="mx-auto min-h-full max-w-3xl py-6">
-                {!hasMessages ? (
+                {isLoadingSnapshot ? (
+                  <div className="space-y-3 px-2" aria-hidden>
+                    <div className="flex justify-end">
+                      <div className="h-6 w-[45%] animate-pulse rounded-[10px] bg-foreground/5" />
+                    </div>
+                    <div className="space-y-2">
+                      <div className="h-4 w-[70%] animate-pulse rounded-[8px] bg-foreground/5" />
+                      <div className="h-4 w-[55%] animate-pulse rounded-[8px] bg-foreground/5" />
+                      <div className="h-4 w-[40%] animate-pulse rounded-[8px] bg-foreground/5" />
+                    </div>
+                    <div className="flex justify-end">
+                      <div className="h-6 w-[30%] animate-pulse rounded-[10px] bg-foreground/5" />
+                    </div>
+                    <div className="space-y-2">
+                      <div className="h-4 w-[60%] animate-pulse rounded-[8px] bg-foreground/5" />
+                      <div className="h-4 w-[35%] animate-pulse rounded-[8px] bg-foreground/5" />
+                    </div>
+                  </div>
+                ) : !hasMessages ? (
                   <div className="flex min-h-[360px] flex-col items-center justify-center gap-4 py-8">
                     <div className="relative flex size-14 items-center justify-center rounded-[16px] border border-border/60 bg-background/85 shadow-middle">
                       <AgentIcon agent={agentWindow.agent} className="size-7" />
