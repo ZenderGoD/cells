@@ -711,9 +711,9 @@ export function AgentTurnCard({
                   <Spinner className="shrink-0 text-[10px] text-muted-foreground/80" />
                   <LoadingIndicator
                     label={computedPreview}
+                    showSpinner={false}
                     showElapsed
                     className="min-w-0 flex-1 gap-1.5 overflow-hidden [&>span:nth-child(2)]:truncate"
-                    spinnerClassName="hidden"
                   />
                 </span>
               ) : (

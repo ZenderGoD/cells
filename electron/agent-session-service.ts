@@ -1350,6 +1350,7 @@ interface CodexRuntime extends RuntimeBase {
   client: LiveCodexAppServerClient
   providerThreadId: string | null
   activeTurnId: string | null
+  currentTurnUnifiedDiff: string | null
   turnPromise: Promise<void> | null
   resolveTurn: (() => void) | null
   rejectTurn: ((error: Error) => void) | null
@@ -1754,6 +1755,25 @@ function appendCodexDelta(
     status: 'in_progress',
     updatedAt: now(),
   })
+}
+
+function syncCodexTurnDiffToLatestFileChange(runtime: CodexRuntime) {
+  const diff = runtime.currentTurnUnifiedDiff
+  if (!diff) return
+  const turnPrefix = `t${runtime.turnCounter}-`
+  for (let index = runtime.snapshot.messages.length - 1; index >= 0; index -= 1) {
+    const message = runtime.snapshot.messages[index]
+    if (
+      message.role === 'tool' &&
+      message.title === 'File changes' &&
+      message.id.startsWith(turnPrefix)
+    ) {
+      message.metadata = diff
+      message.updatedAt = now()
+      runtime.snapshot.updatedAt = now()
+      return
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -3103,6 +3123,7 @@ export class AgentSessionService extends EventEmitter {
       client: null as unknown as LiveCodexAppServerClient,
       providerThreadId: snapshot.codexThreadId ?? null,
       activeTurnId: null,
+      currentTurnUnifiedDiff: null,
       turnPromise: null,
       resolveTurn: null,
       rejectTurn: null,
@@ -3347,6 +3368,7 @@ export class AgentSessionService extends EventEmitter {
       const turn = asRecord(params?.turn)
       runtime.turnCounter += 1
       runtime.activeTurnId = asNonEmptyString(turn?.id) ?? runtime.activeTurnId
+      runtime.currentTurnUnifiedDiff = null
       runtime.snapshot.status = 'running'
       runtime.snapshot.error = null
       runtime.snapshot.codexPlan = null
@@ -3373,6 +3395,14 @@ export class AgentSessionService extends EventEmitter {
       return
     }
 
+    if (method === 'turn/diff/updated') {
+      const diff = asNonEmptyText(params?.diff)
+      if (!diff) return
+      runtime.currentTurnUnifiedDiff = diff
+      syncCodexTurnDiffToLatestFileChange(runtime)
+      return
+    }
+
     if (method === 'turn/completed') {
       const turn = asRecord(params?.turn)
       const status = asNonEmptyString(turn?.status) ?? 'completed'
@@ -3384,6 +3414,7 @@ export class AgentSessionService extends EventEmitter {
       runtime.pendingApproval = null
       runtime.snapshot.pendingApproval = null
       runtime.snapshot.codexPlan = null
+      runtime.currentTurnUnifiedDiff = null
       runtime.activeTurnId = null
       for (const message of runtime.snapshot.messages) {
         if (message.status === 'in_progress') {
@@ -3415,6 +3446,7 @@ export class AgentSessionService extends EventEmitter {
       runtime.snapshot.pendingApproval = null
       runtime.snapshot.status = 'error'
       runtime.snapshot.error = message
+      runtime.currentTurnUnifiedDiff = null
       runtime.activeTurnId = null
       appendMessage(runtime.snapshot, {
         id: `${runtime.snapshot.windowId}-codex-error-${now()}`,
@@ -3477,7 +3509,10 @@ export class AgentSessionService extends EventEmitter {
     next.id = codexMessageId(runtime, next.id)
     if (method === 'item/completed' && next.title === 'File changes') {
       const previous = runtime.snapshot.messages.find((message) => message.id === next.id)
-      if (previous?.text) next.metadata = previous.text
+      next.metadata = runtime.currentTurnUnifiedDiff || previous?.metadata || previous?.text
+    }
+    if (next.title === 'File changes' && runtime.currentTurnUnifiedDiff) {
+      next.metadata = runtime.currentTurnUnifiedDiff
     }
     if (method === 'item/started') next.status = 'in_progress'
     appendMessage(runtime.snapshot, next)

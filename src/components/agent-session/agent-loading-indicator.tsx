@@ -36,6 +36,7 @@ export function Spinner({ className }: SpinnerProps) {
 export interface LoadingIndicatorProps {
   label?: string
   animated?: boolean
+  showSpinner?: boolean
   showElapsed?: boolean | number
   className?: string
   spinnerClassName?: string
@@ -44,6 +45,7 @@ export interface LoadingIndicatorProps {
 export function LoadingIndicator({
   label,
   animated = true,
+  showSpinner = true,
   showElapsed = false,
   className,
   spinnerClassName,
@@ -71,11 +73,13 @@ export function LoadingIndicator({
 
   return (
     <span className={cn('inline-flex items-center gap-2', className)}>
-      {animated ? (
-        <Spinner className={spinnerClassName} />
-      ) : (
-        <span className="inline-flex items-center justify-center w-[1em] h-[1em]">●</span>
-      )}
+      {showSpinner ? (
+        animated ? (
+          <Spinner className={spinnerClassName} />
+        ) : (
+          <span className="inline-flex items-center justify-center w-[1em] h-[1em]">●</span>
+        )
+      ) : null}
       {label && <span className="text-muted-foreground">{label}</span>}
       {showElapsed && elapsed >= 1000 && (
         <span className="text-muted-foreground/60 tabular-nums">({formatDuration(elapsed)})</span>
