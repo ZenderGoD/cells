@@ -40,6 +40,8 @@ export interface LoadingIndicatorProps {
   showElapsed?: boolean | number
   className?: string
   spinnerClassName?: string
+  labelClassName?: string
+  elapsedClassName?: string
 }
 
 export function LoadingIndicator({
@@ -49,6 +51,8 @@ export function LoadingIndicator({
   showElapsed = false,
   className,
   spinnerClassName,
+  labelClassName,
+  elapsedClassName,
 }: LoadingIndicatorProps) {
   const [elapsed, setElapsed] = React.useState(0)
   const startTimeRef = React.useRef<number | null>(null)
@@ -80,9 +84,11 @@ export function LoadingIndicator({
           <span className="inline-flex items-center justify-center w-[1em] h-[1em]">●</span>
         )
       ) : null}
-      {label && <span className="text-muted-foreground">{label}</span>}
+      {label && <span className={cn('text-muted-foreground', labelClassName)}>{label}</span>}
       {showElapsed && elapsed >= 1000 && (
-        <span className="text-muted-foreground/60 tabular-nums">({formatDuration(elapsed)})</span>
+        <span className={cn('text-muted-foreground/60 tabular-nums', elapsedClassName)}>
+          ({formatDuration(elapsed)})
+        </span>
       )}
     </span>
   )

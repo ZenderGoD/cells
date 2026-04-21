@@ -265,8 +265,8 @@ const api: CellsAPI = {
     repairTerminalFonts: () => ipcRenderer.invoke('app:repair-terminal-fonts'),
     beep: () => ipcRenderer.send('app:beep'),
     getShellHistory: () => ipcRenderer.invoke('app:get-shell-history') as Promise<string[]>,
-    fileThumbnail: (filePath: string) =>
-      ipcRenderer.invoke('app:file-thumbnail', filePath) as Promise<string | null>,
+    fileThumbnail: (filePath: string, maxHeight?: number) =>
+      ipcRenderer.invoke('app:file-thumbnail', filePath, maxHeight) as Promise<string | null>,
     pinWindow: (
       id: string,
       type: string,

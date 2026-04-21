@@ -24,6 +24,10 @@ import {
   rewriteAgentComposerMentions,
   type AgentComposerMentionKind,
 } from '../src/lib/agent-composer-mentions'
+import {
+  normalizeClaudeCatalogModelId,
+  parseGenericCliVersion,
+} from '../src/lib/claude-model-catalog'
 import { resolveAgentModelId } from '../src/lib/agent-model-selection'
 import {
   inferAgentSessionTitle,
@@ -1038,6 +1042,39 @@ export interface ClaudeModelInfo {
 }
 
 let cachedClaudeModels: { at: number; list: ClaudeModelInfo[] } | null = null
+let cachedClaudeCliVersion: { at: number; version: string | null } | null = null
+
+function bufferToString(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (Buffer.isBuffer(value)) return value.toString('utf8')
+  return ''
+}
+
+function getClaudeCliVersion(): string | null {
+  if (cachedClaudeCliVersion && Date.now() - cachedClaudeCliVersion.at < 5 * 60_000) {
+    return cachedClaudeCliVersion.version
+  }
+  const claudeBinary = getSystemClaudePath()
+  if (!claudeBinary) return null
+
+  try {
+    const output = execFileSync(claudeBinary, ['--version'], {
+      encoding: 'utf8',
+      env: buildAgentEnv({
+        NO_COLOR: '1',
+        FORCE_COLOR: '0',
+      }),
+    })
+    const version = parseGenericCliVersion(output)
+    cachedClaudeCliVersion = { at: Date.now(), version }
+    return version
+  } catch (error) {
+    const output = `${bufferToString((error as { stdout?: unknown } | null)?.stdout)}\n${bufferToString((error as { stderr?: unknown } | null)?.stderr)}`
+    const version = parseGenericCliVersion(output)
+    cachedClaudeCliVersion = { at: Date.now(), version }
+    return version
+  }
+}
 
 async function resolveSessionModelId(
   agent: 'claude' | 'codex',
@@ -1071,6 +1108,7 @@ export async function listClaudeModels(): Promise<ClaudeModelInfo[]> {
     return cachedClaudeModels.list
   }
   const claudeBinary = getSystemClaudePath()
+  const cliVersion = getClaudeCliVersion()
   let releasePrompt: () => void = () => {}
   const promptDone = new Promise<void>((resolve) => {
     releasePrompt = resolve
@@ -1107,16 +1145,34 @@ export async function listClaudeModels(): Promise<ClaudeModelInfo[]> {
       supportedEffortLevels?: string[]
       supportsAdaptiveThinking?: boolean
     }>
-    const mapped: ClaudeModelInfo[] = raw.map((m) => ({
-      id: m.value,
-      displayName: m.displayName || m.value,
-      description: m.description || '',
-      supportsEffort: !!m.supportsEffort,
-      supportedEffortLevels: (m.supportedEffortLevels as string[] | undefined) ?? [],
-      supportsAdaptiveThinking: !!m.supportsAdaptiveThinking,
-    }))
-    cachedClaudeModels = { at: Date.now(), list: mapped }
-    return mapped
+    const mapped = raw
+      .map<ClaudeModelInfo | null>((m) => {
+        const id = normalizeClaudeCatalogModelId(
+          {
+            id: m.value,
+            displayName: m.displayName,
+            description: m.description,
+          },
+          cliVersion,
+        )
+        if (!id) return null
+        return {
+          id,
+          displayName: m.displayName || m.value,
+          description: m.description || '',
+          supportsEffort: !!m.supportsEffort,
+          supportedEffortLevels: (m.supportedEffortLevels as string[] | undefined) ?? [],
+          supportsAdaptiveThinking: !!m.supportsAdaptiveThinking,
+        }
+      })
+      .filter((model): model is ClaudeModelInfo => model !== null)
+    const deduped = new Map<string, ClaudeModelInfo>()
+    for (const model of mapped) {
+      if (!deduped.has(model.id)) deduped.set(model.id, model)
+    }
+    const list = [...deduped.values()]
+    cachedClaudeModels = { at: Date.now(), list }
+    return list
   } finally {
     releasePrompt()
     try {
@@ -2563,20 +2619,30 @@ export class AgentSessionService extends EventEmitter {
     // when the user queued this message, not whatever is active now.
     if (overrides) {
       const req = runtime.request
-      const modelChanged =
-        overrides.model !== undefined && (overrides.model ?? null) !== (req.model ?? null)
-      const thinkingChanged =
-        overrides.thinkingLevel !== undefined &&
-        (overrides.thinkingLevel ?? null) !== (req.thinkingLevel ?? null)
-      const permissionChanged =
-        overrides.permissionMode !== undefined &&
-        (overrides.permissionMode ?? null) !== (req.permissionMode ?? null)
+      // `null` overrides come from legacy / fallback UI state and should mean
+      // "keep the current resolved setting", not "reset to baked-in default".
+      const nextModel =
+        overrides.model != null
+          ? await resolveSessionModelId(req.agent, overrides.model)
+          : undefined
+      const nextThinkingLevel =
+        overrides.thinkingLevel != null ? overrides.thinkingLevel : undefined
+      const nextPermissionMode =
+        overrides.permissionMode != null
+          ? normalizePermissionMode(overrides.permissionMode)
+          : undefined
 
-      if (modelChanged) req.model = overrides.model ?? null
-      if (thinkingChanged) req.thinkingLevel = overrides.thinkingLevel ?? null
+      const modelChanged = nextModel !== undefined && nextModel !== (req.model ?? null)
+      const thinkingChanged =
+        nextThinkingLevel !== undefined && nextThinkingLevel !== (req.thinkingLevel ?? null)
+      const permissionChanged =
+        nextPermissionMode !== undefined && nextPermissionMode !== (req.permissionMode ?? null)
+
+      if (modelChanged) req.model = nextModel
+      if (thinkingChanged) req.thinkingLevel = nextThinkingLevel
 
       if (permissionChanged) {
-        await this.updatePermissionMode(windowId, overrides.permissionMode ?? null)
+        await this.updatePermissionMode(windowId, nextPermissionMode ?? null)
       }
 
       // Claude only reads model / thinking at session construction time.

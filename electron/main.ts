@@ -2066,12 +2066,12 @@ ipcMain.handle('app:paste-clipboard-files', async () => {
   }
 })
 
-ipcMain.handle('app:file-thumbnail', async (_event, filePath: string) => {
+ipcMain.handle('app:file-thumbnail', async (_event, filePath: string, maxHeight?: number) => {
   try {
     const img = nativeImage.createFromPath(filePath)
     if (img.isEmpty()) return null
-    // Resize to a small thumbnail to keep IPC payload small
-    const thumb = img.resize({ height: 96 })
+    const targetHeight = Math.max(32, Math.min(1600, Math.floor(maxHeight ?? 96)))
+    const thumb = img.resize({ height: targetHeight })
     return thumb.toDataURL()
   } catch {
     return null

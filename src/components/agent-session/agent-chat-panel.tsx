@@ -63,6 +63,7 @@ import { cn } from '@/lib/utils'
 import { computeStableList, createEmptyStableListState } from '@/lib/stable-list'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Kbd } from '@/components/ui/kbd'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 
 interface AgentChatPanelProps {
   agentWindow: AgentWindowNode
@@ -203,12 +204,14 @@ function isImagePath(p: string): boolean {
   return IMAGE_EXTENSIONS.has(p.slice(i).toLowerCase())
 }
 
-function AttachmentThumbnail({ path }: { path: string }) {
+function useFileThumbnail(path: string, enabled = true, maxHeight = 96) {
   const [url, setUrl] = useState<string | null>(null)
+
   useEffect(() => {
+    if (!enabled) return
     let cancelled = false
     window.cells.app
-      .fileThumbnail(path)
+      .fileThumbnail(path, maxHeight)
       .then((resolved) => {
         if (!cancelled) setUrl(resolved)
       })
@@ -218,7 +221,13 @@ function AttachmentThumbnail({ path }: { path: string }) {
     return () => {
       cancelled = true
     }
-  }, [path])
+  }, [enabled, maxHeight, path])
+
+  return enabled ? url : null
+}
+
+function AttachmentThumbnail({ path }: { path: string }) {
+  const url = useFileThumbnail(path)
   const name = path.split('/').pop() || path
   const open = () => {
     void window.cells.app.revealPath(path).catch(() => {})
@@ -270,22 +279,7 @@ function AttachmentPill({ path }: { path: string }) {
 function QueueAttachmentThumb({ path }: { path: string }) {
   const name = path.split('/').pop() || path
   const isImage = isImagePath(path)
-  const [url, setUrl] = useState<string | null>(null)
-  useEffect(() => {
-    if (!isImage) return
-    let cancelled = false
-    window.cells.app
-      .fileThumbnail(path)
-      .then((resolved) => {
-        if (!cancelled) setUrl(resolved)
-      })
-      .catch(() => {
-        if (!cancelled) setUrl(null)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [path, isImage])
+  const url = useFileThumbnail(path, isImage)
   if (isImage && url) {
     return (
       <img
@@ -306,43 +300,106 @@ function QueueAttachmentThumb({ path }: { path: string }) {
   )
 }
 
-// Composer chip — small (single-line) thumbnail for images, paperclip for
-// everything else. Rendered above the textarea so the user sees what they
-// attached before typing. Uses the same `fileThumbnail` IPC that the
-// larger user-bubble preview uses, so the cache is shared.
+function ComposerImagePreviewDialog({
+  path,
+  onClose,
+}: {
+  path: string | null
+  onClose: () => void
+}) {
+  const name = path?.split('/').pop() || path || ''
+  const url = useFileThumbnail(path ?? '', Boolean(path), 1400)
+
+  return (
+    <Dialog
+      open={Boolean(path)}
+      onOpenChange={(open) => {
+        if (!open) onClose()
+      }}
+    >
+      <DialogContent
+        showCloseButton
+        className="max-h-[calc(100vh-1.5rem)] w-[calc(100vw-1.5rem)] max-w-[1280px] overflow-hidden border border-border/40 bg-[oklch(0.12_0.004_285)] p-0"
+      >
+        <DialogTitle className="sr-only">{name || 'Image preview'}</DialogTitle>
+        <div className="flex min-h-0 max-h-[calc(100vh-1.5rem)] flex-col">
+          <div className="flex shrink-0 items-center gap-2 border-b border-border/30 px-4 py-3 pr-12">
+            <span className="min-w-0 flex-1 truncate text-[12px] text-muted-foreground/80">
+              {name}
+            </span>
+          </div>
+          <div className="flex min-h-0 flex-1 items-center justify-center bg-black/60 p-4">
+            {url ? (
+              <img
+                src={url}
+                alt={name}
+                className="max-h-[calc(100vh-7rem)] max-w-full rounded-[12px] object-contain shadow-2xl"
+              />
+            ) : (
+              <div className="flex h-40 w-40 items-center justify-center rounded-[12px] border border-border/30 bg-background/30 text-muted-foreground/70">
+                <Paperclip className="size-7" />
+              </div>
+            )}
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function ComposerImageAttachment({
+  path,
+  onPreview,
+  onRemove,
+}: {
+  path: string
+  onPreview: () => void
+  onRemove: () => void
+}) {
+  const name = path.split('/').pop() || path
+  const url = useFileThumbnail(path, true, 192)
+
+  return (
+    <div className="relative shrink-0">
+      <button
+        type="button"
+        onClick={onPreview}
+        title={`Preview ${name}`}
+        className="group/image relative overflow-hidden rounded-[12px] border border-border/35 bg-foreground/5 transition-colors hover:border-border/60 hover:bg-foreground/8 focus:outline-none focus-visible:ring-2 focus-visible:ring-foreground/30"
+      >
+        {url ? (
+          <img src={url} alt={name} className="h-20 w-20 object-cover" />
+        ) : (
+          <div className="flex h-20 w-20 items-center justify-center text-muted-foreground/70">
+            <Paperclip className="size-5" />
+          </div>
+        )}
+      </button>
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation()
+          onRemove()
+        }}
+        aria-label={`Remove ${name}`}
+        className="absolute right-1 top-1 rounded-full border border-black/20 bg-black/55 p-1 text-white/80 backdrop-blur transition-colors hover:bg-black/75 hover:text-white"
+      >
+        <X className="size-3" />
+      </button>
+    </div>
+  )
+}
+
+// Non-image composer attachments stay compact and text-first. Image attachments
+// use the larger preview tiles above instead.
 function ComposerAttachmentChip({ path, onRemove }: { path: string; onRemove: () => void }) {
   const name = path.split('/').pop() || path
-  const isImage = isImagePath(path)
-  const [url, setUrl] = useState<string | null>(null)
-  useEffect(() => {
-    if (!isImage) return
-    let cancelled = false
-    window.cells.app
-      .fileThumbnail(path)
-      .then((resolved) => {
-        if (!cancelled) setUrl(resolved)
-      })
-      .catch(() => {
-        if (!cancelled) setUrl(null)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [path, isImage])
   return (
     <span
       className="inline-flex items-center gap-1 rounded-[6px] bg-foreground/5 py-0.5 pl-1 pr-1 text-[11px] text-muted-foreground/90"
       title={path}
     >
-      {isImage && url ? (
-        <img
-          src={url}
-          alt=""
-          className="size-5 shrink-0 rounded-[4px] border border-border/30 object-cover"
-        />
-      ) : (
-        <Paperclip className="ml-1 size-3" />
-      )}
+      <Paperclip className="ml-1 size-3" />
       <span className="max-w-[180px] truncate font-mono">{name}</span>
       <button
         type="button"
@@ -1295,6 +1352,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const [input, setInput] = useState('')
   const [isComposerFocused, setIsComposerFocused] = useState(false)
   const [attachments, setAttachments] = useState<string[]>([])
+  const [composerPreviewPath, setComposerPreviewPath] = useState<string | null>(null)
   const activeProjectPath = useStore(
     (state) => state.projects.find((project) => project.id === state.activeProjectId)?.path ?? null,
   )
@@ -1335,6 +1393,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const [midTurnDetected, setMidTurnDetected] = useState(false)
   const midTurnAppliedRef = useRef(false)
   const [recentSessions, setRecentSessions] = useState<RecentAgentSessionSummary[]>([])
+  const [recentSessionsFade, setRecentSessionsFade] = useState({ top: false, bottom: false })
   // Queue list collapses by default — the header already shows count + a
   // preview of the next message, mirroring AgentTurnCard's activities stripe.
   const [queueCollapsed, setQueueCollapsed] = useState(true)
@@ -1359,6 +1418,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     [setQueuedMessages],
   )
   const scrollViewportRef = useRef<HTMLDivElement>(null)
+  const recentSessionsViewportRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   const inputRef = useRef(input)
@@ -1514,6 +1574,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   }, [])
 
   const removeAttachment = useCallback((path: string) => {
+    setComposerPreviewPath((current) => (current === path ? null : current))
     setAttachments((prev) => prev.filter((p) => p !== path))
   }, [])
 
@@ -1554,8 +1615,57 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       ),
     [activeProjectPath, agentWindow.cwd, recentSessions, visibleSnapshot?.cwd, worktrees],
   )
+  useEffect(() => {
+    const viewport = recentSessionsViewportRef.current
+    if (!viewport) return
+
+    let frame: number | null = null
+    const update = () => {
+      frame = null
+      const maxScroll = viewport.scrollHeight - viewport.clientHeight
+      const hasOverflow = maxScroll > 1
+      const next = {
+        top: hasOverflow && viewport.scrollTop > 1,
+        bottom: hasOverflow && viewport.scrollTop < maxScroll - 1,
+      }
+      setRecentSessionsFade((prev) =>
+        prev.top === next.top && prev.bottom === next.bottom ? prev : next,
+      )
+    }
+    const scheduleUpdate = () => {
+      if (frame !== null) return
+      frame = window.requestAnimationFrame(update)
+    }
+
+    scheduleUpdate()
+    viewport.addEventListener('scroll', scheduleUpdate, { passive: true })
+
+    const observer =
+      typeof ResizeObserver === 'function' ? new ResizeObserver(scheduleUpdate) : null
+    observer?.observe(viewport)
+    const content = viewport.firstElementChild
+    if (content instanceof HTMLElement) observer?.observe(content)
+    window.addEventListener('resize', scheduleUpdate)
+
+    return () => {
+      if (frame !== null) window.cancelAnimationFrame(frame)
+      viewport.removeEventListener('scroll', scheduleUpdate)
+      observer?.disconnect()
+      window.removeEventListener('resize', scheduleUpdate)
+    }
+  }, [filteredRecentSessions])
   const hasBackgroundActivity = backgroundActivities.length > 0
   const isRunning = deriveAgentSessionWindowStatus(visibleSnapshot) === 'running'
+  const composerImageAttachments = useMemo(
+    () => attachments.filter((path) => isImagePath(path)),
+    [attachments],
+  )
+  const composerFileAttachments = useMemo(
+    () => attachments.filter((path) => !isImagePath(path)),
+    [attachments],
+  )
+  const visibleComposerPreviewPath =
+    composerPreviewPath && attachments.includes(composerPreviewPath) ? composerPreviewPath : null
   const hasComposerPayload = Boolean(input.trim()) || attachments.length > 0
   const canSubmit = hasComposerPayload && !isRunning
   const isEditingQueuedMessage = editingIndex !== null
@@ -2189,7 +2299,11 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                           Recent Sessions
                         </div>
                         <div className="relative">
-                          <ScrollArea className="max-h-[250px] w-full" viewportClassName="pr-2">
+                          <ScrollArea
+                            className="max-h-[250px] w-full"
+                            viewportClassName="pr-2"
+                            viewportRef={recentSessionsViewportRef}
+                          >
                             <div className="flex flex-col gap-0.5 pb-2">
                               {filteredRecentSessions.map((session) => (
                                 <button
@@ -2226,8 +2340,12 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                               ))}
                             </div>
                           </ScrollArea>
-                          <div className="pointer-events-none absolute inset-x-0 top-0 h-8 bg-gradient-to-b from-background via-background/95 to-transparent" />
-                          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-background via-background/95 to-transparent" />
+                          {recentSessionsFade.top ? (
+                            <div className="pointer-events-none absolute inset-x-0 top-0 h-8 bg-gradient-to-b from-background via-background/95 to-transparent" />
+                          ) : null}
+                          {recentSessionsFade.bottom ? (
+                            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-background via-background/95 to-transparent" />
+                          ) : null}
                         </div>
                       </div>
                     ) : null}
@@ -2471,8 +2589,8 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                           >
                             <span
                               className={cn(
-                                'flex size-3.5 shrink-0 cursor-grab items-center justify-center text-muted-foreground/40 opacity-0 transition-opacity hover:text-foreground/70 group-hover/queued:opacity-100 active:cursor-grabbing',
-                                isEditing && 'opacity-100 text-cyan-300/80',
+                                'flex size-3.5 shrink-0 cursor-grab items-center justify-center text-muted-foreground/40 transition-colors hover:text-foreground/70 active:cursor-grabbing',
+                                isEditing && 'text-cyan-300/80',
                               )}
                               aria-label="Drag to reorder"
                               title="Drag to reorder"
@@ -2549,7 +2667,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                               onClick={() => sendQueuedImmediately(i)}
                               aria-label="Send queued message now"
                               title="Send now"
-                              className="shrink-0 rounded p-0.5 text-muted-foreground/50 opacity-0 transition-opacity hover:bg-foreground/10 hover:text-foreground group-hover/queued:opacity-100"
+                              className="shrink-0 rounded p-0.5 text-muted-foreground/50 transition-colors hover:bg-foreground/10 hover:text-foreground"
                             >
                               <ArrowUp className="size-3" />
                             </button>
@@ -2558,7 +2676,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                               onClick={() => beginEditQueued(i)}
                               aria-label="Edit queued message"
                               title="Edit"
-                              className="shrink-0 rounded p-0.5 text-muted-foreground/50 opacity-0 transition-opacity hover:bg-foreground/10 hover:text-foreground group-hover/queued:opacity-100"
+                              className="shrink-0 rounded p-0.5 text-muted-foreground/50 transition-colors hover:bg-foreground/10 hover:text-foreground"
                             >
                               <Pencil className="size-3" />
                             </button>
@@ -2612,14 +2730,30 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                   </div>
                 ) : null}
                 {attachments.length > 0 ? (
-                  <div className="flex flex-wrap items-center gap-1.5 border-b border-border/30 px-2.5 pb-2 pt-2">
-                    {attachments.map((p) => (
-                      <ComposerAttachmentChip
-                        key={p}
-                        path={p}
-                        onRemove={() => removeAttachment(p)}
-                      />
-                    ))}
+                  <div className="space-y-2 border-b border-border/30 px-3 pb-3 pt-3">
+                    {composerImageAttachments.length > 0 ? (
+                      <div className="flex flex-wrap gap-2.5">
+                        {composerImageAttachments.map((path) => (
+                          <ComposerImageAttachment
+                            key={path}
+                            path={path}
+                            onPreview={() => setComposerPreviewPath(path)}
+                            onRemove={() => removeAttachment(path)}
+                          />
+                        ))}
+                      </div>
+                    ) : null}
+                    {composerFileAttachments.length > 0 ? (
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {composerFileAttachments.map((path) => (
+                          <ComposerAttachmentChip
+                            key={path}
+                            path={path}
+                            onRemove={() => removeAttachment(path)}
+                          />
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
                 <textarea
@@ -2667,6 +2801,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                   rows={Math.min(8, Math.max(3, input.split('\n').length))}
                   className="block w-full min-h-[72px] resize-none bg-transparent px-4 pt-3.5 pb-2 text-[14px] leading-6 text-foreground placeholder:text-muted-foreground/55 outline-none border-0 focus:outline-none focus-visible:outline-none"
                 />
+                <ComposerImagePreviewDialog
+                  path={visibleComposerPreviewPath}
+                  onClose={() => setComposerPreviewPath(null)}
+                />
                 <InlineMentionMenu
                   open={inlineMention.open}
                   items={inlineMention.items}
@@ -2691,7 +2829,9 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                   <PermissionPicker
                     value={agentWindow.permissionMode ?? getDefaultPermissionMode()}
                     onChange={(mode: AgentPermissionMode) => {
-                      useStore.getState().syncAgentWindow(agentWindow.id, { permissionMode: mode })
+                      const store = useStore.getState()
+                      store.syncAgentWindow(agentWindow.id, { permissionMode: mode })
+                      store.setLastAgentSessionDefaults(agentWindow.agent, { permissionMode: mode })
                       // Live-update the running session so the agent picks up
                       // the new mode on the NEXT turn without needing a restart.
                       void window.cells.agentSession
@@ -2705,11 +2845,17 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                     agent={agentWindow.agent}
                     value={agentWindow.model}
                     contextLength={agentWindow.contextLength}
-                    onChange={(modelId) =>
-                      useStore.getState().syncAgentWindow(agentWindow.id, { model: modelId })
-                    }
+                    onChange={(modelId) => {
+                      const store = useStore.getState()
+                      store.syncAgentWindow(agentWindow.id, { model: modelId })
+                      store.setLastAgentSessionDefaults(agentWindow.agent, { model: modelId })
+                    }}
                     onContextLengthChange={(length: AgentContextLength) => {
-                      useStore.getState().syncAgentWindow(agentWindow.id, { contextLength: length })
+                      const store = useStore.getState()
+                      store.syncAgentWindow(agentWindow.id, { contextLength: length })
+                      store.setLastAgentSessionDefaults(agentWindow.agent, {
+                        contextLength: length,
+                      })
                       // Claude session has to be reopened to pick up / drop the
                       // context-1m beta flag — the backend handles that inside
                       // updateContextLength by closing the runtime.
@@ -2724,9 +2870,11 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                     agent={agentWindow.agent}
                     model={agentWindow.model}
                     value={agentWindow.thinkingLevel}
-                    onChange={(level) =>
-                      useStore.getState().syncAgentWindow(agentWindow.id, { thinkingLevel: level })
-                    }
+                    onChange={(level) => {
+                      const store = useStore.getState()
+                      store.syncAgentWindow(agentWindow.id, { thinkingLevel: level })
+                      store.setLastAgentSessionDefaults(agentWindow.agent, { thinkingLevel: level })
+                    }}
                   />
                   <ContextUsageIndicator
                     usage={visibleSnapshot?.usage ?? null}

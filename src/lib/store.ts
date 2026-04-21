@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { nanoid } from 'nanoid'
 import type {
+  AgentSessionDefaults,
   AgentWindowNode,
   AgentName,
   BrowserNode,
@@ -128,6 +129,7 @@ interface StoreState {
   enabledAgents: Record<string, boolean | 'auto'>
   inputPrefixes: InputPrefix[]
   lastUsedAgent: string | null
+  lastAgentSessionDefaults: Record<Extract<AgentName, 'claude' | 'codex'>, AgentSessionDefaults>
   lastCommandAction: 'search' | 'agent' | 'run' | null
   colorScheme: 'light' | 'dark' | 'system'
   saveStatus: 'idle' | 'saving' | 'saved' | 'error'
@@ -282,6 +284,10 @@ interface StoreState {
   setEnabledAgents(agents: Record<string, boolean | 'auto'>): void
   setInputPrefixes(prefixes: InputPrefix[]): void
   setLastUsedAgent(agent: string): void
+  setLastAgentSessionDefaults(
+    agent: Extract<AgentName, 'claude' | 'codex'>,
+    patch: Partial<AgentSessionDefaults>,
+  ): void
   setLastCommandAction(action: 'search' | 'agent' | 'run'): void
   trackCommandAction(key: string): void
   appDarkTheme: string
@@ -346,6 +352,41 @@ const PROJECT_CLOSE_GRACE_MS = 15000
 const DEFAULT_INPUT_PREFIXES: InputPrefix[] = [{ prefix: '!', target: 'terminal' }]
 const DEFAULT_TITLE_BAR_POSITION: TitleBarPosition = 'bottom'
 const SAVE_STATUS_RESET_MS = 1800
+const DEFAULT_AGENT_SESSION_DEFAULTS: Record<
+  Extract<AgentName, 'claude' | 'codex'>,
+  AgentSessionDefaults
+> = {
+  claude: {
+    model: null,
+    permissionMode: null,
+    thinkingLevel: null,
+    contextLength: null,
+  },
+  codex: {
+    model: null,
+    permissionMode: null,
+    thinkingLevel: null,
+    contextLength: null,
+  },
+}
+
+function normalizeAgentSessionDefaults(
+  value:
+    | Partial<Record<Extract<AgentName, 'claude' | 'codex'>, AgentSessionDefaults>>
+    | null
+    | undefined,
+): Record<Extract<AgentName, 'claude' | 'codex'>, AgentSessionDefaults> {
+  return {
+    claude: {
+      ...DEFAULT_AGENT_SESSION_DEFAULTS.claude,
+      ...(value?.claude ?? {}),
+    },
+    codex: {
+      ...DEFAULT_AGENT_SESSION_DEFAULTS.codex,
+      ...(value?.codex ?? {}),
+    },
+  }
+}
 
 /** Apply color scheme to the document and sync with system preferences. */
 let systemThemeCleanup: (() => void) | null = null
@@ -813,6 +854,7 @@ export const useStore = create<StoreState>((set, get) => ({
   enabledAgents: {},
   inputPrefixes: DEFAULT_INPUT_PREFIXES,
   lastUsedAgent: null,
+  lastAgentSessionDefaults: DEFAULT_AGENT_SESSION_DEFAULTS,
   lastCommandAction: null,
   appDarkTheme: DEFAULT_APP_DARK_THEME,
   appLightTheme: DEFAULT_APP_LIGHT_THEME,
@@ -1172,6 +1214,7 @@ export const useStore = create<StoreState>((set, get) => ({
         agentPaths: ps.agentPaths ?? {},
         enabledAgents: ps.enabledAgents ?? {},
         inputPrefixes: ps.inputPrefixes ?? DEFAULT_INPUT_PREFIXES,
+        lastAgentSessionDefaults: normalizeAgentSessionDefaults(ps.lastAgentSessionDefaults),
         colorScheme: ps.colorScheme || 'dark',
         closeUndoTimeoutMs: Math.max(0, ps.closeUndoTimeoutMs ?? DEFAULT_CLOSE_UNDO_TIMEOUT_MS),
         closeProcessSuppressions: ps.closeProcessSuppressions ?? [],
@@ -1380,6 +1423,7 @@ export const useStore = create<StoreState>((set, get) => ({
           agentPaths: freshState.agentPaths,
           enabledAgents: freshState.enabledAgents,
           inputPrefixes: freshState.inputPrefixes,
+          lastAgentSessionDefaults: freshState.lastAgentSessionDefaults,
           colorScheme: freshState.colorScheme,
           closeUndoTimeoutMs: freshState.closeUndoTimeoutMs,
           closeProcessSuppressions: freshState.closeProcessSuppressions,
@@ -1429,6 +1473,7 @@ export const useStore = create<StoreState>((set, get) => ({
           agentPaths: state.agentPaths,
           enabledAgents: state.enabledAgents,
           inputPrefixes: state.inputPrefixes,
+          lastAgentSessionDefaults: state.lastAgentSessionDefaults,
           colorScheme: state.colorScheme,
           closeUndoTimeoutMs: state.closeUndoTimeoutMs,
           closeProcessSuppressions: state.closeProcessSuppressions,
@@ -2820,6 +2865,18 @@ export const useStore = create<StoreState>((set, get) => ({
   setLastUsedAgent(agent) {
     set({ lastUsedAgent: agent })
   },
+  setLastAgentSessionDefaults(agent, patch) {
+    set((state) => ({
+      lastAgentSessionDefaults: {
+        ...state.lastAgentSessionDefaults,
+        [agent]: {
+          ...state.lastAgentSessionDefaults[agent],
+          ...patch,
+        },
+      },
+    }))
+    debouncedPersist(() => get().persist())
+  },
   setLastCommandAction(action) {
     set({ lastCommandAction: action })
   },
@@ -3370,6 +3427,8 @@ export const useStore = create<StoreState>((set, get) => ({
     const id = requestedId ?? nanoid(8)
     const newZ = get().topZIndex + 1
     const { terminals, browsers, agentWindows, focusHistory } = get()
+    const savedDefaults =
+      get().lastAgentSessionDefaults[agent] ?? DEFAULT_AGENT_SESSION_DEFAULTS[agent]
     const width = window.innerWidth - TERMINAL_PAD * 2
     const height = window.innerHeight - STATUS_BAR_HEIGHT - TERMINAL_PAD * 2
 
@@ -3397,10 +3456,10 @@ export const useStore = create<StoreState>((set, get) => ({
       initialPrompt: options?.initialPrompt ?? null,
       claudeSessionId: options?.claudeSessionId ?? null,
       codexThreadId: options?.codexThreadId ?? null,
-      model: options?.model ?? null,
-      permissionMode: options?.permissionMode ?? null,
-      thinkingLevel: options?.thinkingLevel ?? null,
-      contextLength: options?.contextLength ?? null,
+      model: options?.model ?? savedDefaults.model ?? null,
+      permissionMode: options?.permissionMode ?? savedDefaults.permissionMode ?? null,
+      thinkingLevel: options?.thinkingLevel ?? savedDefaults.thinkingLevel ?? null,
+      contextLength: options?.contextLength ?? savedDefaults.contextLength ?? null,
       status: 'idle',
       error: null,
       zIndex: newZ,

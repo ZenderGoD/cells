@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { AnimatePresence, motion } from 'motion/react'
 import {
   Check,
   CheckCircle2,
@@ -26,6 +27,12 @@ const RESPONSE_MAX_HEIGHT = 540
 // Subtle 16px fade on top & bottom edges (dark mode only, matching Craft).
 const RESPONSE_FADE_MASK =
   'linear-gradient(to bottom, transparent 0%, black 16px, black calc(100% - 16px), transparent 100%)'
+const RESPONSE_MORPH_TRANSITION = {
+  type: 'spring' as const,
+  stiffness: 360,
+  damping: 34,
+  mass: 0.9,
+}
 
 // Copied and adapted from Craft Agents OSS:
 // ../craft-agents-oss/packages/ui/src/components/chat/TurnCard.tsx
@@ -473,28 +480,36 @@ function usePreviewText(
   }, [activities, isStreaming, agent])
 }
 
+function getResponseMorphLayoutId(text: string): string {
+  const normalized = text.trim().replace(/\s+/g, ' ').slice(0, 80)
+  return `agent-turn-response-${text.length}-${normalized}`
+}
+
+function LeadTextBlock({ text, className }: { text: string; className?: string }) {
+  return (
+    <motion.div
+      layout
+      layoutId={getResponseMorphLayoutId(text)}
+      initial={{ opacity: 0, y: -8, scale: 0.985 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: -8, scale: 0.985 }}
+      transition={RESPONSE_MORPH_TRANSITION}
+      className={cn(
+        'agent-response select-text px-1 text-sm leading-relaxed text-foreground/85',
+        className,
+      )}
+    >
+      <AgentMarkdown>{text}</AgentMarkdown>
+    </motion.div>
+  )
+}
+
 // Mirrors Craft's ResponseCard — ../craft-agents-oss/packages/ui/src/components/chat/TurnCard.tsx
 // lines 2414-2616. Wrapper is `bg-card` (Cells's --card matches Craft's
 // --background brightness at oklch(0.21)); inner content is pl-[22px] pr-4 py-3
 // with a 16px top/bottom fade mask in dark mode; footer has a Copy button on
 // the left, border-top, and a muted background. Streaming state swaps the
 // footer's copy area for a "Streaming…" spinner.
-// Short, plain assistant text (e.g. "Let me find your tmux config.") reads
-// better as a bare line than buried inside the full response card chrome.
-// We keep the card only when the response is long enough to warrant the copy
-// / markdown affordances or carries markdown features that benefit from the
-// scroll container (code, lists, headings, tables, blockquotes).
-const MARKDOWN_FEATURE_RE =
-  /(^#{1,6}\s)|(^\s*[-*+]\s)|(^\s*\d+\.\s)|(^>\s)|(^\s*```)|(\|.*\|)|(\n\s*\n)/m
-function isShortPlainResponse(text: string): boolean {
-  const trimmed = text.trim()
-  if (!trimmed) return false
-  if (trimmed.length > 240) return false
-  if (trimmed.split('\n').length > 3) return false
-  if (MARKDOWN_FEATURE_RE.test(trimmed)) return false
-  return true
-}
-
 function ResponseCard({ responses }: { responses: AgentSessionMessage[] }) {
   const visible = responses.filter((r) => r.text.trim().length > 0)
   const [copied, setCopied] = useState(false)
@@ -503,18 +518,6 @@ function ResponseCard({ responses }: { responses: AgentSessionMessage[] }) {
   const [viewMode, setViewMode] = useState<'rendered' | 'source'>('rendered')
   const isStreaming = visible.length > 0 && visible[visible.length - 1].status === 'in_progress'
   const combinedText = useMemo(() => visible.map((r) => r.text).join('\n\n'), [visible])
-
-  // Plain-line path: skip the card wrapper entirely for short, markdown-free
-  // responses. Only applies once streaming has settled — while the message is
-  // still coming in we always show the full card so the layout doesn't
-  // shift under the user.
-  if (!isStreaming && visible.length === 1 && isShortPlainResponse(visible[0].text)) {
-    return (
-      <div className="select-text px-1 text-sm leading-relaxed text-foreground/90">
-        <AgentMarkdown inline>{visible[0].text}</AgentMarkdown>
-      </div>
-    )
-  }
 
   const handleCopy = async () => {
     try {
@@ -532,7 +535,13 @@ function ResponseCard({ responses }: { responses: AgentSessionMessage[] }) {
   // lighter than its surroundings. oklch(0.17) sits between --background
   // (0.12) and --card (0.21), avoiding the too-bright flat look of bg-card.
   return (
-    <div
+    <motion.div
+      layout
+      layoutId={combinedText.trim() ? getResponseMorphLayoutId(combinedText) : undefined}
+      initial={{ opacity: 0, y: 8, scale: 0.985 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: 8, scale: 0.985 }}
+      transition={RESPONSE_MORPH_TRANSITION}
       className="group relative overflow-hidden rounded-[8px] shadow-minimal"
       style={{ backgroundColor: 'oklch(0.17 0.004 285.9)' }}
     >
@@ -604,7 +613,7 @@ function ResponseCard({ responses }: { responses: AgentSessionMessage[] }) {
           </>
         )}
       </div>
-    </div>
+    </motion.div>
   )
 }
 
@@ -684,12 +693,6 @@ export function AgentTurnCard({
   )
   const groupDiffStats = useMemo(() => sumDiffStats(activities), [activities])
 
-  const leadBlock = leadText ? (
-    <div className="agent-response select-text px-1 text-sm leading-relaxed text-foreground/85">
-      <AgentMarkdown>{leadText}</AgentMarkdown>
-    </div>
-  ) : null
-
   return (
     <div className="flex w-full justify-start">
       <div className="w-full space-y-1">
@@ -697,11 +700,13 @@ export function AgentTurnCard({
           // Tool activity always stays grouped behind a single collapse handle.
           // This keeps the transcript rhythm consistent even for one-off calls.
           <div className="select-none">
-            {leadBlock ? <div className="px-1 pb-1">{leadBlock}</div> : null}
+            <AnimatePresence initial={false}>
+              {leadText ? <LeadTextBlock key="lead-text" text={leadText} className="pb-1" /> : null}
+            </AnimatePresence>
             <button
               type="button"
               onClick={() => setCollapsed((v) => !v)}
-              className="flex w-full items-center gap-2 rounded-[8px] px-2.5 py-1.5 text-left transition-colors hover:bg-foreground/5 focus:outline-none"
+              className="flex w-full items-center gap-2 overflow-hidden rounded-[8px] px-2.5 py-1.5 text-left transition-colors hover:bg-foreground/5 focus:outline-none"
             >
               <span className="shrink-0 rounded-[4px] bg-background px-1.5 py-0.5 text-[10px] font-medium tabular-nums shadow-minimal">
                 {activities.length}
@@ -713,7 +718,9 @@ export function AgentTurnCard({
                     label={computedPreview}
                     showSpinner={false}
                     showElapsed
-                    className="min-w-0 flex-1 gap-1.5 overflow-hidden [&>span:nth-child(2)]:truncate"
+                    className="min-w-0 flex-1 gap-1.5 overflow-hidden whitespace-nowrap"
+                    labelClassName="min-w-0 flex-1 truncate"
+                    elapsedClassName="shrink-0"
                   />
                 </span>
               ) : (
@@ -740,8 +747,10 @@ export function AgentTurnCard({
               </div>
             ) : null}
           </div>
-        ) : leadBlock ? (
-          leadBlock
+        ) : leadText ? (
+          <AnimatePresence initial={false}>
+            <LeadTextBlock key="lead-text" text={leadText} />
+          </AnimatePresence>
         ) : isStreaming && !hasResponse ? (
           <LoadingIndicator
             label={agent === 'claude' ? 'Claude is thinking…' : 'Codex is thinking…'}
@@ -750,7 +759,9 @@ export function AgentTurnCard({
           />
         ) : null}
 
-        {hasResponse ? <ResponseCard responses={responses} /> : null}
+        <AnimatePresence initial={false}>
+          {hasResponse ? <ResponseCard key="response-card" responses={responses} /> : null}
+        </AnimatePresence>
         {!isStreaming ? <ChangedFilesSection activities={activities} /> : null}
       </div>
     </div>

@@ -95,8 +95,8 @@ function DiffLines({ oldString, newString }: { oldString: string; newString: str
   if (hunks.length === 0) return null
 
   return (
-    <div className="overflow-x-auto rounded-[6px] border border-border/30 bg-[oklch(0.10_0.004_285)] text-[11px] leading-[1.6]">
-      <table className="w-full border-collapse font-mono">
+    <div className="max-h-[320px] overflow-auto rounded-[6px] border border-border/30 bg-[oklch(0.10_0.004_285)] text-[11px] leading-[1.6] overscroll-contain">
+      <table className="min-w-full border-collapse font-mono">
         <tbody>
           {hunks.map((item, idx) => {
             if (item === 'ellipsis') {
@@ -151,8 +151,8 @@ function PatchLines({ patch }: { patch: string }) {
   if (lines.length === 0) return null
 
   return (
-    <div className="overflow-x-auto rounded-[6px] border border-border/30 bg-[oklch(0.10_0.004_285)] text-[11px] leading-[1.6]">
-      <table className="w-full border-collapse font-mono">
+    <div className="max-h-[320px] overflow-auto rounded-[6px] border border-border/30 bg-[oklch(0.10_0.004_285)] text-[11px] leading-[1.6] overscroll-contain">
+      <table className="min-w-full border-collapse font-mono">
         <tbody>
           {lines.map((line, idx) => {
             const isAdd = line.startsWith('+') && !line.startsWith('+++')
@@ -237,7 +237,7 @@ function FileDiffRow({ file }: { file: FileDiffStats }) {
         </span>
       </button>
       {expanded ? (
-        <div className="space-y-1.5 px-3 pb-2">
+        <div className="max-h-[min(55vh,520px)] space-y-1.5 overflow-y-auto overscroll-contain px-3 pb-2 pr-2">
           {file.edits.map((edit, idx) => (
             <DiffLines
               key={`${edit.toolId}-${idx}`}

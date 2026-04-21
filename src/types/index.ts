@@ -219,6 +219,13 @@ export interface AgentWindowNode {
   queuedMessages?: QueuedAgentMessage[]
 }
 
+export interface AgentSessionDefaults {
+  model?: AgentModel | null
+  permissionMode?: AgentPermissionMode | null
+  thinkingLevel?: AgentThinkingLevel | null
+  contextLength?: AgentContextLength | null
+}
+
 /** Context-window variant the user has selected. Only 'extended' (1M) and
  *  'default' (whatever the model's native window is) are meaningful today;
  *  Claude Sonnet 4/4.5 is the only model that accepts 'extended'. */
@@ -438,6 +445,9 @@ export interface ProjectsState {
   version: 4
   activeProjectId: string | null
   projects: Project[]
+  lastAgentSessionDefaults?: Partial<
+    Record<Extract<AgentName, 'claude' | 'codex'>, AgentSessionDefaults>
+  >
   appDarkTheme?: string
   appLightTheme?: string
   terminalSessionBackend?: TerminalSessionBackend
@@ -837,7 +847,7 @@ export interface CellsAPI {
     repairTerminalFonts(): Promise<void>
     beep(): void
     getShellHistory(): Promise<string[]>
-    fileThumbnail(filePath: string): Promise<string | null>
+    fileThumbnail(filePath: string, maxHeight?: number): Promise<string | null>
   }
   mcp: {
     install(projectPath: string): Promise<{

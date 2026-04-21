@@ -620,10 +620,12 @@ export function InfiniteCanvas() {
     snapToNearest('right')
   })
   useHotkey('Mod+ArrowUp', () => {
+    if (isEditableTarget(document.activeElement)) return
     setIsUserDriving(false)
     snapToNearest('up')
   })
   useHotkey('Mod+ArrowDown', () => {
+    if (isEditableTarget(document.activeElement)) return
     setIsUserDriving(false)
     snapToNearest('down')
   })
