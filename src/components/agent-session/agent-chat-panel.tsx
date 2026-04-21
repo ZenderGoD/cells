@@ -2207,23 +2207,18 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                     const forceQueueExpanded = queuedMessages.length === 1
                     const next = queuedMessages[0]
                     const meta = QUEUE_MODE_META[next.mode]
+                    if (forceQueueExpanded) return null
                     return (
                       <button
                         type="button"
                         onClick={() => {
-                          if (!forceQueueExpanded) setQueueCollapsed((v) => !v)
+                          setQueueCollapsed((v) => !v)
                         }}
                         className={cn(
                           'flex w-full items-center gap-2 rounded-[8px] px-2 py-1 text-left transition-colors focus:outline-none',
-                          !forceQueueExpanded && 'hover:bg-foreground/5',
+                          'hover:bg-foreground/5',
                         )}
-                        title={
-                          forceQueueExpanded
-                            ? meta.label
-                            : queueCollapsed
-                              ? 'Show queued messages'
-                              : 'Hide queued messages'
-                        }
+                        title={queueCollapsed ? 'Show queued messages' : 'Hide queued messages'}
                       >
                         <span className="shrink-0 rounded-[4px] bg-background px-1.5 py-0.5 text-[10px] font-medium tabular-nums shadow-minimal">
                           {queuedMessages.length}
@@ -2235,19 +2230,22 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                         <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground">
                           {next.text.replace(/\n/g, ' ') || '(attached files)'}
                         </span>
-                        {!forceQueueExpanded ? (
-                          <ChevronRight
-                            className={cn(
-                              'ml-auto size-3.5 shrink-0 text-muted-foreground/70 transition-transform',
-                              !queueCollapsed && 'rotate-90',
-                            )}
-                          />
-                        ) : null}
+                        <ChevronRight
+                          className={cn(
+                            'ml-auto size-3.5 shrink-0 text-muted-foreground/70 transition-transform',
+                            !queueCollapsed && 'rotate-90',
+                          )}
+                        />
                       </button>
                     )
                   })()}
                   {!queueCollapsed || queuedMessages.length === 1 ? (
-                    <div className="mt-1 flex max-h-[108px] flex-col gap-1 overflow-y-auto overscroll-contain pr-0.5">
+                    <div
+                      className={cn(
+                        'flex max-h-[108px] flex-col gap-1 overflow-y-auto overscroll-contain pr-0.5',
+                        queuedMessages.length > 1 && 'mt-1',
+                      )}
+                    >
                       {queuedMessages.map((entry, i) => {
                         const meta = QUEUE_MODE_META[entry.mode]
                         const modelLabel = entry.model
