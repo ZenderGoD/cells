@@ -420,6 +420,15 @@ export interface RecentAgentSessionSummary {
   sourceLabel: string
 }
 
+export interface AgentNotificationSettings {
+  enabled: boolean
+  playSound: boolean
+  onlyWhenUnfocused: boolean
+  notifyOnDone: boolean
+  notifyOnAttention: boolean
+  notifyOnError: boolean
+}
+
 export interface AgentMentionSearchResult {
   type: 'skill' | 'file' | 'folder'
   label: string
@@ -478,6 +487,7 @@ export interface ProjectsState {
   projectSwitchMode?: 'recent' | 'chronological'
   reducedMotion?: boolean
   autoUpdate?: boolean
+  agentNotificationSettings?: Partial<AgentNotificationSettings>
   searchEngine?: string
   homePage?: string
   terminalLinkTarget?: 'system' | 'browser'
@@ -824,6 +834,7 @@ export interface CellsAPI {
   }
   app: {
     onWindowFocus(callback: (focused: boolean) => void): () => void
+    onFocusAgentWindow(callback: (windowId: string) => void): () => void
     onBeforeQuit(callback: () => void): () => void
     onDaemonDisconnected(callback: () => void): () => void
     onNewTerminal(callback: () => void): () => void
@@ -856,6 +867,14 @@ export interface CellsAPI {
     requestQuit(): Promise<void>
     relaunch(): Promise<void>
     repairTerminalFonts(): Promise<void>
+    showNotification(
+      title: string,
+      body: string,
+      options?: {
+        playSound?: boolean
+        focusAgentWindowId?: string | null
+      },
+    ): Promise<void>
     beep(): void
     getShellHistory(): Promise<string[]>
     fileThumbnail(filePath: string, maxHeight?: number): Promise<string | null>

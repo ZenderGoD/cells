@@ -214,6 +214,11 @@ const api: CellsAPI = {
       ipcRenderer.on('app:window-focus', handler)
       return () => ipcRenderer.removeListener('app:window-focus', handler)
     },
+    onFocusAgentWindow: (callback: (windowId: string) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, windowId: string) => callback(windowId)
+      ipcRenderer.on('app:focus-agent-window', handler)
+      return () => ipcRenderer.removeListener('app:focus-agent-window', handler)
+    },
     onBeforeQuit: (callback: () => void) => {
       const handler = () => callback()
       ipcRenderer.on('app:before-quit', handler)
@@ -263,6 +268,14 @@ const api: CellsAPI = {
     requestQuit: () => ipcRenderer.invoke('app:request-quit'),
     relaunch: () => ipcRenderer.invoke('app:relaunch'),
     repairTerminalFonts: () => ipcRenderer.invoke('app:repair-terminal-fonts'),
+    showNotification: (
+      title: string,
+      body: string,
+      options?: {
+        playSound?: boolean
+        focusAgentWindowId?: string | null
+      },
+    ) => ipcRenderer.invoke('app:show-notification', title, body, options) as Promise<void>,
     beep: () => ipcRenderer.send('app:beep'),
     getShellHistory: () => ipcRenderer.invoke('app:get-shell-history') as Promise<string[]>,
     fileThumbnail: (filePath: string, maxHeight?: number) =>

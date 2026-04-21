@@ -2,6 +2,7 @@ import {
   app,
   BrowserWindow,
   MessageChannelMain,
+  Notification,
   WebContentsView,
   ipcMain,
   clipboard,
@@ -25,6 +26,7 @@ import { getDaemonRestartReason, type PtyDaemonVersionInfo } from './pty-daemon-
 import { PerfMonitor, type RendererPerfReport, type TerminalPerfReport } from './perf-monitor'
 import type { TerminalSessionManager } from './terminal-session-manager'
 import type {
+  AgentNotificationSettings,
   AgentMentionSearchResult,
   AgentSessionSnapshot,
   ProjectsState,
@@ -61,6 +63,10 @@ import {
 } from './mcp-bridge'
 import type { TerminalExitDetails, TerminalRuntimeStatus } from '../src/types'
 import { normalizeTerminalFontFamily } from '../src/lib/terminal-fonts'
+import {
+  DEFAULT_AGENT_NOTIFICATION_SETTINGS,
+  normalizeAgentNotificationSettings,
+} from '../src/lib/agent-notification-settings'
 import { EnhancedSessionTracker } from '../src/lib/enhanced-session-tracker'
 import {
   AgentSessionService,
@@ -270,7 +276,9 @@ let perfMonitor: PerfMonitor | null = null
 let agentSessionTracker: EnhancedSessionTracker | null = null
 const agentSessionService = new AgentSessionService()
 const pendingAgentSessionSnapshots = new Map<string, AgentSessionSnapshot>()
+const previousAgentSessionSnapshots = new Map<string, AgentSessionSnapshot>()
 let pendingAgentSessionFlushTimer: NodeJS.Timeout | null = null
+let cachedAgentNotificationSettings: AgentNotificationSettings | null = null
 
 app.on('second-instance', () => {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -305,6 +313,7 @@ function flushAgentSessionSnapshots() {
 }
 
 agentSessionService.on('update', (snapshot) => {
+  maybeNotifyForAgentSessionUpdate(snapshot)
   pendingAgentSessionSnapshots.set(snapshot.windowId, snapshot)
   if (pendingAgentSessionFlushTimer) return
   // Coalesce bursty agent-session updates into ~30fps batches instead of
@@ -342,6 +351,204 @@ let quitConfirmed = false
 let quitDialogOpen = false
 let selectedTerminalBackend: TerminalSessionBackend = DEFAULT_TERMINAL_SESSION_BACKEND
 let terminalBackendSupport = getTerminalBackendSupportStatus(selectedTerminalBackend)
+
+function getDefaultAgentSessionTitle(agent: AgentSessionSnapshot['agent']) {
+  return agent === 'claude' ? 'Claude Code' : 'Codex'
+}
+
+function getSessionNotificationLabel(snapshot: AgentSessionSnapshot) {
+  const title = snapshot.title.trim()
+  return title && title !== getDefaultAgentSessionTitle(snapshot.agent)
+    ? title
+    : getDefaultAgentSessionTitle(snapshot.agent)
+}
+
+function truncateNotificationText(text: string, max = 180) {
+  const normalized = text.replace(/\s+/g, ' ').trim()
+  if (normalized.length <= max) return normalized
+  return `${normalized.slice(0, max - 1).trimEnd()}…`
+}
+
+function readAgentNotificationSettingsFromStateFile() {
+  try {
+    if (fs.existsSync(STATE_FILE)) {
+      const state = readStateFile(STATE_FILE) as ProjectsState
+      return normalizeAgentNotificationSettings(state.agentNotificationSettings)
+    }
+  } catch {}
+  return DEFAULT_AGENT_NOTIFICATION_SETTINGS
+}
+
+function getAgentNotificationSettings() {
+  if (cachedAgentNotificationSettings) return cachedAgentNotificationSettings
+  cachedAgentNotificationSettings = readAgentNotificationSettingsFromStateFile()
+  return cachedAgentNotificationSettings
+}
+
+function isMainWindowForeground() {
+  return Boolean(
+    mainWindow &&
+    !mainWindow.isDestroyed() &&
+    mainWindow.isVisible() &&
+    !mainWindow.isMinimized() &&
+    mainWindow.isFocused(),
+  )
+}
+
+function focusMainWindowAndAgentWindow(windowId?: string | null) {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  if (!mainWindow.isVisible()) mainWindow.show()
+  mainWindow.focus()
+  if (!windowId) return
+  try {
+    mainWindow.webContents.send('app:focus-agent-window', windowId)
+  } catch {}
+}
+
+async function showSystemNotification(
+  title: string,
+  body: string,
+  options?: {
+    playSound?: boolean
+    focusAgentWindowId?: string | null
+  },
+) {
+  const playSound = options?.playSound ?? true
+  if (!Notification.isSupported()) {
+    if (playSound) shell.beep()
+    return
+  }
+
+  const notification = new Notification({
+    title,
+    body,
+    silent: !playSound,
+  })
+
+  if (options?.focusAgentWindowId) {
+    notification.on('click', () => {
+      focusMainWindowAndAgentWindow(options.focusAgentWindowId)
+    })
+  }
+
+  notification.show()
+}
+
+function getAttentionKey(snapshot: AgentSessionSnapshot) {
+  if (snapshot.pendingQuestion) return `question:${snapshot.pendingQuestion.createdAt}`
+  if (snapshot.pendingApproval) return `approval:${snapshot.pendingApproval.createdAt}`
+  if (snapshot.pendingPlanApproval) return `plan:${snapshot.pendingPlanApproval.createdAt}`
+  return null
+}
+
+function isAgentSessionBusy(snapshot: AgentSessionSnapshot) {
+  const inFlightMessageCount = snapshot.messages.filter((message) => {
+    if (message.status !== 'in_progress') return false
+    return (
+      message.role === 'assistant' ||
+      message.role === 'reasoning' ||
+      message.role === 'tool' ||
+      message.role === 'system' ||
+      message.role === 'auth_request' ||
+      message.role === 'compaction'
+    )
+  }).length
+
+  return (
+    snapshot.status === 'running' ||
+    Boolean(snapshot.pendingQuestion || snapshot.pendingApproval || snapshot.pendingPlanApproval) ||
+    inFlightMessageCount > 0
+  )
+}
+
+function buildAgentNotificationFromSnapshot(
+  previous: AgentSessionSnapshot | undefined,
+  snapshot: AgentSessionSnapshot,
+  settings: AgentNotificationSettings,
+) {
+  const label = getSessionNotificationLabel(snapshot)
+  const previousAttentionKey = previous ? getAttentionKey(previous) : null
+  const nextAttentionKey = getAttentionKey(snapshot)
+
+  if (settings.notifyOnAttention && nextAttentionKey && nextAttentionKey !== previousAttentionKey) {
+    if (snapshot.pendingQuestion) {
+      const count = snapshot.pendingQuestion.questions.length
+      return {
+        title: `${label} needs input`,
+        body:
+          count === 1
+            ? 'Open Cells to answer the question.'
+            : `Open Cells to answer ${count} questions.`,
+      }
+    }
+    if (snapshot.pendingApproval) {
+      return {
+        title: `${label} needs approval`,
+        body: truncateNotificationText(
+          snapshot.pendingApproval.title || 'Open Cells to review the approval request.',
+        ),
+      }
+    }
+    if (snapshot.pendingPlanApproval) {
+      return {
+        title: `${label} has a plan ready`,
+        body: 'Open Cells to review the proposed plan.',
+      }
+    }
+  }
+
+  if (
+    settings.notifyOnError &&
+    snapshot.status === 'error' &&
+    snapshot.error &&
+    (previous?.status !== 'error' || previous.error !== snapshot.error)
+  ) {
+    return {
+      title: `${label} hit an error`,
+      body: truncateNotificationText(snapshot.error),
+    }
+  }
+
+  if (
+    settings.notifyOnDone &&
+    previous &&
+    previous.status !== 'error' &&
+    isAgentSessionBusy(previous) &&
+    !isAgentSessionBusy(snapshot) &&
+    snapshot.status !== 'error'
+  ) {
+    return {
+      title: `${label} finished`,
+      body: 'Open Cells to review the latest response.',
+    }
+  }
+
+  return null
+}
+
+function clearAgentSessionNotificationState(windowId: string) {
+  previousAgentSessionSnapshots.delete(windowId)
+  pendingAgentSessionSnapshots.delete(windowId)
+}
+
+function maybeNotifyForAgentSessionUpdate(snapshot: AgentSessionSnapshot) {
+  const previous = previousAgentSessionSnapshots.get(snapshot.windowId)
+  previousAgentSessionSnapshots.set(snapshot.windowId, snapshot)
+  if (!previous) return
+
+  const settings = getAgentNotificationSettings()
+  if (!settings.enabled) return
+  if (settings.onlyWhenUnfocused && isMainWindowForeground()) return
+
+  const notification = buildAgentNotificationFromSnapshot(previous, snapshot, settings)
+  if (!notification) return
+
+  void showSystemNotification(notification.title, notification.body, {
+    playSound: settings.playSound,
+    focusAgentWindowId: snapshot.windowId,
+  })
+}
 
 function repairLegacyTerminalFontStateEarly() {
   const statePath = STATE_FILE
@@ -587,11 +794,18 @@ ipcMain.handle('state:load', () => {
   try {
     ensureStateDir()
     if (fs.existsSync(STATE_FILE)) {
-      return readStateFile(STATE_FILE)
+      const state = readStateFile(STATE_FILE)
+      cachedAgentNotificationSettings = normalizeAgentNotificationSettings(
+        (state as ProjectsState).agentNotificationSettings,
+      )
+      return state
     }
     if (fs.existsSync(LEGACY_STATE_FILE)) {
       const legacyState = readStateFile(LEGACY_STATE_FILE)
       fs.writeFileSync(STATE_FILE, JSON.stringify(legacyState, null, 2))
+      cachedAgentNotificationSettings = normalizeAgentNotificationSettings(
+        (legacyState as ProjectsState).agentNotificationSettings,
+      )
       return legacyState
     }
   } catch {}
@@ -603,6 +817,9 @@ ipcMain.handle('state:save', (_event, state) => {
     ensureStateDir()
     fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2))
     refreshTerminalBackendSelection(state)
+    cachedAgentNotificationSettings = normalizeAgentNotificationSettings(
+      state.agentNotificationSettings,
+    )
   } catch (err) {
     console.error('Failed to save state:', err)
   }
@@ -1332,6 +1549,18 @@ ipcMain.handle('app:repair-terminal-fonts', () => {
   app.quit()
 })
 
+ipcMain.handle(
+  'app:show-notification',
+  (
+    _event,
+    title: string,
+    body: string,
+    options?: { playSound?: boolean; focusAgentWindowId?: string | null },
+  ) => {
+    return showSystemNotification(title, body, options)
+  },
+)
+
 ipcMain.on('app:beep', () => {
   shell.beep()
 })
@@ -1537,11 +1766,13 @@ ipcMain.handle(
 ipcMain.handle('agent-session:close', (_event, windowId: string) => {
   // Stop the current turn but keep the runtime + messages around so the
   // renderer can resume on the next send.
+  clearAgentSessionNotificationState(windowId)
   return agentSessionService.close(windowId)
 })
 
 ipcMain.handle('agent-session:dispose', (_event, windowId: string) => {
   // Full teardown — called when the agent window itself is destroyed.
+  clearAgentSessionNotificationState(windowId)
   return agentSessionService.dispose(windowId)
 })
 

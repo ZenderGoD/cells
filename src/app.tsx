@@ -93,6 +93,17 @@ function MainApp() {
   }, [])
 
   useEffect(() => {
+    return window.cells.app.onFocusAgentWindow((windowId) => {
+      const state = useStore.getState()
+      const target = state.agentWindows.find((entry) => entry.id === windowId)
+      if (!target) return
+      state.bringAgentWindowToFront(windowId)
+      state.focusAgentWindow(windowId)
+      state.snapToAgentWindow(windowId)
+    })
+  }, [])
+
+  useEffect(() => {
     return window.cells.app.onDaemonDisconnected(() => {
       reloadAllTerminals()
     })

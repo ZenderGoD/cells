@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { nanoid } from 'nanoid'
 import type {
+  AgentNotificationSettings,
   AgentSessionDefaults,
   AgentWindowNode,
   AgentName,
@@ -16,6 +17,10 @@ import type {
   TerminalProcessInfo,
   TitleBarPosition,
 } from '../types'
+import {
+  DEFAULT_AGENT_NOTIFICATION_SETTINGS,
+  normalizeAgentNotificationSettings,
+} from './agent-notification-settings'
 import { inferAgentFromCommand } from './agent-command'
 import { DEFAULT_THEME, terminalThemes } from './terminal-themes'
 import {
@@ -116,6 +121,7 @@ interface StoreState {
   projectSwitchMode: 'recent' | 'chronological'
   reducedMotion: boolean
   autoUpdate: boolean
+  agentNotificationSettings: AgentNotificationSettings
   autoArrangeOnCreate: boolean
   overlayOpen: boolean // true when popover/dialog is open — hides browser native views
   searchEngine: string
@@ -261,6 +267,7 @@ interface StoreState {
   setProjectSwitchMode(mode: 'recent' | 'chronological'): void
   setReducedMotion(enabled: boolean): void
   setAutoUpdate(enabled: boolean): void
+  setAgentNotificationSettings(settings: Partial<AgentNotificationSettings>): void
   setAutoArrangeOnCreate(enabled: boolean): void
 
   setCanvasTransform(transform: CanvasTransform): void
@@ -841,6 +848,7 @@ export const useStore = create<StoreState>((set, get) => ({
   projectSwitchMode: 'recent',
   reducedMotion: false,
   autoUpdate: true,
+  agentNotificationSettings: DEFAULT_AGENT_NOTIFICATION_SETTINGS,
   autoArrangeOnCreate: false,
   overlayOpen: false,
   searchEngine: DEFAULT_SEARCH_ENGINE,
@@ -1202,6 +1210,7 @@ export const useStore = create<StoreState>((set, get) => ({
         projectSwitchMode: ps.projectSwitchMode || 'recent',
         reducedMotion: ps.reducedMotion ?? false,
         autoUpdate: ps.autoUpdate ?? true,
+        agentNotificationSettings: normalizeAgentNotificationSettings(ps.agentNotificationSettings),
         searchEngine: ps.searchEngine || DEFAULT_SEARCH_ENGINE,
         homePage: ps.homePage || DEFAULT_HOME_PAGE,
         terminalLinkTarget: ps.terminalLinkTarget || 'system',
@@ -1321,6 +1330,7 @@ export const useStore = create<StoreState>((set, get) => ({
           useTransparentWindow: (saved as any).useTransparentWindow,
         }),
         titleBarPosition: (saved as any).titleBarPosition ?? DEFAULT_TITLE_BAR_POSITION,
+        agentNotificationSettings: DEFAULT_AGENT_NOTIFICATION_SETTINGS,
         initialized: true,
       })
       setTimeout(() => {
@@ -1413,6 +1423,7 @@ export const useStore = create<StoreState>((set, get) => ({
           projectSwitchMode: freshState.projectSwitchMode,
           reducedMotion: freshState.reducedMotion,
           autoUpdate: freshState.autoUpdate,
+          agentNotificationSettings: freshState.agentNotificationSettings,
           searchEngine: freshState.searchEngine,
           homePage: freshState.homePage,
           terminalLinkTarget: freshState.terminalLinkTarget,
@@ -1463,6 +1474,7 @@ export const useStore = create<StoreState>((set, get) => ({
           projectSwitchMode: state.projectSwitchMode,
           reducedMotion: state.reducedMotion,
           autoUpdate: state.autoUpdate,
+          agentNotificationSettings: state.agentNotificationSettings,
           searchEngine: state.searchEngine,
           homePage: state.homePage,
           terminalLinkTarget: state.terminalLinkTarget,
@@ -2537,6 +2549,16 @@ export const useStore = create<StoreState>((set, get) => ({
     set({ autoUpdate: enabled })
     get().persist()
     window.cells.updater.setAutoUpdate(enabled)
+  },
+
+  setAgentNotificationSettings(settings) {
+    set((state) => ({
+      agentNotificationSettings: normalizeAgentNotificationSettings({
+        ...state.agentNotificationSettings,
+        ...settings,
+      }),
+    }))
+    get().persist()
   },
 
   setAutoArrangeOnCreate(enabled) {

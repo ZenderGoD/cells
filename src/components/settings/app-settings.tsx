@@ -64,6 +64,7 @@ type SettingsSectionId =
   | 'terminal'
   | 'browser'
   | 'agents'
+  | 'notifications'
   | 'prefixes'
   | 'help'
   | 'about'
@@ -77,6 +78,7 @@ const SETTINGS_SECTIONS: Array<{ id: SettingsSectionId; label: string }> = [
   { id: 'terminal', label: 'Terminal' },
   { id: 'browser', label: 'Browser' },
   { id: 'agents', label: 'Agents' },
+  { id: 'notifications', label: 'Notifications' },
   { id: 'prefixes', label: 'Prefixes' },
   { id: 'help', label: 'Help' },
   { id: 'about', label: 'About' },
@@ -158,6 +160,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const reducedMotion = useStore((s) => s.reducedMotion)
   const searchEngine = useStore((s) => s.searchEngine)
   const homePage = useStore((s) => s.homePage)
+  const agentNotificationSettings = useStore((s) => s.agentNotificationSettings)
   const setTerminalTheme = useStore((s) => s.setTerminalTheme)
   const setAppTheme = useStore((s) => s.setAppTheme)
   const setTerminalSessionBackend = useStore((s) => s.setTerminalSessionBackend)
@@ -177,6 +180,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const setReducedMotion = useStore((s) => s.setReducedMotion)
   const colorScheme = useStore((s) => s.colorScheme)
   const setColorScheme = useStore((s) => s.setColorScheme)
+  const setAgentNotificationSettings = useStore((s) => s.setAgentNotificationSettings)
   const setSearchEngine = useStore((s) => s.setSearchEngine)
   const setHomePage = useStore((s) => s.setHomePage)
   const persist = useStore((s) => s.persist)
@@ -1205,6 +1209,143 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                 </div>
               ) : null}
 
+              {activeSection === 'notifications' ? (
+                <div className="space-y-3.5">
+                  <SettingsGroup title="Desktop Notifications">
+                    <p className="mb-3 text-[10px] text-muted-foreground/40">
+                      Native macOS notifications for agent sessions. Cells only sends them on
+                      meaningful state changes, not on every streaming update.
+                    </p>
+                    <div className="space-y-2.5">
+                      <SettingsField
+                        label="Agent notifications"
+                        hint={agentNotificationSettings.enabled ? 'Enabled' : 'Disabled'}
+                      >
+                        <SettingsSwitchRow
+                          label="Send system notifications for agent events"
+                          checked={agentNotificationSettings.enabled}
+                          onToggle={() =>
+                            setAgentNotificationSettings({
+                              enabled: !agentNotificationSettings.enabled,
+                            })
+                          }
+                        />
+                      </SettingsField>
+
+                      <SettingsField
+                        label="Play sound"
+                        hint={agentNotificationSettings.playSound ? 'On' : 'Off'}
+                      >
+                        <SettingsSwitchRow
+                          label="Play the system notification sound"
+                          checked={agentNotificationSettings.playSound}
+                          disabled={!agentNotificationSettings.enabled}
+                          onToggle={() =>
+                            setAgentNotificationSettings({
+                              playSound: !agentNotificationSettings.playSound,
+                            })
+                          }
+                        />
+                      </SettingsField>
+
+                      <SettingsField
+                        label="Delivery"
+                        hint={
+                          agentNotificationSettings.onlyWhenUnfocused ? 'Background only' : 'Always'
+                        }
+                      >
+                        <SettingsSwitchRow
+                          label="Only notify when Cells is not focused"
+                          checked={agentNotificationSettings.onlyWhenUnfocused}
+                          disabled={!agentNotificationSettings.enabled}
+                          onToggle={() =>
+                            setAgentNotificationSettings({
+                              onlyWhenUnfocused: !agentNotificationSettings.onlyWhenUnfocused,
+                            })
+                          }
+                        />
+                      </SettingsField>
+                    </div>
+                  </SettingsGroup>
+
+                  <SettingsGroup title="Notify When">
+                    <div className="space-y-2.5">
+                      <SettingsField
+                        label="Turn complete"
+                        hint={agentNotificationSettings.notifyOnDone ? 'On' : 'Off'}
+                      >
+                        <SettingsSwitchRow
+                          label="An agent finishes a turn"
+                          checked={agentNotificationSettings.notifyOnDone}
+                          disabled={!agentNotificationSettings.enabled}
+                          onToggle={() =>
+                            setAgentNotificationSettings({
+                              notifyOnDone: !agentNotificationSettings.notifyOnDone,
+                            })
+                          }
+                        />
+                      </SettingsField>
+
+                      <SettingsField
+                        label="Needs attention"
+                        hint={agentNotificationSettings.notifyOnAttention ? 'On' : 'Off'}
+                      >
+                        <SettingsSwitchRow
+                          label="An agent asks a question, requests approval, or proposes a plan"
+                          checked={agentNotificationSettings.notifyOnAttention}
+                          disabled={!agentNotificationSettings.enabled}
+                          onToggle={() =>
+                            setAgentNotificationSettings({
+                              notifyOnAttention: !agentNotificationSettings.notifyOnAttention,
+                            })
+                          }
+                        />
+                      </SettingsField>
+
+                      <SettingsField
+                        label="Errors"
+                        hint={agentNotificationSettings.notifyOnError ? 'On' : 'Off'}
+                      >
+                        <SettingsSwitchRow
+                          label="An agent turn fails"
+                          checked={agentNotificationSettings.notifyOnError}
+                          disabled={!agentNotificationSettings.enabled}
+                          onToggle={() =>
+                            setAgentNotificationSettings({
+                              notifyOnError: !agentNotificationSettings.notifyOnError,
+                            })
+                          }
+                        />
+                      </SettingsField>
+                    </div>
+                  </SettingsGroup>
+
+                  <SettingsGroup title="Preview">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void window.cells.app.showNotification(
+                          'Cells test notification',
+                          'Agent notifications are configured and working.',
+                          {
+                            playSound: agentNotificationSettings.playSound,
+                          },
+                        )
+                      }
+                      className="flex w-full items-center justify-between rounded-lg bg-muted/20 px-3 py-2.5 text-left transition-colors hover:bg-muted/30"
+                    >
+                      <div>
+                        <div className="text-[11px] text-foreground">Send test notification</div>
+                        <div className="mt-0.5 text-[10px] text-muted-foreground/40">
+                          Uses the current sound setting.
+                        </div>
+                      </div>
+                      <ExternalLink className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50" />
+                    </button>
+                  </SettingsGroup>
+                </div>
+              ) : null}
+
               {activeSection === 'prefixes' ? (
                 <div className="space-y-3.5">
                   <SettingsGroup title="Input Prefixes">
@@ -1535,6 +1676,42 @@ function SettingsField({ label, hint, children }: SettingsFieldProps) {
       </div>
       {children}
     </div>
+  )
+}
+
+function SettingsSwitchRow({
+  label,
+  checked,
+  onToggle,
+  disabled = false,
+}: {
+  label: string
+  checked: boolean
+  onToggle: () => void
+  disabled?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      disabled={disabled}
+      className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-[11px] transition-colors hover:bg-muted/40 disabled:cursor-not-allowed disabled:opacity-50"
+    >
+      <span className="text-left text-foreground">{label}</span>
+      <div
+        className={cn(
+          'relative h-3.5 w-6 rounded-full transition-colors',
+          checked ? 'bg-primary' : 'bg-muted-foreground/25',
+        )}
+      >
+        <div
+          className={cn(
+            'absolute top-0.5 h-2.5 w-2.5 rounded-full bg-background transition-transform',
+            checked ? 'translate-x-3' : 'translate-x-0.5',
+          )}
+        />
+      </div>
+    </button>
   )
 }
 
