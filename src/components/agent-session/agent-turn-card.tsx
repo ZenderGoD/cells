@@ -492,7 +492,7 @@ function LeadTextBlock({ text, className }: { text: string; className?: string }
   return (
     <div
       className={cn(
-        'agent-response select-text px-1 text-sm leading-relaxed text-foreground/85',
+        'agent-response select-text pl-1.5 pr-2.5 text-sm leading-relaxed text-foreground/85 [&_p:last-child]:mb-0',
         className,
       )}
     >
@@ -533,20 +533,18 @@ function ResponseCard({ responses }: { responses: AgentSessionMessage[] }) {
   // (0.12) and --card (0.21), avoiding the too-bright flat look of bg-card.
   return (
     <div
-      className="group relative overflow-hidden rounded-[8px] shadow-minimal"
+      className="group relative overflow-hidden rounded-[12px] shadow-minimal"
       style={{ backgroundColor: 'oklch(0.17 0.004 285.9)' }}
     >
       <div
         data-search-root="response"
-        className="scrollbar-hover select-text overflow-y-auto pl-[22px] pr-4 py-3 text-sm text-foreground/90"
+        className="scrollbar-hover select-text overflow-y-auto px-4 pt-1 text-sm text-foreground/90"
         style={{ maxHeight: RESPONSE_MAX_HEIGHT }}
       >
         {visible.map((response, idx) => (
           <div key={response.id} className={cn(idx > 0 && 'mt-3 border-t border-border/30 pt-3')}>
             {viewMode === 'source' ? (
-              <pre className="whitespace-pre-wrap break-words font-mono text-[12.5px] leading-[1.55] text-foreground/80">
-                {response.text}
-              </pre>
+              <pre className="whitespace-pre-wrap break-words font-sans py-2">{response.text}</pre>
             ) : (
               <AgentMarkdown breaks={response.status === 'in_progress'}>
                 {response.text}
@@ -700,7 +698,7 @@ export function AgentTurnCard({
             <button
               type="button"
               onClick={() => setCollapsed((v) => !v)}
-              className="flex w-full items-center gap-2 overflow-hidden rounded-[8px] px-2.5 py-1.5 text-left transition-colors hover:bg-foreground/5 focus:outline-none"
+              className="flex w-full items-center gap-2 overflow-hidden rounded-[8px] py-1.5 pl-1.5 pr-2.5 text-left transition-colors hover:bg-foreground/5 focus:outline-none"
             >
               <span className="shrink-0 rounded-[4px] bg-background px-1.5 py-0.5 text-[10px] font-medium tabular-nums shadow-minimal">
                 {activities.length}

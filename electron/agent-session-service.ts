@@ -1382,6 +1382,14 @@ interface ClaudeRuntime extends RuntimeBase {
    *  reset on every real user message. Guards against infinite resume loops
    *  if the model is truly stuck. */
   autoContinueCount: number
+  /** Post-compaction token count reported by the most recent `compact_boundary`
+   *  event. The `result` event that follows a mid-turn auto-compaction reports
+   *  the PRE-compaction prompt size (since that's what actually got sent to
+   *  the model), which would otherwise clobber the indicator back to ~100%.
+   *  We pin this value into `usage.usedTokens` on the boundary event and skip
+   *  the next result's usage reporting so the % bar reflects reality. Cleared
+   *  after the next user send() starts a fresh turn. */
+  postCompactUsedTokens: number | null
   /** Set while the agent has called `ExitPlanMode` and we're blocking the
    *  `canUseTool` return until the user picks approve / reject from the UI. */
   pendingPlanApproval: {
@@ -2474,9 +2482,17 @@ export class AgentSessionService extends EventEmitter {
       permissionMode: request.permissionMode ?? null,
       cwd: request.cwd ?? null,
     })
+    // A stale placeholder title ("Claude Code" / "Codex") on the node must not
+    // override a real inferred title from the persisted snapshot — new windows
+    // are born with the placeholder and carry it up through ensure() on every
+    // mount, which would otherwise clobber good titles on every reload.
+    const requestTitleTrimmed = request.title?.trim() ?? ''
+    const requestTitleOverride = isPlaceholderAgentSessionTitle(request.agent, requestTitleTrimmed)
+      ? ''
+      : requestTitleTrimmed
     if (existing) {
       existing.request = { ...existing.request, ...request }
-      existing.snapshot.title = request.title?.trim() || existing.snapshot.title
+      existing.snapshot.title = requestTitleOverride || existing.snapshot.title
       existing.snapshot.cwd = request.cwd ?? existing.snapshot.cwd ?? null
       const cloned = cloneSnapshot(existing.snapshot)
       existing.snapshot.restoredFromPersist = false
@@ -2493,7 +2509,7 @@ export class AgentSessionService extends EventEmitter {
       windowId: request.windowId,
       agent: request.agent,
       title:
-        request.title?.trim() ||
+        requestTitleOverride ||
         persisted?.title ||
         (request.agent === 'claude' ? 'Claude Code' : 'Codex'),
       cwd: request.cwd ?? persisted?.cwd ?? null,
@@ -2513,6 +2529,12 @@ export class AgentSessionService extends EventEmitter {
     if (snapshot.messages.length > 0) {
       snapshot.updatedAt =
         snapshot.messages[snapshot.messages.length - 1]?.updatedAt ?? snapshot.updatedAt
+    }
+    if (
+      snapshot.messages.length > 0 &&
+      isPlaceholderAgentSessionTitle(snapshot.agent, snapshot.title)
+    ) {
+      snapshot.title = inferAgentSessionTitle(snapshot.agent, snapshot.messages)
     }
 
     if (request.agent === 'claude') {
@@ -2567,6 +2589,7 @@ export class AgentSessionService extends EventEmitter {
         streamPromise: Promise.resolve(),
         streamGeneration: 0,
         autoContinueCount: 0,
+        postCompactUsedTokens: null,
         pendingPlanApproval: null,
         pendingQuestion: null,
       }
@@ -2688,6 +2711,10 @@ export class AgentSessionService extends EventEmitter {
     // gets its own three-try budget if it also bottoms out on max_turns.
     if (runtime.kind === 'claude') {
       runtime.autoContinueCount = 0
+      // A fresh user turn means the next `result` event reflects real
+      // post-compaction usage (not the pre-compact remnant), so drop any
+      // pinned post-compact value so we don't shadow it.
+      runtime.postCompactUsedTokens = null
     }
 
     appendMessage(runtime.snapshot, {
@@ -4100,6 +4127,12 @@ export class AgentSessionService extends EventEmitter {
       return
     }
     if (event.type === 'system' && (event as any).subtype === 'compact_boundary') {
+      const meta = (event as any).compact_metadata ?? {}
+      const postTokensRaw = meta.post_tokens
+      const postTokens =
+        typeof postTokensRaw === 'number' && Number.isFinite(postTokensRaw) && postTokensRaw > 0
+          ? Math.round(postTokensRaw)
+          : null
       const existing = runtime.snapshot.messages.find(
         (m) => m.role === 'compaction' && m.status === 'in_progress',
       )
@@ -4116,16 +4149,35 @@ export class AgentSessionService extends EventEmitter {
           updatedAt: now(),
         })
       }
-      // Reset the stale usage so the context indicator clears until the next
-      // result event reports the actual post-compaction token count.
-      if (runtime.snapshot.usage) {
-        runtime.snapshot.usage = {
-          ...runtime.snapshot.usage,
-          usedTokens: null,
-          totalProcessedTokens: null,
-          updatedAt: now(),
-        }
+      // The upcoming `result` event (if one comes in this same turn) reports
+      // the PRE-compaction prompt size — i.e., what got sent to the API
+      // before the boundary. Using it would bounce the indicator back to
+      // ~100% even though the live context is now much smaller. Pin the
+      // post-compaction count from compact_metadata so the indicator reflects
+      // reality, and flag the result handler to skip its usage update.
+      runtime.postCompactUsedTokens = postTokens
+      const window =
+        runtime.snapshot.usage?.contextWindow ??
+        (runtime.request.contextLength === 'extended' ? 1_000_000 : 200_000)
+      const clamped = postTokens != null ? Math.min(postTokens, window) : null
+      const existingUsage = runtime.snapshot.usage
+      runtime.snapshot.usage = {
+        model: existingUsage?.model ?? runtime.request.model ?? null,
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedInputTokens: 0,
+        contextWindow: existingUsage?.contextWindow ?? null,
+        usedTokens: clamped,
+        totalProcessedTokens: postTokens,
+        compactsAutomatically: existingUsage?.compactsAutomatically ?? true,
+        updatedAt: now(),
       }
+      log('claude.compact_boundary', {
+        windowId: runtime.snapshot.windowId,
+        trigger: meta.trigger ?? null,
+        preTokens: typeof meta.pre_tokens === 'number' ? meta.pre_tokens : null,
+        postTokens,
+      })
       return
     }
     if (event.type === 'system' && (event as any).subtype === 'session_state_changed') {
@@ -4247,7 +4299,7 @@ export class AgentSessionService extends EventEmitter {
         if (pickEntry) {
           const [pickModel, pick] = pickEntry
           const cached = (pick.cacheReadInputTokens ?? 0) + (pick.cacheCreationInputTokens ?? 0)
-          runtime.snapshot.usage = buildUsageStats({
+          const freshUsage = buildUsageStats({
             model: pickModel,
             // Claude reports `inputTokens` as the NEW prompt tokens only —
             // cache reads/creations are billed in separate buckets. Fold them
@@ -4258,6 +4310,25 @@ export class AgentSessionService extends EventEmitter {
             contextWindow: pick.contextWindow ?? null,
             compactsAutomatically: true,
           })
+          // If a `compact_boundary` fired during this same turn, the SDK's
+          // modelUsage reports the pre-compaction prompt size (what was
+          // actually sent to the API before the boundary). Overwriting
+          // usedTokens with that would flip the indicator back to ~100%
+          // right after compaction. Pin the post_tokens value we captured on
+          // the boundary instead, but still refresh contextWindow / model /
+          // output counts so the rest of the view stays accurate.
+          if (runtime.postCompactUsedTokens != null) {
+            const window = freshUsage.contextWindow ?? 200_000
+            const pinned = Math.min(runtime.postCompactUsedTokens, window)
+            runtime.snapshot.usage = {
+              ...freshUsage,
+              usedTokens: pinned,
+              totalProcessedTokens: runtime.postCompactUsedTokens,
+            }
+            runtime.postCompactUsedTokens = null
+          } else {
+            runtime.snapshot.usage = freshUsage
+          }
           log('claude.usage', {
             windowId: runtime.snapshot.windowId,
             requested,

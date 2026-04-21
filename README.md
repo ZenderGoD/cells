@@ -14,13 +14,16 @@ Cells is a desktop workspace for arranging terminals and browser panes on an inf
 
 ### Agent support
 
-Cells works with CLI agents like Claude Code and OpenAI Codex — each runs in its own terminal node on the canvas.
+Cells works with CLI agents like Claude Code and OpenAI Codex. You can run them as a plain terminal on the canvas, or open a dedicated agent window with a rich chat UI on top of the same CLI — streaming turns, tool call grouping, inline diffs, and a built-in diffs panel.
+
+![Agent session window with streaming turns, tool groups, and an inline diff panel](docs/screenshots/agent-session.png)
+*Agent session window running on top of the Claude Code / Codex CLI*
 
 ![Claude Code running in a Cells terminal node](docs/screenshots/claude-code.png)
-*Claude Code*
+*Claude Code in a terminal node*
 
 ![OpenAI Codex running in a Cells terminal node](docs/screenshots/codex.png)
-*OpenAI Codex*
+*OpenAI Codex in a terminal node*
 
 ### Browser panes
 
@@ -46,7 +49,8 @@ Navigate between nodes on the canvas with configurable Ctrl+Tab snapping — no 
 
 ## Credits
 
-The in-canvas agent chat — message grouping, turn card, markdown rendering, composer toolbar, and most of the chat UX — is adapted from [Craft Agents OSS](https://github.com/lukilabs/craft-agents-oss). Files that pull from it have a header comment pointing at the upstream source.
+- [Craft Agents OSS](https://github.com/lukilabs/craft-agents-oss) — the in-canvas agent chat UI (message grouping, turn card, markdown rendering, composer toolbar, and most of the chat UX) is adapted from this project. Files that pull from it have a header comment pointing at the upstream source.
+- [T3 Code](https://github.com/pingdotgg/t3code) — the unified-diff stat model that powers the Codex session diffs panel is adapted from T3 Code, and several of the agent-session performance patterns were informed by it.
 
 ## Status
 

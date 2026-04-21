@@ -1,7 +1,6 @@
-import ClaudeCode from '@lobehub/icons/es/ClaudeCode'
-import OpenAI from '@lobehub/icons/es/OpenAI'
 import { Bot, Sparkles } from 'lucide-react'
 
+import { ClaudeCodeIcon, OpenAIAvatarIcon } from '@/components/brand-icons'
 import { getAgentBrand, type AgentName } from '@/lib/agent-brand'
 import { cn } from '@/lib/utils'
 
@@ -16,11 +15,11 @@ export function AgentIcon({ agent, className, size = 14 }: AgentIconProps) {
   const numericSize = typeof size === 'number' ? size : Number.parseFloat(size) || 14
 
   if (brand === 'claude-code') {
-    return <ClaudeCode.Color className={cn('shrink-0', className)} size={size} />
+    return <ClaudeCodeIcon className={cn('shrink-0', className)} size={size} />
   }
 
   if (brand === 'openai') {
-    return <OpenAI.Avatar className={cn('shrink-0', className)} size={numericSize} />
+    return <OpenAIAvatarIcon className={cn('shrink-0', className)} size={numericSize} />
   }
 
   if (brand === 'opencode') {

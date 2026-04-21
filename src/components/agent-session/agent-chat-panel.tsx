@@ -329,15 +329,15 @@ function ComposerImagePreviewDialog({
               {name}
             </span>
           </div>
-          <div className="flex min-h-0 flex-1 items-center justify-center bg-black/60 p-4">
+          <div className="flex min-h-0 flex-1 items-center justify-center bg-black/60 p-1">
             {url ? (
               <img
                 src={url}
                 alt={name}
-                className="max-h-[calc(100vh-7rem)] max-w-full rounded-[12px] object-contain shadow-2xl"
+                className="max-h-[calc(100vh-6rem)] max-w-full rounded-xl object-contain shadow-2xl"
               />
             ) : (
-              <div className="flex h-40 w-40 items-center justify-center rounded-[12px] border border-border/30 bg-background/30 text-muted-foreground/70">
+              <div className="flex h-40 w-40 items-center justify-center rounded-xl border border-border/30 bg-background/30 text-muted-foreground/70">
                 <Paperclip className="size-7" />
               </div>
             )}
@@ -721,16 +721,18 @@ function groupMessages(messages: AgentSessionMessage[]): ChatGroup[] {
 // After demotion:
 //   turn1(acts=[a,b]) + turn2(acts=[c,d], leadText=text)
 function demoteInterimResponses(groups: ChatGroup[]): ChatGroup[] {
+  const working: ChatGroup[] = groups.slice()
   const result: ChatGroup[] = []
-  for (let i = 0; i < groups.length; i++) {
-    const g = groups[i]
+  for (let i = 0; i < working.length; i++) {
+    const g = working[i]
     if (g.kind === 'turn' && g.responses.length > 0) {
-      const next = groups[i + 1]
+      const next = working[i + 1]
       if (next && next.kind === 'turn' && next.activities.length > 0) {
         const leadText = g.responses
           .map((r) => r.text)
           .join('\n\n')
           .trim()
+        working[i + 1] = { ...next, leadText: leadText || next.leadText }
         if (g.activities.length > 0) {
           result.push({
             kind: 'turn',
@@ -739,8 +741,6 @@ function demoteInterimResponses(groups: ChatGroup[]): ChatGroup[] {
             responses: [],
           })
         }
-        result.push({ ...next, leadText: leadText || next.leadText })
-        i++
         continue
       }
     }
@@ -1333,7 +1333,7 @@ const MessageGroupRow = memo(
   }) {
     return (
       <div
-        className="min-w-0"
+        className="min-w-0 p-[1px]"
         style={{
           contain: 'layout style paint',
           contentVisibility: 'auto',
@@ -1355,7 +1355,6 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const [messages, setMessages] = useState<AgentSessionMessage[]>([])
   const [groups, setGroups] = useState<ChatGroup[]>([])
   const [input, setInput] = useState('')
-  const [isComposerFocused, setIsComposerFocused] = useState(false)
   const [attachments, setAttachments] = useState<string[]>([])
   const [composerPreviewPath, setComposerPreviewPath] = useState<string | null>(null)
   const activeProjectPath = useStore(
@@ -2383,7 +2382,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                 data={visibleGroups}
                 keyExtractor={chatGroupKey}
                 renderItem={({ item, index }) => (
-                  <div className="mx-auto w-full min-w-0 max-w-3xl px-2">
+                  <div className="mx-auto w-full min-w-0 max-w-3xl">
                     <div className="pb-3">
                       <MessageGroupRow
                         group={item}
@@ -2401,7 +2400,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                 className="h-full overscroll-y-contain"
                 ListHeaderComponent={<div className="h-6" />}
                 ListFooterComponent={
-                  <div className="mx-auto w-full min-w-0 max-w-3xl px-2 pb-6">
+                  <div className="mx-auto w-full min-w-0 max-w-3xl pb-6">
                     {showPendingLoader ? <PendingTurnIndicator agent={agentWindow.agent} /> : null}
                   </div>
                 }
@@ -2412,7 +2411,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
           <div className="relative shrink-0 px-4 pb-4 pt-2">
             <div className="mx-auto max-w-3xl">
               {visibleSnapshot?.error ? (
-                <div className="mb-2 rounded-[12px] border border-red-500/25 bg-red-500/8 px-3 py-2 text-[12px] text-red-300 shadow-minimal">
+                <div className="mb-2 rounded-[12px] bg-red-500/12 px-3 py-2 text-[12px] text-red-300">
                   {visibleSnapshot.error}
                 </div>
               ) : null}
@@ -2446,8 +2445,8 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                     type="button"
                     onClick={() => setDiffsPanelOpen((v) => !v)}
                     className={cn(
-                      'inline-flex items-center gap-1.5 rounded-[6px] border border-border/40 bg-background/60 px-2 py-0.5 text-[11px] text-muted-foreground/80 transition-colors hover:border-foreground/20 hover:bg-foreground/5',
-                      diffsPanelOpen && 'border-foreground/30 bg-foreground/5 text-foreground/90',
+                      'inline-flex items-center gap-1.5 rounded-[6px] bg-foreground/5 px-2 py-0.5 text-[11px] text-muted-foreground/80 transition-colors hover:bg-foreground/10',
+                      diffsPanelOpen && 'bg-foreground/10 text-foreground/90',
                     )}
                     title="Show session diffs"
                   >
@@ -2615,11 +2614,11 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                               setDragOverIndex(null)
                             }}
                             className={cn(
-                              'group/queued flex gap-2 rounded-[10px] border border-border/50 bg-muted/30 px-2.5 py-1.5 text-[12px] text-foreground/85 shadow-minimal transition-colors',
+                              'group/queued flex gap-2 rounded-[10px] bg-foreground/5 px-2.5 py-1.5 text-[12px] text-foreground/85 transition-colors',
                               'items-center',
-                              isEditing && 'border-cyan-400/35 bg-cyan-500/5',
+                              isEditing && 'bg-cyan-500/10',
                               isDragging && 'opacity-50',
-                              isDropTarget && 'border-foreground/40 bg-foreground/5',
+                              isDropTarget && 'bg-foreground/10',
                             )}
                             title={
                               isEditing ? 'Editing in composer' : `${meta.shortcut} · ${meta.hint}`
@@ -2673,7 +2672,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                             <div className="flex shrink-0 items-center gap-1 text-[10.5px] text-muted-foreground/80">
                               {modelLabel ? (
                                 <span
-                                  className="rounded-[6px] border border-border/40 bg-background/40 px-1.5 py-px"
+                                  className="rounded-[6px] bg-background/60 px-1.5 py-px"
                                   title={`Model: ${modelLabel}`}
                                 >
                                   {modelLabel}
@@ -2681,7 +2680,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                               ) : null}
                               {thinkingLabel ? (
                                 <span
-                                  className="rounded-[6px] border border-border/40 bg-background/40 px-1.5 py-px"
+                                  className="rounded-[6px] bg-background/60 px-1.5 py-px"
                                   title={`Thinking: ${thinkingLabel}`}
                                 >
                                   {thinkingLabel}
@@ -2690,7 +2689,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                               {permissionOption ? (
                                 <span
                                   className={cn(
-                                    'inline-flex items-center gap-1 rounded-[6px] border border-border/40 bg-background/40 px-1.5 py-px',
+                                    'inline-flex items-center gap-1 rounded-[6px] bg-background/60 px-1.5 py-px',
                                     permissionOption.tint,
                                   )}
                                   title={`Permission: ${permissionOption.label}`}
@@ -2743,15 +2742,11 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                 />
               ) : null}
               <div
-                className={cn(
-                  'group/composer relative overflow-hidden rounded-[14px] border bg-background/95 shadow-middle transition-colors',
-                  isComposerFocused
-                    ? 'border-foreground/18'
-                    : 'border-border/30 hover:border-border/50',
-                )}
+                className="group/composer relative overflow-hidden rounded-[12px] shadow-minimal"
+                style={{ backgroundColor: 'oklch(0.17 0.004 285.9)' }}
               >
                 {isEditingQueuedMessage ? (
-                  <div className="flex items-center justify-between gap-3 border-b border-cyan-400/20 bg-cyan-500/6 px-3 py-2 text-[11.5px]">
+                  <div className="flex items-center justify-between gap-3 bg-cyan-500/6 px-3 py-2 text-[11.5px]">
                     <div className="min-w-0">
                       <span className="font-medium text-cyan-100">Editing queued message</span>
                       <span className="ml-1.5 text-muted-foreground/80">
@@ -2768,7 +2763,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                   </div>
                 ) : null}
                 {attachments.length > 0 ? (
-                  <div className="space-y-2 border-b border-border/30 px-3 pb-3 pt-3">
+                  <div className="space-y-2 px-3 pb-1 pt-3">
                     {composerImageAttachments.length > 0 ? (
                       <div className="flex flex-wrap gap-2.5">
                         {composerImageAttachments.map((path) => (
@@ -2805,8 +2800,6 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                       event.target.selectionStart ?? nextValue.length,
                     )
                   }}
-                  onFocus={() => setIsComposerFocused(true)}
-                  onBlur={() => setIsComposerFocused(false)}
                   onKeyDown={handleKeyDown}
                   onPaste={async (event) => {
                     const items = Array.from(event.clipboardData?.items ?? [])
