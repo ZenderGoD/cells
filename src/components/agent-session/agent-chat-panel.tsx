@@ -570,10 +570,6 @@ type ChatGroup =
       activities: AgentSessionMessage[]
       responses: AgentSessionMessage[]
       changedFilesActivities?: AgentSessionMessage[]
-      // When present, this group came from an explicit backend turn boundary
-      // (currently Codex's `tN-...` item ids), not our renderer heuristic.
-      // Keep those groups intact even if assistant prose lands between tools.
-      turnBoundaryKey?: string | null
       // Interim assistant text that preceded this turn's tool calls. When the
       // agent emits prose between tool groups, we demote that prose from its
       // own ResponseCard into the next turn's header line — it reads as the
@@ -643,7 +639,6 @@ function isChatGroupUnchanged(previous: ChatGroup, next: ChatGroup): boolean {
           previous.changedFilesActivities ?? [],
           nextTurn.changedFilesActivities ?? [],
         ) &&
-        previous.turnBoundaryKey === nextTurn.turnBoundaryKey &&
         previous.leadText === nextTurn.leadText &&
         areMessageRefsEqual(previous.activities, nextTurn.activities) &&
         areMessageRefsEqual(previous.responses, nextTurn.responses)
@@ -665,11 +660,6 @@ function isChatGroupUnchanged(previous: ChatGroup, next: ChatGroup): boolean {
  */
 function chatGroupKey(group: ChatGroup): string {
   return group.key
-}
-
-function getExplicitTurnBoundaryKey(message: AgentSessionMessage): string | null {
-  const match = /^(t\d+)-/.exec(message.id)
-  return match ? match[1] : null
 }
 
 function turnHasVisibleResponse(group: Extract<ChatGroup, { kind: 'turn' }>) {
@@ -722,11 +712,7 @@ function finalizeTurnGroups(groups: ChatGroup[]): ChatGroup[] {
 
 function groupMessages(messages: AgentSessionMessage[]): ChatGroup[] {
   const groups: ChatGroup[] = []
-  let pending: {
-    activities: AgentSessionMessage[]
-    responses: AgentSessionMessage[]
-    turnBoundaryKey: string | null
-  } | null = null
+  let pending: { activities: AgentSessionMessage[]; responses: AgentSessionMessage[] } | null = null
   let turnIndex = 0
 
   const flushPending = () => {
@@ -737,10 +723,9 @@ function groupMessages(messages: AgentSessionMessage[]): ChatGroup[] {
     }
     groups.push({
       kind: 'turn',
-      key: pending.turnBoundaryKey ?? `turn-${turnIndex++}`,
+      key: `turn-${turnIndex++}`,
       activities: pending.activities,
       responses: pending.responses,
-      turnBoundaryKey: pending.turnBoundaryKey,
     })
     pending = null
   }
@@ -753,7 +738,7 @@ function groupMessages(messages: AgentSessionMessage[]): ChatGroup[] {
     // subagents are dropped entirely since they're system-prompt noise.
     if (message.parentToolUseId) {
       if (message.role === 'user') continue
-      if (!pending) pending = { activities: [], responses: [], turnBoundaryKey: null }
+      if (!pending) pending = { activities: [], responses: [] }
       // Assistant text from a subagent still lives in the activities stripe
       // (rendered as a child of the Task row), not as the top-level response.
       pending.activities.push(message)
@@ -781,15 +766,6 @@ function groupMessages(messages: AgentSessionMessage[]): ChatGroup[] {
       case 'reasoning':
       case 'tool':
       case 'system': {
-        const turnBoundaryKey = getExplicitTurnBoundaryKey(message)
-        if (
-          pending &&
-          pending.turnBoundaryKey &&
-          turnBoundaryKey &&
-          pending.turnBoundaryKey !== turnBoundaryKey
-        ) {
-          flushPending()
-        }
         // Preserve chronological order of assistant text vs tool activity.
         // Whenever a non-assistant message (tool / reasoning / system) arrives
         // after any assistant response has already landed in the current turn,
@@ -797,20 +773,10 @@ function groupMessages(messages: AgentSessionMessage[]): ChatGroup[] {
         // [tool, tool, text, tool, tool] would collapse both tool pairs into
         // a single activities stripe above one response — the second pair
         // needs to render BELOW the text, not merged with the first pair.
-        //
-        // Codex exposes a real turn boundary in its generated message ids
-        // (`tN-...`). When we have that explicit boundary, keep the whole turn
-        // together instead of splitting on assistant prose.
-        if (
-          message.role !== 'assistant' &&
-          pending &&
-          pending.responses.length > 0 &&
-          !pending.turnBoundaryKey &&
-          !turnBoundaryKey
-        ) {
+        if (message.role !== 'assistant' && pending && pending.responses.length > 0) {
           flushPending()
         }
-        if (!pending) pending = { activities: [], responses: [], turnBoundaryKey }
+        if (!pending) pending = { activities: [], responses: [] }
         if (message.role === 'assistant') pending.responses.push(message)
         else pending.activities.push(message)
         break
@@ -839,13 +805,7 @@ function demoteInterimResponses(groups: ChatGroup[]): ChatGroup[] {
     const g = working[i]
     if (g.kind === 'turn' && g.responses.length > 0) {
       const next = working[i + 1]
-      if (
-        next &&
-        next.kind === 'turn' &&
-        next.activities.length > 0 &&
-        !g.turnBoundaryKey &&
-        !next.turnBoundaryKey
-      ) {
+      if (next && next.kind === 'turn' && next.activities.length > 0) {
         const leadText = g.responses
           .map((r) => r.text)
           .join('\n\n')
@@ -857,7 +817,6 @@ function demoteInterimResponses(groups: ChatGroup[]): ChatGroup[] {
             key: g.key,
             activities: g.activities,
             responses: [],
-            turnBoundaryKey: g.turnBoundaryKey,
           })
         }
         continue
