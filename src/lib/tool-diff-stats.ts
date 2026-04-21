@@ -3,6 +3,7 @@ import type { AgentSessionMessage } from '../types/index.ts'
 export interface DiffStats {
   additions: number
   deletions: number
+  changedFiles?: number
 }
 
 export interface FileDiffStats extends DiffStats {
@@ -45,7 +46,10 @@ function normalizeDiffPath(text: string): string | null {
 function parseSummaryFileChanges(text: string): FileDiffStats[] {
   const byPath = new Map<string, FileDiffStats>()
   for (const rawLine of text.replace(/\r\n/g, '\n').split('\n')) {
-    const match = rawLine.match(/^(?:add|delete|update|change):\s+(.+)$/)
+    const cleanedLine = rawLine.replace(/\s*Success\. Updated the following files:.*$/, '').trim()
+    const match =
+      cleanedLine.match(/^(?:add|delete|update|change):\s+(.+)$/) ??
+      cleanedLine.match(/^[ACDMRTU?]\s+(.+)$/)
     if (!match) continue
     const filePath = match[1]?.trim()
     if (!filePath) continue
@@ -150,9 +154,32 @@ function diffStatsFromFiles(files: FileDiffStats[]): DiffStats | null {
     (total, file) => ({
       additions: total.additions + file.additions,
       deletions: total.deletions + file.deletions,
+      changedFiles: (total.changedFiles ?? 0) + 1,
     }),
-    { additions: 0, deletions: 0 },
+    { additions: 0, deletions: 0, changedFiles: 0 },
   )
+}
+
+function parseFileChangeStats(message: AgentSessionMessage): FileDiffStats[] {
+  const candidates = [message.metadata, message.text].filter(
+    (value): value is string => typeof value === 'string' && value.trim().length > 0,
+  )
+  let best: FileDiffStats[] = []
+  let bestHasNumeric = false
+  for (const candidate of candidates) {
+    const parsed = parseUnifiedDiffFiles(candidate)
+    if (parsed.length === 0) continue
+    const hasNumeric = parsed.some((file) => file.additions > 0 || file.deletions > 0)
+    if (
+      parsed.length > best.length ||
+      (hasNumeric && !bestHasNumeric) ||
+      (hasNumeric === bestHasNumeric && parsed.length === best.length && candidate === message.text)
+    ) {
+      best = parsed
+      bestHasNumeric = hasNumeric
+    }
+  }
+  return best
 }
 
 /** Compute {additions, deletions} from an Edit/Write/MultiEdit tool input.
@@ -207,7 +234,7 @@ export function computeEditWriteDiffStats(
 export function diffStatsFromMessage(message: AgentSessionMessage): DiffStats | null {
   if (message.role !== 'tool' || !message.title) return null
   if (message.title === FILE_CHANGE_TOOL) {
-    return diffStatsFromFiles(parseUnifiedDiffFiles(message.metadata ?? message.text))
+    return diffStatsFromFiles(parseFileChangeStats(message))
   }
   return computeEditWriteDiffStats(
     message.title,
@@ -234,7 +261,7 @@ export function groupDiffsByFile(messages: AgentSessionMessage[]): FileDiffStats
   for (const message of messages) {
     if (message.role !== 'tool' || !message.title) continue
     if (message.title === FILE_CHANGE_TOOL) {
-      for (const file of parseUnifiedDiffFiles(message.metadata ?? message.text)) {
+      for (const file of parseFileChangeStats(message)) {
         const existing = byPath.get(file.filePath) ?? {
           filePath: file.filePath,
           additions: 0,
@@ -298,5 +325,5 @@ export function groupDiffsByFile(messages: AgentSessionMessage[]): FileDiffStats
 
 export function hasDiffStats(stats: DiffStats | null | undefined): boolean {
   if (!stats) return false
-  return stats.additions > 0 || stats.deletions > 0
+  return stats.additions > 0 || stats.deletions > 0 || (stats.changedFiles ?? 0) > 0
 }

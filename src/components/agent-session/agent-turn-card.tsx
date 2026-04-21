@@ -254,16 +254,33 @@ function buildActivityTree(activities: AgentSessionMessage[]): ActivityNode[] {
 
 function DiffStatsBadge({ stats, className }: { stats: DiffStats; className?: string }) {
   if (!hasDiffStats(stats)) return null
+  const hasLineCounts = stats.additions > 0 || stats.deletions > 0
   return (
     <span
       className={cn(
         'shrink-0 inline-flex items-center gap-1 text-[11px] tabular-nums font-medium',
         className,
       )}
-      title={`+${stats.additions} / -${stats.deletions}`}
+      title={
+        hasLineCounts
+          ? `+${stats.additions} / -${stats.deletions}`
+          : `${stats.changedFiles ?? 0} file${stats.changedFiles === 1 ? '' : 's'} changed`
+      }
     >
-      {stats.additions > 0 ? <span className="text-emerald-400/90">+{stats.additions}</span> : null}
-      {stats.deletions > 0 ? <span className="text-rose-400/90">-{stats.deletions}</span> : null}
+      {hasLineCounts ? (
+        <>
+          {stats.additions > 0 ? (
+            <span className="text-emerald-400/90">+{stats.additions}</span>
+          ) : null}
+          {stats.deletions > 0 ? (
+            <span className="text-rose-400/90">-{stats.deletions}</span>
+          ) : null}
+        </>
+      ) : (
+        <span className="text-muted-foreground/80">
+          {stats.changedFiles} file{stats.changedFiles === 1 ? '' : 's'}
+        </span>
+      )}
     </span>
   )
 }

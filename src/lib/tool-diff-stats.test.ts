@@ -38,7 +38,11 @@ test('diffStatsFromMessage reads Codex unified diff metadata', () => {
     text: 'update: a.txt\nupdate: src/b.ts',
   })
 
-  assert.deepEqual(diffStatsFromMessage(message), { additions: 2, deletions: 3 })
+  assert.deepEqual(diffStatsFromMessage(message), {
+    additions: 2,
+    deletions: 3,
+    changedFiles: 2,
+  })
 })
 
 test('groupDiffsByFile aggregates per-file counts from Codex unified diffs', () => {
@@ -127,6 +131,41 @@ test('groupDiffsByFile falls back to Codex summary lines when no patch is preser
     },
     {
       filePath: 'src/old.ts',
+      additions: 0,
+      deletions: 0,
+      edits: [],
+    },
+  ])
+})
+
+test('diffStatsFromMessage falls back to changed-file counts for Codex summaries', () => {
+  const stats = diffStatsFromMessage(
+    toolMessage({
+      text: 'change: src/app.ts\nchange: src/lib/tool-diff-stats.ts',
+    }),
+  )
+
+  assert.deepEqual(stats, {
+    additions: 0,
+    deletions: 0,
+    changedFiles: 2,
+  })
+})
+
+test('groupDiffsByFile prefers clean Codex summary text over polluted metadata', () => {
+  const files = groupDiffsByFile([
+    toolMessage({
+      text: 'change: /Users/raj/projects/cells/src/components/agent-session/agent-chat-panel.tsx',
+      metadata: [
+        'change: /Users/raj/projects/cells/src/components/agent-session/agent-chat-panel.tsxSuccess. Updated the following files:',
+        'M /Users/raj/projects/cells/src/components/agent-session/agent-chat-panel.tsx',
+      ].join('\n'),
+    }),
+  ])
+
+  assert.deepEqual(files, [
+    {
+      filePath: '/Users/raj/projects/cells/src/components/agent-session/agent-chat-panel.tsx',
       additions: 0,
       deletions: 0,
       edits: [],

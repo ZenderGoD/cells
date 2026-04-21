@@ -2151,6 +2151,14 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                       {sessionDiffStats.deletions > 0 ? (
                         <span className="text-rose-400/80">-{sessionDiffStats.deletions}</span>
                       ) : null}
+                      {sessionDiffStats.additions === 0 &&
+                      sessionDiffStats.deletions === 0 &&
+                      (sessionDiffStats.changedFiles ?? 0) > 0 ? (
+                        <span className="text-muted-foreground/85">
+                          {sessionDiffStats.changedFiles} file
+                          {sessionDiffStats.changedFiles === 1 ? '' : 's'}
+                        </span>
+                      ) : null}
                     </span>
                     <span>diffs</span>
                   </button>
