@@ -101,6 +101,8 @@ const CLAUDE_CONTEXT_1M_BETA = 'context-1m-2025-08-07' as const
 // leave the session idle so the user can take over — avoids pinning a model
 // that's genuinely stuck in a loop.
 const CLAUDE_AUTO_CONTINUE_CAP = 3
+const CLAUDE_IDLE_STREAM_BACKOFF_MS = 250
+const AGENT_SESSION_DEBUG = process.env.CELLS_AGENT_SESSION_DEBUG === '1'
 
 // Fold legacy ('safe' / 'allow-all') values from older saved sessions into
 // the current 3-mode set so the rest of the service only has to reason about
@@ -1875,6 +1877,7 @@ function schedulePersist(snapshot: AgentSessionSnapshot) {
 // us exactly where a stall is happening from the app logs. Keep single-line
 // JSON-ish payloads so they're easy to paste back.
 function log(event: string, data: Record<string, unknown> = {}) {
+  if (!AGENT_SESSION_DEBUG && !event.includes('error') && !event.includes('exit')) return
   console.log(
     `[agent-session] ${event}` + (Object.keys(data).length ? ` ${JSON.stringify(data)}` : ''),
   )
@@ -3614,7 +3617,11 @@ export class AgentSessionService extends EventEmitter {
           this.handleClaudeEvent(runtime, event)
           this.emitUpdate(runtime.snapshot)
         }
-        log('claude.stream.turn-end', { windowId, count, totalCount, streamGeneration })
+        if (count > 0) {
+          log('claude.stream.turn-end', { windowId, count, totalCount, streamGeneration })
+        } else {
+          await new Promise((resolve) => setTimeout(resolve, CLAUDE_IDLE_STREAM_BACKOFF_MS))
+        }
         // Loop back around — the next stream() call will block on the shared
         // queryIterator until the user sends another message.
       }

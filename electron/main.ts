@@ -85,7 +85,11 @@ if (process.platform === 'darwin') {
   app.name = 'Cells'
 }
 
-const hasSingleInstanceLock = app.requestSingleInstanceLock()
+// Dev runs deliberately use an isolated data dir (`CELLS_DEV_ROOT`) so they
+// should be allowed to run alongside the packaged app. The single-instance
+// lock is only needed for the installed build, where duplicate app trees
+// burn CPU/GPU and battery.
+const hasSingleInstanceLock = app.isPackaged ? app.requestSingleInstanceLock() : true
 if (!hasSingleInstanceLock) {
   app.quit()
 }
