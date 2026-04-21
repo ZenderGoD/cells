@@ -64,7 +64,7 @@ import { computeStableList, createEmptyStableListState } from '@/lib/stable-list
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Kbd } from '@/components/ui/kbd'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
-import { AnimatePresence, motion } from 'motion/react'
+import { LegendList, type LegendListRef } from '@legendapp/list/react'
 
 interface AgentChatPanelProps {
   agentWindow: AgentWindowNode
@@ -628,6 +628,10 @@ function isChatGroupUnchanged(previous: ChatGroup, next: ChatGroup): boolean {
  *   - Errors and auth prompts are lifted out of the group so they render
  *     as their own cards (matches Craft).
  */
+function chatGroupKey(group: ChatGroup): string {
+  return group.key
+}
+
 function groupMessages(messages: AgentSessionMessage[]): ChatGroup[] {
   const groups: ChatGroup[] = []
   let pending: { activities: AgentSessionMessage[]; responses: AgentSessionMessage[] } | null = null
@@ -1358,7 +1362,6 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     (state) => state.projects.find((project) => project.id === state.activeProjectId)?.path ?? null,
   )
   const worktrees = useStore((state) => state.worktrees)
-  const reducedMotion = useStore((s) => s.reducedMotion)
   // Queue is persisted on the AgentWindowNode so it survives app restart.
   // Read straight from the prop (zustand re-renders this component whenever
   // the window patches) and write through `syncAgentWindow` so the change
@@ -1420,6 +1423,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     [setQueuedMessages],
   )
   const scrollViewportRef = useRef<HTMLDivElement>(null)
+  const listRef = useRef<LegendListRef>(null)
   const recentSessionsViewportRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -1554,11 +1558,8 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     agentWindow.contextLength,
   ])
 
-  useEffect(() => {
-    const viewport = scrollViewportRef.current
-    if (!viewport) return
-    viewport.scrollTop = viewport.scrollHeight
-  }, [snapshot?.messages.length, snapshot?.status])
+  // Scroll-to-bottom is handled by <LegendList maintainScrollAtEnd /> in the
+  // messages branch; the skeleton/empty branches don't need autoscroll.
 
   useEffect(() => {
     const id = window.setTimeout(() => textareaRef.current?.focus(), 50)
@@ -2243,170 +2244,169 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                 'linear-gradient(to bottom, transparent 0%, black 28px, black calc(100% - 20px), transparent 100%)',
             }}
           >
-            <ScrollArea
-              className="h-full min-w-0"
-              viewportRef={scrollViewportRef}
-              viewportClassName="rounded-none"
-            >
-              <div className="mx-auto min-h-full max-w-3xl py-6">
-                {isLoadingSnapshot ? (
-                  <div className="space-y-3 px-2" aria-hidden>
-                    <div className="flex justify-end">
-                      <div className="h-6 w-[45%] animate-pulse rounded-[10px] bg-foreground/5" />
+            {isLoadingSnapshot || !hasMessages ? (
+              <ScrollArea
+                className="h-full min-w-0"
+                viewportRef={scrollViewportRef}
+                viewportClassName="rounded-none"
+              >
+                <div className="mx-auto min-h-full max-w-3xl py-6">
+                  {isLoadingSnapshot ? (
+                    <div className="space-y-3 px-2" aria-hidden>
+                      <div className="flex justify-end">
+                        <div className="h-6 w-[45%] animate-pulse rounded-[10px] bg-foreground/5" />
+                      </div>
+                      <div className="space-y-2">
+                        <div className="h-4 w-[70%] animate-pulse rounded-[8px] bg-foreground/5" />
+                        <div className="h-4 w-[55%] animate-pulse rounded-[8px] bg-foreground/5" />
+                        <div className="h-4 w-[40%] animate-pulse rounded-[8px] bg-foreground/5" />
+                      </div>
+                      <div className="flex justify-end">
+                        <div className="h-6 w-[30%] animate-pulse rounded-[10px] bg-foreground/5" />
+                      </div>
+                      <div className="space-y-2">
+                        <div className="h-4 w-[60%] animate-pulse rounded-[8px] bg-foreground/5" />
+                        <div className="h-4 w-[35%] animate-pulse rounded-[8px] bg-foreground/5" />
+                      </div>
                     </div>
-                    <div className="space-y-2">
-                      <div className="h-4 w-[70%] animate-pulse rounded-[8px] bg-foreground/5" />
-                      <div className="h-4 w-[55%] animate-pulse rounded-[8px] bg-foreground/5" />
-                      <div className="h-4 w-[40%] animate-pulse rounded-[8px] bg-foreground/5" />
-                    </div>
-                    <div className="flex justify-end">
-                      <div className="h-6 w-[30%] animate-pulse rounded-[10px] bg-foreground/5" />
-                    </div>
-                    <div className="space-y-2">
-                      <div className="h-4 w-[60%] animate-pulse rounded-[8px] bg-foreground/5" />
-                      <div className="h-4 w-[35%] animate-pulse rounded-[8px] bg-foreground/5" />
-                    </div>
-                  </div>
-                ) : !hasMessages ? (
-                  <div className="flex min-h-[360px] flex-col items-center justify-center gap-4 py-8">
-                    <div className="relative flex size-14 items-center justify-center rounded-[16px] border border-border/60 bg-background/85 shadow-middle">
-                      <AgentIcon agent={agentWindow.agent} className="size-7" />
-                      <span
-                        className={cn(
-                          'absolute -right-1 -bottom-1 size-3 rounded-full ring-2 ring-background',
-                          isRunning
-                            ? 'bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.6)]'
-                            : 'bg-muted-foreground/40',
+                  ) : (
+                    <div className="flex min-h-[360px] flex-col items-center justify-center gap-4 py-8">
+                      <div className="relative flex size-14 items-center justify-center rounded-[16px] border border-border/60 bg-background/85 shadow-middle">
+                        <AgentIcon agent={agentWindow.agent} className="size-7" />
+                        <span
+                          className={cn(
+                            'absolute -right-1 -bottom-1 size-3 rounded-full ring-2 ring-background',
+                            isRunning
+                              ? 'bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.6)]'
+                              : 'bg-muted-foreground/40',
+                          )}
+                        />
+                      </div>
+                      <div className="space-y-1.5 text-center">
+                        <p className="text-[15px] font-semibold tracking-tight text-foreground">
+                          New {getAgentDisplayName(agentWindow.agent)} session
+                        </p>
+                        {cwdDisplay ? (
+                          <p className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-muted-foreground/85">
+                            <Folder className="h-3 w-3" />
+                            <span className="font-mono">{cwdDisplay}</span>
+                          </p>
+                        ) : (
+                          <p className="text-[11.5px] text-muted-foreground/60">
+                            No working directory
+                          </p>
                         )}
+                      </div>
+                      <AgentEmptyStateHint />
+                      <div className="flex w-full max-w-xl flex-wrap items-center justify-center gap-1.5 text-[11px] text-muted-foreground/70">
+                        {(['stop', 'after-tool', 'after-turn'] as const).map((mode) => {
+                          const meta = QUEUE_MODE_META[mode]
+                          return (
+                            <div
+                              key={mode}
+                              className="inline-flex items-center gap-1.5 rounded-[999px] bg-background/35 px-2.5 py-1"
+                            >
+                              <meta.Icon className={cn('size-3.5 shrink-0', meta.tint)} />
+                              <span className="text-foreground/80">{meta.label}</span>
+                              <Kbd className="h-[18px] min-w-[18px] rounded-[4px] bg-foreground/6 px-1 text-[10px] text-muted-foreground/80">
+                                {meta.shortcut}
+                              </Kbd>
+                            </div>
+                          )
+                        })}
+                      </div>
+                      {filteredRecentSessions.length > 0 ? (
+                        <div className="w-full max-w-xl">
+                          <div className="flex items-center gap-1.5 px-1 pb-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground/65">
+                            <History className="size-3.5" />
+                            Recent Sessions
+                          </div>
+                          <div className="relative">
+                            <ScrollArea
+                              className="max-h-[250px] w-full"
+                              viewportClassName="pr-2"
+                              viewportRef={recentSessionsViewportRef}
+                            >
+                              <div className="flex flex-col gap-0.5 pb-2">
+                                {filteredRecentSessions.map((session) => (
+                                  <button
+                                    key={`${session.origin}:${session.windowId ?? session.nativeId ?? session.title}`}
+                                    type="button"
+                                    onClick={() => openRecentSession(session)}
+                                    className="flex items-center gap-3 rounded-[10px] px-2.5 py-2 text-left transition-colors hover:bg-foreground/5"
+                                  >
+                                    <AgentIcon agent={session.agent} className="size-4 shrink-0" />
+                                    <div className="min-w-0 flex-1">
+                                      <div className="flex items-center gap-2">
+                                        <span className="truncate text-[12.5px] font-medium text-foreground/90">
+                                          {session.title}
+                                        </span>
+                                        <span className="shrink-0 rounded-[6px] border border-border/35 bg-background/50 px-1.5 py-0.5 text-[10px] text-muted-foreground/70">
+                                          {session.sourceLabel}
+                                        </span>
+                                      </div>
+                                      <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground/65">
+                                        {session.cwd ? (
+                                          <span className="truncate font-mono">
+                                            {truncateCwd(session.cwd)}
+                                          </span>
+                                        ) : null}
+                                        <span className="shrink-0">
+                                          {formatRelativeTime(session.updatedAt)}
+                                        </span>
+                                      </div>
+                                    </div>
+                                    <span className="shrink-0 text-[11px] text-muted-foreground/70">
+                                      {session.origin === 'cells' ? 'Open' : 'Import'}
+                                    </span>
+                                  </button>
+                                ))}
+                              </div>
+                            </ScrollArea>
+                            {recentSessionsFade.top ? (
+                              <div className="pointer-events-none absolute inset-x-0 top-0 h-8 bg-gradient-to-b from-background via-background/95 to-transparent" />
+                            ) : null}
+                            {recentSessionsFade.bottom ? (
+                              <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-background via-background/95 to-transparent" />
+                            ) : null}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
+                </div>
+              </ScrollArea>
+            ) : (
+              <LegendList<ChatGroup>
+                key={agentWindow.id}
+                ref={listRef}
+                data={visibleGroups}
+                keyExtractor={chatGroupKey}
+                renderItem={({ item, index }) => (
+                  <div className="mx-auto w-full min-w-0 max-w-3xl px-2">
+                    <div className="pb-3">
+                      <MessageGroupRow
+                        group={item}
+                        agent={agentWindow.agent}
+                        isStreamingLastTurn={isRunning && index === lastTurnIndex}
                       />
                     </div>
-                    <div className="space-y-1.5 text-center">
-                      <p className="text-[15px] font-semibold tracking-tight text-foreground">
-                        New {getAgentDisplayName(agentWindow.agent)} session
-                      </p>
-                      {cwdDisplay ? (
-                        <p className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-muted-foreground/85">
-                          <Folder className="h-3 w-3" />
-                          <span className="font-mono">{cwdDisplay}</span>
-                        </p>
-                      ) : (
-                        <p className="text-[11.5px] text-muted-foreground/60">
-                          No working directory
-                        </p>
-                      )}
-                    </div>
-                    <AgentEmptyStateHint />
-                    <div className="flex w-full max-w-xl flex-wrap items-center justify-center gap-1.5 text-[11px] text-muted-foreground/70">
-                      {(['stop', 'after-tool', 'after-turn'] as const).map((mode) => {
-                        const meta = QUEUE_MODE_META[mode]
-                        return (
-                          <div
-                            key={mode}
-                            className="inline-flex items-center gap-1.5 rounded-[999px] bg-background/35 px-2.5 py-1"
-                          >
-                            <meta.Icon className={cn('size-3.5 shrink-0', meta.tint)} />
-                            <span className="text-foreground/80">{meta.label}</span>
-                            <Kbd className="h-[18px] min-w-[18px] rounded-[4px] bg-foreground/6 px-1 text-[10px] text-muted-foreground/80">
-                              {meta.shortcut}
-                            </Kbd>
-                          </div>
-                        )
-                      })}
-                    </div>
-                    {filteredRecentSessions.length > 0 ? (
-                      <div className="w-full max-w-xl">
-                        <div className="flex items-center gap-1.5 px-1 pb-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground/65">
-                          <History className="size-3.5" />
-                          Recent Sessions
-                        </div>
-                        <div className="relative">
-                          <ScrollArea
-                            className="max-h-[250px] w-full"
-                            viewportClassName="pr-2"
-                            viewportRef={recentSessionsViewportRef}
-                          >
-                            <div className="flex flex-col gap-0.5 pb-2">
-                              {filteredRecentSessions.map((session) => (
-                                <button
-                                  key={`${session.origin}:${session.windowId ?? session.nativeId ?? session.title}`}
-                                  type="button"
-                                  onClick={() => openRecentSession(session)}
-                                  className="flex items-center gap-3 rounded-[10px] px-2.5 py-2 text-left transition-colors hover:bg-foreground/5"
-                                >
-                                  <AgentIcon agent={session.agent} className="size-4 shrink-0" />
-                                  <div className="min-w-0 flex-1">
-                                    <div className="flex items-center gap-2">
-                                      <span className="truncate text-[12.5px] font-medium text-foreground/90">
-                                        {session.title}
-                                      </span>
-                                      <span className="shrink-0 rounded-[6px] border border-border/35 bg-background/50 px-1.5 py-0.5 text-[10px] text-muted-foreground/70">
-                                        {session.sourceLabel}
-                                      </span>
-                                    </div>
-                                    <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground/65">
-                                      {session.cwd ? (
-                                        <span className="truncate font-mono">
-                                          {truncateCwd(session.cwd)}
-                                        </span>
-                                      ) : null}
-                                      <span className="shrink-0">
-                                        {formatRelativeTime(session.updatedAt)}
-                                      </span>
-                                    </div>
-                                  </div>
-                                  <span className="shrink-0 text-[11px] text-muted-foreground/70">
-                                    {session.origin === 'cells' ? 'Open' : 'Import'}
-                                  </span>
-                                </button>
-                              ))}
-                            </div>
-                          </ScrollArea>
-                          {recentSessionsFade.top ? (
-                            <div className="pointer-events-none absolute inset-x-0 top-0 h-8 bg-gradient-to-b from-background via-background/95 to-transparent" />
-                          ) : null}
-                          {recentSessionsFade.bottom ? (
-                            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-background via-background/95 to-transparent" />
-                          ) : null}
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    <AnimatePresence mode="popLayout" initial={false}>
-                      {visibleGroups.map((group, idx) => (
-                        <motion.div
-                          key={group.key}
-                          initial={reducedMotion ? false : { opacity: 0, y: 6 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          transition={{ duration: 0.18, ease: [0.4, 0, 0.2, 1] }}
-                        >
-                          <MessageGroupRow
-                            group={group}
-                            agent={agentWindow.agent}
-                            isStreamingLastTurn={isRunning && idx === lastTurnIndex}
-                          />
-                        </motion.div>
-                      ))}
-                    </AnimatePresence>
-                    <AnimatePresence mode="popLayout">
-                      {showPendingLoader ? (
-                        <motion.div
-                          key="pending"
-                          className="flex justify-start px-2"
-                          initial={reducedMotion ? false : { opacity: 0 }}
-                          animate={{ opacity: 1 }}
-                          exit={{ opacity: 0 }}
-                          transition={{ duration: 0.2 }}
-                        >
-                          <PendingTurnIndicator agent={agentWindow.agent} />
-                        </motion.div>
-                      ) : null}
-                    </AnimatePresence>
                   </div>
                 )}
-              </div>
-            </ScrollArea>
+                estimatedItemSize={120}
+                initialScrollAtEnd
+                maintainScrollAtEnd
+                maintainScrollAtEndThreshold={0.1}
+                maintainVisibleContentPosition
+                className="h-full overscroll-y-contain"
+                ListHeaderComponent={<div className="h-6" />}
+                ListFooterComponent={
+                  <div className="mx-auto w-full min-w-0 max-w-3xl px-2 pb-6">
+                    {showPendingLoader ? <PendingTurnIndicator agent={agentWindow.agent} /> : null}
+                  </div>
+                }
+              />
+            )}
           </div>
 
           <div className="relative shrink-0 px-4 pb-4 pt-2">
