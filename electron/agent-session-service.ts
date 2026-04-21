@@ -2388,7 +2388,9 @@ export class AgentSessionService extends EventEmitter {
       existing.request = { ...existing.request, ...request }
       existing.snapshot.title = request.title?.trim() || existing.snapshot.title
       existing.snapshot.cwd = request.cwd ?? existing.snapshot.cwd ?? null
-      return cloneSnapshot(existing.snapshot)
+      const cloned = cloneSnapshot(existing.snapshot)
+      existing.snapshot.restoredFromPersist = false
+      return cloned
     }
 
     const persisted = loadPersistedSnapshot(request.windowId)
@@ -2405,6 +2407,7 @@ export class AgentSessionService extends EventEmitter {
         persisted?.title ||
         (request.agent === 'claude' ? 'Claude Code' : 'Codex'),
       cwd: request.cwd ?? persisted?.cwd ?? null,
+      restoredFromPersist: Boolean(persisted),
       status: 'idle',
       error: null,
       claudeSessionId: request.claudeSessionId ?? persisted?.claudeSessionId ?? null,
@@ -2483,7 +2486,9 @@ export class AgentSessionService extends EventEmitter {
         log('claude.initialPrompt', { windowId: request.windowId })
         void this.send(request.windowId, request.initialPrompt)
       }
-      return cloneSnapshot(snapshot)
+      const cloned = cloneSnapshot(snapshot)
+      snapshot.restoredFromPersist = false
+      return cloned
     }
 
     const isResumedThread = Boolean(request.codexThreadId)
@@ -2492,7 +2497,9 @@ export class AgentSessionService extends EventEmitter {
     if (!isResumedThread && request.initialPrompt?.trim()) {
       void this.send(request.windowId, request.initialPrompt)
     }
-    return cloneSnapshot(snapshot)
+    const cloned = cloneSnapshot(snapshot)
+    snapshot.restoredFromPersist = false
+    return cloned
   }
 
   async send(

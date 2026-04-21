@@ -680,11 +680,15 @@ export function AgentTurnCard({
                 {activities.length}
               </span>
               {isStreaming ? (
-                <LoadingIndicator
-                  label={computedPreview}
-                  showElapsed
-                  className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground [&>span:nth-child(2)]:truncate"
-                />
+                <span className="flex min-w-0 flex-1 items-center gap-2 text-[13px] text-muted-foreground">
+                  <Spinner className="shrink-0 text-[10px] text-muted-foreground/80" />
+                  <LoadingIndicator
+                    label={computedPreview}
+                    showElapsed
+                    className="min-w-0 flex-1 gap-1.5 overflow-hidden [&>span:nth-child(2)]:truncate"
+                    spinnerClassName="hidden"
+                  />
+                </span>
               ) : (
                 <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground">
                   {computedPreview}

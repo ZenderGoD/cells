@@ -356,6 +356,10 @@ export interface AgentSessionSnapshot {
   agent: Extract<AgentName, 'claude' | 'codex'>
   title: string
   cwd?: string | null
+  /** True only on the first snapshot returned after we reconstruct a session
+   *  from on-disk state during app startup. Lets the UI show "resume" affordances
+   *  for recovered sessions without re-triggering them on ordinary remounts. */
+  restoredFromPersist?: boolean
   status: 'idle' | 'running' | 'error'
   error?: string | null
   claudeSessionId?: string | null

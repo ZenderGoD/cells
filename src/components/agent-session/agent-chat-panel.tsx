@@ -1228,13 +1228,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       useStore.getState().syncAgentWindow(agentWindow.id, { queuedMessages: sanitized })
     }
   }, [agentWindow.id, agentWindow.queuedMessages])
-  // If the panel mounts with a non-empty queue, the app was quit mid-turn —
-  // auto-draining would feel like the agent started itself without the user
-  // asking. Hold the queue behind an explicit "Continue" button until the
-  // user confirms. Once lifted, normal drain behaviour takes over.
-  const [resumeGated, setResumeGated] = useState<boolean>(
-    () => sanitizeQueuedMessages(agentWindow.queuedMessages ?? []).length > 0,
-  )
+  // Only gate resume when the session was actually reconstructed from the
+  // persisted snapshot after Cells restarted. Project/window remounts within
+  // the same app session should not show the "Continue" banner.
+  const [resumeGated, setResumeGated] = useState(false)
   // Separately track mid-turn resumes: the session had an outstanding user
   // turn when the app was closed (last message is a user message with no
   // completed assistant response). Surfaces the Continue banner even when
@@ -1287,19 +1284,20 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     const sync = (next: AgentSessionSnapshot) => {
       if (cancelled || next.windowId !== agentWindow.id) return
       setSnapshot(next)
-      // First snapshot after mount: detect mid-turn resumes so the drain
-      // effect stays gated until the user presses Continue. A session is
-      // mid-turn when the last message is a user message (no assistant reply
-      // followed) or any tool/reasoning row is still in_progress.
+      // First snapshot after mount: detect recovered mid-turn resumes so the
+      // drain effect stays gated until the user presses Continue. We only do
+      // this for sessions restored from disk after an app restart — normal
+      // remounts from project switching should not trigger the banner.
       if (!midTurnAppliedRef.current) {
         midTurnAppliedRef.current = true
         const msgs = next.messages
-        if (msgs.length > 0) {
+        const hasQueued = sanitizeQueuedMessages(agentWindow.queuedMessages ?? []).length > 0
+        if (next.restoredFromPersist && (msgs.length > 0 || hasQueued)) {
           const tail = msgs[msgs.length - 1]
-          const tailIsUser = tail.role === 'user'
+          const tailIsUser = tail?.role === 'user'
           const hasPending = msgs.some((m) => m.status === 'in_progress')
-          if (tailIsUser || hasPending) {
-            setMidTurnDetected(true)
+          if (tailIsUser || hasPending || hasQueued) {
+            setMidTurnDetected(tailIsUser || hasPending)
             setResumeGated(true)
           }
         }
@@ -1350,6 +1348,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     agentWindow.customTitle,
     agentWindow.id,
     agentWindow.initialPrompt,
+    agentWindow.queuedMessages,
     agentWindow.title,
     agentWindow.model,
     agentWindow.permissionMode,
