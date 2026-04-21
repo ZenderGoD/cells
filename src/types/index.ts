@@ -189,6 +189,17 @@ export interface QueuedAgentMessage {
   permissionMode: AgentPermissionMode | null
 }
 
+/** Minimap/overview status for an agent window. Richer than the main-process
+ *  session status so the minimap can differentiate approval/input needs from
+ *  plain "working" — derived from the session snapshot in the renderer. */
+export type AgentWindowStatus =
+  | 'idle'
+  | 'running'
+  | 'error'
+  | 'awaiting-approval'
+  | 'awaiting-input'
+  | 'plan-ready'
+
 export interface AgentWindowNode {
   id: string
   agent: Extract<AgentName, 'claude' | 'codex'>
@@ -199,7 +210,7 @@ export interface AgentWindowNode {
   title: string
   customTitle?: string | null
   zIndex?: number
-  status?: 'idle' | 'running' | 'error'
+  status?: AgentWindowStatus
   error?: string | null
   claudeSessionId?: string | null
   codexThreadId?: string | null

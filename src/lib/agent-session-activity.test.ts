@@ -50,3 +50,46 @@ test('deriveAgentSessionWindowStatus preserves error state', () => {
     'error',
   )
 })
+
+test('deriveAgentSessionWindowStatus surfaces approval over working', () => {
+  // pendingApproval blocks progress, so it outranks the in-flight tool call.
+  assert.equal(
+    deriveAgentSessionWindowStatus({
+      status: 'running',
+      messages: [message({ id: 'tool-live', role: 'tool', status: 'in_progress' })],
+      pendingApproval: { kind: 'command' } as never,
+    }),
+    'awaiting-approval',
+  )
+})
+
+test('deriveAgentSessionWindowStatus surfaces awaiting-input when a question is pending', () => {
+  assert.equal(
+    deriveAgentSessionWindowStatus({
+      status: 'idle',
+      messages: [],
+      pendingQuestion: { questions: [{ id: 'q1', question: 'why' }] } as never,
+    }),
+    'awaiting-input',
+  )
+})
+
+test('deriveAgentSessionWindowStatus surfaces plan-ready only when idle', () => {
+  // Plan ranks below working — a still-streaming turn shouldn't be reported as plan-ready.
+  assert.equal(
+    deriveAgentSessionWindowStatus({
+      status: 'running',
+      messages: [],
+      pendingPlanApproval: { plan: 'do thing' } as never,
+    }),
+    'running',
+  )
+  assert.equal(
+    deriveAgentSessionWindowStatus({
+      status: 'idle',
+      messages: [],
+      pendingPlanApproval: { plan: 'do thing' } as never,
+    }),
+    'plan-ready',
+  )
+})

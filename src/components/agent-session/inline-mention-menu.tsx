@@ -34,7 +34,7 @@ interface InlineMentionMenuProps {
 }
 
 const MENU_CONTAINER_STYLE =
-  'overflow-hidden rounded-[8px] bg-popover text-popover-foreground shadow-md ring-1 ring-foreground/10'
+  'overflow-hidden rounded-[10px] text-popover-foreground shadow-minimal ring-1 ring-foreground/10'
 const MENU_LIST_STYLE = 'max-h-[240px] overflow-y-auto py-1'
 const MENU_ITEM_STYLE =
   'mx-1 flex cursor-pointer select-none items-center gap-3 rounded-[6px] px-2 py-1.5 text-[13px]'
@@ -159,7 +159,7 @@ export function InlineMentionMenu({
   if (!open) return null
 
   const bottomPosition =
-    typeof window !== 'undefined' ? window.innerHeight - Math.round(position.y) + 8 : 0
+    typeof window !== 'undefined' ? window.innerHeight - Math.round(position.y) + 6 : 0
 
   return (
     <div
@@ -170,9 +170,10 @@ export function InlineMentionMenu({
         bottom: bottomPosition,
         width: 280,
         maxWidth: 280,
+        backgroundColor: 'oklch(0.17 0.004 285.9)',
       }}
     >
-      <div className="border-b border-foreground/5 px-3 py-1.5 text-[12px] font-medium text-muted-foreground">
+      <div className="px-3 py-1.5 text-[12px] font-medium text-muted-foreground/70">
         Files, folders & skills
       </div>
       <div className={MENU_LIST_STYLE}>
@@ -287,18 +288,15 @@ export function useInlineMention({ inputRef, cwd }: UseInlineMentionOptions) {
 
       const input = inputRef.current
       if (!input) return
-      const caretRect = getTextareaCaretRect(input)
-      if (caretRect && caretRect.x > 0) {
-        setPosition({ x: caretRect.x, y: caretRect.y })
-        return
-      }
+      // Anchor the menu's bottom edge to the textarea's top — the composer
+      // can grow/scroll in ways that throw off the caret-mirror trick, and
+      // a stable above-the-input position reads better than a jumpy one
+      // chasing the caret. Caret x is still useful for left alignment when
+      // we can compute it cheaply.
       const rect = input.getBoundingClientRect()
-      const lineHeight = Number.parseFloat(getComputedStyle(input).lineHeight || '20') || 20
-      const linesBeforeCursor = value.slice(0, cursorPosition).split('\n').length - 1
-      setPosition({
-        x: rect.left,
-        y: rect.top + (linesBeforeCursor + 1) * lineHeight,
-      })
+      const caretRect = getTextareaCaretRect(input)
+      const xAnchor = caretRect && caretRect.x > 0 ? caretRect.x : rect.left
+      setPosition({ x: xAnchor, y: rect.top })
     },
     [close, inputRef, runSearch],
   )

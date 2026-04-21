@@ -3,6 +3,7 @@ import type {
   AgentSessionSnapshot,
   AgentStatus,
   AgentWindowNode,
+  AgentWindowStatus,
   TerminalRuntimeStatus,
 } from '@/types'
 
@@ -38,13 +39,36 @@ const NONE: StatusPresentation = {
 }
 
 export function getAgentWindowStatusPresentation(
-  status: 'idle' | 'running' | 'error' | null | undefined,
+  status: AgentWindowStatus | null | undefined,
 ): AgentWindowStatusPresentation {
+  // Palette mirrors t3code's sidebar pill (amber→indigo→sky→violet→emerald).
+  // Only active states pulse so the minimap reads as calm at rest.
+  if (status === 'awaiting-approval') {
+    return {
+      label: 'Approval needed',
+      pillClass: 'border-amber-400/25 bg-amber-500/10 text-amber-300',
+      dotClass: 'bg-amber-400 animate-pulse',
+    }
+  }
+  if (status === 'awaiting-input') {
+    return {
+      label: 'Awaiting input',
+      pillClass: 'border-indigo-400/25 bg-indigo-500/10 text-indigo-300',
+      dotClass: 'bg-indigo-400 animate-pulse',
+    }
+  }
   if (status === 'running') {
     return {
-      label: 'Running',
-      pillClass: 'border-emerald-400/25 bg-emerald-500/10 text-emerald-300',
-      dotClass: 'bg-emerald-400 animate-pulse',
+      label: 'Working',
+      pillClass: 'border-sky-400/25 bg-sky-500/10 text-sky-300',
+      dotClass: 'bg-sky-400 animate-pulse',
+    }
+  }
+  if (status === 'plan-ready') {
+    return {
+      label: 'Plan ready',
+      pillClass: 'border-violet-400/25 bg-violet-500/10 text-violet-300',
+      dotClass: 'bg-violet-400',
     }
   }
   if (status === 'error') {

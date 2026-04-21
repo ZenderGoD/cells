@@ -1,4 +1,10 @@
-import type { AgentWindowNode, BrowserNode, TerminalNode, TerminalRuntimeStatus } from '../types'
+import type {
+  AgentWindowNode,
+  AgentWindowStatus,
+  BrowserNode,
+  TerminalNode,
+  TerminalRuntimeStatus,
+} from '../types'
 
 export type CanvasDirection = 'left' | 'right' | 'up' | 'down'
 
@@ -13,7 +19,7 @@ export interface CanvasWindow {
   zIndex: number
   agent?: 'claude' | 'codex' | 'opencode' | 'pi' | null
   runtimeStatus?: TerminalRuntimeStatus | null
-  agentWindowStatus?: 'idle' | 'running' | 'error' | null
+  agentWindowStatus?: AgentWindowStatus | null
   faviconUrl?: string
 }
 

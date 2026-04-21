@@ -1,10 +1,12 @@
 import * as React from 'react'
-import { AnimatePresence, motion } from 'motion/react'
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { cn } from '@/lib/utils'
 
 // Copied verbatim from Craft Agents OSS:
 // ../craft-agents-oss/packages/ui/src/components/ui/LoadingIndicator.tsx
 // CSS (`.spinner` / `.spinner-cube` / `.animate-shimmer`) lives in globals.css.
+
+const EASE_OUT = [0.25, 0.46, 0.45, 0.94] as const
 
 function formatDuration(ms: number): string {
   const seconds = Math.floor(ms / 1000)
@@ -55,6 +57,7 @@ export function LoadingIndicator({
   labelClassName,
   elapsedClassName,
 }: LoadingIndicatorProps) {
+  const reduceMotion = useReducedMotion()
   const [elapsed, setElapsed] = React.useState(0)
   const startTimeRef = React.useRef<number | null>(null)
 
@@ -90,10 +93,12 @@ export function LoadingIndicator({
           <motion.span
             key={label}
             className={cn('text-muted-foreground', labelClassName)}
-            initial={{ opacity: 0, filter: 'blur(3px)' }}
+            // 3px blur is the Safari-safe ceiling per the skill's note on
+            // filter cost; disable entirely for reduced motion.
+            initial={reduceMotion ? false : { opacity: 0, filter: 'blur(3px)' }}
             animate={{ opacity: 1, filter: 'blur(0px)' }}
-            exit={{ opacity: 0, filter: 'blur(3px)' }}
-            transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+            exit={reduceMotion ? { opacity: 0 } : { opacity: 0, filter: 'blur(3px)' }}
+            transition={{ duration: 0.18, ease: EASE_OUT }}
           >
             {label}
           </motion.span>

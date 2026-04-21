@@ -9,8 +9,8 @@ import { motion, AnimatePresence } from 'motion/react'
 import { WindowOverviewMap } from './canvas/window-overview-map'
 import { AgentIcon } from './agent-icon'
 import { Logo } from './logo'
-import { getStatusPresentation } from '@/lib/status-indicator'
-import type { TerminalRuntimeStatus } from '@/types'
+import { getAgentWindowStatusPresentation, getStatusPresentation } from '@/lib/status-indicator'
+import type { AgentWindowStatus, TerminalRuntimeStatus } from '@/types'
 
 interface SwitcherItem {
   id: string
@@ -18,7 +18,7 @@ interface SwitcherItem {
   type: 'terminal' | 'browser' | 'agent'
   agent?: 'claude' | 'codex' | 'opencode' | 'pi' | null
   runtimeStatus?: TerminalRuntimeStatus | null
-  agentStatus?: 'idle' | 'running' | 'error' | null
+  agentStatus?: AgentWindowStatus | null
   url?: string
   isCurrent: boolean
   faviconUrl?: string
@@ -334,18 +334,13 @@ export function TerminalSwitcher() {
                       <span className="text-[10px] truncate flex-1">{item.title}</span>
                       {(() => {
                         if (item.type === 'agent') {
-                          const s = item.agentStatus
-                          const dotClass =
-                            s === 'running'
-                              ? 'bg-emerald-400 animate-pulse'
-                              : s === 'error'
-                                ? 'bg-red-400'
-                                : null
-                          if (dotClass)
+                          const presentation = getAgentWindowStatusPresentation(item.agentStatus)
+                          const hasStatus = item.agentStatus && item.agentStatus !== 'idle'
+                          if (hasStatus)
                             return (
                               <div
-                                className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotClass}`}
-                                title={s ?? ''}
+                                className={`w-1.5 h-1.5 rounded-full shrink-0 ${presentation.dotClass}`}
+                                title={presentation.label}
                               />
                             )
                           if (item.isCurrent)

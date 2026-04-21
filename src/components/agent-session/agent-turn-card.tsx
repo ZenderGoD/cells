@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { AnimatePresence, motion } from 'motion/react'
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import {
   Check,
   CheckCircle2,
@@ -29,9 +29,15 @@ const RESPONSE_MAX_HEIGHT = 540
 // ../craft-agents-oss/packages/ui/src/components/chat/TurnCard.tsx
 // Renders activities stripe (count badge + preview) and response card.
 
+// Ease-out-quad (cubic-bezier(0.25, 0.46, 0.45, 0.94)). Entrances/exits should
+// feel responsive — fast start, gentle landing — per Emil Kowalski's easing
+// rules. Reused everywhere in this file so paired elements move as a unit.
+const EASE_OUT = [0.25, 0.46, 0.45, 0.94] as const
+
 interface AgentTurnCardProps {
   activities: AgentSessionMessage[]
   responses: AgentSessionMessage[]
+  changedFilesActivities?: AgentSessionMessage[]
   // Interim assistant text that preceded this turn's tool calls. When
   // present it replaces the generic "Working…" preview so the user reads
   // the intent behind the upcoming activity instead of a filler label.
@@ -300,6 +306,7 @@ function ActivityRow({ node, depth }: { node: ActivityNode; depth: number }) {
   // push the main response off-screen. User can still open via the chevron.
   void isTaskLike
   const [expanded, setExpanded] = useState(false)
+  const reduceMotion = useReducedMotion()
   const row = formatToolRow(message)
   // For Bash rows, try to resolve the leading command against the bundled
   // tool-icons set (git → Git icon, npm → npm, etc.). When we get a hit we
@@ -403,10 +410,10 @@ function ActivityRow({ node, depth }: { node: ActivityNode; depth: number }) {
         {expanded && !hasChildren ? (
           <motion.div
             key="leaf"
-            initial={{ opacity: 0, y: -3 }}
+            initial={reduceMotion ? false : { opacity: 0, y: -3 }}
             animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -3 }}
-            transition={{ duration: 0.14, ease: [0.4, 0, 0.2, 1] }}
+            exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -3 }}
+            transition={{ duration: 0.14, ease: EASE_OUT }}
           >
             <pre
               className={cn(
@@ -424,10 +431,10 @@ function ActivityRow({ node, depth }: { node: ActivityNode; depth: number }) {
         {hasChildren && expanded ? (
           <motion.div
             key="children"
-            initial={{ opacity: 0, y: -3 }}
+            initial={reduceMotion ? false : { opacity: 0, y: -3 }}
             animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -3 }}
-            transition={{ duration: 0.14, ease: [0.4, 0, 0.2, 1] }}
+            exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -3 }}
+            transition={{ duration: 0.14, ease: EASE_OUT }}
             className="space-y-0.5"
           >
             {children.map((child) => (
@@ -604,6 +611,7 @@ function ResponseCard({ responses }: { responses: AgentSessionMessage[] }) {
 
 function ChangedFilesSection({ activities }: { activities: AgentSessionMessage[] }) {
   const [open, setOpen] = useState(false)
+  const reduceMotion = useReducedMotion()
   const files = useMemo(() => groupDiffsByFile(activities), [activities])
   if (files.length === 0) return null
   const totals = files.reduce(
@@ -633,10 +641,10 @@ function ChangedFilesSection({ activities }: { activities: AgentSessionMessage[]
         {open ? (
           <motion.div
             key="files"
-            initial={{ opacity: 0, y: -3 }}
+            initial={reduceMotion ? false : { opacity: 0, y: -3 }}
             animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -3 }}
-            transition={{ duration: 0.14, ease: [0.4, 0, 0.2, 1] }}
+            exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -3 }}
+            transition={{ duration: 0.14, ease: EASE_OUT }}
             className="ml-4 mt-0.5 space-y-px"
           >
             {files.map((f) => {
@@ -672,6 +680,7 @@ function ChangedFilesSection({ activities }: { activities: AgentSessionMessage[]
 export function AgentTurnCard({
   activities,
   responses,
+  changedFilesActivities,
   leadText,
   agent,
   isStreaming,
@@ -681,6 +690,7 @@ export function AgentTurnCard({
   const [collapsed, setCollapsed] = useState(true)
   const showActivities = !collapsed
   const computedPreview = usePreviewText(activities, isStreaming, agent)
+  const reduceMotion = useReducedMotion()
   const tree = useMemo(
     () => (showActivities ? buildActivityTree(activities) : []),
     [activities, showActivities],
@@ -689,7 +699,7 @@ export function AgentTurnCard({
 
   return (
     <div className="flex w-full justify-start">
-      <div className="w-full space-y-1">
+      <motion.div layout="position" className="w-full space-y-1">
         {hasActivities ? (
           // Tool activity always stays grouped behind a single collapse handle.
           // This keeps the transcript rhythm consistent even for one-off calls.
@@ -721,10 +731,13 @@ export function AgentTurnCard({
                     <motion.span
                       key={computedPreview}
                       className="block truncate"
-                      initial={{ opacity: 0, filter: 'blur(3px)' }}
+                      // Blur keeps each swap from feeling like a cut; kept at
+                      // 3px so Safari's filter cost stays cheap (skill warns
+                      // above 20px). Disable entirely under reduced motion.
+                      initial={reduceMotion ? false : { opacity: 0, filter: 'blur(3px)' }}
                       animate={{ opacity: 1, filter: 'blur(0px)' }}
-                      exit={{ opacity: 0, filter: 'blur(3px)' }}
-                      transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+                      exit={reduceMotion ? { opacity: 0 } : { opacity: 0, filter: 'blur(3px)' }}
+                      transition={{ duration: 0.18, ease: EASE_OUT }}
                     >
                       {computedPreview}
                     </motion.span>
@@ -746,10 +759,10 @@ export function AgentTurnCard({
               {showActivities ? (
                 <motion.div
                   key="activity-list"
-                  initial={{ opacity: 0, y: -4 }}
+                  initial={reduceMotion ? false : { opacity: 0, y: -4 }}
                   animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -4 }}
-                  transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
+                  exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
+                  transition={{ duration: 0.15, ease: EASE_OUT }}
                 >
                   <div className="ml-[13px] mt-1 max-h-[360px] space-y-0.5 overflow-y-auto overscroll-contain border-l-2 border-border/40 pl-3 pr-1 py-0.5">
                     {tree.map((node) => (
@@ -770,9 +783,24 @@ export function AgentTurnCard({
           />
         ) : null}
 
-        {hasResponse ? <ResponseCard responses={responses} /> : null}
-        {!isStreaming ? <ChangedFilesSection activities={activities} /> : null}
-      </div>
+        <AnimatePresence initial={false} mode="popLayout">
+          {hasResponse ? (
+            <motion.div
+              key="response"
+              layout="position"
+              initial={reduceMotion ? false : { opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
+              transition={{ duration: 0.2, ease: EASE_OUT }}
+            >
+              <ResponseCard responses={responses} />
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
+        {!isStreaming && changedFilesActivities ? (
+          <ChangedFilesSection activities={changedFilesActivities} />
+        ) : null}
+      </motion.div>
     </div>
   )
 }

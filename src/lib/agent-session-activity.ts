@@ -1,4 +1,4 @@
-import type { AgentSessionMessage, AgentSessionSnapshot } from '@/types'
+import type { AgentSessionMessage, AgentSessionSnapshot, AgentWindowStatus } from '@/types'
 
 export function getInFlightAgentMessages(messages: AgentSessionMessage[]): AgentSessionMessage[] {
   return messages.filter((message) => {
@@ -14,12 +14,22 @@ export function getInFlightAgentMessages(messages: AgentSessionMessage[]): Agent
   })
 }
 
+type DeriveStatusInput = Pick<
+  AgentSessionSnapshot,
+  'status' | 'messages' | 'pendingApproval' | 'pendingPlanApproval' | 'pendingQuestion'
+>
+
 export function deriveAgentSessionWindowStatus(
-  snapshot: Pick<AgentSessionSnapshot, 'status' | 'messages'> | null | undefined,
-): 'idle' | 'running' | 'error' {
+  snapshot: DeriveStatusInput | null | undefined,
+): AgentWindowStatus {
   if (snapshot?.status === 'error') return 'error'
-  return getInFlightAgentMessages(snapshot?.messages ?? []).length > 0 ||
-    snapshot?.status === 'running'
-    ? 'running'
-    : 'idle'
+  // Approval comes first: it blocks progress and needs user action, matching
+  // t3code's sidebar priority order (approval > input > working > plan > done).
+  if (snapshot?.pendingApproval) return 'awaiting-approval'
+  if (snapshot?.pendingQuestion) return 'awaiting-input'
+  const working =
+    getInFlightAgentMessages(snapshot?.messages ?? []).length > 0 || snapshot?.status === 'running'
+  if (working) return 'running'
+  if (snapshot?.pendingPlanApproval) return 'plan-ready'
+  return 'idle'
 }

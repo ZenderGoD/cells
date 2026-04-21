@@ -172,9 +172,9 @@
   --accent: oklch(0.274 0.006 286.033);
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.704 0.191 22.216);
-  /* Matches Craft Agents OSS --success token (packages/ui/src/styles/index.css).
-   * Muted green for tool checkmarks in TurnCard; lighter than emerald-400. */
-  --success: oklch(0.60 0.17 145);
+  /* Tealish green for tool checkmarks — shifted from Craft's hue 145 toward
+   * 175 so the chip reads less neon and sits closer to teal. */
+  --success: oklch(0.66 0.12 175);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.552 0.016 285.938);
@@ -554,5 +554,18 @@ textarea[data-ghostty] {
   html {
     @apply font-sans;
     background: transparent !important;
+  }
+}
+
+/* Honour prefers-reduced-motion for decorative loops that Tailwind / custom
+ * keyframes leave running unconditionally. Spinners (`animate-spin`) stay put
+ * because a frozen spinner reads as "stuck", not "at rest" — state colour on
+ * the dots still communicates status without the pulse. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse,
+  .animate-shimmer::after,
+  .animate-border-trace rect,
+  .spinner-cube {
+    animation: none;
   }
 }

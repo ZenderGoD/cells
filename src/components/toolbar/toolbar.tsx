@@ -26,7 +26,7 @@ import {
   X,
 } from 'lucide-react'
 import type { ExtensionMeta } from '@/types'
-import { motion, AnimatePresence, Reorder, useDragControls } from 'motion/react'
+import { motion, AnimatePresence, Reorder, useDragControls, useReducedMotion } from 'motion/react'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
 import {
@@ -52,6 +52,9 @@ import {
   getStatusPresentation,
   type ProjectAttention,
 } from '@/lib/status-indicator'
+
+const EASE_OUT = [0.25, 0.46, 0.45, 0.94] as const
+const EASE_IN_OUT = [0.645, 0.045, 0.355, 1] as const
 
 const EMPTY_BROWSER_UI = {
   browserId: null as string | null,
@@ -144,6 +147,7 @@ function ProjectTab({
   moveAgentWindow: (id: string, x: number, y: number) => void
   attention: ProjectAttention
 }) {
+  const reduceMotion = useReducedMotion()
   const dragControls = useDragControls()
   const itemRef = useRef<HTMLDivElement | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -273,10 +277,15 @@ function ProjectTab({
       <AnimatePresence>
         {isActive && allWindows.length > 0 && (
           <motion.div
-            initial={{ opacity: 0, width: 0 }}
+            // Width animation triggers layout (skill's golden rule prefers
+            // transform/opacity), but the overview reveals only on project
+            // switch — a rare-enough trigger that the natural expand/collapse
+            // outweighs the cost. Uses ease-in-out because the element is
+            // morphing its own size on screen, not entering/exiting.
+            initial={reduceMotion ? false : { opacity: 0, width: 0 }}
             animate={{ opacity: 1, width: titleBarOverviewWidth }}
-            exit={{ opacity: 0, width: 0 }}
-            transition={{ duration: 0.2, ease: 'easeInOut' }}
+            exit={reduceMotion ? { opacity: 0 } : { opacity: 0, width: 0 }}
+            transition={{ duration: 0.2, ease: EASE_IN_OUT }}
             className={cn(
               'flex items-center overflow-hidden',
               isActive ? 'bg-white/40 dark:bg-black/35' : '',
@@ -324,6 +333,7 @@ function ProjectTab({
 }
 
 export function StatusBar() {
+  const reduceMotion = useReducedMotion()
   const titleBarPosition = useStore((s) => s.titleBarPosition)
   const addTerminal = useStore((s) => s.addTerminal)
   const addBrowser = useStore((s) => s.addBrowser)
@@ -1062,10 +1072,10 @@ export function StatusBar() {
               <motion.button
                 key="undo-close-project"
                 layout
-                initial={{ opacity: 0, x: 12, scale: 0.96 }}
+                initial={reduceMotion ? false : { opacity: 0, x: 12, scale: 0.96 }}
                 animate={{ opacity: 1, x: 0, scale: 1 }}
-                exit={{ opacity: 0, x: 12, scale: 0.96 }}
-                transition={{ duration: 0.2, ease: 'easeOut' }}
+                exit={reduceMotion ? { opacity: 0 } : { opacity: 0, x: 12, scale: 0.96 }}
+                transition={{ duration: 0.2, ease: EASE_OUT }}
                 onClick={() => {
                   hapticSuccess()
                   restoreLastClosedProject()
@@ -1084,10 +1094,10 @@ export function StatusBar() {
               <motion.button
                 key="undo-close"
                 layout
-                initial={{ opacity: 0, x: 12, scale: 0.96 }}
+                initial={reduceMotion ? false : { opacity: 0, x: 12, scale: 0.96 }}
                 animate={{ opacity: 1, x: 0, scale: 1 }}
-                exit={{ opacity: 0, x: 12, scale: 0.96 }}
-                transition={{ duration: 0.2, ease: 'easeOut' }}
+                exit={reduceMotion ? { opacity: 0 } : { opacity: 0, x: 12, scale: 0.96 }}
+                transition={{ duration: 0.2, ease: EASE_OUT }}
                 onClick={() => {
                   hapticSuccess()
                   restoreLastClosedWindow()
@@ -1262,10 +1272,10 @@ export function StatusBar() {
               <motion.button
                 key="update-download"
                 layout
-                initial={{ opacity: 0, x: 8, scale: 0.96 }}
+                initial={reduceMotion ? false : { opacity: 0, x: 8, scale: 0.96 }}
                 animate={{ opacity: 1, x: 0, scale: 1 }}
-                exit={{ opacity: 0, x: 8, scale: 0.96 }}
-                transition={{ duration: 0.2, ease: 'easeOut' }}
+                exit={reduceMotion ? { opacity: 0 } : { opacity: 0, x: 8, scale: 0.96 }}
+                transition={{ duration: 0.2, ease: EASE_OUT }}
                 onClick={() => {
                   hapticNudge()
                   window.cells.updater.download()
@@ -1280,10 +1290,10 @@ export function StatusBar() {
               <motion.span
                 key="update-downloading"
                 layout
-                initial={{ opacity: 0, x: 8, scale: 0.96 }}
+                initial={reduceMotion ? false : { opacity: 0, x: 8, scale: 0.96 }}
                 animate={{ opacity: 1, x: 0, scale: 1 }}
-                exit={{ opacity: 0, x: 8, scale: 0.96 }}
-                transition={{ duration: 0.2, ease: 'easeOut' }}
+                exit={reduceMotion ? { opacity: 0 } : { opacity: 0, x: 8, scale: 0.96 }}
+                transition={{ duration: 0.2, ease: EASE_OUT }}
                 className="flex shrink-0 items-center gap-1.5 rounded-md border border-border/30 bg-background/40 px-2 py-0.5 text-[10px] text-muted-foreground/65"
               >
                 <Loader2 className="w-2.5 h-2.5 animate-spin" />
@@ -1294,10 +1304,10 @@ export function StatusBar() {
               <motion.button
                 key="update-ready"
                 layout
-                initial={{ opacity: 0, x: 8, scale: 0.96 }}
+                initial={reduceMotion ? false : { opacity: 0, x: 8, scale: 0.96 }}
                 animate={{ opacity: 1, x: 0, scale: 1 }}
-                exit={{ opacity: 0, x: 8, scale: 0.96 }}
-                transition={{ duration: 0.2, ease: 'easeOut' }}
+                exit={reduceMotion ? { opacity: 0 } : { opacity: 0, x: 8, scale: 0.96 }}
+                transition={{ duration: 0.2, ease: EASE_OUT }}
                 onClick={() => {
                   hapticSuccess()
                   window.cells.updater.install()

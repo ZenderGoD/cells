@@ -133,16 +133,31 @@ test('getStatusPresentation returns an empty presentation when there is no runti
   })
 })
 
-test('getAgentWindowStatusPresentation maps idle, running, and error to shared agent-window styles', () => {
+test('getAgentWindowStatusPresentation maps each agent-window state to its t3-style palette', () => {
   const idle = getAgentWindowStatusPresentation('idle')
   assert.equal(idle.label, 'Idle')
   assert.match(idle.dotClass, /muted/)
   assert.match(idle.pillClass, /muted/)
 
   const running = getAgentWindowStatusPresentation('running')
-  assert.equal(running.label, 'Running')
-  assert.match(running.dotClass, /emerald/)
-  assert.match(running.pillClass, /emerald/)
+  assert.equal(running.label, 'Working')
+  assert.match(running.dotClass, /sky/)
+  assert.match(running.pillClass, /sky/)
+
+  const approval = getAgentWindowStatusPresentation('awaiting-approval')
+  assert.equal(approval.label, 'Approval needed')
+  assert.match(approval.dotClass, /amber/)
+  assert.match(approval.pillClass, /amber/)
+
+  const input = getAgentWindowStatusPresentation('awaiting-input')
+  assert.equal(input.label, 'Awaiting input')
+  assert.match(input.dotClass, /indigo/)
+  assert.match(input.pillClass, /indigo/)
+
+  const plan = getAgentWindowStatusPresentation('plan-ready')
+  assert.equal(plan.label, 'Plan ready')
+  assert.match(plan.dotClass, /violet/)
+  assert.match(plan.pillClass, /violet/)
 
   const error = getAgentWindowStatusPresentation('error')
   assert.equal(error.label, 'Error')
