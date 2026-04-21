@@ -275,17 +275,29 @@ function MainApp() {
   useEffect(() => {
     if (!initialized || !window.cells.perf.enabled) return
 
-    let frameCount = 0
-    let sampleStart = performance.now()
     let longTaskCount = 0
     let maxLongTaskMs = 0
     let frameHandle = 0
+    let burstTimer = 0
 
-    const tick = () => {
-      frameCount += 1
-      frameHandle = window.requestAnimationFrame(tick)
-    }
-    frameHandle = window.requestAnimationFrame(tick)
+    const measureFpsBurst = (durationMs = 250) =>
+      new Promise<{ fps: number; sampleWindowMs: number }>((resolve) => {
+        let frameCount = 0
+        const sampleStart = performance.now()
+        const tick = () => {
+          frameCount += 1
+          frameHandle = window.requestAnimationFrame(tick)
+        }
+        frameHandle = window.requestAnimationFrame(tick)
+        burstTimer = window.setTimeout(() => {
+          window.cancelAnimationFrame(frameHandle)
+          frameHandle = 0
+          const now = performance.now()
+          const sampleWindowMs = Math.max(1, Math.round(now - sampleStart))
+          const fps = Number(((frameCount * 1000) / sampleWindowMs).toFixed(1))
+          resolve({ fps, sampleWindowMs })
+        }, durationMs)
+      })
 
     let longTaskObserver: PerformanceObserver | null = null
     if (typeof PerformanceObserver !== 'undefined') {
@@ -302,10 +314,8 @@ function MainApp() {
       }
     }
 
-    const interval = window.setInterval(() => {
-      const now = performance.now()
-      const sampleWindowMs = Math.max(1, Math.round(now - sampleStart))
-      const fps = Number(((frameCount * 1000) / sampleWindowMs).toFixed(1))
+    const reportSample = async () => {
+      const { fps, sampleWindowMs } = await measureFpsBurst()
       const state = useStore.getState()
 
       void window.cells.perf.reportRendererSample({
@@ -326,14 +336,17 @@ function MainApp() {
         windowOpacity: state.windowOpacity,
         overlayOpen: state.overlayOpen,
       })
-
-      sampleStart = now
-      frameCount = 0
       longTaskCount = 0
       maxLongTaskMs = 0
+    }
+
+    void reportSample()
+    const interval = window.setInterval(() => {
+      void reportSample()
     }, 5_000)
 
     return () => {
+      window.clearTimeout(burstTimer)
       window.cancelAnimationFrame(frameHandle)
       window.clearInterval(interval)
       longTaskObserver?.disconnect()

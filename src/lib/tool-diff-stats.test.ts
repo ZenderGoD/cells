@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import type { AgentSessionMessage } from '../types/index.ts'
-import { diffStatsFromMessage, groupDiffsByFile } from './tool-diff-stats.ts'
+import { diffStatsFromMessage, groupDiffsByFile, sumDiffStats } from './tool-diff-stats.ts'
 
 function toolMessage(overrides: Partial<AgentSessionMessage>): AgentSessionMessage {
   return {
@@ -171,4 +171,17 @@ test('groupDiffsByFile prefers clean Codex summary text over polluted metadata',
       edits: [],
     },
   ])
+})
+
+test('sumDiffStats preserves changed-file counts for Codex summaries', () => {
+  const stats = sumDiffStats([
+    toolMessage({ text: 'change: src/app.ts\nchange: src/lib/a.ts' }),
+    toolMessage({ text: 'change: src/lib/b.ts' }),
+  ])
+
+  assert.deepEqual(stats, {
+    additions: 0,
+    deletions: 0,
+    changedFiles: 3,
+  })
 })

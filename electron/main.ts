@@ -85,6 +85,11 @@ if (process.platform === 'darwin') {
   app.name = 'Cells'
 }
 
+const hasSingleInstanceLock = app.requestSingleInstanceLock()
+if (!hasSingleInstanceLock) {
+  app.quit()
+}
+
 const shouldIgnoreGpuBlocklist = process.env.CELLS_IGNORE_GPU_BLOCKLIST === '1'
 if (shouldIgnoreGpuBlocklist) {
   app.commandLine.appendSwitch('ignore-gpu-blocklist')
@@ -255,6 +260,16 @@ let mainWindow: BrowserWindow | null = null
 let perfMonitor: PerfMonitor | null = null
 let agentSessionTracker: EnhancedSessionTracker | null = null
 const agentSessionService = new AgentSessionService()
+
+app.on('second-instance', () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    if (!mainWindow.isVisible()) mainWindow.show()
+    mainWindow.focus()
+    return
+  }
+  createWindow()
+})
 
 agentSessionService.on('update', (snapshot) => {
   for (const window of BrowserWindow.getAllWindows()) {

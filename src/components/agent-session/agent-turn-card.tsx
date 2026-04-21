@@ -74,15 +74,19 @@ function getMessageDurationMs(message: AgentSessionMessage): number | null {
 }
 
 function getActivitiesDurationMs(activities: AgentSessionMessage[]): number | null {
-  const startedAt = activities
-    .map((activity) => activity.startedAt ?? activity.updatedAt ?? null)
-    .filter((value): value is number => typeof value === 'number')
-    .sort((a, b) => a - b)[0]
-  const updatedAt = activities
-    .map((activity) => activity.updatedAt ?? null)
-    .filter((value): value is number => typeof value === 'number')
-    .sort((a, b) => b - a)[0]
-  if (!startedAt || !updatedAt) return null
+  let startedAt: number | null = null
+  let updatedAt: number | null = null
+  for (const activity of activities) {
+    const activityStartedAt = activity.startedAt ?? activity.updatedAt ?? null
+    if (typeof activityStartedAt === 'number') {
+      startedAt = startedAt == null ? activityStartedAt : Math.min(startedAt, activityStartedAt)
+    }
+    const activityUpdatedAt = activity.updatedAt ?? null
+    if (typeof activityUpdatedAt === 'number') {
+      updatedAt = updatedAt == null ? activityUpdatedAt : Math.max(updatedAt, activityUpdatedAt)
+    }
+  }
+  if (startedAt == null || updatedAt == null) return null
   const elapsed = updatedAt - startedAt
   return elapsed >= 1000 ? elapsed : null
 }
@@ -443,7 +447,8 @@ function usePreviewText(
     if (!isStreaming) {
       const errorCount = activities.filter((a) => a.status === 'failed').length
       const durationMs = getActivitiesDurationMs(activities)
-      for (const a of activities) {
+      for (let index = activities.length - 1; index >= 0; index -= 1) {
+        const a = activities[index]
         const row = formatToolRow(a)
         if (row.description) return row.description
       }
@@ -451,14 +456,16 @@ function usePreviewText(
       return errorCount > 0 ? `${completedLabel} · ${errorCount} failed` : completedLabel
     }
     // Streaming: prefer a running activity's description/summary
-    const running = activities.find((a) => a.status === 'in_progress')
-    if (running) {
+    for (let index = activities.length - 1; index >= 0; index -= 1) {
+      const running = activities[index]
+      if (running.status !== 'in_progress') continue
       const row = formatToolRow(running)
       if (row.description) return row.description
       if (running.role === 'reasoning') return 'Thinking…'
       return `Running ${getToolDisplayName(running.title || 'Tool')}…`
     }
-    for (const a of activities) {
+    for (let index = activities.length - 1; index >= 0; index -= 1) {
+      const a = activities[index]
       const row = formatToolRow(a)
       if (row.description) return row.description
     }
@@ -671,7 +678,10 @@ export function AgentTurnCard({
   const [collapsed, setCollapsed] = useState(true)
   const showActivities = !collapsed
   const computedPreview = usePreviewText(activities, isStreaming, agent)
-  const tree = useMemo(() => buildActivityTree(activities), [activities])
+  const tree = useMemo(
+    () => (showActivities ? buildActivityTree(activities) : []),
+    [activities, showActivities],
+  )
   const groupDiffStats = useMemo(() => sumDiffStats(activities), [activities])
 
   const leadBlock = leadText ? (

@@ -14,6 +14,51 @@ export interface FileDiffStats extends DiffStats {
 
 const EDIT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit'])
 const FILE_CHANGE_TOOL = 'File changes'
+const MAX_CACHE_ENTRIES = 10_000
+const parsedFileCache = new Map<string, FileDiffStats[]>()
+const diffStatsCache = new Map<string, DiffStats | null>()
+
+function trimCache<T>(cache: Map<string, T>) {
+  while (cache.size > MAX_CACHE_ENTRIES) {
+    const oldestKey = cache.keys().next().value
+    if (!oldestKey) break
+    cache.delete(oldestKey)
+  }
+}
+
+function messageCacheKey(message: AgentSessionMessage): string {
+  const hashValue = (value: string | undefined | null) => {
+    if (!value) return ''
+    let hash = 2166136261
+    for (let index = 0; index < value.length; index += 1) {
+      hash ^= value.charCodeAt(index)
+      hash = Math.imul(hash, 16777619)
+    }
+    return `${value.length}:${(hash >>> 0).toString(36)}`
+  }
+  return [
+    message.id,
+    message.updatedAt ?? '',
+    message.status ?? '',
+    message.title ?? '',
+    hashValue(message.metadata),
+    hashValue(message.text),
+  ].join('\u241f')
+}
+
+function parseCandidateStats(value: string): FileDiffStats[] {
+  return candidateHasLikelyDiff(value)
+    ? parseUnifiedDiffFiles(value)
+    : parseSummaryFileChanges(value)
+}
+
+function candidateHasNumericChanges(files: FileDiffStats[]) {
+  return files.some((file) => file.additions > 0 || file.deletions > 0)
+}
+
+function candidateHasLikelyDiff(value: string) {
+  return /^diff --git /m.test(value) || /^@@/m.test(value)
+}
 
 function safeParse(text: string | undefined | null): Record<string, unknown> | null {
   if (!text) return null
@@ -161,24 +206,43 @@ function diffStatsFromFiles(files: FileDiffStats[]): DiffStats | null {
 }
 
 function parseFileChangeStats(message: AgentSessionMessage): FileDiffStats[] {
+  const cacheKey = messageCacheKey(message)
+  const cached = parsedFileCache.get(cacheKey)
+  if (cached) return cached
   const candidates = [message.metadata, message.text].filter(
     (value): value is string => typeof value === 'string' && value.trim().length > 0,
   )
   let best: FileDiffStats[] = []
   let bestHasNumeric = false
+  let bestLooksLikeDiff = false
+  let bestFromText = false
   for (const candidate of candidates) {
-    const parsed = parseUnifiedDiffFiles(candidate)
+    const parsed = parseCandidateStats(candidate)
     if (parsed.length === 0) continue
-    const hasNumeric = parsed.some((file) => file.additions > 0 || file.deletions > 0)
+    const hasNumeric = candidateHasNumericChanges(parsed)
+    const looksLikeDiff = candidateHasLikelyDiff(candidate)
+    const fromText = candidate === message.text
     if (
-      parsed.length > best.length ||
-      (hasNumeric && !bestHasNumeric) ||
-      (hasNumeric === bestHasNumeric && parsed.length === best.length && candidate === message.text)
+      best.length === 0 ||
+      (looksLikeDiff && !bestLooksLikeDiff) ||
+      (looksLikeDiff === bestLooksLikeDiff && hasNumeric && !bestHasNumeric) ||
+      (looksLikeDiff === bestLooksLikeDiff &&
+        hasNumeric === bestHasNumeric &&
+        parsed.length > best.length) ||
+      (looksLikeDiff === bestLooksLikeDiff &&
+        hasNumeric === bestHasNumeric &&
+        parsed.length === best.length &&
+        fromText &&
+        !bestFromText)
     ) {
       best = parsed
       bestHasNumeric = hasNumeric
+      bestLooksLikeDiff = looksLikeDiff
+      bestFromText = fromText
     }
   }
+  parsedFileCache.set(cacheKey, best)
+  trimCache(parsedFileCache)
   return best
 }
 
@@ -233,23 +297,30 @@ export function computeEditWriteDiffStats(
  *  overwritten with the tool result once the call completes. */
 export function diffStatsFromMessage(message: AgentSessionMessage): DiffStats | null {
   if (message.role !== 'tool' || !message.title) return null
-  if (message.title === FILE_CHANGE_TOOL) {
-    return diffStatsFromFiles(parseFileChangeStats(message))
-  }
-  return computeEditWriteDiffStats(
-    message.title,
-    safeParse(message.metadata) ?? safeParse(message.text),
-  )
+  const cacheKey = messageCacheKey(message)
+  const cached = diffStatsCache.get(cacheKey)
+  if (cached !== undefined) return cached
+  const computed =
+    message.title === FILE_CHANGE_TOOL
+      ? diffStatsFromFiles(parseFileChangeStats(message))
+      : computeEditWriteDiffStats(
+          message.title,
+          safeParse(message.metadata) ?? safeParse(message.text),
+        )
+  diffStatsCache.set(cacheKey, computed)
+  trimCache(diffStatsCache)
+  return computed
 }
 
 /** Sum {additions, deletions} across a list of tool messages. */
 export function sumDiffStats(messages: AgentSessionMessage[]): DiffStats {
-  const total: DiffStats = { additions: 0, deletions: 0 }
+  const total: DiffStats = { additions: 0, deletions: 0, changedFiles: 0 }
   for (const message of messages) {
     const stats = diffStatsFromMessage(message)
     if (!stats) continue
     total.additions += stats.additions
     total.deletions += stats.deletions
+    total.changedFiles = (total.changedFiles ?? 0) + (stats.changedFiles ?? 0)
   }
   return total
 }
