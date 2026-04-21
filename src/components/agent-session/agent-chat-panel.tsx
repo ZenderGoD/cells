@@ -844,51 +844,63 @@ function PendingTurnIndicator({ agent }: { agent: AgentWindowNode['agent'] }) {
 // prompt options verbatim: auto-accept, manually approve, or keep planning.
 function CodexPlanBanner({ plan }: { plan: CodexPlanSnapshot }) {
   const [collapsed, setCollapsed] = useState(false)
+  const reduceMotion = useReducedMotion()
   const total = plan.items.length
   const done = plan.items.filter((item) => item.completed).length
   if (total === 0) return null
   return (
-    <div className="mb-2 rounded-[12px] border border-sky-300/12 bg-[linear-gradient(180deg,rgba(8,35,47,0.92),rgba(10,23,31,0.96))] px-3 py-2 text-[12px] text-foreground/90 shadow-[inset_0_1px_0_rgba(125,211,252,0.08),0_0_0_1px_rgba(12,18,24,0.35)]">
+    <div className="mb-2 select-none">
       <button
         type="button"
         onClick={() => setCollapsed((prev) => !prev)}
-        className="flex w-full items-center gap-2 text-left"
+        title={collapsed ? 'Show plan' : 'Hide plan'}
+        className="flex w-full items-center gap-2 rounded-[8px] px-2 py-1 text-left transition-colors hover:bg-foreground/5 focus:outline-none"
       >
-        <ListTodo className="size-3.5 shrink-0 text-sky-300/90" />
-        <span className="flex-1 text-[11px] font-medium uppercase tracking-[0.12em] text-sky-300/90">
-          Plan
-        </span>
-        <span className="text-[11px] tabular-nums text-muted-foreground/80">
+        <span className="shrink-0 rounded-[4px] bg-background px-1.5 py-0.5 text-[10px] font-medium tabular-nums shadow-minimal">
           {done}/{total}
         </span>
+        <ListTodo className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="text-[13px] text-muted-foreground">Plan</span>
         <ChevronRight
           className={cn(
-            'size-3.5 shrink-0 text-muted-foreground/70 transition-transform',
+            'ml-auto size-3.5 shrink-0 text-muted-foreground/70 transition-transform',
             !collapsed && 'rotate-90',
           )}
         />
       </button>
-      {!collapsed ? (
-        <ul className="mt-1.5 flex flex-col gap-1">
-          {plan.items.map((item, idx) => (
-            <li key={`${idx}-${item.text}`} className="flex items-start gap-2">
-              {item.completed ? (
-                <Check className="mt-0.5 size-3.5 shrink-0 text-emerald-400/90" />
-              ) : (
-                <Circle className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/50" />
-              )}
-              <span
-                className={cn(
-                  'min-w-0 flex-1 break-words leading-[1.45]',
-                  item.completed && 'text-muted-foreground/70 line-through',
-                )}
+      <AnimatePresence initial={false}>
+        {!collapsed ? (
+          <motion.ul
+            key="plan-items"
+            initial={reduceMotion ? false : { opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
+            transition={{ duration: 0.18, ease: EASE_OUT }}
+            className="mt-1 flex flex-col gap-0.5"
+          >
+            {plan.items.map((item, idx) => (
+              <li
+                key={`${idx}-${item.text}`}
+                className="flex items-start gap-2 rounded-[10px] bg-foreground/5 px-2.5 py-1.5 text-[12px] text-foreground/85"
               >
-                {item.text}
-              </span>
-            </li>
-          ))}
-        </ul>
-      ) : null}
+                {item.completed ? (
+                  <Check className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/70" />
+                ) : (
+                  <Circle className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/50" />
+                )}
+                <span
+                  className={cn(
+                    'min-w-0 flex-1 break-words leading-[1.45]',
+                    item.completed && 'text-muted-foreground/55 line-through',
+                  )}
+                >
+                  {item.text}
+                </span>
+              </li>
+            ))}
+          </motion.ul>
+        ) : null}
+      </AnimatePresence>
     </div>
   )
 }
@@ -1568,6 +1580,26 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const listRef = useRef<LegendListRef>(null)
   const recentSessionsViewportRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  // The composer overlays the bottom of the list so messages can scroll
+  // "behind" it — we track its live height via ResizeObserver so the list's
+  // bottom fade mask and footer spacer always line up with the composer's
+  // current size (composer height swells when banners, queue rows, or the
+  // textarea itself grows).
+  const composerOverlayRef = useRef<HTMLDivElement>(null)
+  const [composerOverlayHeight, setComposerOverlayHeight] = useState(0)
+  useEffect(() => {
+    const el = composerOverlayRef.current
+    if (!el) return
+    setComposerOverlayHeight(el.getBoundingClientRect().height)
+    const ro = new ResizeObserver((entries) => {
+      const entry = entries[0]
+      if (!entry) return
+      const h = entry.contentRect.height
+      setComposerOverlayHeight((prev) => (Math.abs(prev - h) < 0.5 ? prev : h))
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
 
   const inputRef = useRef(input)
   const snapshotRef = useRef(snapshot)
@@ -2459,15 +2491,20 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         void absorbDroppedImages(event.dataTransfer)
       }}
     >
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="relative flex min-w-0 flex-1 flex-col">
         <div className="relative flex min-h-0 flex-1 flex-col">
           <div
             className="min-h-0 flex-1"
             style={{
+              // Preserve the 28px top fade and only add a slim 12px softener
+              // just above the composer — we WANT content to stay visible
+              // beneath the composer so the backdrop-blur has something to
+              // blur. A full composer-height fade would erase content before
+              // it reaches the overlay, defeating the "scroll behind" effect.
               maskImage:
-                'linear-gradient(to bottom, transparent 0%, black 28px, black calc(100% - 20px), transparent 100%)',
+                'linear-gradient(to bottom, transparent 0%, black 28px, black calc(100% - 12px), transparent 100%)',
               WebkitMaskImage:
-                'linear-gradient(to bottom, transparent 0%, black 28px, black calc(100% - 20px), transparent 100%)',
+                'linear-gradient(to bottom, transparent 0%, black 28px, black calc(100% - 12px), transparent 100%)',
             }}
           >
             {isLoadingSnapshot || !hasMessages ? (
@@ -2476,7 +2513,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                 viewportRef={scrollViewportRef}
                 viewportClassName="rounded-none"
               >
-                <div className="mx-auto min-h-full max-w-3xl py-6">
+                <div
+                  className="mx-auto min-h-full max-w-3xl py-6"
+                  style={{ paddingBottom: composerOverlayHeight + 24 }}
+                >
                   {isLoadingSnapshot ? (
                     <div className="space-y-3 px-2" aria-hidden>
                       <div className="flex justify-end">
@@ -2648,7 +2688,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                 className="h-full overscroll-y-contain"
                 ListHeaderComponent={<div className="h-6" />}
                 ListFooterComponent={
-                  <div className="mx-auto w-full min-w-0 max-w-3xl pb-6">
+                  <div
+                    className="mx-auto w-full min-w-0 max-w-3xl"
+                    style={{ paddingBottom: composerOverlayHeight + 24 }}
+                  >
                     {showPendingLoader ? <PendingTurnIndicator agent={agentWindow.agent} /> : null}
                   </div>
                 }
@@ -2656,8 +2699,17 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
             )}
           </div>
 
-          <div className="relative shrink-0 px-4 pb-4 pt-2">
-            <div className="mx-auto max-w-3xl">
+          <div
+            ref={composerOverlayRef}
+            // Translucent bg + backdrop blur lets list content remain visible
+            // beneath the composer — that's what sells the "scrolls behind"
+            // effect. Top gradient edge softens the boundary instead of a
+            // hard cutline. pointer-events-none on the wrapper lets the empty
+            // margins around the composer pass clicks through to the list;
+            // the inner max-w-3xl re-enables events for the composer itself.
+            className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-b from-background/0 via-background/70 to-background/85 px-4 pb-4 pt-6 backdrop-blur-md"
+          >
+            <div className="pointer-events-auto mx-auto max-w-3xl">
               {visibleSnapshot?.error ? (
                 <div className="mb-2 rounded-[12px] bg-red-500/12 px-3 py-2 text-[12px] text-red-300">
                   {visibleSnapshot.error}
