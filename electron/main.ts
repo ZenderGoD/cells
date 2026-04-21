@@ -24,7 +24,12 @@ import { ensureDaemon } from './daemon-lifecycle'
 import { getDaemonRestartReason, type PtyDaemonVersionInfo } from './pty-daemon-contract'
 import { PerfMonitor, type RendererPerfReport, type TerminalPerfReport } from './perf-monitor'
 import type { TerminalSessionManager } from './terminal-session-manager'
-import type { AgentMentionSearchResult, ProjectsState, TerminalSessionBackend } from '../src/types'
+import type {
+  AgentMentionSearchResult,
+  AgentSessionSnapshot,
+  ProjectsState,
+  TerminalSessionBackend,
+} from '../src/types'
 import {
   createTerminalSessionManager,
   describeTerminalBackendRequirement,
@@ -264,6 +269,8 @@ let mainWindow: BrowserWindow | null = null
 let perfMonitor: PerfMonitor | null = null
 let agentSessionTracker: EnhancedSessionTracker | null = null
 const agentSessionService = new AgentSessionService()
+const pendingAgentSessionSnapshots = new Map<string, AgentSessionSnapshot>()
+let pendingAgentSessionFlushTimer: NodeJS.Timeout | null = null
 
 app.on('second-instance', () => {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -275,7 +282,11 @@ app.on('second-instance', () => {
   createWindow()
 })
 
-agentSessionService.on('update', (snapshot) => {
+function flushAgentSessionSnapshots() {
+  pendingAgentSessionFlushTimer = null
+  if (pendingAgentSessionSnapshots.size === 0) return
+  const snapshots = Array.from(pendingAgentSessionSnapshots.values())
+  pendingAgentSessionSnapshots.clear()
   for (const window of BrowserWindow.getAllWindows()) {
     if (window.isDestroyed()) continue
     const contents = window.webContents
@@ -284,11 +295,21 @@ agentSessionService.on('update', (snapshot) => {
     // could be accessed". Guard with isDestroyed + try/catch.
     if (contents.isDestroyed() || contents.isCrashed()) continue
     try {
-      contents.send('agent-session:update', snapshot)
+      for (const snapshot of snapshots) {
+        contents.send('agent-session:update', snapshot)
+      }
     } catch {
       // swallow — frame was disposed between the check and the send
     }
   }
+}
+
+agentSessionService.on('update', (snapshot) => {
+  pendingAgentSessionSnapshots.set(snapshot.windowId, snapshot)
+  if (pendingAgentSessionFlushTimer) return
+  // Coalesce bursty agent-session updates into ~30fps batches instead of
+  // hammering every renderer on every streaming chunk.
+  pendingAgentSessionFlushTimer = setTimeout(flushAgentSessionSnapshots, 32)
 })
 
 // Per-terminal session isolation:

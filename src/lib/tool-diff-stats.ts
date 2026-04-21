@@ -10,6 +10,8 @@ export interface FileDiffStats extends DiffStats {
   filePath: string
   /** Multiple edit ops may target the same file within a session. */
   edits: Array<{ oldString: string; newString: string; toolId: string }>
+  /** Unified diff blocks for file-change summaries, used by the session diffs panel. */
+  patches?: string[]
 }
 
 const EDIT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit'])
@@ -193,6 +195,53 @@ function parseUnifiedDiffFiles(diff: string): FileDiffStats[] {
   return Array.from(byPath.values()).sort((a, b) => a.filePath.localeCompare(b.filePath))
 }
 
+function parseUnifiedDiffPatches(diff: string): Map<string, string[]> {
+  const normalized = diff.replace(/\r\n/g, '\n').trim()
+  if (!normalized) return new Map()
+
+  const byPath = new Map<string, string[]>()
+  let currentPath: string | null = null
+  let currentLines: string[] = []
+
+  const flush = () => {
+    if (!currentPath || currentLines.length === 0) {
+      currentPath = null
+      currentLines = []
+      return
+    }
+    const existing = byPath.get(currentPath) ?? []
+    existing.push(currentLines.join('\n'))
+    byPath.set(currentPath, existing)
+    currentPath = null
+    currentLines = []
+  }
+
+  for (const line of normalized.split('\n')) {
+    if (line.startsWith('diff --git ')) {
+      flush()
+      currentLines = [line]
+      continue
+    }
+    if (currentLines.length === 0) continue
+    currentLines.push(line)
+    if (line.startsWith('rename to ')) {
+      currentPath = normalizeDiffPath(line.slice('rename to '.length))
+      continue
+    }
+    if (line.startsWith('+++ ')) {
+      const nextPath = normalizeDiffPath(line.slice(4))
+      if (nextPath) currentPath = nextPath
+      continue
+    }
+    if (line.startsWith('--- ') && !currentPath) {
+      currentPath = normalizeDiffPath(line.slice(4))
+    }
+  }
+
+  flush()
+  return byPath
+}
+
 function diffStatsFromFiles(files: FileDiffStats[]): DiffStats | null {
   if (files.length === 0) return null
   return files.reduce(
@@ -332,6 +381,11 @@ export function groupDiffsByFile(messages: AgentSessionMessage[]): FileDiffStats
   for (const message of messages) {
     if (message.role !== 'tool' || !message.title) continue
     if (message.title === FILE_CHANGE_TOOL) {
+      const patchesByPath = candidateHasLikelyDiff(message.metadata ?? '')
+        ? parseUnifiedDiffPatches(message.metadata ?? '')
+        : candidateHasLikelyDiff(message.text)
+          ? parseUnifiedDiffPatches(message.text)
+          : new Map<string, string[]>()
       for (const file of parseFileChangeStats(message)) {
         const existing = byPath.get(file.filePath) ?? {
           filePath: file.filePath,
@@ -341,6 +395,10 @@ export function groupDiffsByFile(messages: AgentSessionMessage[]): FileDiffStats
         }
         existing.additions += file.additions
         existing.deletions += file.deletions
+        const patches = patchesByPath.get(file.filePath)
+        if (patches && patches.length > 0) {
+          existing.patches = [...(existing.patches ?? []), ...patches]
+        }
         byPath.set(file.filePath, existing)
       }
       continue

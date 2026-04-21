@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowUp,
   Check,
@@ -60,6 +60,7 @@ import {
   getInFlightAgentMessages,
 } from '@/lib/agent-session-activity'
 import { cn } from '@/lib/utils'
+import { computeStableList, createEmptyStableListState } from '@/lib/stable-list'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Kbd } from '@/components/ui/kbd'
 
@@ -495,6 +496,70 @@ type ChatGroup =
   | { kind: 'auth'; key: string; message: AgentSessionMessage }
   | { kind: 'system'; key: string; message: AgentSessionMessage }
   | { kind: 'compaction'; key: string; message: AgentSessionMessage }
+
+function areStringArraysEqual(previous: string[] | undefined, next: string[] | undefined): boolean {
+  if (previous === next) return true
+  if (!previous || !next) return !previous && !next
+  if (previous.length !== next.length) return false
+  for (let index = 0; index < previous.length; index += 1) {
+    if (previous[index] !== next[index]) return false
+  }
+  return true
+}
+
+function isAgentSessionMessageUnchanged(
+  previous: AgentSessionMessage,
+  next: AgentSessionMessage,
+): boolean {
+  return (
+    previous.id === next.id &&
+    previous.role === next.role &&
+    previous.text === next.text &&
+    previous.title === next.title &&
+    previous.metadata === next.metadata &&
+    previous.status === next.status &&
+    previous.startedAt === next.startedAt &&
+    previous.updatedAt === next.updatedAt &&
+    previous.authLoginUrl === next.authLoginUrl &&
+    previous.parentToolUseId === next.parentToolUseId &&
+    previous.toolUseId === next.toolUseId &&
+    areStringArraysEqual(previous.attachments, next.attachments)
+  )
+}
+
+function areMessageRefsEqual(
+  previous: AgentSessionMessage[],
+  next: AgentSessionMessage[],
+): boolean {
+  if (previous === next) return true
+  if (previous.length !== next.length) return false
+  for (let index = 0; index < previous.length; index += 1) {
+    if (previous[index] !== next[index]) return false
+  }
+  return true
+}
+
+function isChatGroupUnchanged(previous: ChatGroup, next: ChatGroup): boolean {
+  if (previous.kind !== next.kind || previous.key !== next.key) return false
+  switch (previous.kind) {
+    case 'user':
+    case 'error':
+    case 'auth':
+    case 'system':
+    case 'compaction':
+      return previous.message === (next as typeof previous).message
+    case 'turn': {
+      const nextTurn = next as typeof previous
+      return (
+        previous.leadText === nextTurn.leadText &&
+        areMessageRefsEqual(previous.activities, nextTurn.activities) &&
+        areMessageRefsEqual(previous.responses, nextTurn.responses)
+      )
+    }
+    default:
+      return false
+  }
+}
 
 /**
  * Group messages into Craft-style turns:
@@ -1194,8 +1259,39 @@ function GroupRenderer({
   }
 }
 
+const MessageGroupRow = memo(
+  function MessageGroupRow({
+    group,
+    agent,
+    isStreamingLastTurn,
+  }: {
+    group: ChatGroup
+    agent: AgentWindowNode['agent']
+    isStreamingLastTurn: boolean
+  }) {
+    return (
+      <div
+        className="min-w-0"
+        style={{
+          contain: 'layout style paint',
+          contentVisibility: 'auto',
+          containIntrinsicSize: '320px',
+        }}
+      >
+        <GroupRenderer group={group} agent={agent} isStreamingLastTurn={isStreamingLastTurn} />
+      </div>
+    )
+  },
+  (previous, next) =>
+    previous.group === next.group &&
+    previous.agent === next.agent &&
+    previous.isStreamingLastTurn === next.isStreamingLastTurn,
+)
+
 export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const [snapshot, setSnapshot] = useState<AgentSessionSnapshot | null>(null)
+  const [messages, setMessages] = useState<AgentSessionMessage[]>([])
+  const [groups, setGroups] = useState<ChatGroup[]>([])
   const [input, setInput] = useState('')
   const [isComposerFocused, setIsComposerFocused] = useState(false)
   const [attachments, setAttachments] = useState<string[]>([])
@@ -1268,6 +1364,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const inputRef = useRef(input)
   const snapshotRef = useRef(snapshot)
   const windowIdRef = useRef(agentWindow.id)
+  const messageStateRef = useRef(createEmptyStableListState<AgentSessionMessage>())
+  const groupStateRef = useRef(createEmptyStableListState<ChatGroup>())
+  const pendingSnapshotRef = useRef<AgentSessionSnapshot | null>(null)
+  const pendingFrameRef = useRef<number | null>(null)
   useEffect(() => {
     inputRef.current = input
   }, [input])
@@ -1277,13 +1377,33 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   useEffect(() => {
     windowIdRef.current = agentWindow.id
   }, [agentWindow.id])
+  useEffect(() => {
+    messageStateRef.current = createEmptyStableListState<AgentSessionMessage>()
+    groupStateRef.current = createEmptyStableListState<ChatGroup>()
+  }, [agentWindow.id])
 
   useEffect(() => {
     let cancelled = false
 
-    const sync = (next: AgentSessionSnapshot) => {
+    const applySnapshot = (next: AgentSessionSnapshot) => {
       if (cancelled || next.windowId !== agentWindow.id) return
+      const nextMessageState = computeStableList(next.messages ?? [], messageStateRef.current, {
+        getId: (message) => message.id,
+        isUnchanged: isAgentSessionMessageUnchanged,
+      })
+      messageStateRef.current = nextMessageState
+      const nextGroupState = computeStableList(
+        groupMessages(nextMessageState.result),
+        groupStateRef.current,
+        {
+          getId: (group) => group.key,
+          isUnchanged: isChatGroupUnchanged,
+        },
+      )
+      groupStateRef.current = nextGroupState
       setSnapshot(next)
+      setMessages(nextMessageState.result)
+      setGroups(nextGroupState.result)
       // First snapshot after mount: detect recovered mid-turn resumes so the
       // drain effect stays gated until the user presses Continue. We only do
       // this for sessions restored from disk after an app restart — normal
@@ -1319,6 +1439,17 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       })
     }
 
+    const sync = (next: AgentSessionSnapshot) => {
+      pendingSnapshotRef.current = next
+      if (pendingFrameRef.current !== null) return
+      pendingFrameRef.current = window.requestAnimationFrame(() => {
+        pendingFrameRef.current = null
+        const pending = pendingSnapshotRef.current
+        pendingSnapshotRef.current = null
+        if (pending) applySnapshot(pending)
+      })
+    }
+
     void window.cells.agentSession
       .ensure({
         windowId: agentWindow.id,
@@ -1338,6 +1469,11 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     const unsubscribe = window.cells.agentSession.onUpdate(sync)
     return () => {
       cancelled = true
+      pendingSnapshotRef.current = null
+      if (pendingFrameRef.current !== null) {
+        window.cancelAnimationFrame(pendingFrameRef.current)
+        pendingFrameRef.current = null
+      }
       unsubscribe()
     }
   }, [
@@ -1385,26 +1521,41 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     () => getComposerPlaceholder(agentWindow.agent),
     [agentWindow.agent],
   )
+  const snapshotMatchesWindow = snapshot?.windowId === agentWindow.id
+  const visibleSnapshot = useMemo(
+    () => (snapshotMatchesWindow ? snapshot : null),
+    [snapshot, snapshotMatchesWindow],
+  )
+  const visibleMessages = useMemo(
+    () => (snapshotMatchesWindow ? messages : []),
+    [messages, snapshotMatchesWindow],
+  )
+  const visibleGroups = useMemo(
+    () => (snapshotMatchesWindow ? groups : []),
+    [groups, snapshotMatchesWindow],
+  )
   const inlineMention = useInlineMention({
     inputRef: textareaRef,
-    cwd: snapshot?.cwd ?? agentWindow.cwd ?? null,
+    cwd: visibleSnapshot?.cwd ?? agentWindow.cwd ?? null,
   })
 
-  const messages = useMemo(() => snapshot?.messages ?? [], [snapshot?.messages])
-  const cwdDisplay = truncateCwd(snapshot?.cwd || agentWindow.cwd)
-  const backgroundActivities = useMemo(() => getInFlightAgentMessages(messages), [messages])
-  const hasMessages = messages.length > 0
+  const cwdDisplay = truncateCwd(visibleSnapshot?.cwd || agentWindow.cwd)
+  const backgroundActivities = useMemo(
+    () => getInFlightAgentMessages(visibleMessages),
+    [visibleMessages],
+  )
+  const hasMessages = visibleMessages.length > 0
   const filteredRecentSessions = useMemo(
     () =>
       filterRecentSessionsForProject(
         recentSessions,
-        activeProjectPath ?? snapshot?.cwd ?? agentWindow.cwd ?? null,
+        activeProjectPath ?? visibleSnapshot?.cwd ?? agentWindow.cwd ?? null,
         worktrees,
       ),
-    [activeProjectPath, agentWindow.cwd, recentSessions, snapshot?.cwd, worktrees],
+    [activeProjectPath, agentWindow.cwd, recentSessions, visibleSnapshot?.cwd, worktrees],
   )
   const hasBackgroundActivity = backgroundActivities.length > 0
-  const isRunning = deriveAgentSessionWindowStatus(snapshot) === 'running'
+  const isRunning = deriveAgentSessionWindowStatus(visibleSnapshot) === 'running'
   const hasComposerPayload = Boolean(input.trim()) || attachments.length > 0
   const canSubmit = hasComposerPayload && !isRunning
   const isEditingQueuedMessage = editingIndex !== null
@@ -1936,19 +2087,19 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     [agentWindow.id],
   )
 
-  const groups = useMemo(() => groupMessages(messages), [messages])
-  const sessionDiffStats = useMemo(() => sumDiffStats(messages), [messages])
+  const sessionDiffStats = useMemo(() => sumDiffStats(visibleMessages), [visibleMessages])
   const [diffsPanelOpen, setDiffsPanelOpen] = useState(false)
   const lastTurnIndex = (() => {
-    for (let i = groups.length - 1; i >= 0; i -= 1) {
-      if (groups[i].kind === 'turn') return i
+    for (let i = visibleGroups.length - 1; i >= 0; i -= 1) {
+      if (visibleGroups[i].kind === 'turn') return i
     }
     return -1
   })()
   // Show the Craft-style "working" pill whenever the agent is running and the
   // last rendered group isn't a turn (= model hasn't emitted anything yet).
   const showPendingLoader =
-    isRunning && (groups.length === 0 || groups[groups.length - 1].kind !== 'turn')
+    isRunning &&
+    (visibleGroups.length === 0 || visibleGroups[visibleGroups.length - 1].kind !== 'turn')
 
   return (
     <div
@@ -2083,8 +2234,8 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    {groups.map((group, idx) => (
-                      <GroupRenderer
+                    {visibleGroups.map((group, idx) => (
+                      <MessageGroupRow
                         key={group.key}
                         group={group}
                         agent={agentWindow.agent}
@@ -2104,33 +2255,35 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
 
           <div className="relative shrink-0 px-4 pb-4 pt-2">
             <div className="mx-auto max-w-3xl">
-              {snapshot?.error ? (
+              {visibleSnapshot?.error ? (
                 <div className="mb-2 rounded-[12px] border border-red-500/25 bg-red-500/8 px-3 py-2 text-[12px] text-red-300 shadow-minimal">
-                  {snapshot.error}
+                  {visibleSnapshot.error}
                 </div>
               ) : null}
-              {snapshot?.pendingPlanApproval ? (
+              {visibleSnapshot?.pendingPlanApproval ? (
                 <PlanApprovalBanner
-                  key={snapshot.pendingPlanApproval.createdAt}
+                  key={visibleSnapshot.pendingPlanApproval.createdAt}
                   windowId={agentWindow.id}
                 />
               ) : null}
-              {snapshot?.pendingApproval ? (
+              {visibleSnapshot?.pendingApproval ? (
                 <AgentApprovalBanner
-                  key={snapshot.pendingApproval.createdAt}
+                  key={visibleSnapshot.pendingApproval.createdAt}
                   windowId={agentWindow.id}
-                  approval={snapshot.pendingApproval}
+                  approval={visibleSnapshot.pendingApproval}
                 />
               ) : null}
-              {snapshot?.pendingQuestion ? (
+              {visibleSnapshot?.pendingQuestion ? (
                 <QuestionBanner
-                  key={snapshot.pendingQuestion.createdAt}
+                  key={visibleSnapshot.pendingQuestion.createdAt}
                   windowId={agentWindow.id}
                   agent={agentWindow.agent}
-                  questions={snapshot.pendingQuestion.questions}
+                  questions={visibleSnapshot.pendingQuestion.questions}
                 />
               ) : null}
-              {snapshot?.codexPlan ? <CodexPlanBanner plan={snapshot.codexPlan} /> : null}
+              {visibleSnapshot?.codexPlan ? (
+                <CodexPlanBanner plan={visibleSnapshot.codexPlan} />
+              ) : null}
               {hasDiffStats(sessionDiffStats) ? (
                 <div className="mb-2 flex justify-end">
                   <button
@@ -2424,7 +2577,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                   ) : null}
                 </div>
               ) : null}
-              {hasBackgroundActivity && snapshot?.status !== 'running' ? (
+              {hasBackgroundActivity && visibleSnapshot?.status !== 'running' ? (
                 <BackgroundActivityBanner
                   agent={agentWindow.agent}
                   activities={backgroundActivities}
@@ -2576,7 +2729,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                     }
                   />
                   <ContextUsageIndicator
-                    usage={snapshot?.usage ?? null}
+                    usage={visibleSnapshot?.usage ?? null}
                     agent={agentWindow.agent}
                     contextLength={agentWindow.contextLength}
                   />
@@ -2639,7 +2792,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         </div>
       </div>
       {diffsPanelOpen ? (
-        <SessionDiffsPanel messages={messages} onClose={() => setDiffsPanelOpen(false)} />
+        <SessionDiffsPanel messages={visibleMessages} onClose={() => setDiffsPanelOpen(false)} />
       ) : null}
     </div>
   )

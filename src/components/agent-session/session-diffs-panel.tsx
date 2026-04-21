@@ -146,10 +146,69 @@ function DiffLines({ oldString, newString }: { oldString: string; newString: str
   )
 }
 
+function PatchLines({ patch }: { patch: string }) {
+  const lines = useMemo(() => patch.split('\n').slice(0, 400), [patch])
+  if (lines.length === 0) return null
+
+  return (
+    <div className="overflow-x-auto rounded-[6px] border border-border/30 bg-[oklch(0.10_0.004_285)] text-[11px] leading-[1.6]">
+      <table className="w-full border-collapse font-mono">
+        <tbody>
+          {lines.map((line, idx) => {
+            const isAdd = line.startsWith('+') && !line.startsWith('+++')
+            const isDel = line.startsWith('-') && !line.startsWith('---')
+            const isMeta =
+              line.startsWith('diff --git ') ||
+              line.startsWith('index ') ||
+              line.startsWith('@@') ||
+              line.startsWith('--- ') ||
+              line.startsWith('+++ ') ||
+              line.startsWith('rename ')
+            return (
+              <tr
+                key={idx}
+                className={cn(
+                  isDel && 'bg-rose-500/[0.08]',
+                  isAdd && 'bg-emerald-500/[0.08]',
+                  isMeta && 'bg-foreground/[0.04]',
+                )}
+              >
+                <td
+                  className={cn(
+                    'w-5 select-none border-r border-border/20 px-1.5 text-center font-medium',
+                    isDel && 'border-rose-500/20 text-rose-400/70',
+                    isAdd && 'border-emerald-500/20 text-emerald-400/70',
+                    !isAdd && !isDel && 'text-muted-foreground/25',
+                  )}
+                >
+                  {isDel ? '−' : isAdd ? '+' : ' '}
+                </td>
+                <td
+                  className={cn(
+                    'whitespace-pre px-2 py-px',
+                    isDel && 'text-rose-200/80',
+                    isAdd && 'text-emerald-200/80',
+                    isMeta && 'text-sky-200/75',
+                    !isAdd && !isDel && !isMeta && 'text-foreground/55',
+                  )}
+                >
+                  {line}
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 function FileDiffRow({ file }: { file: FileDiffStats }) {
   const [expanded, setExpanded] = useState(false)
   const name = baseName(file.filePath)
   const dir = file.filePath.slice(0, Math.max(0, file.filePath.length - name.length - 1))
+  const patches = file.patches ?? []
+  const hasDetails = file.edits.length > 0 || patches.length > 0
   return (
     <li className="border-b border-border/20 last:border-b-0">
       <button
@@ -186,6 +245,14 @@ function FileDiffRow({ file }: { file: FileDiffStats }) {
               newString={edit.newString}
             />
           ))}
+          {patches.map((patch, idx) => (
+            <PatchLines key={`patch-${file.filePath}-${idx}`} patch={patch} />
+          ))}
+          {!hasDetails ? (
+            <div className="rounded-[6px] border border-border/25 bg-background/40 px-2.5 py-2 text-[11px] text-muted-foreground/60">
+              Diff summary available, but the full patch was not preserved for this file.
+            </div>
+          ) : null}
         </div>
       ) : null}
     </li>

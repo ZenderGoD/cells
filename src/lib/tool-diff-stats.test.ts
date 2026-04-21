@@ -76,12 +76,36 @@ test('groupDiffsByFile aggregates per-file counts from Codex unified diffs', () 
       additions: 1,
       deletions: 2,
       edits: [],
+      patches: [
+        [
+          'diff --git a/docs/readme.md b/docs/readme.md',
+          'index 3333333..4444444 100644',
+          '--- a/docs/readme.md',
+          '+++ b/docs/readme.md',
+          '@@ -1,2 +1 @@',
+          '-first',
+          '-second',
+          '+replacement',
+        ].join('\n'),
+      ],
     },
     {
       filePath: 'src/a.ts',
       additions: 2,
       deletions: 1,
       edits: [],
+      patches: [
+        [
+          'diff --git a/src/a.ts b/src/a.ts',
+          'index 1111111..2222222 100644',
+          '--- a/src/a.ts',
+          '+++ b/src/a.ts',
+          '@@ -1 +1,2 @@',
+          '-old line',
+          '+new line',
+          '+another line',
+        ].join('\n'),
+      ],
     },
   ])
 })
@@ -105,6 +129,14 @@ test('groupDiffsByFile keeps rename-only file changes visible', () => {
       additions: 0,
       deletions: 0,
       edits: [],
+      patches: [
+        [
+          'diff --git a/src/old.ts b/src/new.ts',
+          'similarity index 100%',
+          'rename from src/old.ts',
+          'rename to src/new.ts',
+        ].join('\n'),
+      ],
     },
   ])
 })

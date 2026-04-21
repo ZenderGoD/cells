@@ -1850,6 +1850,16 @@ function loadPersistedSnapshot(windowId: string): AgentSessionSnapshot | null {
 // streaming — one write per ~150ms is plenty to keep the file fresh.
 const persistTimers = new Map<string, NodeJS.Timeout>()
 
+function getPersistDebounceMs(snapshot: AgentSessionSnapshot) {
+  // Craft avoids this write amplification with append-oriented JSONL storage.
+  // Cells still writes full snapshots, so back off aggressively once a live
+  // session transcript gets large.
+  const messageCount = snapshot.messages.length
+  if (messageCount >= 1000) return 1000
+  if (messageCount >= 400) return 500
+  return 150
+}
+
 async function persistSnapshotNow(snapshot: AgentSessionSnapshot) {
   const file = getPersistPath(snapshot.windowId)
   const tmp = `${file}.tmp`
@@ -1861,6 +1871,7 @@ async function persistSnapshotNow(snapshot: AgentSessionSnapshot) {
 function schedulePersist(snapshot: AgentSessionSnapshot) {
   const existing = persistTimers.get(snapshot.windowId)
   if (existing) clearTimeout(existing)
+  const delayMs = getPersistDebounceMs(snapshot)
   const timer = setTimeout(() => {
     persistTimers.delete(snapshot.windowId)
     persistSnapshotNow(snapshot).catch((err) => {
@@ -1869,7 +1880,7 @@ function schedulePersist(snapshot: AgentSessionSnapshot) {
         error: err instanceof Error ? err.message : String(err),
       })
     })
-  }, 150)
+  }, delayMs)
   persistTimers.set(snapshot.windowId, timer)
 }
 
