@@ -129,7 +129,7 @@ function DiffLines({ oldString, newString }: { oldString: string; newString: str
                 </td>
                 <td
                   className={cn(
-                    'whitespace-pre px-2 py-px',
+                    'whitespace-pre-wrap break-all px-2 py-px',
                     isDel && 'text-rose-200/80',
                     isAdd && 'text-emerald-200/80',
                     op === 'eq' && 'text-foreground/55',
@@ -185,7 +185,7 @@ function PatchLines({ patch }: { patch: string }) {
                 </td>
                 <td
                   className={cn(
-                    'whitespace-pre px-2 py-px',
+                    'whitespace-pre-wrap break-all px-2 py-px',
                     isDel && 'text-rose-200/80',
                     isAdd && 'text-emerald-200/80',
                     isMeta && 'text-sky-200/75',
@@ -304,7 +304,7 @@ export function SessionDiffsPanel({ messages, onClose }: SessionDiffsPanelProps)
 
   return (
     <div
-      className="relative flex h-full shrink-0 flex-col border-l border-border/40 bg-[oklch(0.11_0.004_285)] backdrop-blur-sm"
+      className="relative z-20 flex h-full shrink-0 flex-col border-l border-border/40 bg-[oklch(0.11_0.004_285)] backdrop-blur-sm"
       style={{ width }}
     >
       {/* Drag-resize handle on the left edge */}

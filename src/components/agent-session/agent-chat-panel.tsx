@@ -64,6 +64,7 @@ import { computeStableList, createEmptyStableListState } from '@/lib/stable-list
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Kbd } from '@/components/ui/kbd'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
+import { AnimatePresence, motion } from 'motion/react'
 
 interface AgentChatPanelProps {
   agentWindow: AgentWindowNode
@@ -1357,6 +1358,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     (state) => state.projects.find((project) => project.id === state.activeProjectId)?.path ?? null,
   )
   const worktrees = useStore((state) => state.worktrees)
+  const reducedMotion = useStore((s) => s.reducedMotion)
   // Queue is persisted on the AgentWindowNode so it survives app restart.
   // Read straight from the prop (zustand re-renders this component whenever
   // the window patches) and write through `syncAgentWindow` so the change
@@ -2352,19 +2354,36 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    {visibleGroups.map((group, idx) => (
-                      <MessageGroupRow
-                        key={group.key}
-                        group={group}
-                        agent={agentWindow.agent}
-                        isStreamingLastTurn={isRunning && idx === lastTurnIndex}
-                      />
-                    ))}
-                    {showPendingLoader ? (
-                      <div className="flex justify-start px-2">
-                        <PendingTurnIndicator agent={agentWindow.agent} />
-                      </div>
-                    ) : null}
+                    <AnimatePresence mode="popLayout" initial={false}>
+                      {visibleGroups.map((group, idx) => (
+                        <motion.div
+                          key={group.key}
+                          initial={reducedMotion ? false : { opacity: 0, y: 6 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ duration: 0.18, ease: [0.4, 0, 0.2, 1] }}
+                        >
+                          <MessageGroupRow
+                            group={group}
+                            agent={agentWindow.agent}
+                            isStreamingLastTurn={isRunning && idx === lastTurnIndex}
+                          />
+                        </motion.div>
+                      ))}
+                    </AnimatePresence>
+                    <AnimatePresence mode="popLayout">
+                      {showPendingLoader ? (
+                        <motion.div
+                          key="pending"
+                          className="flex justify-start px-2"
+                          initial={reducedMotion ? false : { opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          exit={{ opacity: 0 }}
+                          transition={{ duration: 0.2 }}
+                        >
+                          <PendingTurnIndicator agent={agentWindow.agent} />
+                        </motion.div>
+                      ) : null}
+                    </AnimatePresence>
                   </div>
                 )}
               </div>
@@ -2708,8 +2727,8 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                 className={cn(
                   'group/composer relative overflow-hidden rounded-[14px] border bg-background/95 shadow-middle transition-colors',
                   isComposerFocused
-                    ? 'border-foreground/25'
-                    : 'border-border/60 hover:border-border',
+                    ? 'border-foreground/18'
+                    : 'border-border/30 hover:border-border/50',
                 )}
               >
                 {isEditingQueuedMessage ? (

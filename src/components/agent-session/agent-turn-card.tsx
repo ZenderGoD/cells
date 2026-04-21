@@ -24,15 +24,6 @@ import { AgentMarkdown } from './agent-markdown'
 import { LoadingIndicator, Spinner } from './agent-loading-indicator'
 
 const RESPONSE_MAX_HEIGHT = 540
-// Subtle 16px fade on top & bottom edges (dark mode only, matching Craft).
-const RESPONSE_FADE_MASK =
-  'linear-gradient(to bottom, transparent 0%, black 16px, black calc(100% - 16px), transparent 100%)'
-const RESPONSE_MORPH_TRANSITION = {
-  type: 'spring' as const,
-  stiffness: 360,
-  damping: 34,
-  mass: 0.9,
-}
 
 // Copied and adapted from Craft Agents OSS:
 // ../craft-agents-oss/packages/ui/src/components/chat/TurnCard.tsx
@@ -408,26 +399,43 @@ function ActivityRow({ node, depth }: { node: ActivityNode; depth: number }) {
       </button>
       {/* Regular leaf rows show the raw payload in a <pre> when expanded;
        *  rows with children render those children instead. */}
-      {expanded && !hasChildren ? (
-        <pre
-          className={cn(
-            'mt-1 mb-1 whitespace-pre-wrap break-words rounded-[8px] border border-border/40 bg-background/50 px-3 py-2 text-[13px] leading-[1.5]',
-            message.role === 'reasoning'
-              ? 'font-sans text-foreground/80'
-              : 'font-mono text-foreground/75',
-          )}
-          style={{ marginLeft: `${24 + depth * 12}px` }}
-        >
-          {message.text || '(no output)'}
-        </pre>
-      ) : null}
-      {hasChildren && expanded ? (
-        <div className="space-y-0.5">
-          {children.map((child) => (
-            <ActivityRow key={child.message.id} node={child} depth={depth + 1} />
-          ))}
-        </div>
-      ) : null}
+      <AnimatePresence mode="popLayout" initial={false}>
+        {expanded && !hasChildren ? (
+          <motion.div
+            key="leaf"
+            initial={{ opacity: 0, y: -3 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -3 }}
+            transition={{ duration: 0.14, ease: [0.4, 0, 0.2, 1] }}
+          >
+            <pre
+              className={cn(
+                'mt-1 mb-1 whitespace-pre-wrap break-words rounded-[8px] border border-border/40 bg-background/50 px-3 py-2 text-[13px] leading-[1.5]',
+                message.role === 'reasoning'
+                  ? 'font-sans text-foreground/80'
+                  : 'font-mono text-foreground/75',
+              )}
+              style={{ marginLeft: `${24 + depth * 12}px` }}
+            >
+              {message.text || '(no output)'}
+            </pre>
+          </motion.div>
+        ) : null}
+        {hasChildren && expanded ? (
+          <motion.div
+            key="children"
+            initial={{ opacity: 0, y: -3 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -3 }}
+            transition={{ duration: 0.14, ease: [0.4, 0, 0.2, 1] }}
+            className="space-y-0.5"
+          >
+            {children.map((child) => (
+              <ActivityRow key={child.message.id} node={child} depth={depth + 1} />
+            ))}
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
     </div>
   )
 }
@@ -480,27 +488,16 @@ function usePreviewText(
   }, [activities, isStreaming, agent])
 }
 
-function getResponseMorphLayoutId(text: string): string {
-  const normalized = text.trim().replace(/\s+/g, ' ').slice(0, 80)
-  return `agent-turn-response-${text.length}-${normalized}`
-}
-
 function LeadTextBlock({ text, className }: { text: string; className?: string }) {
   return (
-    <motion.div
-      layout
-      layoutId={getResponseMorphLayoutId(text)}
-      initial={{ opacity: 0, y: -8, scale: 0.985 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, y: -8, scale: 0.985 }}
-      transition={RESPONSE_MORPH_TRANSITION}
+    <div
       className={cn(
         'agent-response select-text px-1 text-sm leading-relaxed text-foreground/85',
         className,
       )}
     >
       <AgentMarkdown>{text}</AgentMarkdown>
-    </motion.div>
+    </div>
   )
 }
 
@@ -535,24 +532,14 @@ function ResponseCard({ responses }: { responses: AgentSessionMessage[] }) {
   // lighter than its surroundings. oklch(0.17) sits between --background
   // (0.12) and --card (0.21), avoiding the too-bright flat look of bg-card.
   return (
-    <motion.div
-      layout
-      layoutId={combinedText.trim() ? getResponseMorphLayoutId(combinedText) : undefined}
-      initial={{ opacity: 0, y: 8, scale: 0.985 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, y: 8, scale: 0.985 }}
-      transition={RESPONSE_MORPH_TRANSITION}
+    <div
       className="group relative overflow-hidden rounded-[8px] shadow-minimal"
       style={{ backgroundColor: 'oklch(0.17 0.004 285.9)' }}
     >
       <div
         data-search-root="response"
         className="scrollbar-hover select-text overflow-y-auto pl-[22px] pr-4 py-3 text-sm text-foreground/90"
-        style={{
-          maxHeight: RESPONSE_MAX_HEIGHT,
-          maskImage: RESPONSE_FADE_MASK,
-          WebkitMaskImage: RESPONSE_FADE_MASK,
-        }}
+        style={{ maxHeight: RESPONSE_MAX_HEIGHT }}
       >
         {visible.map((response, idx) => (
           <div key={response.id} className={cn(idx > 0 && 'mt-3 border-t border-border/30 pt-3')}>
@@ -613,7 +600,7 @@ function ResponseCard({ responses }: { responses: AgentSessionMessage[] }) {
           </>
         )}
       </div>
-    </motion.div>
+    </div>
   )
 }
 
@@ -644,33 +631,42 @@ function ChangedFilesSection({ activities }: { activities: AgentSessionMessage[]
           {totals.deletions > 0 && <span className="text-rose-400/80">-{totals.deletions}</span>}
         </span>
       </button>
-      {open ? (
-        <div className="ml-4 mt-0.5 space-y-px">
-          {files.map((f) => {
-            const name = f.filePath.split('/').pop() ?? f.filePath
-            const dir = f.filePath.includes('/')
-              ? f.filePath.slice(0, f.filePath.lastIndexOf('/'))
-              : null
-            return (
-              <div
-                key={f.filePath}
-                className="flex items-center gap-1.5 py-0.5 text-[11.5px] text-muted-foreground/80"
-                title={f.filePath}
-              >
-                <FileText className="size-3 shrink-0 opacity-50" />
-                <span className="truncate font-medium">{name}</span>
-                {dir ? (
-                  <span className="shrink-0 truncate text-muted-foreground/40">{dir}</span>
-                ) : null}
-                <span className="ml-auto inline-flex shrink-0 items-center gap-1 tabular-nums text-[11px]">
-                  {f.additions > 0 && <span className="text-emerald-400/80">+{f.additions}</span>}
-                  {f.deletions > 0 && <span className="text-rose-400/80">-{f.deletions}</span>}
-                </span>
-              </div>
-            )
-          })}
-        </div>
-      ) : null}
+      <AnimatePresence mode="popLayout" initial={false}>
+        {open ? (
+          <motion.div
+            key="files"
+            initial={{ opacity: 0, y: -3 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -3 }}
+            transition={{ duration: 0.14, ease: [0.4, 0, 0.2, 1] }}
+            className="ml-4 mt-0.5 space-y-px"
+          >
+            {files.map((f) => {
+              const name = f.filePath.split('/').pop() ?? f.filePath
+              const dir = f.filePath.includes('/')
+                ? f.filePath.slice(0, f.filePath.lastIndexOf('/'))
+                : null
+              return (
+                <div
+                  key={f.filePath}
+                  className="flex items-center gap-1.5 py-0.5 text-[11.5px] text-muted-foreground/80"
+                  title={f.filePath}
+                >
+                  <FileText className="size-3 shrink-0 opacity-50" />
+                  <span className="truncate font-medium">{name}</span>
+                  {dir ? (
+                    <span className="shrink-0 truncate text-muted-foreground/40">{dir}</span>
+                  ) : null}
+                  <span className="ml-auto inline-flex shrink-0 items-center gap-1 tabular-nums text-[11px]">
+                    {f.additions > 0 && <span className="text-emerald-400/80">+{f.additions}</span>}
+                    {f.deletions > 0 && <span className="text-rose-400/80">-{f.deletions}</span>}
+                  </span>
+                </div>
+              )
+            })}
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
     </div>
   )
 }
@@ -700,9 +696,7 @@ export function AgentTurnCard({
           // Tool activity always stays grouped behind a single collapse handle.
           // This keeps the transcript rhythm consistent even for one-off calls.
           <div className="select-none">
-            <AnimatePresence initial={false}>
-              {leadText ? <LeadTextBlock key="lead-text" text={leadText} className="pb-1" /> : null}
-            </AnimatePresence>
+            {leadText ? <LeadTextBlock text={leadText} className="pb-1" /> : null}
             <button
               type="button"
               onClick={() => setCollapsed((v) => !v)}
@@ -724,8 +718,19 @@ export function AgentTurnCard({
                   />
                 </span>
               ) : (
-                <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground">
-                  {computedPreview}
+                <span className="relative min-w-0 flex-1 text-[13px] text-muted-foreground">
+                  <AnimatePresence mode="popLayout" initial={false}>
+                    <motion.span
+                      key={computedPreview}
+                      className="block truncate"
+                      initial={{ opacity: 0, filter: 'blur(3px)' }}
+                      animate={{ opacity: 1, filter: 'blur(0px)' }}
+                      exit={{ opacity: 0, filter: 'blur(3px)' }}
+                      transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+                    >
+                      {computedPreview}
+                    </motion.span>
+                  </AnimatePresence>
                 </span>
               )}
               {hasDiffStats(groupDiffStats) ? (
@@ -739,18 +744,26 @@ export function AgentTurnCard({
                 )}
               />
             </button>
-            {showActivities ? (
-              <div className="ml-[13px] mt-1 max-h-[360px] space-y-0.5 overflow-y-auto overscroll-contain border-l-2 border-border/40 pl-3 pr-1 py-0.5">
-                {tree.map((node) => (
-                  <ActivityRow key={node.message.id} node={node} depth={0} />
-                ))}
-              </div>
-            ) : null}
+            <AnimatePresence mode="popLayout" initial={false}>
+              {showActivities ? (
+                <motion.div
+                  key="activity-list"
+                  initial={{ opacity: 0, y: -4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -4 }}
+                  transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
+                >
+                  <div className="ml-[13px] mt-1 max-h-[360px] space-y-0.5 overflow-y-auto overscroll-contain border-l-2 border-border/40 pl-3 pr-1 py-0.5">
+                    {tree.map((node) => (
+                      <ActivityRow key={node.message.id} node={node} depth={0} />
+                    ))}
+                  </div>
+                </motion.div>
+              ) : null}
+            </AnimatePresence>
           </div>
         ) : leadText ? (
-          <AnimatePresence initial={false}>
-            <LeadTextBlock key="lead-text" text={leadText} />
-          </AnimatePresence>
+          <LeadTextBlock text={leadText} />
         ) : isStreaming && !hasResponse ? (
           <LoadingIndicator
             label={agent === 'claude' ? 'Claude is thinking…' : 'Codex is thinking…'}
@@ -759,9 +772,7 @@ export function AgentTurnCard({
           />
         ) : null}
 
-        <AnimatePresence initial={false}>
-          {hasResponse ? <ResponseCard key="response-card" responses={responses} /> : null}
-        </AnimatePresence>
+        {hasResponse ? <ResponseCard responses={responses} /> : null}
         {!isStreaming ? <ChangedFilesSection activities={activities} /> : null}
       </div>
     </div>

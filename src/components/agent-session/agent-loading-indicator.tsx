@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { AnimatePresence, motion } from 'motion/react'
 import { cn } from '@/lib/utils'
 
 // Copied verbatim from Craft Agents OSS:
@@ -84,7 +85,20 @@ export function LoadingIndicator({
           <span className="inline-flex items-center justify-center w-[1em] h-[1em]">●</span>
         )
       ) : null}
-      {label && <span className={cn('text-muted-foreground', labelClassName)}>{label}</span>}
+      {label !== undefined ? (
+        <AnimatePresence mode="popLayout" initial={false}>
+          <motion.span
+            key={label}
+            className={cn('text-muted-foreground', labelClassName)}
+            initial={{ opacity: 0, filter: 'blur(3px)' }}
+            animate={{ opacity: 1, filter: 'blur(0px)' }}
+            exit={{ opacity: 0, filter: 'blur(3px)' }}
+            transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+          >
+            {label}
+          </motion.span>
+        </AnimatePresence>
+      ) : null}
       {showElapsed && elapsed >= 1000 && (
         <span className={cn('text-muted-foreground/60 tabular-nums', elapsedClassName)}>
           ({formatDuration(elapsed)})
