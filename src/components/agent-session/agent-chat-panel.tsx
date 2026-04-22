@@ -1482,8 +1482,6 @@ const MessageGroupRow = memo(
         className="min-w-0 p-[1px]"
         style={{
           contain: hasMorph ? 'style paint' : 'layout style paint',
-          contentVisibility: 'auto',
-          containIntrinsicSize: '320px',
         }}
         initial={reduceMotion ? false : { opacity: 0 }}
         animate={{ opacity: 1 }}
