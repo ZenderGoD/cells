@@ -282,6 +282,11 @@ const previousAgentSessionSnapshots = new Map<string, AgentSessionSnapshot>()
 let pendingAgentSessionFlushTimer: NodeJS.Timeout | null = null
 let cachedAgentNotificationSettings: AgentNotificationSettings | null = null
 const cachedAgentWindowProjectIds = new Map<string, string>()
+// Hold a strong reference to live Notification objects. Without this, the JS
+// objects can be GC'd while the OS notification is still visible, so their
+// 'click' handlers never fire and clicking the notification only triggers the
+// OS default (raise the app) instead of our project/window focus logic.
+const liveNotifications = new Set<Electron.Notification>()
 let cachedAgentNotificationContext: AgentNotificationContext = {
   activeProjectId: null,
   focusedAgentWindowId: null,
@@ -460,13 +465,30 @@ function shouldDeliverAgentNotification(
 
 function focusMainWindowAndAgentWindow(request?: FocusAgentWindowRequest | null) {
   if (!mainWindow || mainWindow.isDestroyed()) return
+  // On macOS a hidden app (via Cmd+H or the Hide menu item) keeps its window
+  // "visible" flag true, so mainWindow.show() alone does not unhide it.
+  if (process.platform === 'darwin') {
+    try {
+      app.show()
+    } catch {}
+  }
   if (mainWindow.isMinimized()) mainWindow.restore()
   if (!mainWindow.isVisible()) mainWindow.show()
   mainWindow.focus()
-  if (!request?.windowId) return
   try {
-    mainWindow.webContents.send('app:focus-agent-window', request)
+    app.focus({ steal: true })
   } catch {}
+  if (!request?.windowId) return
+  // Send after the focus chain settles so the renderer is definitely awake and
+  // subscribed. Buffered IPCs can also race with the focus event, so a small
+  // delay avoids reordering on the renderer side.
+  const send = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    try {
+      mainWindow.webContents.send('app:focus-agent-window', request)
+    } catch {}
+  }
+  setTimeout(send, 50)
 }
 
 async function showSystemNotification(
@@ -490,6 +512,13 @@ async function showSystemNotification(
     silent: !playSound,
   })
 
+  liveNotifications.add(notification)
+  const release = () => {
+    liveNotifications.delete(notification)
+  }
+  notification.on('close', release)
+  notification.on('failed', release)
+
   if (options?.focusAgentWindowId) {
     const focusAgentWindowId = options.focusAgentWindowId
     const focusProjectId = options.focusProjectId
@@ -498,6 +527,7 @@ async function showSystemNotification(
         windowId: focusAgentWindowId,
         projectId: focusProjectId,
       })
+      release()
     })
   }
 
