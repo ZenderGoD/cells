@@ -244,6 +244,9 @@ interface StoreState {
   ): AgentWindowNode
   removeAgentWindow(id: string): void
   moveAgentWindow(id: string, x: number, y: number): void
+  moveCanvasNodes(
+    updates: Array<{ id: string; kind: 'terminal' | 'browser' | 'agent'; x: number; y: number }>,
+  ): void
   resizeAgentWindow(id: string, width: number, height: number): void
   focusAgentWindow(id: string | null): void
   bringAgentWindowToFront(id: string): void
@@ -252,6 +255,7 @@ interface StoreState {
   syncAgentWindow(id: string, patch: Partial<AgentWindowNode>): void
   snapToTerminal(id: string, options?: { keepScale?: boolean }): void
   zoomToFit(id: string): void
+  zoomFocusedWindow(direction: 'in' | 'out'): void
   snapToNearest(
     direction: 'left' | 'right' | 'up' | 'down',
     options?: { keepScale?: boolean },
@@ -342,6 +346,9 @@ interface StoreState {
 
 const TERMINAL_PAD = 8
 const FOCUS_READ_DELAY_MS = 2000
+const CANVAS_MIN_ZOOM = 0.15
+const CANVAS_MAX_ZOOM = 1.5
+const CANVAS_KEYBOARD_ZOOM_FACTOR = 1.2
 
 // Timer for delayed runtime-attention clear on focus
 let _runtimeAttentionClearTimer: ReturnType<typeof setTimeout> | null = null
@@ -2336,6 +2343,54 @@ export const useStore = create<StoreState>((set, get) => ({
     debouncedPersist(() => get().persist())
   },
 
+  moveCanvasNodes(updates) {
+    if (updates.length === 0) return
+
+    if (get().autoArrangeOnCreate) {
+      get().setAutoArrangeOnCreate(false)
+      showToast('Auto-arrange disabled', 'info')
+    }
+
+    const terminalUpdates = new Map<string, { x: number; y: number }>()
+    const browserUpdates = new Map<string, { x: number; y: number }>()
+    const agentUpdates = new Map<string, { x: number; y: number }>()
+
+    for (const update of updates) {
+      if (update.kind === 'browser') {
+        browserUpdates.set(update.id, { x: update.x, y: update.y })
+      } else if (update.kind === 'agent') {
+        agentUpdates.set(update.id, { x: update.x, y: update.y })
+      } else {
+        terminalUpdates.set(update.id, { x: update.x, y: update.y })
+      }
+    }
+
+    set((state) => ({
+      terminals:
+        terminalUpdates.size === 0
+          ? state.terminals
+          : state.terminals.map((terminal) => {
+              const next = terminalUpdates.get(terminal.id)
+              return next ? { ...terminal, x: next.x, y: next.y } : terminal
+            }),
+      browsers:
+        browserUpdates.size === 0
+          ? state.browsers
+          : state.browsers.map((browser) => {
+              const next = browserUpdates.get(browser.id)
+              return next ? { ...browser, x: next.x, y: next.y } : browser
+            }),
+      agentWindows:
+        agentUpdates.size === 0
+          ? state.agentWindows
+          : state.agentWindows.map((agentWindow) => {
+              const next = agentUpdates.get(agentWindow.id)
+              return next ? { ...agentWindow, x: next.x, y: next.y } : agentWindow
+            }),
+    }))
+    debouncedPersist(() => get().persist())
+  },
+
   resizeTerminal(id, width, height) {
     set((s) => ({
       terminals: s.terminals.map((t) => (t.id === id ? { ...t, width, height } : t)),
@@ -2428,22 +2483,143 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   zoomToFit(id) {
-    const { terminals } = get()
-    const terminal = terminals.find((t) => t.id === id)
-    if (!terminal) return
+    const { terminals, browsers, agentWindows } = get()
+    const node =
+      terminals.find((terminal) => terminal.id === id) ??
+      browsers.find((browser) => browser.id === id) ??
+      agentWindows.find((agentWindow) => agentWindow.id === id)
+    if (!node) return
     const viewW = window.innerWidth
     const viewH = window.innerHeight - STATUS_BAR_HEIGHT
     const scale = Math.min(
-      viewW / (terminal.width + TERMINAL_PAD * 2),
-      viewH / (terminal.height + TERMINAL_PAD * 2),
+      viewW / (node.width + TERMINAL_PAD * 2),
+      viewH / (node.height + TERMINAL_PAD * 2),
       1,
     )
-    if (id !== get().focusedTerminalId) get().bringToFront(id)
-    set({ focusedTerminalId: id, snapPaused: false, snapFast: true })
+    if (terminals.some((terminal) => terminal.id === id)) {
+      if (id !== get().focusedTerminalId) get().bringToFront(id)
+      set({
+        focusedTerminalId: id,
+        focusedBrowserId: null,
+        focusedAgentWindowId: null,
+        snapPaused: false,
+        snapFast: true,
+      })
+    } else if (browsers.some((browser) => browser.id === id)) {
+      if (id !== get().focusedBrowserId) get().bringBrowserToFront(id)
+      set({
+        focusedTerminalId: null,
+        focusedBrowserId: id,
+        focusedAgentWindowId: null,
+        snapPaused: false,
+        snapFast: true,
+      })
+    } else {
+      if (id !== get().focusedAgentWindowId) get().bringAgentWindowToFront(id)
+      set({
+        focusedTerminalId: null,
+        focusedBrowserId: null,
+        focusedAgentWindowId: id,
+        snapPaused: false,
+        snapFast: true,
+      })
+    }
     get().setCanvasTransform({
-      x: TERMINAL_PAD - terminal.x * scale,
-      y: TERMINAL_PAD - terminal.y * scale,
+      x: TERMINAL_PAD - node.x * scale,
+      y: TERMINAL_PAD - node.y * scale,
       scale,
+    })
+  },
+
+  zoomFocusedWindow(direction) {
+    const state = get()
+    const id =
+      state.focusedTerminalId ||
+      state.focusedBrowserId ||
+      state.focusedAgentWindowId ||
+      state.terminals[0]?.id ||
+      state.browsers[0]?.id ||
+      state.agentWindows[0]?.id
+    if (!id) return
+
+    const node =
+      state.terminals.find((terminal) => terminal.id === id) ??
+      state.browsers.find((browser) => browser.id === id) ??
+      state.agentWindows.find((agentWindow) => agentWindow.id === id)
+    if (!node) return
+
+    const viewW = window.innerWidth
+    const viewH = window.innerHeight - STATUS_BAR_HEIGHT
+    const scale = Math.max(
+      CANVAS_MIN_ZOOM,
+      Math.min(
+        CANVAS_MAX_ZOOM,
+        direction === 'in'
+          ? state.canvas.scale * CANVAS_KEYBOARD_ZOOM_FACTOR
+          : state.canvas.scale / CANVAS_KEYBOARD_ZOOM_FACTOR,
+      ),
+    )
+    const centerX = node.x + node.width / 2
+    const centerY = node.y + node.height / 2
+    let nextX = viewW / 2 - centerX * scale
+    let nextY = viewH / 2 - centerY * scale
+    const scaledWidth = node.width * scale
+    const scaledHeight = node.height * scale
+    const minX = viewW - TERMINAL_PAD - (node.x + node.width) * scale
+    const maxX = TERMINAL_PAD - node.x * scale
+    const minY = viewH - TERMINAL_PAD - (node.y + node.height) * scale
+    const maxY = TERMINAL_PAD - node.y * scale
+
+    if (scaledWidth <= viewW - TERMINAL_PAD * 2) {
+      nextX = Math.max(minX, Math.min(maxX, nextX))
+    }
+    if (scaledHeight <= viewH - TERMINAL_PAD * 2) {
+      nextY = Math.max(minY, Math.min(maxY, nextY))
+    }
+
+    const fitScale = Math.min(
+      viewW / (node.width + TERMINAL_PAD * 2),
+      viewH / (node.height + TERMINAL_PAD * 2),
+      1,
+    )
+    const shouldFitViewport = direction === 'out' && scale >= fitScale
+    const finalScale = shouldFitViewport ? fitScale : scale
+    const finalX = shouldFitViewport ? TERMINAL_PAD - node.x * fitScale : nextX
+    const finalY = shouldFitViewport ? TERMINAL_PAD - node.y * fitScale : nextY
+
+    if (state.terminals.some((terminal) => terminal.id === id)) {
+      if (id !== state.focusedTerminalId) get().bringToFront(id)
+      set({
+        focusedTerminalId: id,
+        focusedBrowserId: null,
+        focusedAgentWindowId: null,
+        snapPaused: false,
+        snapFast: true,
+      })
+    } else if (state.browsers.some((browser) => browser.id === id)) {
+      if (id !== state.focusedBrowserId) get().bringBrowserToFront(id)
+      set({
+        focusedTerminalId: null,
+        focusedBrowserId: id,
+        focusedAgentWindowId: null,
+        snapPaused: false,
+        snapFast: true,
+      })
+    } else {
+      if (id !== state.focusedAgentWindowId) get().bringAgentWindowToFront(id)
+      set({
+        focusedTerminalId: null,
+        focusedBrowserId: null,
+        focusedAgentWindowId: id,
+        snapPaused: false,
+        snapFast: true,
+      })
+    }
+
+    get().setCanvasTransform({
+      x: finalX,
+      y: finalY,
+      scale: finalScale,
     })
   },
 

@@ -26,6 +26,7 @@ export interface AgentWindowStatusPresentation {
   label: string
   dotClass: string
   pillClass: string
+  ringClass: string
 }
 
 const NONE: StatusPresentation = {
@@ -40,7 +41,20 @@ const NONE: StatusPresentation = {
 
 export function getAgentWindowStatusPresentation(
   status: AgentWindowStatus | null | undefined,
+  options?: { hasUnviewedCompletion?: boolean },
 ): AgentWindowStatusPresentation {
+  // "Done but unchecked" beats idle — surfaces finished work the user hasn't
+  // looked at yet with a calm emerald dot. Only applies when the session is
+  // otherwise idle; any active state (approval/input/running/plan) takes
+  // priority since those are more urgent than "you have unread results".
+  if (status === 'idle' && options?.hasUnviewedCompletion) {
+    return {
+      label: 'Done',
+      pillClass: 'border-emerald-400/25 bg-emerald-500/10 text-emerald-300',
+      dotClass: 'bg-emerald-400',
+      ringClass: 'ring-1 ring-emerald-500/65',
+    }
+  }
   // Palette mirrors t3code's sidebar pill (amber→indigo→sky→violet→emerald).
   // Only active states pulse so the minimap reads as calm at rest.
   if (status === 'awaiting-approval') {
@@ -48,6 +62,7 @@ export function getAgentWindowStatusPresentation(
       label: 'Approval needed',
       pillClass: 'border-amber-400/25 bg-amber-500/10 text-amber-300',
       dotClass: 'bg-amber-400 animate-pulse',
+      ringClass: 'ring-1 ring-amber-500/70',
     }
   }
   if (status === 'awaiting-input') {
@@ -55,6 +70,7 @@ export function getAgentWindowStatusPresentation(
       label: 'Awaiting input',
       pillClass: 'border-indigo-400/25 bg-indigo-500/10 text-indigo-300',
       dotClass: 'bg-indigo-400 animate-pulse',
+      ringClass: 'ring-1 ring-indigo-500/70',
     }
   }
   if (status === 'running') {
@@ -62,6 +78,7 @@ export function getAgentWindowStatusPresentation(
       label: 'Working',
       pillClass: 'border-sky-400/25 bg-sky-500/10 text-sky-300',
       dotClass: 'bg-sky-400 animate-pulse',
+      ringClass: 'ring-1 ring-sky-500/65',
     }
   }
   if (status === 'plan-ready') {
@@ -69,6 +86,7 @@ export function getAgentWindowStatusPresentation(
       label: 'Plan ready',
       pillClass: 'border-violet-400/25 bg-violet-500/10 text-violet-300',
       dotClass: 'bg-violet-400',
+      ringClass: 'ring-1 ring-violet-500/70',
     }
   }
   if (status === 'error') {
@@ -76,12 +94,14 @@ export function getAgentWindowStatusPresentation(
       label: 'Error',
       pillClass: 'border-red-400/25 bg-red-500/10 text-red-300',
       dotClass: 'bg-red-400',
+      ringClass: 'ring-1 ring-rose-500/70',
     }
   }
   return {
     label: 'Idle',
     pillClass: 'border-border/30 bg-muted/40 text-muted-foreground/80',
     dotClass: 'bg-muted-foreground/50',
+    ringClass: '',
   }
 }
 

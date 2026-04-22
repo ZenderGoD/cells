@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect, type MouseEvent } from 'react'
 import { ArrowUpRight, EyeOff, Globe, WifiOff } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { hasPrimaryModifier } from '@/lib/keyboard-shortcuts'
 import { useStore } from '@/lib/store'
 import type { BrowserNode as BrowserNodeType } from '@/types'
 import { useShallow } from 'zustand/react/shallow'
@@ -371,9 +372,13 @@ export function BrowserNode({
 
   const handleNodeMouseDown = useCallback(
     (e: MouseEvent) => {
-      if (!selectionMode) {
+      const modifierDrag = hasPrimaryModifier(e)
+      if (!selectionMode && !modifierDrag) {
         focusBrowser(browser.id)
         return
+      }
+      if (modifierDrag && !selectionMode) {
+        focusBrowser(browser.id)
       }
       e.preventDefault()
       e.stopPropagation()

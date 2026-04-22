@@ -18,6 +18,7 @@ import {
 import type { AgentWindowNode as AgentWindowNodeType } from '@/types'
 import { useStore } from '@/lib/store'
 import { useShallow } from 'zustand/react/shallow'
+import { hasPrimaryModifier } from '@/lib/keyboard-shortcuts'
 import { cn } from '@/lib/utils'
 import { AgentChatPanel } from '@/components/agent-session/agent-chat-panel'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -88,10 +89,15 @@ export const AgentWindowNode = memo(function AgentWindowNode({
     (event: MouseEvent) => {
       if ((event.target as HTMLElement).closest('button')) return
       if ((event.target as HTMLElement).closest('input')) return
-      if (!selectionMode) {
+      const modifierDrag = hasPrimaryModifier(event)
+      if (!selectionMode && !modifierDrag) {
         focusAgentWindow(agentWindow.id)
         if (!isFocused) bringAgentWindowToFront(agentWindow.id)
         return
+      }
+      if (modifierDrag && !selectionMode) {
+        focusAgentWindow(agentWindow.id)
+        if (!isFocused) bringAgentWindowToFront(agentWindow.id)
       }
       event.preventDefault()
       event.stopPropagation()
@@ -107,10 +113,31 @@ export const AgentWindowNode = memo(function AgentWindowNode({
     ],
   )
 
-  const handleNodeMouseDown = useCallback(() => {
-    focusAgentWindow(agentWindow.id)
-    if (!isFocused) bringAgentWindowToFront(agentWindow.id)
-  }, [agentWindow.id, bringAgentWindowToFront, focusAgentWindow, isFocused])
+  const handleNodeMouseDown = useCallback(
+    (event: MouseEvent) => {
+      const modifierDrag = hasPrimaryModifier(event)
+      if (!selectionMode && !modifierDrag) {
+        focusAgentWindow(agentWindow.id)
+        if (!isFocused) bringAgentWindowToFront(agentWindow.id)
+        return
+      }
+      if (modifierDrag && !selectionMode) {
+        focusAgentWindow(agentWindow.id)
+        if (!isFocused) bringAgentWindowToFront(agentWindow.id)
+      }
+      event.preventDefault()
+      event.stopPropagation()
+      onDragStart(agentWindow.id, 'agent', event.clientX, event.clientY)
+    },
+    [
+      agentWindow.id,
+      bringAgentWindowToFront,
+      focusAgentWindow,
+      isFocused,
+      onDragStart,
+      selectionMode,
+    ],
+  )
 
   const handleEdgeMouseDown = useCallback(
     (edge: Edge, event: MouseEvent) => {

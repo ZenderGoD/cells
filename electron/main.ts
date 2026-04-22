@@ -359,6 +359,11 @@ let quitDialogOpen = false
 let selectedTerminalBackend: TerminalSessionBackend = DEFAULT_TERMINAL_SESSION_BACKEND
 let terminalBackendSupport = getTerminalBackendSupportStatus(selectedTerminalBackend)
 
+function sendCanvasZoomCommand(command: 'fit' | 'in' | 'out') {
+  if (mainWindow?.isDestroyed()) return
+  mainWindow?.webContents.send('app:canvas-zoom', command)
+}
+
 function getDefaultAgentSessionTitle(agent: AgentSessionSnapshot['agent']) {
   return agent === 'claude' ? 'Claude Code' : 'Codex'
 }
@@ -768,6 +773,34 @@ function createWindow() {
     if (!mainWindow.isVisible()) {
       mainWindow.show()
     }
+  })
+
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (
+      !(input.meta || input.control) ||
+      input.alt ||
+      (input.type !== 'keyDown' && input.type !== 'rawKeyDown')
+    ) {
+      return
+    }
+
+    const key = input.key.toLowerCase()
+    const zoomIn =
+      key === '+' ||
+      key === '=' ||
+      key === 'add' ||
+      input.code === 'Equal' ||
+      input.code === 'NumpadAdd'
+    const zoomOut =
+      key === '-' ||
+      key === '_' ||
+      key === 'subtract' ||
+      input.code === 'Minus' ||
+      input.code === 'NumpadSubtract'
+    if (!zoomIn && !zoomOut) return
+
+    event.preventDefault()
+    sendCanvasZoomCommand(zoomIn ? 'in' : 'out')
   })
 
   // Relay native window focus/blur to the renderer so the dim overlay
@@ -2459,6 +2492,31 @@ function setupBrowserView(browserId: string, view: WebContentsView, projectId: s
       return
     }
 
+    if (
+      (input.meta || input.control) &&
+      !input.alt &&
+      (input.type === 'keyDown' || input.type === 'rawKeyDown')
+    ) {
+      const key = input.key.toLowerCase()
+      const zoomIn =
+        key === '+' ||
+        key === '=' ||
+        key === 'add' ||
+        input.code === 'Equal' ||
+        input.code === 'NumpadAdd'
+      const zoomOut =
+        key === '-' ||
+        key === '_' ||
+        key === 'subtract' ||
+        input.code === 'Minus' ||
+        input.code === 'NumpadSubtract'
+      if (zoomIn || zoomOut) {
+        _e.preventDefault()
+        sendCanvasZoomCommand(zoomIn ? 'in' : 'out')
+        return
+      }
+    }
+
     if (input.meta || input.control) {
       const key = input.key.toLowerCase()
       const shouldForwardShortcut =
@@ -2467,7 +2525,9 @@ function setupBrowserView(browserId: string, view: WebContentsView, projectId: s
           'r',
           'w',
           't',
+          'p',
           'q',
+          '0',
           ',',
           '[',
           ']',
@@ -2791,6 +2851,26 @@ ipcMain.on('browser:overscroll-navigate', (event, direction: string) => {
     browserGoForward(browserId)
   }
 })
+
+ipcMain.on(
+  'browser:canvas-wheel',
+  (
+    event,
+    gesture: {
+      deltaX: number
+      deltaY: number
+      clientX: number
+      clientY: number
+      ctrlKey: boolean
+      metaKey: boolean
+      shiftKey: boolean
+    },
+  ) => {
+    const browserId = webContentsIdToBrowser.get(event.sender.id)
+    if (!browserId || mainWindow?.isDestroyed()) return
+    mainWindow?.webContents.send('browser:canvas-wheel', browserId, gesture)
+  },
+)
 
 // Get navigation history for all active browser views (for persist)
 ipcMain.handle('browser:get-all-history', () => {
@@ -3599,9 +3679,18 @@ app.whenReady().then(async () => {
           submenu: [
             { role: 'toggleDevTools' },
             { type: 'separator' },
-            { role: 'resetZoom' },
-            { role: 'zoomIn' },
-            { role: 'zoomOut' },
+            {
+              label: 'Fit Focused Window',
+              click: () => sendCanvasZoomCommand('fit'),
+            },
+            {
+              label: 'Zoom Toward Focused Window',
+              click: () => sendCanvasZoomCommand('in'),
+            },
+            {
+              label: 'Zoom Away From Focused Window',
+              click: () => sendCanvasZoomCommand('out'),
+            },
             { type: 'separator' },
             { role: 'togglefullscreen' },
           ],

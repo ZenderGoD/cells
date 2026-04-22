@@ -46,6 +46,7 @@ import { WorktreeSwitcher } from '../worktree-switcher'
 import { AgentIcon } from '../agent-icon'
 import { inferAgentFromTitle } from '@/lib/agent-command'
 import { hapticNudge, hapticSuccess, hapticBuzz } from '@/lib/haptics'
+import { getPrimaryModifierLabel, isMacPlatform } from '@/lib/keyboard-shortcuts'
 import {
   getAgentWindowStatusPresentation,
   getProjectRuntimeAttention,
@@ -482,6 +483,15 @@ export function StatusBar() {
   const projectUndoSecondsLeft = latestClosedProject
     ? Math.max(0, Math.ceil((latestClosedProject.expiresAt - undoNow) / 1000))
     : 0
+  const macPlatform = isMacPlatform()
+  const primaryModifierLabel = getPrimaryModifierLabel()
+  const shiftModifierLabel = macPlatform ? '⇧' : 'Shift'
+  const formatShortcutLabel = (...keys: string[]) => (macPlatform ? keys.join('') : keys.join('+'))
+  const canvasShortcutHints = [
+    { label: 'Move', keys: [primaryModifierLabel], suffix: 'drag' },
+    { label: 'Pan', keys: [shiftModifierLabel], suffix: 'swipe' },
+    { label: 'Zoom', keys: [primaryModifierLabel], suffix: 'scroll' },
+  ] as const
 
   // --- Project tab drag-to-reorder ---
   const handleReorder = useCallback(
@@ -682,7 +692,7 @@ export function StatusBar() {
             hapticNudge()
             zoomToFitAll()
           }}
-          title="Overview (Cmd+Shift+O)"
+          title={`Overview (${formatShortcutLabel(primaryModifierLabel, shiftModifierLabel, 'O')})`}
         >
           <Logo className="w-3.5 h-3.5 text-foreground/80" />
         </button>
@@ -982,10 +992,22 @@ export function StatusBar() {
             const awStatus = aw.status || 'idle'
             const awLocation = getAgentLocationLabel(aw.cwd ?? null, worktrees)
             const isEditingAgentTitle = editingTitleForAgentId === focusedAgentWindowId
-            const awStatusPill = getAgentWindowStatusPresentation(awStatus)
+            const awStatusPill = getAgentWindowStatusPresentation(awStatus, {
+              hasUnviewedCompletion: aw.hasUnviewedCompletion,
+            })
             return (
               <div className="flex-1 flex items-center gap-2 px-3 min-w-0 no-drag">
-                <AgentIcon agent={aw.agent} className="h-3 w-3 shrink-0" size={12} />
+                <span className="relative inline-flex shrink-0" title={awStatusPill.label}>
+                  <AgentIcon agent={aw.agent} className="h-3 w-3 shrink-0" size={12} />
+                  {awStatusPill.dotClass ? (
+                    <span
+                      className={cn(
+                        'pointer-events-none absolute -bottom-0.5 -right-0.5 size-1.5 rounded-full ring-[1.5px] ring-background',
+                        awStatusPill.dotClass,
+                      )}
+                    />
+                  ) : null}
+                </span>
                 {isEditingAgentTitle ? (
                   <input
                     ref={titleInputRef}
@@ -1029,23 +1051,13 @@ export function StatusBar() {
                 )}
                 {awLocation ? (
                   <span
-                    className="inline-flex min-w-0 max-w-52 shrink items-center gap-1 rounded-full border border-border/25 bg-background/35 px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground/70"
+                    className="inline-flex min-w-0 max-w-52 shrink items-center gap-1 text-[10px] leading-none text-muted-foreground/55"
                     title={shortenPath(aw.cwd ?? awLocation)}
                   >
-                    <GitBranch className="h-2.5 w-2.5 shrink-0 opacity-70" />
+                    <GitBranch className="h-2.5 w-2.5 shrink-0 opacity-60" />
                     <span className="truncate">{awLocation}</span>
                   </span>
                 ) : null}
-                <span
-                  className={cn(
-                    'inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] leading-none',
-                    awStatusPill.pillClass,
-                  )}
-                  title={awStatusPill.label}
-                >
-                  <span className={cn('h-1.5 w-1.5 rounded-full', awStatusPill.dotClass)} />
-                  <span>{awStatusPill.label}</span>
-                </span>
                 <button
                   className="p-1 rounded text-muted-foreground/40 hover:text-foreground hover:bg-muted/40 transition-colors shrink-0"
                   onClick={() =>
@@ -1108,8 +1120,8 @@ export function StatusBar() {
                 <span className="font-medium text-foreground/80">Undo close</span>
                 <span className="max-w-24 truncate">{latestClosedWindow.title}</span>
                 <KbdGroup className="gap-0.5">
-                  <Kbd className="h-3.5 min-w-0 px-1 text-[9px]">⌘</Kbd>
-                  <Kbd className="h-3.5 min-w-0 px-1 text-[9px]">⇧</Kbd>
+                  <Kbd className="h-3.5 min-w-0 px-1 text-[9px]">{primaryModifierLabel}</Kbd>
+                  <Kbd className="h-3.5 min-w-0 px-1 text-[9px]">{shiftModifierLabel}</Kbd>
                   <Kbd className="h-3.5 min-w-0 px-1 text-[9px]">T</Kbd>
                   <span className="ml-0.5 text-[9px] text-muted-foreground/70">
                     {undoSecondsLeft}s
@@ -1217,7 +1229,11 @@ export function StatusBar() {
                   ? 'text-primary/70 hover:text-primary'
                   : 'text-muted-foreground/40 hover:text-foreground',
               )}
-              title={focusedWindowPinned ? 'Pop back in (⌘⇧P)' : 'Pop out (⌘⇧P)'}
+              title={
+                focusedWindowPinned
+                  ? `Pop back in (${formatShortcutLabel(primaryModifierLabel, shiftModifierLabel, 'P')})`
+                  : `Pop out (${formatShortcutLabel(primaryModifierLabel, shiftModifierLabel, 'P')})`
+              }
             >
               {focusedWindowPinned ? (
                 <ArrowDownLeft className="w-3 h-3" />
@@ -1227,7 +1243,9 @@ export function StatusBar() {
             </button>
           )}
 
-          {/* Snap toggle */}
+          {/* Snap toggle — selection mode keeps its pill (the count matters and
+              the state is transient); normal snap states drop the pill chrome
+              to match the other icon-only controls in this cluster. */}
           <button
             onClick={() => {
               hapticBuzz()
@@ -1238,33 +1256,63 @@ export function StatusBar() {
               toggleSnap()
             }}
             className={cn(
-              'flex items-center gap-1.5 px-2 py-1 rounded-md transition-colors',
-              selectionMode
-                ? 'bg-primary/15 text-primary'
-                : !snapEnabled
-                  ? 'text-muted-foreground/30 hover:text-muted-foreground hover:bg-muted/50'
+              'flex items-center gap-1.5 rounded-md transition-colors',
+              selectionMode ? 'bg-primary/15 px-2 py-1 text-primary' : 'px-1 py-1',
+              !selectionMode &&
+                (!snapEnabled
+                  ? 'text-muted-foreground/35 hover:text-muted-foreground'
                   : snapPaused
-                    ? 'bg-yellow-500/10 text-yellow-500/70'
-                    : 'bg-primary/15 text-primary',
+                    ? 'text-amber-400/80 hover:text-amber-300'
+                    : 'text-primary/80 hover:text-primary'),
             )}
-            title={selectionMode ? 'Selection mode active. Click to exit.' : undefined}
+            title={
+              selectionMode
+                ? 'Selection mode active. Click to exit.'
+                : !snapEnabled
+                  ? 'Snap off — windows move freely'
+                  : snapPaused
+                    ? 'Snap paused'
+                    : 'Snap on'
+            }
           >
             <Magnet className="w-3 h-3" />
-            <span className="text-[10px]">
-              {selectionMode
-                ? `Select ${selectionCount > 0 ? `(${selectionCount})` : ''}`
-                : !snapEnabled
-                  ? 'Free'
-                  : snapPaused
-                    ? 'Paused'
-                    : 'Snap'}
-            </span>
+            {selectionMode ? (
+              <span className="text-[10px]">
+                {`Select ${selectionCount > 0 ? `(${selectionCount})` : ''}`}
+              </span>
+            ) : !snapEnabled || snapPaused ? (
+              <span className="text-[10px] lowercase text-muted-foreground/55">
+                {snapPaused ? 'paused' : 'free'}
+              </span>
+            ) : null}
           </button>
 
-          <KbdGroup className="gap-0.5">
-            <Kbd className="h-4 min-w-4 text-[10px]">⌘</Kbd>
-            <Kbd className="h-4 min-w-4 text-[10px]">T</Kbd>
-          </KbdGroup>
+          <div
+            className="flex shrink-0 items-center gap-2 text-[10px] text-muted-foreground/55"
+            title={canvasShortcutHints
+              .map((hint) => `${hint.label}: ${formatShortcutLabel(...hint.keys)} ${hint.suffix}`)
+              .join(' • ')}
+          >
+            {canvasShortcutHints.map((hint, index) => (
+              <div key={hint.label} className="flex items-center gap-1 whitespace-nowrap">
+                {index > 0 && (
+                  <span aria-hidden className="mr-1 size-0.5 rounded-full bg-muted-foreground/25" />
+                )}
+                <span className="text-muted-foreground/55">{hint.label}</span>
+                <KbdGroup className="gap-0.5">
+                  {hint.keys.map((key) => (
+                    <Kbd
+                      key={`${hint.label}-${key}`}
+                      className="h-3.5 min-w-0 border-border/25 bg-background/30 px-1 text-[9px] text-muted-foreground/70"
+                    >
+                      {key}
+                    </Kbd>
+                  ))}
+                </KbdGroup>
+                <span className="lowercase text-muted-foreground/45">{hint.suffix}</span>
+              </div>
+            ))}
+          </div>
 
           {/* Update indicator */}
           <AnimatePresence initial={false}>

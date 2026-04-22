@@ -201,12 +201,22 @@ export function WindowOverviewMap({
           const runtimeStatus = getStatusPresentation(window.runtimeStatus, { agent: window.agent })
           const agentWindowStatus =
             window.type === 'agent'
-              ? getAgentWindowStatusPresentation(window.agentWindowStatus)
+              ? getAgentWindowStatusPresentation(window.agentWindowStatus, {
+                  hasUnviewedCompletion: window.hasUnviewedCompletion,
+                })
               : null
-          const statusClass = runtimeStatus.ringClass
-          const indicatorDotClass = agentWindowStatus?.dotClass || runtimeStatus.dotClass
+          const isAgent = window.type === 'agent'
+          const statusClass = isAgent
+            ? (agentWindowStatus?.ringClass ?? '')
+            : runtimeStatus.ringClass
+          // Agent windows use a dock-style bottom pill instead of a corner dot;
+          // terminal/browser windows keep the classic corner dot.
+          const indicatorDotClass = isAgent ? '' : runtimeStatus.dotClass
+          const agentPillClass = isAgent ? (agentWindowStatus?.dotClass ?? '') : ''
           const statusTitle = agentWindowStatus?.label || runtimeStatus.detail
           const statusDotClass = minDim >= 14 ? 'size-2' : 'size-1.5'
+          const agentPillHeight = minDim >= 20 ? 'h-[2px]' : 'h-px'
+          const agentPillWidth = minDim >= 20 ? 'w-3' : 'w-2'
           const sharedClassName = cn(
             'absolute flex items-center justify-center border transition-[transform,background-color,border-color,opacity,box-shadow] duration-150',
             (onSelect || canDrag) && 'hover:scale-[1.04]',
@@ -244,8 +254,24 @@ export function WindowOverviewMap({
                     )}
                   />
                 ) : null}
+                {agentPillClass ? (
+                  <span
+                    className={cn(
+                      'pointer-events-none absolute bottom-[2px] left-1/2 -translate-x-1/2 rounded-full',
+                      agentPillHeight,
+                      agentPillWidth,
+                      agentPillClass,
+                    )}
+                  />
+                ) : null}
                 {isFocused && !isCurrent && (
-                  <span className="pointer-events-none absolute bottom-0.5 right-0.5 size-1 rounded-full bg-white/90" />
+                  <span
+                    className={cn(
+                      'pointer-events-none absolute left-1/2 top-[2px] -translate-x-1/2 rounded-full bg-white/90',
+                      agentPillHeight,
+                      agentPillWidth,
+                    )}
+                  />
                 )}
               </button>
             )

@@ -1537,10 +1537,10 @@ export function CommandPalette() {
                         <img
                           src={a.thumbnailUrl}
                           alt={a.name}
-                          className="h-12 max-w-24 rounded-md object-cover border border-border/30"
+                          className="h-12 max-w-24 rounded-[6px] object-cover border border-border/30"
                         />
                       ) : (
-                        <div className="h-12 w-12 rounded-md border border-border/30 bg-muted/40 flex items-center justify-center">
+                        <div className="h-12 w-12 rounded-[6px] border border-border/30 bg-muted/40 flex items-center justify-center">
                           <Image className="size-4 text-muted-foreground/50" />
                         </div>
                       )}

@@ -312,8 +312,7 @@ export function SessionDiffsPanel({ messages, onClose }: SessionDiffsPanelProps)
         onMouseDown={onResizeStart}
         className="absolute inset-y-0 left-0 z-10 w-1 cursor-ew-resize transition-colors hover:bg-foreground/10"
       />
-      {/* pr-8 keeps the X clear of the absolute 3-dot menu button */}
-      <div className="flex shrink-0 items-center gap-2 border-b border-border/30 px-3 py-2 pr-8">
+      <div className="flex shrink-0 items-center gap-2 border-b border-border/30 px-3 py-2">
         <FileText className="size-3 shrink-0 text-muted-foreground/50" />
         <span className="flex-1 text-[10.5px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/60">
           Session diffs

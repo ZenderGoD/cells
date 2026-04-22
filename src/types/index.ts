@@ -65,6 +65,16 @@ export interface BrowserHistoryEntry {
   title: string
 }
 
+export interface BrowserCanvasWheelGesture {
+  deltaX: number
+  deltaY: number
+  clientX: number
+  clientY: number
+  ctrlKey: boolean
+  metaKey: boolean
+  shiftKey: boolean
+}
+
 export interface TerminalProcessInfo {
   pid: number
   command: string
@@ -228,6 +238,10 @@ export interface AgentWindowNode {
    *  they survive app restart — the chat panel drains them in order on the
    *  next idle. */
   queuedMessages?: QueuedAgentMessage[]
+  /** Set when the agent finishes a turn while the user isn't viewing this
+   *  window, cleared when the window regains focus. Surfaces a distinct
+   *  "done and unchecked" indicator so users can spot completed work. */
+  hasUnviewedCompletion?: boolean
 }
 
 export interface AgentSessionDefaults {
@@ -825,6 +839,9 @@ export interface CellsAPI {
     onOverscroll(
       callback: (browserId: string, progress: number, direction: string | null) => void,
     ): () => void
+    onCanvasWheel(
+      callback: (browserId: string, gesture: BrowserCanvasWheelGesture) => void,
+    ): () => void
     onWindowCycle(callback: (direction: 1 | -1) => void): () => void
     onProjectCycle(callback: (direction: 1 | -1) => void): () => void
   }
@@ -845,6 +862,7 @@ export interface CellsAPI {
   app: {
     onWindowFocus(callback: (focused: boolean) => void): () => void
     onFocusAgentWindow(callback: (request: FocusAgentWindowRequest) => void): () => void
+    onCanvasZoom(callback: (command: 'fit' | 'in' | 'out') => void): () => void
     updateNotificationContext(context: AgentNotificationContext): void
     onBeforeQuit(callback: () => void): () => void
     onDaemonDisconnected(callback: () => void): () => void

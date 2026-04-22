@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useHotkey } from '@tanstack/react-hotkeys'
 import { useStore } from './lib/store'
 import { StatusBar } from './components/toolbar/toolbar'
@@ -16,6 +16,7 @@ import {
   getCachedTerminalCount,
   reloadAllTerminals,
 } from './components/terminal/terminal-cache-api'
+import { hasPrimaryModifier, isPrimaryModifierKey } from './lib/keyboard-shortcuts'
 import { buildWindowAppearanceStyle } from './lib/window-appearance'
 import { useShallow } from 'zustand/react/shallow'
 
@@ -81,31 +82,66 @@ function MainApp() {
   const shellStyle = buildWindowAppearanceStyle({ windowOpacity, useTransparentWindow })
   const activeProjectId = useStore((s) => s.activeProjectId)
   const focusedAgentWindowId = useStore((s) => s.focusedAgentWindowId)
+  const suppressWindowFocusTerminalRefocusRef = useRef(false)
+  const suppressWindowFocusTerminalRefocusTimerRef = useRef<number | null>(null)
 
   const [windowFocused, setWindowFocused] = useState(true)
   useEffect(() => {
+    const clearSuppressedWindowFocusRefocus = () => {
+      suppressWindowFocusTerminalRefocusRef.current = false
+      if (suppressWindowFocusTerminalRefocusTimerRef.current != null) {
+        window.clearTimeout(suppressWindowFocusTerminalRefocusTimerRef.current)
+        suppressWindowFocusTerminalRefocusTimerRef.current = null
+      }
+    }
+
     // Use native BrowserWindow focus/blur via IPC so the overlay tracks the
     // actual OS window state.  DOM window blur fires whenever a WebContentsView
     // (browser panel) takes keyboard focus, which is a false positive.
-    return window.cells.app.onWindowFocus((focused) => {
+    const unsubscribe = window.cells.app.onWindowFocus((focused) => {
       setWindowFocused(focused)
       if (!focused) return
-      requestAnimationFrame(() => window.dispatchEvent(new Event('terminal-refocus')))
+      requestAnimationFrame(() => {
+        if (suppressWindowFocusTerminalRefocusRef.current) {
+          clearSuppressedWindowFocusRefocus()
+          return
+        }
+        window.dispatchEvent(new Event('terminal-refocus'))
+      })
     })
+
+    return () => {
+      clearSuppressedWindowFocusRefocus()
+      unsubscribe()
+    }
   }, [])
 
   useEffect(() => {
     return window.cells.app.onFocusAgentWindow(({ windowId, projectId }) => {
+      suppressWindowFocusTerminalRefocusRef.current = true
+      if (suppressWindowFocusTerminalRefocusTimerRef.current != null) {
+        window.clearTimeout(suppressWindowFocusTerminalRefocusTimerRef.current)
+      }
+      suppressWindowFocusTerminalRefocusTimerRef.current = window.setTimeout(() => {
+        suppressWindowFocusTerminalRefocusRef.current = false
+        suppressWindowFocusTerminalRefocusTimerRef.current = null
+      }, 750)
+
       const state = useStore.getState()
-      if (projectId && state.activeProjectId !== projectId) {
-        state.switchProject(projectId)
+      const resolvedProjectId =
+        projectId ??
+        state.projects.find((project) =>
+          (project.agentWindows ?? []).some((entry) => entry.id === windowId),
+        )?.id ??
+        null
+
+      if (resolvedProjectId && state.activeProjectId !== resolvedProjectId) {
+        state.switchProject(resolvedProjectId)
       }
 
       const nextState = useStore.getState()
       const target = nextState.agentWindows.find((entry) => entry.id === windowId)
       if (!target) return
-      nextState.bringAgentWindowToFront(windowId)
-      nextState.focusAgentWindow(windowId)
       nextState.snapToAgentWindow(windowId)
     })
   }, [])
@@ -124,6 +160,27 @@ function MainApp() {
   }, [])
 
   const showDimOverlay = dimWhenUnfocused && !windowFocused
+
+  const runCanvasZoomCommand = useCallback((command: 'fit' | 'in' | 'out') => {
+    const state = useStore.getState()
+    if (command === 'fit') {
+      const id =
+        state.focusedTerminalId ||
+        state.focusedBrowserId ||
+        state.focusedAgentWindowId ||
+        state.terminals[0]?.id ||
+        state.browsers[0]?.id ||
+        state.agentWindows[0]?.id
+      if (id) state.zoomToFit(id)
+      return
+    }
+
+    state.zoomFocusedWindow(command)
+  }, [])
+
+  useEffect(() => {
+    return window.cells.app.onCanvasZoom(runCanvasZoomCommand)
+  }, [runCanvasZoomCommand])
 
   const closeWindow = useCallback(() => {
     void requestCloseWindow()
@@ -172,9 +229,32 @@ function MainApp() {
     const handleKeyDown = (event: KeyboardEvent) => {
       const state = useStore.getState()
       const key = event.key.toLowerCase()
+      const primaryModifier = hasPrimaryModifier(event)
       if (state.overlayOpen || event.altKey) return
 
-      if (key === 'f' && event.metaKey && !event.ctrlKey && state.focusedTerminalId) {
+      const zoomIn =
+        primaryModifier &&
+        (key === '+' ||
+          key === '=' ||
+          key === 'add' ||
+          event.code === 'Equal' ||
+          event.code === 'NumpadAdd')
+      const zoomOut =
+        primaryModifier &&
+        (key === '-' ||
+          key === '_' ||
+          key === 'subtract' ||
+          event.code === 'Minus' ||
+          event.code === 'NumpadSubtract')
+
+      if (zoomIn || zoomOut) {
+        event.preventDefault()
+        event.stopPropagation()
+        state.zoomFocusedWindow(zoomIn ? 'in' : 'out')
+        return
+      }
+
+      if (key === 'f' && primaryModifier && state.focusedTerminalId) {
         event.preventDefault()
         event.stopPropagation()
         state.openTerminalFind()
@@ -183,18 +263,17 @@ function MainApp() {
       }
 
       // Cmd+HJKL for canvas navigation (no Ctrl+Arrow — reserved for macOS text cursor)
-      const direction =
-        event.metaKey && !event.ctrlKey
-          ? key === 'h'
-            ? 'left'
-            : key === 'l'
-              ? 'right'
-              : key === 'k'
-                ? 'up'
-                : key === 'j'
-                  ? 'down'
-                  : null
-          : null
+      const direction = primaryModifier
+        ? key === 'h'
+          ? 'left'
+          : key === 'l'
+            ? 'right'
+            : key === 'k'
+              ? 'up'
+              : key === 'j'
+                ? 'down'
+                : null
+        : null
 
       if (direction) {
         event.preventDefault()
@@ -205,7 +284,7 @@ function MainApp() {
         return
       }
 
-      if (key === 'o' && event.shiftKey && event.metaKey && !event.ctrlKey) {
+      if (key === 'o' && event.shiftKey && primaryModifier) {
         event.preventDefault()
         event.stopPropagation()
         state.zoomToFitAll()
@@ -230,13 +309,13 @@ function MainApp() {
         state.exitOverview()
       }
 
-      if (key === 'enter' && event.shiftKey && event.metaKey && !event.ctrlKey) {
+      if (key === 'enter' && event.shiftKey && primaryModifier) {
         event.preventDefault()
         event.stopPropagation()
         state.resizeFocusedToFitViewport()
       }
 
-      if (key === '0' && event.shiftKey && event.metaKey && !event.ctrlKey) {
+      if (key === '0' && event.shiftKey && primaryModifier) {
         event.preventDefault()
         event.stopPropagation()
         state.resizeWindowToFitFocused()
@@ -244,7 +323,7 @@ function MainApp() {
     }
 
     const handleKeyUp = (event: KeyboardEvent) => {
-      if (event.key === 'Meta') {
+      if (isPrimaryModifierKey(event.key)) {
         endKeyboardNavigation()
       }
     }

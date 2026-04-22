@@ -42,10 +42,7 @@ interface AgentTurnCardProps {
   // present it replaces the generic "Working…" preview so the user reads
   // the intent behind the upcoming activity instead of a filler label.
   leadText?: string
-  // When `leadText` was demoted from a previous turn's ResponseCard, this
-  // carries the source response id so motion can match layoutIds across
-  // the two locations and morph the text between them.
-  leadTextId?: string
+  cwd?: string | null
   agent: AgentWindowNode['agent']
   isStreaming: boolean
 }
@@ -63,6 +60,33 @@ function parseToolInput(raw: string | null | undefined): Record<string, any> | n
 function baseName(p: string): string {
   const parts = p.split('/').filter(Boolean)
   return parts[parts.length - 1] ?? p
+}
+
+function isAbsolutePath(p: string): boolean {
+  return p.startsWith('/') || p.startsWith('~') || /^[A-Za-z]:[\\/]/.test(p)
+}
+
+function joinPath(basePath: string, relativePath: string): string {
+  const normalizedBase = basePath.replace(/[\\/]+$/, '')
+  const normalizedRelative = relativePath.replace(/^[.][\\/]/, '').replace(/^[/\\]+/, '')
+  return `${normalizedBase}/${normalizedRelative}`
+}
+
+async function revealChangedFile(filePath: string, cwd: string | null | undefined) {
+  const candidates =
+    cwd && !isAbsolutePath(filePath) ? [joinPath(cwd, filePath), filePath] : [filePath]
+  for (const candidate of candidates) {
+    try {
+      const stat = await window.cells.app.statPath(candidate)
+      if (stat.kind !== 'missing') {
+        await window.cells.app.revealPath(stat.resolved)
+        return
+      }
+    } catch {
+      // Fall through to the next candidate and let revealPath surface the final failure.
+    }
+  }
+  await window.cells.app.revealPath(candidates[0] ?? filePath)
 }
 
 function formatDuration(ms: number): string {
@@ -499,30 +523,16 @@ function usePreviewText(
   }, [activities, isStreaming, agent])
 }
 
-function LeadTextBlock({
-  text,
-  className,
-  layoutId,
-}: {
-  text: string
-  className?: string
-  layoutId?: string
-}) {
+function LeadTextBlock({ text, className }: { text: string; className?: string }) {
   return (
-    <motion.div
-      // `layoutId` pairs with the exiting ResponseCard in the previous turn
-      // so motion morphs the text from boxed → unboxed. `layout="position"`
-      // keeps only position animating (no size interpolation across the
-      // differently-sized containers) so characters don't warp in transit.
-      layoutId={layoutId}
-      layout={layoutId ? 'position' : false}
+    <div
       className={cn(
         'agent-response select-text pl-1.5 pr-2.5 text-sm leading-relaxed text-foreground/85 [&_p:last-child]:mb-0',
         className,
       )}
     >
       <AgentMarkdown>{text}</AgentMarkdown>
-    </motion.div>
+    </div>
   )
 }
 
@@ -561,15 +571,8 @@ function ResponseCard({ responses }: { responses: AgentSessionMessage[] }) {
       className="group relative overflow-hidden rounded-[12px] shadow-minimal"
       style={{ backgroundColor: 'oklch(0.17 0.004 285.9)' }}
     >
-      <motion.div
+      <div
         data-search-root="response"
-        // layoutId pairs this text with the next turn's LeadTextBlock when
-        // the response gets demoted to leadText (see demoteInterimResponses).
-        // layout="position" means motion animates the text's position across
-        // the boxed → unboxed transition without warping its size — the box
-        // chrome fades independently via AnimatePresence.
-        layoutId={visible[0]?.id}
-        layout={visible[0]?.id ? 'position' : false}
         className="scrollbar-hover select-text overflow-y-auto px-4 pt-1 text-sm text-foreground/90"
         style={{ maxHeight: RESPONSE_MAX_HEIGHT }}
       >
@@ -584,7 +587,7 @@ function ResponseCard({ responses }: { responses: AgentSessionMessage[] }) {
             )}
           </div>
         ))}
-      </motion.div>
+      </div>
       <div className="flex items-center gap-3 pl-4 pr-2.5 py-2 text-[13px]">
         {isStreaming ? (
           <div className="flex items-center gap-1.5 text-muted-foreground">
@@ -634,7 +637,13 @@ function ResponseCard({ responses }: { responses: AgentSessionMessage[] }) {
   )
 }
 
-function ChangedFilesSection({ activities }: { activities: AgentSessionMessage[] }) {
+function ChangedFilesSection({
+  activities,
+  cwd,
+}: {
+  activities: AgentSessionMessage[]
+  cwd?: string | null
+}) {
   const [open, setOpen] = useState(false)
   const reduceMotion = useReducedMotion()
   const files = useMemo(() => groupDiffsByFile(activities), [activities])
@@ -678,9 +687,11 @@ function ChangedFilesSection({ activities }: { activities: AgentSessionMessage[]
                 ? f.filePath.slice(0, f.filePath.lastIndexOf('/'))
                 : null
               return (
-                <div
+                <button
                   key={f.filePath}
-                  className="flex items-center gap-1.5 py-0.5 text-[11.5px] text-muted-foreground/80"
+                  type="button"
+                  onClick={() => void revealChangedFile(f.filePath, cwd)}
+                  className="flex w-full items-center gap-1.5 rounded-[4px] py-0.5 text-left text-[11.5px] text-muted-foreground/80 transition-colors hover:bg-foreground/5 hover:text-foreground/90"
                   title={f.filePath}
                 >
                   <FileText className="size-3 shrink-0 opacity-50" />
@@ -692,7 +703,7 @@ function ChangedFilesSection({ activities }: { activities: AgentSessionMessage[]
                     {f.additions > 0 && <span className="text-emerald-400/80">+{f.additions}</span>}
                     {f.deletions > 0 && <span className="text-rose-400/80">-{f.deletions}</span>}
                   </span>
-                </div>
+                </button>
               )
             })}
           </motion.div>
@@ -707,7 +718,7 @@ export function AgentTurnCard({
   responses,
   changedFilesActivities,
   leadText,
-  leadTextId,
+  cwd,
   agent,
   isStreaming,
 }: AgentTurnCardProps) {
@@ -725,14 +736,12 @@ export function AgentTurnCard({
 
   return (
     <div className="flex w-full justify-start">
-      <motion.div layout="position" className="w-full space-y-1">
+      <motion.div layout={isStreaming ? false : 'position'} className="w-full space-y-1">
         {hasActivities ? (
           // Tool activity always stays grouped behind a single collapse handle.
           // This keeps the transcript rhythm consistent even for one-off calls.
           <div className="select-none">
-            {leadText ? (
-              <LeadTextBlock text={leadText} layoutId={leadTextId} className="pb-1" />
-            ) : null}
+            {leadText ? <LeadTextBlock text={leadText} className="pb-1" /> : null}
             <button
               type="button"
               onClick={() => setCollapsed((v) => !v)}
@@ -802,7 +811,7 @@ export function AgentTurnCard({
             </AnimatePresence>
           </div>
         ) : leadText ? (
-          <LeadTextBlock text={leadText} layoutId={leadTextId} />
+          <LeadTextBlock text={leadText} />
         ) : isStreaming && !hasResponse ? (
           <LoadingIndicator
             label={agent === 'claude' ? 'Claude is thinking…' : 'Codex is thinking…'}
@@ -815,10 +824,9 @@ export function AgentTurnCard({
           {hasResponse ? (
             <motion.div
               key="response"
-              layout="position"
-              initial={reduceMotion ? false : { opacity: 0, y: 4 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
+              initial={reduceMotion ? false : { opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
               transition={{ duration: 0.2, ease: EASE_OUT }}
             >
               <ResponseCard responses={responses} />
@@ -826,7 +834,7 @@ export function AgentTurnCard({
           ) : null}
         </AnimatePresence>
         {!isStreaming && changedFilesActivities ? (
-          <ChangedFilesSection activities={changedFilesActivities} />
+          <ChangedFilesSection activities={changedFilesActivities} cwd={cwd} />
         ) : null}
       </motion.div>
     </div>

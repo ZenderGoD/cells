@@ -30,6 +30,7 @@ import type {
   AgentSessionSnapshot,
   AgentThinkingLevel,
   AgentWindowNode,
+  AgentWindowStatus,
   CodexPlanSnapshot,
   PendingAgentApproval,
   PendingQuestion,
@@ -60,6 +61,11 @@ import {
   deriveAgentSessionWindowStatus,
   getInFlightAgentMessages,
 } from '@/lib/agent-session-activity'
+import {
+  getAltModifierLabel,
+  getPrimaryModifierLabel,
+  hasPrimaryModifier,
+} from '@/lib/keyboard-shortcuts'
 import { cn } from '@/lib/utils'
 import { computeStableList, createEmptyStableListState } from '@/lib/stable-list'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -374,7 +380,7 @@ function ComposerImageAttachment({
         type="button"
         onClick={onPreview}
         title={`Preview ${name}`}
-        className="group/image relative overflow-hidden rounded-[12px] border border-border/35 bg-foreground/5 transition-colors hover:border-border/60 hover:bg-foreground/8 focus:outline-none focus-visible:ring-2 focus-visible:ring-foreground/30"
+        className="group/image relative overflow-hidden rounded-[4px] border border-border/35 bg-foreground/5 transition-colors hover:border-border/60 hover:bg-foreground/8 focus:outline-none focus-visible:ring-2 focus-visible:ring-foreground/30"
       >
         {url ? (
           <img src={url} alt={name} className="h-20 w-20 object-cover" />
@@ -535,31 +541,37 @@ function getQueuedStoredText(text: string, attachments: string[]) {
   return attachments.length > 0 ? ATTACHMENTS_ONLY_TEXT : ''
 }
 
-const QUEUE_MODE_META: Record<
+function formatModifiedEnter(modifierLabel: string) {
+  return modifierLabel.length === 1 ? `${modifierLabel}↩` : `${modifierLabel}+↩`
+}
+
+function getQueueModeMeta(): Record<
   QueuedMessage['mode'],
   { Icon: typeof Zap; tint: string; shortcut: string; hint: string; label: string }
-> = {
-  stop: {
-    Icon: Zap,
-    tint: 'text-rose-400/90',
-    shortcut: '⌘↩',
-    label: 'Interrupt',
-    hint: 'Interrupt the agent now and send this next.',
-  },
-  'after-tool': {
-    Icon: FastForward,
-    tint: 'text-violet-400/90',
-    shortcut: '⌥↩',
-    label: 'After next tool',
-    hint: 'Send as soon as the next tool call finishes — don’t cut off a running tool.',
-  },
-  'after-turn': {
-    Icon: Clock,
-    tint: 'text-amber-400/90',
-    shortcut: '↩',
-    label: 'After this turn',
-    hint: 'Send after the current turn finishes naturally.',
-  },
+> {
+  return {
+    stop: {
+      Icon: Zap,
+      tint: 'text-rose-400/90',
+      shortcut: formatModifiedEnter(getPrimaryModifierLabel()),
+      label: 'Interrupt',
+      hint: 'Interrupt the agent now and send this next.',
+    },
+    'after-tool': {
+      Icon: FastForward,
+      tint: 'text-violet-400/90',
+      shortcut: formatModifiedEnter(getAltModifierLabel()),
+      label: 'After next tool',
+      hint: 'Send as soon as the next tool call finishes — don’t cut off a running tool.',
+    },
+    'after-turn': {
+      Icon: Clock,
+      tint: 'text-amber-400/90',
+      shortcut: '↩',
+      label: 'After this turn',
+      hint: 'Send after the current turn finishes naturally.',
+    },
+  }
 }
 
 type ChatGroup =
@@ -575,10 +587,6 @@ type ChatGroup =
       // own ResponseCard into the next turn's header line — it reads as the
       // intent behind the upcoming activity instead of a separate bubble.
       leadText?: string
-      // Id of the response message this leadText originated from. Used as a
-      // shared `layoutId` so the text morphs smoothly from the exiting
-      // ResponseCard into this leadText slot.
-      leadTextId?: string
     }
   | { kind: 'error'; key: string; message: AgentSessionMessage }
   | { kind: 'auth'; key: string; message: AgentSessionMessage }
@@ -644,7 +652,6 @@ function isChatGroupUnchanged(previous: ChatGroup, next: ChatGroup): boolean {
           nextTurn.changedFilesActivities ?? [],
         ) &&
         previous.leadText === nextTurn.leadText &&
-        previous.leadTextId === nextTurn.leadTextId &&
         areMessageRefsEqual(previous.activities, nextTurn.activities) &&
         areMessageRefsEqual(previous.responses, nextTurn.responses)
       )
@@ -815,11 +822,9 @@ function demoteInterimResponses(groups: ChatGroup[]): ChatGroup[] {
           .map((r) => r.text)
           .join('\n\n')
           .trim()
-        const leadTextId = leadText ? g.responses[0]?.id : next.leadTextId
         working[i + 1] = {
           ...next,
           leadText: leadText || next.leadText,
-          leadTextId,
         }
         if (g.activities.length > 0) {
           result.push({
@@ -827,6 +832,7 @@ function demoteInterimResponses(groups: ChatGroup[]): ChatGroup[] {
             key: g.key,
             activities: g.activities,
             responses: [],
+            leadText: g.leadText,
           })
         }
         continue
@@ -939,7 +945,7 @@ function AgentApprovalBanner({
   )
 
   return (
-    <div className="mb-2 rounded-[12px] border border-amber-400/25 bg-amber-400/5 px-3 py-2.5 text-[12px] text-foreground/90 shadow-minimal">
+    <div className="mb-2 rounded-[12px] border border-amber-400/25 bg-amber-400/5 px-3 py-2.5 text-[12px] text-foreground/90 shadow-minimal backdrop-blur-sm">
       <div className="mb-2 flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-amber-300/90">
         <ShieldCheck className="size-3.5" />
         <span>{approval.title}</span>
@@ -1027,7 +1033,7 @@ function PlanApprovalBanner({ windowId }: { windowId: string }) {
   const optionClass =
     'flex w-full items-start gap-2 rounded-[10px] border border-border/60 bg-background/60 px-3 py-2 text-left text-[12px] transition-colors hover:border-foreground/30 hover:bg-foreground/5 disabled:cursor-wait disabled:opacity-60'
   return (
-    <div className="mb-2 rounded-[12px] border border-emerald-400/25 bg-emerald-500/5 px-3 py-2.5 text-[12px] text-foreground/90 shadow-minimal">
+    <div className="mb-2 rounded-[12px] border border-emerald-400/25 bg-emerald-500/5 px-3 py-2.5 text-[12px] text-foreground/90 shadow-minimal backdrop-blur-sm">
       <div className="mb-2 flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-emerald-300/90">
         <ShieldCheck className="size-3.5" />
         <span>Would you like to proceed?</span>
@@ -1188,7 +1194,7 @@ function QuestionBanner({
   }, [busy, windowId])
 
   return (
-    <div className="mb-2 rounded-[12px] border border-sky-400/25 bg-sky-500/5 px-3 py-2.5 text-[12px] text-foreground/90 shadow-minimal">
+    <div className="mb-2 rounded-[12px] border border-sky-400/25 bg-sky-500/5 px-3 py-2.5 text-[12px] text-foreground/90 shadow-minimal backdrop-blur-sm">
       <div className="mb-2 flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-sky-300/90">
         <HelpCircle className="size-3.5" />
         <span>
@@ -1369,12 +1375,14 @@ function BackgroundActivityBanner({
 
 function GroupRenderer({
   group,
+  cwd,
   agent,
   isStreamingLastTurn,
   userMorphLayoutId,
   onUserMorphComplete,
 }: {
   group: ChatGroup
+  cwd?: string | null
   agent: AgentWindowNode['agent']
   isStreamingLastTurn: boolean
   userMorphLayoutId?: string
@@ -1396,7 +1404,7 @@ function GroupRenderer({
           responses={group.responses}
           changedFilesActivities={group.changedFilesActivities}
           leadText={group.leadText}
-          leadTextId={group.leadTextId}
+          cwd={cwd}
           agent={agent}
           isStreaming={isStreamingLastTurn}
         />
@@ -1417,12 +1425,14 @@ function GroupRenderer({
 const MessageGroupRow = memo(
   function MessageGroupRow({
     group,
+    cwd,
     agent,
     isStreamingLastTurn,
     userMorphLayoutId,
     onUserMorphComplete,
   }: {
     group: ChatGroup
+    cwd?: string | null
     agent: AgentWindowNode['agent']
     isStreamingLastTurn: boolean
     userMorphLayoutId?: string
@@ -1441,12 +1451,13 @@ const MessageGroupRow = memo(
           contentVisibility: 'auto',
           containIntrinsicSize: '320px',
         }}
-        initial={reduceMotion ? false : { opacity: 0, y: 6 }}
-        animate={{ opacity: 1, y: 0 }}
+        initial={reduceMotion ? false : { opacity: 0 }}
+        animate={{ opacity: 1 }}
         transition={{ duration: 0.18, ease: EASE_OUT }}
       >
         <GroupRenderer
           group={group}
+          cwd={cwd}
           agent={agent}
           isStreamingLastTurn={isStreamingLastTurn}
           userMorphLayoutId={userMorphLayoutId}
@@ -1457,6 +1468,7 @@ const MessageGroupRow = memo(
   },
   (previous, next) =>
     previous.group === next.group &&
+    previous.cwd === next.cwd &&
     previous.agent === next.agent &&
     previous.isStreamingLastTurn === next.isStreamingLastTurn &&
     previous.userMorphLayoutId === next.userMorphLayoutId &&
@@ -1474,7 +1486,9 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const activeProjectPath = useStore(
     (state) => state.projects.find((project) => project.id === state.activeProjectId)?.path ?? null,
   )
+  const focusedAgentWindowId = useStore((state) => state.focusedAgentWindowId)
   const worktrees = useStore((state) => state.worktrees)
+  const queueModeMeta = useMemo(() => getQueueModeMeta(), [])
   // Queue is persisted on the AgentWindowNode so it survives app restart.
   // Read straight from the prop (zustand re-renders this component whenever
   // the window patches) and write through `syncAgentWindow` so the change
@@ -1491,6 +1505,13 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       const next = sanitizeQueuedMessages(updater(prev))
       useStore.getState().syncAgentWindow(agentWindow.id, { queuedMessages: next })
     },
+    [agentWindow.id],
+  )
+  const getQueuedMessagesSnapshot = useCallback(
+    () =>
+      sanitizeQueuedMessages(
+        useStore.getState().agentWindows.find((w) => w.id === agentWindow.id)?.queuedMessages ?? [],
+      ),
     [agentWindow.id],
   )
   useEffect(() => {
@@ -1528,23 +1549,18 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   // tree to run the animation.
   //
   // Flow:
-  //  1. On send, we push a morph id onto `pendingMorphsRef` (FIFO). Queue
-  //     drains push `queue-morph-${queueKey}` (the same id as the exiting
-  //     queue row). Composer sends push a fresh `composer-morph-${n}` and
-  //     also set `composerMorphId` so the composer pill carries that id.
-  //  2. During render we diff `messages` against `handledUserIdsRef`. The
-  //     first never-seen user message pops the FIFO and records a mapping
-  //     from message.id → morphId in `morphAssignments`.
-  //  3. MessageGroupRow threads that layoutId to UserBubble. When the bubble
-  //     mounts, Framer finds a matching layoutId already on-screen (the
-  //     exiting queue row or the composer pill) and morphs between them.
-  //  4. The composer's stale layoutId is cleared in `onLayoutAnimationComplete`
-  //     so subsequent sends get a fresh nonce and don't collide.
-  const pendingMorphsRef = useRef<string[]>([])
-  const handledUserIdsRef = useRef<Set<string>>(new Set())
-  const handledUserIdsInitRef = useRef(false)
-  const [morphAssignments, setMorphAssignments] = useState<Record<string, string>>({})
-  const [composerMorphId, setComposerMorphId] = useState<string | null>(null)
+  //  1. On send, we enqueue a morph id. Queue drains push
+  //     `queue-morph-${queueKey}` (the same id as the exiting queue row).
+  //     Composer sends push a fresh `composer-morph-${n}` and also set
+  //     `composerMorphId` so the composer pill carries that id.
+  //  2. During render we derive which user messages are newly visible since
+  //     the previous commit and tentatively claim the oldest pending morphs
+  //     for them so the first render already carries the right `layoutId`.
+  //  3. A layout effect commits those claims back into state after render.
+  const [pendingMorphs, setPendingMorphs] = useState<
+    Array<{ id: string; userIndex: number; windowId: string }>
+  >([])
+  const [composerMorph, setComposerMorph] = useState<{ id: string; windowId: string } | null>(null)
   const composerMorphNonceRef = useRef(0)
   // Edge-fade state for the queue scroll area. `top` = content above the
   // viewport, `bottom` = content below. We fade each edge only when there's
@@ -1591,6 +1607,27 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const listRef = useRef<LegendListRef>(null)
   const recentSessionsViewportRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (focusedAgentWindowId !== agentWindow.id) return
+      if (useStore.getState().overlayOpen) return
+      if (event.defaultPrevented || event.key.toLowerCase() !== 'i') return
+      if (!hasPrimaryModifier(event) || event.shiftKey || event.altKey) return
+      event.preventDefault()
+      event.stopPropagation()
+      textareaRef.current?.focus({ preventScroll: true })
+    }
+
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [agentWindow.id, focusedAgentWindowId])
+  // Clear the "done-unviewed" flag the moment the user focuses this window —
+  // they've now "checked on" the completed turn.
+  useEffect(() => {
+    if (focusedAgentWindowId !== agentWindow.id) return
+    if (!agentWindow.hasUnviewedCompletion) return
+    useStore.getState().syncAgentWindow(agentWindow.id, { hasUnviewedCompletion: false })
+  }, [agentWindow.id, focusedAgentWindowId, agentWindow.hasUnviewedCompletion])
   // The composer overlays the bottom of the list so messages can scroll
   // "behind" it — we track its live height via ResizeObserver so the list's
   // bottom fade mask and footer spacer always line up with the composer's
@@ -1606,27 +1643,32 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     const el = composerOverlayRef.current
     if (!el) return
     setComposerOverlayHeight(el.getBoundingClientRect().height)
+    // Round to whole pixels and require >=2px deltas before propagating. The
+    // composer's rendered height fluctuates sub-pixel during streaming (font
+    // metrics, scrollbar auto/hide, banner fades), and threading every one of
+    // those into React state cascades through the footer spacer, LegendList
+    // re-layout, and scrollToEnd — the visible "jitter" the user saw.
     const ro = new ResizeObserver((entries) => {
       const entry = entries[0]
       if (!entry) return
-      const h = entry.contentRect.height
-      setComposerOverlayHeight((prev) => (Math.abs(prev - h) < 0.5 ? prev : h))
+      const h = Math.round(entry.contentRect.height)
+      setComposerOverlayHeight((prev) => (Math.abs(prev - h) < 2 ? prev : h))
     })
     ro.observe(el)
     return () => ro.disconnect()
   }, [])
 
-  // When the overlay grows (queue row, plan banner, diff pill appearing), the
-  // extra footer spacer makes room but LegendList's maintainScrollAtEnd
-  // doesn't re-anchor aggressively enough — the growing overlay visually
-  // covers the last message until the user scrolls. Force a scrollToEnd on
-  // growth so the bottom of the transcript stays glued to the composer top.
+  // When the overlay grows meaningfully (queue row, plan banner, diff pill
+  // appearing), re-anchor the transcript to the bottom so the composer
+  // doesn't visually cover the last message. A non-animated scroll avoids
+  // fighting the smooth maintainScrollAtEnd behavior during streaming; the
+  // 8px gate keeps stream-induced micro-growth from triggering scrolls at all.
   useEffect(() => {
     const prev = prevComposerOverlayHeightRef.current
     prevComposerOverlayHeightRef.current = composerOverlayHeight
-    if (composerOverlayHeight <= prev + 0.5) return
+    if (composerOverlayHeight <= prev + 8) return
     const id = window.requestAnimationFrame(() => {
-      listRef.current?.scrollToEnd?.({ animated: true })
+      listRef.current?.scrollToEnd?.({ animated: false })
     })
     return () => window.cancelAnimationFrame(id)
   }, [composerOverlayHeight])
@@ -1638,6 +1680,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const groupStateRef = useRef(createEmptyStableListState<ChatGroup>())
   const pendingSnapshotRef = useRef<AgentSessionSnapshot | null>(null)
   const pendingFrameRef = useRef<number | null>(null)
+  // Remember the last derived status so we can detect the active→idle
+  // transition — that's what flips a window into "done but unviewed" when
+  // the user isn't currently looking at it.
+  const prevDerivedStatusRef = useRef<AgentWindowStatus | null>(null)
   useEffect(() => {
     inputRef.current = input
   }, [input])
@@ -1698,15 +1744,28 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
           next.status === 'running' ||
           Boolean(next.claudeSessionId) ||
           Boolean(next.codexThreadId))
-      useStore.getState().syncAgentWindow(agentWindow.id, {
+      const derivedStatus = deriveAgentSessionWindowStatus(next)
+      const prevStatus = prevDerivedStatusRef.current
+      prevDerivedStatusRef.current = derivedStatus
+      // Flip on "done but unviewed" the moment we transition from an active
+      // state to idle while the user isn't looking at this window. The flag
+      // is cleared by a focus effect below.
+      const justCompleted = prevStatus !== null && prevStatus !== 'idle' && derivedStatus === 'idle'
+      const storeState = useStore.getState()
+      const isFocused = storeState.focusedAgentWindowId === agentWindow.id
+      const patch: Partial<AgentWindowNode> = {
         title: next.title,
         cwd: next.cwd ?? agentWindow.cwd ?? null,
-        status: deriveAgentSessionWindowStatus(next),
+        status: derivedStatus,
         error: next.error ?? null,
         claudeSessionId: next.claudeSessionId ?? null,
         codexThreadId: next.codexThreadId ?? null,
         initialPrompt: shouldClearInitialPrompt ? null : (agentWindow.initialPrompt ?? null),
-      })
+      }
+      if (justCompleted && !isFocused) {
+        patch.hasUnviewedCompletion = true
+      }
+      storeState.syncAgentWindow(agentWindow.id, patch)
     }
 
     const sync = (next: AgentSessionSnapshot) => {
@@ -1802,58 +1861,53 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     () => (snapshotMatchesWindow ? groups : []),
     [groups, snapshotMatchesWindow],
   )
-  // Claim pending morph ids for newly-arrived user messages. Runs at render
-  // time (NOT in an effect) because the layoutId has to be present the very
-  // first time the bubble renders — a post-mount effect would assign it too
-  // late for Framer to pair it with the exiting queue row / composer pill.
-  //
-  // The `setMorphAssignments` call during render is intentional and safe:
-  // `handledUserIdsRef` records every id we've already processed, so the
-  // loop makes no changes on re-renders and the update is convergent.
-  if (!handledUserIdsInitRef.current) {
-    // First render: every existing user message predates this mount, so they
-    // must never steal a future morph. Mark them all as handled.
-    for (const m of messages) {
-      if (m.role === 'user') handledUserIdsRef.current.add(m.id)
+  const userMessages = useMemo(
+    () => messages.filter((message) => message.role === 'user'),
+    [messages],
+  )
+  const currentComposerMorphId =
+    composerMorph?.windowId === agentWindow.id ? composerMorph.id : null
+  const enqueuePendingMorph = useCallback(
+    (id: string) => {
+      setPendingMorphs((prev) => [
+        ...prev,
+        {
+          id,
+          userIndex:
+            userMessages.length + prev.filter((entry) => entry.windowId === agentWindow.id).length,
+          windowId: agentWindow.id,
+        },
+      ])
+    },
+    [agentWindow.id, userMessages.length],
+  )
+  const liveMorphAssignments = useMemo(() => {
+    const assignments: Record<string, string> = {}
+    for (const morph of pendingMorphs) {
+      if (morph.windowId !== agentWindow.id) continue
+      const message = userMessages[morph.userIndex]
+      if (message) assignments[message.id] = morph.id
     }
-    handledUserIdsInitRef.current = true
-  } else if (pendingMorphsRef.current.length > 0) {
-    const claims: Record<string, string> = {}
-    for (const m of messages) {
-      if (m.role !== 'user') continue
-      if (handledUserIdsRef.current.has(m.id)) continue
-      handledUserIdsRef.current.add(m.id)
-      const morph = pendingMorphsRef.current.shift()
-      if (morph) claims[m.id] = morph
-      if (pendingMorphsRef.current.length === 0) break
-    }
-    if (Object.keys(claims).length > 0) {
-      setMorphAssignments((prev) => ({ ...prev, ...claims }))
-    }
-  } else {
-    // Keep the handled set in sync with the arrival of new user messages
-    // even when no morph is pending, so a stale pending morph from the
-    // future never binds to an older user message it wasn't meant for.
-    for (const m of messages) {
-      if (m.role !== 'user') continue
-      if (!handledUserIdsRef.current.has(m.id)) handledUserIdsRef.current.add(m.id)
-    }
-  }
+    return assignments
+  }, [agentWindow.id, pendingMorphs, userMessages])
   // Clear a completed morph assignment — and the composer's stale layoutId
   // if this bubble was the one consuming it — so the next send mints a
   // fresh id instead of colliding with the old bubble's.
-  const handleUserMorphComplete = useCallback((messageId: string) => {
-    let consumed: string | undefined
-    setMorphAssignments((prev) => {
-      if (!(messageId in prev)) return prev
-      consumed = prev[messageId]
-      const { [messageId]: _discard, ...rest } = prev
-      return rest
-    })
-    if (consumed && consumed.startsWith('composer-morph-')) {
-      setComposerMorphId((prev) => (prev === consumed ? null : prev))
-    }
-  }, [])
+  const handleUserMorphComplete = useCallback(
+    (messageId: string) => {
+      const consumed = liveMorphAssignments[messageId]
+      if (!consumed) return
+      setPendingMorphs((prev) =>
+        prev.filter((entry) => !(entry.windowId === agentWindow.id && entry.id === consumed)),
+      )
+      if (consumed.startsWith('composer-morph-')) {
+        setComposerMorph((prev) =>
+          prev?.windowId === agentWindow.id && prev.id === consumed ? null : prev,
+        )
+      }
+    },
+    [agentWindow.id, liveMorphAssignments],
+  )
   const inlineMention = useInlineMention({
     inputRef: textareaRef,
     cwd: visibleSnapshot?.cwd ?? agentWindow.cwd ?? null,
@@ -1958,14 +2012,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   ])
 
   const attachmentsRef = useRef(attachments)
-  const queueRef = useRef<QueuedMessage[]>(queuedMessages)
   const queuedEditRestoreRef = useRef<{ input: string; attachments: string[] } | null>(null)
   useEffect(() => {
     attachmentsRef.current = attachments
   }, [attachments])
-  useEffect(() => {
-    queueRef.current = queuedMessages
-  }, [queuedMessages])
 
   const writeComposer = useCallback((value: string, nextAttachments: string[]) => {
     setInput(value)
@@ -2082,11 +2132,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
           mode: intent,
           ...settings,
         }
+        const currentQueue = getQueuedMessagesSnapshot()
         const nextQueue =
-          intent === 'after-tool' ? [entry, ...queueRef.current] : [...queueRef.current, entry]
-        queueFrontModeRef.current = nextQueue[0]?.mode ?? null
+          intent === 'after-tool' ? [entry, ...currentQueue] : [...currentQueue, entry]
         setQueuedMessages(() => nextQueue)
-        queueRef.current = nextQueue
         return
       }
 
@@ -2095,8 +2144,8 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       // bubble's layoutId never collides with a fresh one.
       composerMorphNonceRef.current += 1
       const morphId = `composer-morph-${composerMorphNonceRef.current}`
-      pendingMorphsRef.current.push(morphId)
-      setComposerMorphId(morphId)
+      enqueuePendingMorph(morphId)
+      setComposerMorph({ id: morphId, windowId: agentWindow.id })
 
       try {
         await sendToAgent(value, pinned)
@@ -2104,9 +2153,13 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         // Rollback the pending morph — if the send failed, the bubble will
         // never arrive to claim it and it would incorrectly bind to the
         // next message from a later source.
-        const idx = pendingMorphsRef.current.indexOf(morphId)
-        if (idx >= 0) pendingMorphsRef.current.splice(idx, 1)
-        setComposerMorphId((prev) => (prev === morphId ? null : prev))
+        setPendingMorphs((prev) => {
+          const idx = prev.findIndex((entry) => entry.id === morphId)
+          return idx < 0 ? prev : [...prev.slice(0, idx), ...prev.slice(idx + 1)]
+        })
+        setComposerMorph((prev) =>
+          prev?.windowId === agentWindow.id && prev.id === morphId ? null : prev,
+        )
         writeComposer(value, pinned)
         console.error('[agent-chat] send failed', err)
       }
@@ -2114,9 +2167,12 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     [
       sendToAgent,
       handleStop,
+      enqueuePendingMorph,
+      getQueuedMessagesSnapshot,
       inlineMention,
       setQueuedMessages,
       writeComposer,
+      agentWindow.id,
       agentWindow.model,
       agentWindow.thinkingLevel,
       agentWindow.permissionMode,
@@ -2222,23 +2278,15 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   // interrupt once per running-turn (reset when the turn ends).
   const seenCompletedToolsRef = useRef<Set<string>>(new Set())
   const afterToolFiredRef = useRef(false)
-  // Mirror of queuedMessages[0].mode kept as a mutable ref so the watcher
-  // always reads the CURRENT value, not the stale closure. React's batched
-  // state updates mean queuedMessages in the effect closure can lag behind
-  // reality by one render — this ref is cleared synchronously at drain time
-  // so the watcher never sees the stale 'after-tool' mode on the new turn.
-  const queueFrontModeRef = useRef<QueuedMessage['mode'] | null>(queuedMessages[0]?.mode ?? null)
-  useEffect(() => {
-    queueFrontModeRef.current = queuedMessages[0]?.mode ?? null
-  }, [queuedMessages])
   const toggleQueuedMode = useCallback(
     (index: number) => {
       setQueuedMessages((q) =>
         q.map((entry, i) => {
           if (i !== index) return entry
-          const nextMode = entry.mode === 'after-tool' ? 'after-turn' : 'after-tool'
-          if (i === 0) queueFrontModeRef.current = nextMode
-          return { ...entry, mode: nextMode }
+          return {
+            ...entry,
+            mode: entry.mode === 'after-tool' ? 'after-turn' : 'after-tool',
+          }
         }),
       )
     },
@@ -2261,10 +2309,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     if (!hasNewCompletion) return
     if (snapshot?.status !== 'running') return
     if (afterToolFiredRef.current) return
-    if (queueFrontModeRef.current !== 'after-tool') return
+    if (getQueuedMessagesSnapshot()[0]?.mode !== 'after-tool') return
     afterToolFiredRef.current = true
     void handleStop()
-  }, [snapshot?.messages, snapshot?.status, handleStop])
+  }, [getQueuedMessagesSnapshot, snapshot?.messages, snapshot?.status, handleStop])
   useEffect(() => {
     if (snapshot?.status !== 'idle') return
     if (resumeGated) return
@@ -2279,7 +2327,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       // morph means the bubble still animates in from a sensible layout origin
       // — Framer falls back to a fresh mount if no shared id is on-screen.
       const interruptMorphId = `interrupt-morph-${Date.now()}`
-      pendingMorphsRef.current.push(interruptMorphId)
+      queueMicrotask(() => enqueuePendingMorph(interruptMorphId))
       void sendToAgent(next.text, next.attachments, {
         model: next.model,
         thinkingLevel: next.thinkingLevel,
@@ -2287,8 +2335,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       })
         .catch((err) => {
           console.error('[agent-chat] interrupt send failed', err)
-          const idx = pendingMorphsRef.current.indexOf(interruptMorphId)
-          if (idx >= 0) pendingMorphsRef.current.splice(idx, 1)
+          setPendingMorphs((prev) => {
+            const idx = prev.findIndex((entry) => entry.id === interruptMorphId)
+            return idx < 0 ? prev : [...prev.slice(0, idx), ...prev.slice(idx + 1)]
+          })
           interruptMessageRef.current = next
           awaitingRunningRef.current = false
         })
@@ -2303,15 +2353,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       return
     }
     const next = queuedMessages[0]
-    // Clear the ref synchronously so the after-tool watcher immediately sees
-    // no pending mode — React's batched state update for setQueuedMessages
-    // would otherwise leave queuedMessages stale in the closure long enough
-    // for the watcher to fire handleStop() on the new turn.
-    queueFrontModeRef.current = queuedMessages[1]?.mode ?? null
     // Prime the queue→bubble morph. Same key as the exiting queue row; the
-    // bubble will claim it on arrival (see pendingMorphsRef logic above).
+    // bubble will claim it on arrival.
     const queueMorphId = `queue-morph-${next.mode}|${next.text}|${next.attachments.join(',')}`
-    pendingMorphsRef.current.push(queueMorphId)
+    queueMicrotask(() => enqueuePendingMorph(queueMorphId))
     setQueuedMessages((q) => q.slice(1))
     void sendToAgent(next.text, next.attachments, {
       model: next.model,
@@ -2320,8 +2365,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     })
       .catch((err) => {
         console.error('[agent-chat] queued send failed', err)
-        const idx = pendingMorphsRef.current.indexOf(queueMorphId)
-        if (idx >= 0) pendingMorphsRef.current.splice(idx, 1)
+        setPendingMorphs((prev) => {
+          const idx = prev.findIndex((entry) => entry.id === queueMorphId)
+          return idx < 0 ? prev : [...prev.slice(0, idx), ...prev.slice(idx + 1)]
+        })
         // Put it back at the front so the user can retry / see it.
         setQueuedMessages((q) => [next, ...q])
         awaitingRunningRef.current = false
@@ -2329,7 +2376,14 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       .finally(() => {
         sendingQueuedRef.current = false
       })
-  }, [queuedMessages, resumeGated, sendToAgent, setQueuedMessages, snapshot?.status])
+  }, [
+    enqueuePendingMorph,
+    queuedMessages,
+    resumeGated,
+    sendToAgent,
+    setQueuedMessages,
+    snapshot?.status,
+  ])
 
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -2350,8 +2404,8 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         commitEditQueued()
         return
       }
-      // Cmd+Enter: interrupt the running turn and send this message next.
-      if (event.metaKey) {
+      // Mod+Enter: interrupt the running turn and send this message next.
+      if (hasPrimaryModifier(event.nativeEvent)) {
         event.preventDefault()
         event.stopPropagation()
         void submit('stop')
@@ -2423,7 +2477,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       event.stopPropagation()
       if (editingIndex !== null) {
         commitEditQueued()
-      } else if (event.metaKey) {
+      } else if (hasPrimaryModifier(event)) {
         void submit('stop')
       } else if (event.altKey) {
         void submit('after-tool')
@@ -2596,7 +2650,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                       <AgentEmptyStateHint />
                       <div className="flex w-full max-w-xl flex-wrap items-center justify-center gap-1.5 text-[11px] text-muted-foreground/70">
                         {(['stop', 'after-tool', 'after-turn'] as const).map((mode) => {
-                          const meta = QUEUE_MODE_META[mode]
+                          const meta = queueModeMeta[mode]
                           return (
                             <div
                               key={mode}
@@ -2629,12 +2683,12 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                                     key={`${session.origin}:${session.windowId ?? session.nativeId ?? session.title}`}
                                     type="button"
                                     onClick={() => openRecentSession(session)}
-                                    className="flex items-center gap-3 rounded-[10px] px-2.5 py-2 text-left transition-colors hover:bg-foreground/5"
+                                    className="flex w-full min-w-0 items-center gap-3 rounded-[10px] px-2.5 py-2 text-left transition-colors hover:bg-foreground/5"
                                   >
                                     <AgentIcon agent={session.agent} className="size-4 shrink-0" />
                                     <div className="min-w-0 flex-1">
-                                      <div className="flex items-center gap-2">
-                                        <span className="truncate text-[12.5px] font-medium text-foreground/90">
+                                      <div className="flex min-w-0 items-center gap-2">
+                                        <span className="min-w-0 truncate text-[12.5px] font-medium text-foreground/90">
                                           {session.title}
                                         </span>
                                         <span className="shrink-0 rounded-[6px] border border-border/35 bg-background/50 px-1.5 py-0.5 text-[10px] text-muted-foreground/70">
@@ -2684,17 +2738,18 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                 // in the "Working..." state after a newer turn becomes active.
                 // Morph assignments are folded in so a newly-claimed layoutId
                 // reaches the user bubble the first time it renders.
-                extraData={`${streamingTurnKey ?? ''}|${Object.keys(morphAssignments).join(',')}`}
+                extraData={`${streamingTurnKey ?? ''}|${Object.keys(liveMorphAssignments).join(',')}`}
                 keyExtractor={chatGroupKey}
                 renderItem={({ item }) => {
                   const userMorphId =
-                    item.kind === 'user' ? morphAssignments[item.message.id] : undefined
+                    item.kind === 'user' ? liveMorphAssignments[item.message.id] : undefined
                   const userId = item.kind === 'user' ? item.message.id : null
                   return (
                     <div className="mx-auto w-full min-w-0 max-w-3xl">
                       <div className="pb-3">
                         <MessageGroupRow
                           group={item}
+                          cwd={activeProjectPath ?? visibleSnapshot?.cwd ?? agentWindow.cwd ?? null}
                           agent={agentWindow.agent}
                           isStreamingLastTurn={
                             item.kind === 'turn' && item.key === streamingTurnKey
@@ -2738,8 +2793,41 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
             className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-b from-background/0 via-background to-background px-4 pb-4 pt-3"
           >
             <div className="pointer-events-auto mx-auto max-w-3xl">
+              {hasDiffStats(sessionDiffStats) ? (
+                <div className="mb-2 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => setDiffsPanelOpen((v) => !v)}
+                    className={cn(
+                      'inline-flex items-center gap-1.5 rounded-[6px] bg-foreground/5 px-2 py-0.5 text-[11px] text-muted-foreground/80 backdrop-blur-sm transition-colors hover:bg-foreground/10',
+                      diffsPanelOpen && 'bg-foreground/10 text-foreground/90',
+                    )}
+                    title="Show session diffs"
+                  >
+                    <FileText className="size-3 shrink-0" />
+                    <span className="tabular-nums">
+                      {sessionDiffStats.additions > 0 ? (
+                        <span className="text-emerald-400/80">+{sessionDiffStats.additions}</span>
+                      ) : null}
+                      {sessionDiffStats.additions > 0 && sessionDiffStats.deletions > 0 ? ' ' : ''}
+                      {sessionDiffStats.deletions > 0 ? (
+                        <span className="text-rose-400/80">-{sessionDiffStats.deletions}</span>
+                      ) : null}
+                      {sessionDiffStats.additions === 0 &&
+                      sessionDiffStats.deletions === 0 &&
+                      (sessionDiffStats.changedFiles ?? 0) > 0 ? (
+                        <span className="text-muted-foreground/85">
+                          {sessionDiffStats.changedFiles} file
+                          {sessionDiffStats.changedFiles === 1 ? '' : 's'}
+                        </span>
+                      ) : null}
+                    </span>
+                    <span>diffs</span>
+                  </button>
+                </div>
+              ) : null}
               {visibleSnapshot?.error ? (
-                <div className="mb-2 rounded-[12px] bg-red-500/12 px-3 py-2 text-[12px] text-red-300">
+                <div className="mb-2 rounded-[12px] bg-red-500/12 px-3 py-2 text-[12px] text-red-300 backdrop-blur-sm">
                   {visibleSnapshot.error}
                 </div>
               ) : null}
@@ -2767,41 +2855,8 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
               {visibleSnapshot?.codexPlan ? (
                 <CodexPlanBanner plan={visibleSnapshot.codexPlan} />
               ) : null}
-              {hasDiffStats(sessionDiffStats) ? (
-                <div className="mb-2 flex justify-end">
-                  <button
-                    type="button"
-                    onClick={() => setDiffsPanelOpen((v) => !v)}
-                    className={cn(
-                      'inline-flex items-center gap-1.5 rounded-[6px] bg-foreground/5 px-2 py-0.5 text-[11px] text-muted-foreground/80 transition-colors hover:bg-foreground/10',
-                      diffsPanelOpen && 'bg-foreground/10 text-foreground/90',
-                    )}
-                    title="Show session diffs"
-                  >
-                    <FileText className="size-3 shrink-0" />
-                    <span className="tabular-nums">
-                      {sessionDiffStats.additions > 0 ? (
-                        <span className="text-emerald-400/80">+{sessionDiffStats.additions}</span>
-                      ) : null}
-                      {sessionDiffStats.additions > 0 && sessionDiffStats.deletions > 0 ? ' ' : ''}
-                      {sessionDiffStats.deletions > 0 ? (
-                        <span className="text-rose-400/80">-{sessionDiffStats.deletions}</span>
-                      ) : null}
-                      {sessionDiffStats.additions === 0 &&
-                      sessionDiffStats.deletions === 0 &&
-                      (sessionDiffStats.changedFiles ?? 0) > 0 ? (
-                        <span className="text-muted-foreground/85">
-                          {sessionDiffStats.changedFiles} file
-                          {sessionDiffStats.changedFiles === 1 ? '' : 's'}
-                        </span>
-                      ) : null}
-                    </span>
-                    <span>diffs</span>
-                  </button>
-                </div>
-              ) : null}
               {resumeGated && (queuedMessages.length > 0 || midTurnDetected) ? (
-                <div className="mb-2 flex items-center gap-2 rounded-[10px] border border-amber-400/25 bg-amber-400/5 px-2.5 py-1.5 text-[12px] text-foreground/90 shadow-minimal">
+                <div className="mb-2 flex items-center gap-2 rounded-[10px] border border-amber-400/25 bg-amber-400/5 px-2.5 py-1.5 text-[12px] text-foreground/90 shadow-minimal backdrop-blur-sm">
                   <Clock className="size-3.5 shrink-0 text-amber-400/90" />
                   <span className="min-w-0 flex-1 truncate text-muted-foreground/90">
                     {queuedMessages.length > 0
@@ -2850,7 +2905,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                   {(() => {
                     const forceQueueExpanded = queuedMessages.length === 1
                     const next = queuedMessages[0]
-                    const meta = QUEUE_MODE_META[next.mode]
+                    const meta = queueModeMeta[next.mode]
                     if (forceQueueExpanded) return null
                     return (
                       <button
@@ -2921,7 +2976,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                     >
                       <AnimatePresence initial={false} mode="popLayout">
                         {queuedMessages.map((entry, i) => {
-                          const meta = QUEUE_MODE_META[entry.mode]
+                          const meta = queueModeMeta[entry.mode]
                           const modelLabel = entry.model
                             ? prettifyModelId(agentWindow.agent, entry.model)
                             : null
@@ -2952,7 +3007,6 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                             <motion.div
                               key={queueKey}
                               layoutId={queueMorphLayoutId}
-                              layout
                               initial={reduceMotion ? false : { opacity: 0, y: 8, scale: 0.98 }}
                               animate={{ opacity: 1, y: 0, scale: 1 }}
                               // Exit slides UP toward the chat history. Pairs with
@@ -2962,11 +3016,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                               exit={
                                 reduceMotion ? { opacity: 0 } : { opacity: 0, y: -8, scale: 0.98 }
                               }
-                              transition={{
-                                duration: 0.22,
-                                ease: EASE_OUT,
-                                layout: { duration: 0.26, ease: EASE_IN_OUT },
-                              }}
+                              transition={{ duration: 0.22, ease: EASE_OUT }}
                               draggable={!isEditing}
                               // motion.div retypes the drag event handlers for
                               // its own gesture system (MouseEvent | TouchEvent |
@@ -3008,7 +3058,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                                 setDragOverIndex(null)
                               }}
                               className={cn(
-                                'group/queued flex gap-2 rounded-[10px] bg-foreground/5 px-2.5 py-1.5 text-[12px] text-foreground/85 transition-colors',
+                                'group/queued flex gap-2 rounded-[10px] bg-foreground/5 px-2.5 py-1.5 text-[12px] text-foreground/85 transition-colors backdrop-blur-sm',
                                 'items-center',
                                 isEditing && 'bg-cyan-500/10',
                                 isDragging && 'opacity-50',
@@ -3139,7 +3189,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                 />
               ) : null}
               <motion.div
-                // When a composer send is in flight, `composerMorphId` carries
+                // When a composer send is in flight, `currentComposerMorphId` carries
                 // the layoutId that the incoming user bubble will match. The
                 // composer itself doesn't unmount, so we rely on Framer's
                 // mid-animation duplicate-id handling: the newly-mounted bubble
@@ -3147,8 +3197,8 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                 // clears the id on the bubble side. `layout` is enabled only
                 // while a morph is pending — otherwise every textarea growth
                 // would animate the composer's own size changes.
-                layoutId={reduceMotion ? undefined : (composerMorphId ?? undefined)}
-                layout={composerMorphId ? true : false}
+                layoutId={reduceMotion ? undefined : (currentComposerMorphId ?? undefined)}
+                layout={currentComposerMorphId ? true : false}
                 transition={{ layout: { duration: 0.26, ease: EASE_IN_OUT } }}
                 className="group/composer relative overflow-hidden rounded-[12px] shadow-minimal"
                 style={{ backgroundColor: 'oklch(0.17 0.004 285.9)' }}

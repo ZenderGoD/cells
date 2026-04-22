@@ -40,6 +40,24 @@ const THRESHOLD = 150 // px of accumulated delta to trigger navigation
 window.addEventListener(
   'wheel',
   function (e) {
+    const canvasZoomGesture = e.ctrlKey || e.metaKey
+    const canvasPanGesture = e.shiftKey && Math.abs(e.deltaY) > Math.abs(e.deltaX)
+    if (canvasZoomGesture || canvasPanGesture) {
+      if (resetTimer) clearTimeout(resetTimer)
+      if (gesturePhase === 'overscrolling') resetGesture()
+      e.preventDefault()
+      ipcRenderer.send('browser:canvas-wheel', {
+        deltaX: e.deltaX,
+        deltaY: e.deltaY,
+        clientX: e.clientX,
+        clientY: e.clientY,
+        ctrlKey: e.ctrlKey,
+        metaKey: e.metaKey,
+        shiftKey: e.shiftKey,
+      })
+      return
+    }
+
     // Ignore momentum events still arriving after a navigation was committed
     if (Date.now() < cooldownUntil) return
 
@@ -99,5 +117,5 @@ window.addEventListener(
       resetGesture()
     }, 120)
   },
-  { passive: true },
+  { passive: false },
 )

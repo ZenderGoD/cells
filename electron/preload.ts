@@ -4,6 +4,7 @@ import type {
   AgentMentionSearchResult,
   AgentSessionRequest,
   AgentSessionSnapshot,
+  BrowserCanvasWheelGesture,
   SavedAgentSessionSummary,
   AgentThinkingLevel,
   CellsAPI,
@@ -193,6 +194,15 @@ const api: CellsAPI = {
       ipcRenderer.on('browser:overscroll', handler)
       return () => ipcRenderer.removeListener('browser:overscroll', handler)
     },
+    onCanvasWheel: (callback: (browserId: string, gesture: BrowserCanvasWheelGesture) => void) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        browserId: string,
+        gesture: BrowserCanvasWheelGesture,
+      ) => callback(browserId, gesture)
+      ipcRenderer.on('browser:canvas-wheel', handler)
+      return () => ipcRenderer.removeListener('browser:canvas-wheel', handler)
+    },
     onWindowCycle: (callback: (direction: 1 | -1) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, direction: 1 | -1) => callback(direction)
       ipcRenderer.on('browser:window-cycle', handler)
@@ -223,6 +233,12 @@ const api: CellsAPI = {
       ) => callback(request)
       ipcRenderer.on('app:focus-agent-window', handler)
       return () => ipcRenderer.removeListener('app:focus-agent-window', handler)
+    },
+    onCanvasZoom: (callback: (command: 'fit' | 'in' | 'out') => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, command: 'fit' | 'in' | 'out') =>
+        callback(command)
+      ipcRenderer.on('app:canvas-zoom', handler)
+      return () => ipcRenderer.removeListener('app:canvas-zoom', handler)
     },
     updateNotificationContext: (context: {
       activeProjectId: string | null

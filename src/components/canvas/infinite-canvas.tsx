@@ -9,6 +9,7 @@ import {
 } from 'react'
 import { motion, useMotionValue, useSpring } from 'motion/react'
 import { useHotkey } from '@tanstack/react-hotkeys'
+import { hasPrimaryModifier, isPrimaryModifierKey } from '@/lib/keyboard-shortcuts'
 import { cn } from '@/lib/utils'
 
 function isEditableTarget(target: EventTarget | null) {
@@ -42,6 +43,8 @@ const SNAP_DISABLE_ZOOM = 0.5
 const TERMINAL_VISIBILITY_OVERSCAN_PX = 240
 const SNAP_POSITION_EPSILON = 0.5
 const SNAP_SCALE_EPSILON = 0.002
+const WHEEL_ZOOM_INTENSITY = 0.01
+const BROWSER_VIEW_INSET_PX = 3 // Must match the content inset used by BrowserNode.
 
 const SPRING_NORMAL = { stiffness: 300, damping: 30 }
 const SPRING_FAST = { stiffness: 800, damping: 50 }
@@ -52,9 +55,7 @@ export function InfiniteCanvas() {
     browsers,
     agentWindows,
     canvas,
-    moveTerminal,
-    moveBrowser,
-    moveAgentWindow,
+    moveCanvasNodes,
     setCanvasTransform,
     snapToNearest,
     snapToTerminal,
@@ -77,9 +78,7 @@ export function InfiniteCanvas() {
       browsers: s.browsers,
       agentWindows: s.agentWindows,
       canvas: s.canvas,
-      moveTerminal: s.moveTerminal,
-      moveBrowser: s.moveBrowser,
-      moveAgentWindow: s.moveAgentWindow,
+      moveCanvasNodes: s.moveCanvasNodes,
       setCanvasTransform: s.setCanvasTransform,
       snapToNearest: s.snapToNearest,
       snapToTerminal: s.snapToTerminal,
@@ -105,7 +104,7 @@ export function InfiniteCanvas() {
   const [isDragging, setIsDragging] = useState(false)
   const [isUserDriving, setIsUserDriving] = useState(false) // true while user is actively panning/scrolling
   const [isSnapAnimating, setIsSnapAnimating] = useState(false)
-  const [metaHeld, setMetaHeld] = useState(false)
+  const [primaryModifierHeld, setPrimaryModifierHeld] = useState(false)
   const [marqueeBox, setMarqueeBox] = useState<{
     x: number
     y: number
@@ -122,6 +121,7 @@ export function InfiniteCanvas() {
     startX: number
     startY: number
     origins: ReturnType<typeof createSelectionOrigins>
+    transientSelection: boolean
   } | null>(null)
   const marqueeRef = useRef<{ startX: number; startY: number } | null>(null)
   const snapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -346,6 +346,60 @@ export function InfiniteCanvas() {
     }
   }, [])
 
+  const applyCanvasWheelGesture = useCallback(
+    (gesture: {
+      deltaX: number
+      deltaY: number
+      zoomModifier: boolean
+      clientX?: number
+      clientY?: number
+    }) => {
+      cancelSnap()
+      setIsUserDriving(true)
+
+      const current = useStore.getState().canvas
+
+      if (gesture.zoomModifier) {
+        const rect = containerRef.current?.getBoundingClientRect()
+        if (!rect || gesture.clientX == null || gesture.clientY == null) return
+
+        const newScale = Math.max(
+          MIN_ZOOM,
+          Math.min(MAX_ZOOM, current.scale * (1 - gesture.deltaY * WHEEL_ZOOM_INTENSITY)),
+        )
+
+        const mouseX = gesture.clientX - rect.left
+        const mouseY = gesture.clientY - rect.top
+        const ratio = newScale / current.scale
+
+        setCanvasTransform({
+          x: mouseX - (mouseX - current.x) * ratio,
+          y: mouseY - (mouseY - current.y) * ratio,
+          scale: newScale,
+        })
+      } else {
+        setCanvasTransform({
+          x: current.x - gesture.deltaX,
+          y: current.y - gesture.deltaY,
+          scale: current.scale,
+        })
+      }
+
+      if ((terminals.length > 0 || browsers.length > 0 || agentWindows.length > 0) && snapEnabled) {
+        scheduleSnap()
+      }
+    },
+    [
+      setCanvasTransform,
+      cancelSnap,
+      scheduleSnap,
+      terminals.length,
+      browsers.length,
+      agentWindows.length,
+      snapEnabled,
+    ],
+  )
+
   // Pan handlers
   const handleCanvasMouseDown = useCallback(
     (e: MouseEvent) => {
@@ -370,11 +424,12 @@ export function InfiniteCanvas() {
 
       // Let terminal/browser handle their own clicks (including Cmd+click for links).
       // Only intercept Cmd+click on the non-interactive shell of the node (title bar, resize edges).
+      const primaryModifier = hasPrimaryModifier(e)
       const isInsideContent =
         (e.target as HTMLElement).closest('.cell-terminal') ||
         (e.target as HTMLElement).closest('.browser-node > div') ||
         (e.target as HTMLElement).closest('.agent-chat-panel')
-      if (clickedNode && (!e.metaKey || isInsideContent)) return
+      if (clickedNode && (!primaryModifier || isInsideContent)) return
 
       if (e.button === 0 || e.button === 1) {
         e.preventDefault()
@@ -409,15 +464,14 @@ export function InfiniteCanvas() {
         const dx = (e.clientX - dragRef.current.startX) / transform.scale
         const dy = (e.clientY - dragRef.current.startY) / transform.scale
         const moved = applySelectionDelta(dragRef.current.origins, dx, dy)
-        for (const [id, origin] of Object.entries(moved)) {
-          if (origin.kind === 'browser') {
-            moveBrowser(id, origin.x, origin.y)
-          } else if (origin.kind === 'agent') {
-            moveAgentWindow(id, origin.x, origin.y)
-          } else {
-            moveTerminal(id, origin.x, origin.y)
-          }
-        }
+        moveCanvasNodes(
+          Object.entries(moved).map(([id, origin]) => ({
+            id,
+            kind: origin.kind,
+            x: origin.x,
+            y: origin.y,
+          })),
+        )
       }
 
       if (marqueeRef.current) {
@@ -443,9 +497,7 @@ export function InfiniteCanvas() {
       isDragging,
       transform,
       setCanvasTransform,
-      moveTerminal,
-      moveBrowser,
-      moveAgentWindow,
+      moveCanvasNodes,
       selectableWindows,
       setSelectedNodeIds,
     ],
@@ -453,12 +505,16 @@ export function InfiniteCanvas() {
 
   const handleMouseUp = useCallback(() => {
     const wasPanning = isPanning
+    const clearTransientSelection = dragRef.current?.transientSelection === true
     setIsPanning(false)
     setIsDragging(false)
     setMarqueeBox(null)
     panRef.current = null
     dragRef.current = null
     marqueeRef.current = null
+    if (clearTransientSelection) {
+      setSelectedNodeIds([])
+    }
     if (
       wasPanning &&
       (terminals.length > 0 || browsers.length > 0 || agentWindows.length > 0) &&
@@ -468,7 +524,15 @@ export function InfiniteCanvas() {
     } else {
       setIsUserDriving(false)
     }
-  }, [isPanning, terminals.length, browsers.length, agentWindows.length, scheduleSnap, snapEnabled])
+  }, [
+    isPanning,
+    setSelectedNodeIds,
+    terminals.length,
+    browsers.length,
+    agentWindows.length,
+    scheduleSnap,
+    snapEnabled,
+  ])
 
   useEffect(() => {
     return useStore.subscribe((state, previousState) => {
@@ -483,18 +547,19 @@ export function InfiniteCanvas() {
 
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
-      if (e.key === 'Meta') setMetaHeld(true)
+      if (isPrimaryModifierKey(e.key)) setPrimaryModifierHeld(true)
     }
     const up = (e: KeyboardEvent) => {
-      if (e.key === 'Meta') setMetaHeld(false)
+      if (isPrimaryModifierKey(e.key)) setPrimaryModifierHeld(false)
     }
+    const blur = () => setPrimaryModifierHeld(false)
     window.addEventListener('keydown', down)
     window.addEventListener('keyup', up)
-    window.addEventListener('blur', () => setMetaHeld(false))
+    window.addEventListener('blur', blur)
     return () => {
       window.removeEventListener('keydown', down)
       window.removeEventListener('keyup', up)
-      window.removeEventListener('blur', () => setMetaHeld(false))
+      window.removeEventListener('blur', blur)
     }
   }, [])
 
@@ -506,67 +571,63 @@ export function InfiniteCanvas() {
       const termNode = (e.target as HTMLElement).closest('.terminal-node')
       const browserNode = (e.target as HTMLElement).closest('.browser-node')
       const agentNode = (e.target as HTMLElement).closest('.agent-window-node')
-      // Let terminals/browsers handle their own scroll, but intercept
-      // Cmd+scroll for canvas zoom regardless of what's under the cursor.
-      if ((termNode || browserNode || agentNode) && !e.metaKey) return
+      const zoomModifier = e.ctrlKey || e.metaKey
+      const forceCanvasPan = e.shiftKey && !zoomModifier
+      // Let node content own plain scroll, but reserve Cmd/Ctrl+scroll for
+      // zoom and Shift+scroll/swipe as an explicit canvas-pan override.
+      if ((termNode || browserNode || agentNode) && !zoomModifier && !forceCanvasPan) return
 
       e.preventDefault()
-      cancelSnap()
-      setIsUserDriving(true)
-
-      const current = useStore.getState().canvas
-
-      if (e.ctrlKey || e.metaKey) {
-        const zoomIntensity = 0.01
-        const newScale = Math.max(
-          MIN_ZOOM,
-          Math.min(MAX_ZOOM, current.scale * (1 - e.deltaY * zoomIntensity)),
-        )
-
-        const rect = containerRef.current?.getBoundingClientRect()
-        if (!rect) return
-
-        const mouseX = e.clientX - rect.left
-        const mouseY = e.clientY - rect.top
-        const ratio = newScale / current.scale
-
-        setCanvasTransform({
-          x: mouseX - (mouseX - current.x) * ratio,
-          y: mouseY - (mouseY - current.y) * ratio,
-          scale: newScale,
-        })
-      } else {
-        setCanvasTransform({
-          x: current.x - e.deltaX,
-          y: current.y - e.deltaY,
-          scale: current.scale,
-        })
-      }
-
-      if ((terminals.length > 0 || browsers.length > 0 || agentWindows.length > 0) && snapEnabled) {
-        scheduleSnap()
-      }
+      applyCanvasWheelGesture({
+        deltaX: e.deltaX,
+        deltaY: e.deltaY,
+        zoomModifier,
+        clientX: e.clientX,
+        clientY: e.clientY,
+      })
     },
-    [
-      setCanvasTransform,
-      cancelSnap,
-      scheduleSnap,
-      terminals.length,
-      browsers.length,
-      agentWindows.length,
-      snapEnabled,
-    ],
+    [applyCanvasWheelGesture],
   )
+
+  useEffect(() => {
+    return window.cells.browser.onCanvasWheel((browserId, gesture) => {
+      const zoomModifier = gesture.ctrlKey || gesture.metaKey
+      const forceCanvasPan = gesture.shiftKey && !zoomModifier
+      if (!zoomModifier && !forceCanvasPan) return
+
+      const rect = containerRef.current?.getBoundingClientRect()
+      if (!rect) return
+
+      const { browsers, canvas } = useStore.getState()
+      const browser = browsers.find((entry) => entry.id === browserId)
+      if (!browser) return
+
+      const inset = BROWSER_VIEW_INSET_PX * canvas.scale
+      applyCanvasWheelGesture({
+        deltaX: gesture.deltaX,
+        deltaY: gesture.deltaY,
+        zoomModifier,
+        clientX: rect.left + browser.x * canvas.scale + canvas.x + inset + gesture.clientX,
+        clientY: rect.top + browser.y * canvas.scale + canvas.y + inset + gesture.clientY,
+      })
+    })
+  }, [applyCanvasWheelGesture])
 
   // Terminal drag handler
   const beginSelectionDrag = useCallback(
-    (dragIds: string[], startX: number, startY: number) => {
+    (
+      dragIds: string[],
+      startX: number,
+      startY: number,
+      options?: { transientSelection?: boolean },
+    ) => {
       if (dragIds.length === 0) return
       setIsDragging(true)
       dragRef.current = {
         startX,
         startY,
         origins: createSelectionOrigins(selectableWindows, dragIds),
+        transientSelection: options?.transientSelection === true,
       }
     },
     [selectableWindows],
@@ -576,6 +637,8 @@ export function InfiniteCanvas() {
     (nodeId: string, kind: 'terminal' | 'browser' | 'agent', startX: number, startY: number) => {
       const { selectionMode: sm, selectedNodeIds: sel } = useStore.getState()
       if (!sm) {
+        setSelectedNodeIds([nodeId])
+        beginSelectionDrag([nodeId], startX, startY, { transientSelection: true })
         return
       }
 
@@ -631,9 +694,23 @@ export function InfiniteCanvas() {
   })
   useHotkey('Mod+0', () => {
     setIsUserDriving(false)
-    const { focusedTerminalId: fid, terminals: terms, zoomToFit: fit } = useStore.getState()
-    const id = fid || terms[0]?.id
-    if (id) fit(id)
+    const {
+      focusedTerminalId,
+      focusedBrowserId,
+      focusedAgentWindowId,
+      terminals,
+      browsers,
+      agentWindows,
+      zoomToFit,
+    } = useStore.getState()
+    const id =
+      focusedTerminalId ||
+      focusedBrowserId ||
+      focusedAgentWindowId ||
+      terminals[0]?.id ||
+      browsers[0]?.id ||
+      agentWindows[0]?.id
+    if (id) zoomToFit(id)
   })
 
   // Global mouse listeners for drag/pan
@@ -654,8 +731,8 @@ export function InfiniteCanvas() {
       className={cn(
         'canvas-stage flex-1 min-h-0 overflow-hidden relative',
         (isPanning || isDragging) && 'cursor-grabbing',
-        metaHeld && !isPanning && !isDragging && 'cursor-grab',
-        selectionMode && !isPanning && !isDragging && !metaHeld && 'cursor-default',
+        primaryModifierHeld && !isPanning && !isDragging && 'cursor-grab',
+        selectionMode && !isPanning && !isDragging && !primaryModifierHeld && 'cursor-default',
       )}
       onMouseDown={handleCanvasMouseDown}
       onWheel={handleWheel}

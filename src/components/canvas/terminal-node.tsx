@@ -9,6 +9,7 @@ import {
 } from 'react'
 import { ArrowUpRight, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { hasPrimaryModifier } from '@/lib/keyboard-shortcuts'
 import { CellTerminal } from '../terminal/cell-terminal'
 import { getTerminalPreviewSnapshot } from '../terminal/terminal-cache-api'
 import { useStore } from '@/lib/store'
@@ -102,7 +103,8 @@ export const TerminalNode = memo(function TerminalNode({
   const handleDragMouseDown = useCallback(
     (e: MouseEvent) => {
       if ((e.target as HTMLElement).closest('button')) return
-      if (!selectionMode) {
+      const modifierDrag = hasPrimaryModifier(e)
+      if (!selectionMode && !modifierDrag) {
         focusTerminal(terminal.id)
         if (isFocused) {
           requestAnimationFrame(() => {
@@ -112,6 +114,9 @@ export const TerminalNode = memo(function TerminalNode({
           })
         }
         return
+      }
+      if (modifierDrag && !selectionMode) {
+        focusTerminal(terminal.id)
       }
       e.preventDefault()
       e.stopPropagation()
@@ -221,7 +226,8 @@ export const TerminalNode = memo(function TerminalNode({
 
   const handleNodeMouseDown = useCallback(
     (e: MouseEvent) => {
-      if (!selectionMode) {
+      const modifierDrag = hasPrimaryModifier(e)
+      if (!selectionMode && !modifierDrag) {
         focusTerminal(terminal.id)
         if (isFocused) {
           requestAnimationFrame(() => {
@@ -231,6 +237,9 @@ export const TerminalNode = memo(function TerminalNode({
           })
         }
         return
+      }
+      if (modifierDrag && !selectionMode) {
+        focusTerminal(terminal.id)
       }
       e.preventDefault()
       e.stopPropagation()
