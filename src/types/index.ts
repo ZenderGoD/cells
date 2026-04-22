@@ -429,6 +429,16 @@ export interface AgentNotificationSettings {
   notifyOnError: boolean
 }
 
+export interface AgentNotificationContext {
+  activeProjectId: string | null
+  focusedAgentWindowId: string | null
+}
+
+export interface FocusAgentWindowRequest {
+  windowId: string
+  projectId?: string | null
+}
+
 export interface AgentMentionSearchResult {
   type: 'skill' | 'file' | 'folder'
   label: string
@@ -834,7 +844,8 @@ export interface CellsAPI {
   }
   app: {
     onWindowFocus(callback: (focused: boolean) => void): () => void
-    onFocusAgentWindow(callback: (windowId: string) => void): () => void
+    onFocusAgentWindow(callback: (request: FocusAgentWindowRequest) => void): () => void
+    updateNotificationContext(context: AgentNotificationContext): void
     onBeforeQuit(callback: () => void): () => void
     onDaemonDisconnected(callback: () => void): () => void
     onNewTerminal(callback: () => void): () => void
@@ -873,6 +884,7 @@ export interface CellsAPI {
       options?: {
         playSound?: boolean
         focusAgentWindowId?: string | null
+        focusProjectId?: string | null
       },
     ): Promise<void>
     beep(): void

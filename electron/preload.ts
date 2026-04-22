@@ -214,10 +214,21 @@ const api: CellsAPI = {
       ipcRenderer.on('app:window-focus', handler)
       return () => ipcRenderer.removeListener('app:window-focus', handler)
     },
-    onFocusAgentWindow: (callback: (windowId: string) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, windowId: string) => callback(windowId)
+    onFocusAgentWindow: (
+      callback: (request: { windowId: string; projectId?: string | null }) => void,
+    ) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        request: { windowId: string; projectId?: string | null },
+      ) => callback(request)
       ipcRenderer.on('app:focus-agent-window', handler)
       return () => ipcRenderer.removeListener('app:focus-agent-window', handler)
+    },
+    updateNotificationContext: (context: {
+      activeProjectId: string | null
+      focusedAgentWindowId: string | null
+    }) => {
+      ipcRenderer.send('app:update-notification-context', context)
     },
     onBeforeQuit: (callback: () => void) => {
       const handler = () => callback()
@@ -274,6 +285,7 @@ const api: CellsAPI = {
       options?: {
         playSound?: boolean
         focusAgentWindowId?: string | null
+        focusProjectId?: string | null
       },
     ) => ipcRenderer.invoke('app:show-notification', title, body, options) as Promise<void>,
     beep: () => ipcRenderer.send('app:beep'),

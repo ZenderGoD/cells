@@ -457,7 +457,7 @@ function UserBubble({
           </div>
         ) : null}
         {hasText ? (
-          <div className="break-words rounded-[10px] bg-foreground/5 px-3.5 py-2 text-[13px] leading-[1.45] text-foreground">
+          <div className="break-words rounded-[12px] bg-foreground/5 px-3.5 py-2 text-[13px] leading-[1.45] text-foreground shadow-minimal">
             <AgentMarkdown inline breaks>
               {message.text}
             </AgentMarkdown>
@@ -575,6 +575,10 @@ type ChatGroup =
       // own ResponseCard into the next turn's header line — it reads as the
       // intent behind the upcoming activity instead of a separate bubble.
       leadText?: string
+      // Id of the response message this leadText originated from. Used as a
+      // shared `layoutId` so the text morphs smoothly from the exiting
+      // ResponseCard into this leadText slot.
+      leadTextId?: string
     }
   | { kind: 'error'; key: string; message: AgentSessionMessage }
   | { kind: 'auth'; key: string; message: AgentSessionMessage }
@@ -640,6 +644,7 @@ function isChatGroupUnchanged(previous: ChatGroup, next: ChatGroup): boolean {
           nextTurn.changedFilesActivities ?? [],
         ) &&
         previous.leadText === nextTurn.leadText &&
+        previous.leadTextId === nextTurn.leadTextId &&
         areMessageRefsEqual(previous.activities, nextTurn.activities) &&
         areMessageRefsEqual(previous.responses, nextTurn.responses)
       )
@@ -810,7 +815,12 @@ function demoteInterimResponses(groups: ChatGroup[]): ChatGroup[] {
           .map((r) => r.text)
           .join('\n\n')
           .trim()
-        working[i + 1] = { ...next, leadText: leadText || next.leadText }
+        const leadTextId = leadText ? g.responses[0]?.id : next.leadTextId
+        working[i + 1] = {
+          ...next,
+          leadText: leadText || next.leadText,
+          leadTextId,
+        }
         if (g.activities.length > 0) {
           result.push({
             kind: 'turn',
@@ -834,7 +844,7 @@ function PendingTurnIndicator({ agent }: { agent: AgentWindowNode['agent'] }) {
     <LoadingIndicator
       label={`${agent === 'claude' ? 'Claude Code' : 'Codex'} is thinking`}
       showElapsed
-      className="text-[12px] text-muted-foreground"
+      className="py-1.5 pl-1.5 pr-2.5 text-[12px] text-muted-foreground"
     />
   )
 }
@@ -1386,6 +1396,7 @@ function GroupRenderer({
           responses={group.responses}
           changedFilesActivities={group.changedFilesActivities}
           leadText={group.leadText}
+          leadTextId={group.leadTextId}
           agent={agent}
           isStreaming={isStreamingLastTurn}
         />
@@ -1587,6 +1598,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   // textarea itself grows).
   const composerOverlayRef = useRef<HTMLDivElement>(null)
   const [composerOverlayHeight, setComposerOverlayHeight] = useState(0)
+  // Tracks the prior overlay height so we only auto-scroll when it GROWS
+  // (new queue row, plan banner, etc.). Shrinks leave the user where they
+  // are — yanking the viewport on collapse would feel aggressive.
+  const prevComposerOverlayHeightRef = useRef(0)
   useEffect(() => {
     const el = composerOverlayRef.current
     if (!el) return
@@ -1600,6 +1615,21 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     ro.observe(el)
     return () => ro.disconnect()
   }, [])
+
+  // When the overlay grows (queue row, plan banner, diff pill appearing), the
+  // extra footer spacer makes room but LegendList's maintainScrollAtEnd
+  // doesn't re-anchor aggressively enough — the growing overlay visually
+  // covers the last message until the user scrolls. Force a scrollToEnd on
+  // growth so the bottom of the transcript stays glued to the composer top.
+  useEffect(() => {
+    const prev = prevComposerOverlayHeightRef.current
+    prevComposerOverlayHeightRef.current = composerOverlayHeight
+    if (composerOverlayHeight <= prev + 0.5) return
+    const id = window.requestAnimationFrame(() => {
+      listRef.current?.scrollToEnd?.({ animated: true })
+    })
+    return () => window.cancelAnimationFrame(id)
+  }, [composerOverlayHeight])
 
   const inputRef = useRef(input)
   const snapshotRef = useRef(snapshot)
@@ -2701,13 +2731,11 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
 
           <div
             ref={composerOverlayRef}
-            // Translucent bg + backdrop blur lets list content remain visible
-            // beneath the composer — that's what sells the "scrolls behind"
-            // effect. Top gradient edge softens the boundary instead of a
-            // hard cutline. pointer-events-none on the wrapper lets the empty
+            // Short gradient fade at the top edge softens where content meets
+            // the composer. pointer-events-none on the wrapper lets the empty
             // margins around the composer pass clicks through to the list;
             // the inner max-w-3xl re-enables events for the composer itself.
-            className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-b from-background/0 via-background/70 to-background/85 px-4 pb-4 pt-6 backdrop-blur-md"
+            className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-b from-background/0 via-background to-background px-4 pb-4 pt-3"
           >
             <div className="pointer-events-auto mx-auto max-w-3xl">
               {visibleSnapshot?.error ? (
@@ -2830,9 +2858,14 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                         onClick={() => {
                           setQueueCollapsed((v) => !v)
                         }}
+                        // Backdrop-blur + translucent bg lets the chat content
+                        // behind stay hinted-at instead of being covered by a
+                        // hard fill. Kept subtle per Emil's "speed over
+                        // delight" rule — blur is used as a readability
+                        // affordance, not decoration.
                         className={cn(
-                          'flex w-full items-center gap-2 rounded-[8px] px-2 py-1 text-left transition-colors focus:outline-none',
-                          'hover:bg-foreground/5',
+                          'flex w-full items-center gap-2 rounded-[8px] bg-background/60 px-2 py-1 text-left shadow-minimal backdrop-blur-md transition-colors focus:outline-none',
+                          'hover:bg-background/75',
                         )}
                         title={queueCollapsed ? 'Show queued messages' : 'Hide queued messages'}
                       >
@@ -3111,9 +3144,12 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                 // composer itself doesn't unmount, so we rely on Framer's
                 // mid-animation duplicate-id handling: the newly-mounted bubble
                 // animates from this pill's bounding box and `onLayoutAnimationComplete`
-                // clears the id on the bubble side.
+                // clears the id on the bubble side. `layout` is enabled only
+                // while a morph is pending — otherwise every textarea growth
+                // would animate the composer's own size changes.
                 layoutId={reduceMotion ? undefined : (composerMorphId ?? undefined)}
-                layout={false}
+                layout={composerMorphId ? true : false}
+                transition={{ layout: { duration: 0.26, ease: EASE_IN_OUT } }}
                 className="group/composer relative overflow-hidden rounded-[12px] shadow-minimal"
                 style={{ backgroundColor: 'oklch(0.17 0.004 285.9)' }}
               >
@@ -3149,6 +3185,16 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                     </motion.div>
                   ) : null}
                 </AnimatePresence>
+                <InlineMentionMenu
+                  open={inlineMention.open}
+                  items={inlineMention.items}
+                  query={inlineMention.query}
+                  selectedIndex={inlineMention.selectedIndex}
+                  onHover={inlineMention.setSelectedIndex}
+                  onSelect={(item) => {
+                    applyInlineMentionSelection(inlineMention.selectItem(item))
+                  }}
+                />
                 {attachments.length > 0 ? (
                   <div className="space-y-2 px-3 pb-1 pt-3">
                     {composerImageAttachments.length > 0 ? (
@@ -3222,17 +3268,6 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                 <ComposerImagePreviewDialog
                   path={visibleComposerPreviewPath}
                   onClose={() => setComposerPreviewPath(null)}
-                />
-                <InlineMentionMenu
-                  open={inlineMention.open}
-                  items={inlineMention.items}
-                  position={inlineMention.position}
-                  selectedIndex={inlineMention.selectedIndex}
-                  onHover={inlineMention.setSelectedIndex}
-                  onClose={inlineMention.close}
-                  onSelect={(item) => {
-                    applyInlineMentionSelection(inlineMention.selectItem(item))
-                  }}
                 />
                 <div className="flex items-center gap-1.5 px-2 pb-2 pt-0.5">
                   <button

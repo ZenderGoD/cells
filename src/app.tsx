@@ -79,6 +79,8 @@ function MainApp() {
     })),
   )
   const shellStyle = buildWindowAppearanceStyle({ windowOpacity, useTransparentWindow })
+  const activeProjectId = useStore((s) => s.activeProjectId)
+  const focusedAgentWindowId = useStore((s) => s.focusedAgentWindowId)
 
   const [windowFocused, setWindowFocused] = useState(true)
   useEffect(() => {
@@ -93,15 +95,27 @@ function MainApp() {
   }, [])
 
   useEffect(() => {
-    return window.cells.app.onFocusAgentWindow((windowId) => {
+    return window.cells.app.onFocusAgentWindow(({ windowId, projectId }) => {
       const state = useStore.getState()
-      const target = state.agentWindows.find((entry) => entry.id === windowId)
+      if (projectId && state.activeProjectId !== projectId) {
+        state.switchProject(projectId)
+      }
+
+      const nextState = useStore.getState()
+      const target = nextState.agentWindows.find((entry) => entry.id === windowId)
       if (!target) return
-      state.bringAgentWindowToFront(windowId)
-      state.focusAgentWindow(windowId)
-      state.snapToAgentWindow(windowId)
+      nextState.bringAgentWindowToFront(windowId)
+      nextState.focusAgentWindow(windowId)
+      nextState.snapToAgentWindow(windowId)
     })
   }, [])
+
+  useEffect(() => {
+    window.cells.app.updateNotificationContext({
+      activeProjectId,
+      focusedAgentWindowId,
+    })
+  }, [activeProjectId, focusedAgentWindowId])
 
   useEffect(() => {
     return window.cells.app.onDaemonDisconnected(() => {

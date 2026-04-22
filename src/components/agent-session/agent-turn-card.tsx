@@ -42,6 +42,10 @@ interface AgentTurnCardProps {
   // present it replaces the generic "Working…" preview so the user reads
   // the intent behind the upcoming activity instead of a filler label.
   leadText?: string
+  // When `leadText` was demoted from a previous turn's ResponseCard, this
+  // carries the source response id so motion can match layoutIds across
+  // the two locations and morph the text between them.
+  leadTextId?: string
   agent: AgentWindowNode['agent']
   isStreaming: boolean
 }
@@ -495,16 +499,30 @@ function usePreviewText(
   }, [activities, isStreaming, agent])
 }
 
-function LeadTextBlock({ text, className }: { text: string; className?: string }) {
+function LeadTextBlock({
+  text,
+  className,
+  layoutId,
+}: {
+  text: string
+  className?: string
+  layoutId?: string
+}) {
   return (
-    <div
+    <motion.div
+      // `layoutId` pairs with the exiting ResponseCard in the previous turn
+      // so motion morphs the text from boxed → unboxed. `layout="position"`
+      // keeps only position animating (no size interpolation across the
+      // differently-sized containers) so characters don't warp in transit.
+      layoutId={layoutId}
+      layout={layoutId ? 'position' : false}
       className={cn(
         'agent-response select-text pl-1.5 pr-2.5 text-sm leading-relaxed text-foreground/85 [&_p:last-child]:mb-0',
         className,
       )}
     >
       <AgentMarkdown>{text}</AgentMarkdown>
-    </div>
+    </motion.div>
   )
 }
 
@@ -543,8 +561,15 @@ function ResponseCard({ responses }: { responses: AgentSessionMessage[] }) {
       className="group relative overflow-hidden rounded-[12px] shadow-minimal"
       style={{ backgroundColor: 'oklch(0.17 0.004 285.9)' }}
     >
-      <div
+      <motion.div
         data-search-root="response"
+        // layoutId pairs this text with the next turn's LeadTextBlock when
+        // the response gets demoted to leadText (see demoteInterimResponses).
+        // layout="position" means motion animates the text's position across
+        // the boxed → unboxed transition without warping its size — the box
+        // chrome fades independently via AnimatePresence.
+        layoutId={visible[0]?.id}
+        layout={visible[0]?.id ? 'position' : false}
         className="scrollbar-hover select-text overflow-y-auto px-4 pt-1 text-sm text-foreground/90"
         style={{ maxHeight: RESPONSE_MAX_HEIGHT }}
       >
@@ -559,7 +584,7 @@ function ResponseCard({ responses }: { responses: AgentSessionMessage[] }) {
             )}
           </div>
         ))}
-      </div>
+      </motion.div>
       <div className="flex items-center gap-3 pl-4 pr-2.5 py-2 text-[13px]">
         {isStreaming ? (
           <div className="flex items-center gap-1.5 text-muted-foreground">
@@ -682,6 +707,7 @@ export function AgentTurnCard({
   responses,
   changedFilesActivities,
   leadText,
+  leadTextId,
   agent,
   isStreaming,
 }: AgentTurnCardProps) {
@@ -704,7 +730,9 @@ export function AgentTurnCard({
           // Tool activity always stays grouped behind a single collapse handle.
           // This keeps the transcript rhythm consistent even for one-off calls.
           <div className="select-none">
-            {leadText ? <LeadTextBlock text={leadText} className="pb-1" /> : null}
+            {leadText ? (
+              <LeadTextBlock text={leadText} layoutId={leadTextId} className="pb-1" />
+            ) : null}
             <button
               type="button"
               onClick={() => setCollapsed((v) => !v)}
@@ -774,7 +802,7 @@ export function AgentTurnCard({
             </AnimatePresence>
           </div>
         ) : leadText ? (
-          <LeadTextBlock text={leadText} />
+          <LeadTextBlock text={leadText} layoutId={leadTextId} />
         ) : isStreaming && !hasResponse ? (
           <LoadingIndicator
             label={agent === 'claude' ? 'Claude is thinking…' : 'Codex is thinking…'}

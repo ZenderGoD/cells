@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { FileText, Folder, ListTodo } from 'lucide-react'
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import type { AgentMentionSearchResult } from '@/types'
 import {
   extractAgentComposerMentionTrigger,
@@ -7,9 +8,12 @@ import {
 } from '@/lib/agent-composer-mentions'
 import { cn } from '@/lib/utils'
 
-// Copied and adapted from Craft Agents OSS inline mention UI:
-// ../craft-agents-oss/apps/electron/src/renderer/components/ui/mention-menu.tsx
-// ../craft-agents-oss/apps/electron/src/renderer/components/app-shell/input/FreeFormInput.tsx
+// Design note: this menu is rendered INSIDE the composer pill (above the
+// textarea), not as a floating popover. The composer expands upward when
+// `@` is typed, and the menu shares the composer's width so full relative
+// paths stay readable. Backend scoring already ranks on label AND
+// relativePath (see electron/main.ts getAgentMentionScore), so fuzzy-path
+// matching works once the UI has room to show it.
 
 interface UseInlineMentionOptions {
   inputRef: RefObject<HTMLTextAreaElement | null>
@@ -26,92 +30,13 @@ type InlineMentionKeyResult = InlineMentionSelection | 'handled' | null
 interface InlineMentionMenuProps {
   open: boolean
   items: AgentMentionSearchResult[]
-  position: { x: number; y: number }
+  query: string
   selectedIndex: number
   onHover: (index: number) => void
   onSelect: (item: AgentMentionSearchResult) => void
-  onClose: () => void
 }
 
-const MENU_CONTAINER_STYLE =
-  'overflow-hidden rounded-[10px] text-popover-foreground shadow-minimal ring-1 ring-foreground/10'
-const MENU_LIST_STYLE = 'max-h-[240px] overflow-y-auto py-1'
-const MENU_ITEM_STYLE =
-  'mx-1 flex cursor-pointer select-none items-center gap-3 rounded-[6px] px-2 py-1.5 text-[13px]'
-const MENU_ITEM_SELECTED = 'bg-foreground/5'
-const MENU_TYPE_BADGE =
-  'shrink-0 rounded-[4px] bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground shadow-sm'
-
-function getParentDir(relativePath: string): string {
-  const lastSlash = relativePath.lastIndexOf('/')
-  if (lastSlash <= 0) return ''
-  return relativePath.slice(0, lastSlash + 1)
-}
-
-function getTextareaCaretRect(textarea: HTMLTextAreaElement): DOMRect | null {
-  if (typeof window === 'undefined' || typeof document === 'undefined') return null
-  const style = window.getComputedStyle(textarea)
-  const mirror = document.createElement('div')
-  const span = document.createElement('span')
-  const rect = textarea.getBoundingClientRect()
-  const selectionStart = textarea.selectionStart ?? 0
-  const before = textarea.value.slice(0, selectionStart)
-
-  const properties = [
-    'boxSizing',
-    'width',
-    'height',
-    'overflowX',
-    'overflowY',
-    'borderTopWidth',
-    'borderRightWidth',
-    'borderBottomWidth',
-    'borderLeftWidth',
-    'paddingTop',
-    'paddingRight',
-    'paddingBottom',
-    'paddingLeft',
-    'fontStyle',
-    'fontVariant',
-    'fontWeight',
-    'fontStretch',
-    'fontSize',
-    'fontSizeAdjust',
-    'lineHeight',
-    'fontFamily',
-    'textAlign',
-    'textTransform',
-    'textIndent',
-    'textDecoration',
-    'letterSpacing',
-    'wordSpacing',
-    'tabSize',
-  ] as const
-
-  mirror.style.position = 'fixed'
-  mirror.style.pointerEvents = 'none'
-  mirror.style.visibility = 'hidden'
-  mirror.style.whiteSpace = 'pre-wrap'
-  mirror.style.wordBreak = 'break-word'
-  mirror.style.left = `${rect.left}px`
-  mirror.style.top = `${rect.top}px`
-  mirror.style.transform = `translateY(-${textarea.scrollTop}px)`
-
-  for (const property of properties) {
-    ;(mirror.style as any)[property] = style[property]
-  }
-
-  mirror.textContent = before
-  if (before.endsWith('\n') || before.length === 0) {
-    mirror.append(document.createTextNode('\u200b'))
-  }
-  span.textContent = textarea.value.slice(selectionStart) || '\u200b'
-  mirror.appendChild(span)
-  document.body.appendChild(mirror)
-  const caretRect = span.getBoundingClientRect()
-  document.body.removeChild(mirror)
-  return caretRect
-}
+const EASE_OUT: [number, number, number, number] = [0.25, 0.46, 0.45, 0.94]
 
 function buildMentionText(item: AgentMentionSearchResult): string {
   const kind: AgentComposerMentionKind = item.type
@@ -120,113 +45,113 @@ function buildMentionText(item: AgentMentionSearchResult): string {
 
 function MentionItemIcon({ item }: { item: AgentMentionSearchResult }) {
   if (item.type === 'skill') {
-    return <ListTodo className="size-4 text-muted-foreground" />
+    return <ListTodo className="size-4 text-muted-foreground/80" />
   }
   if (item.type === 'folder') {
-    return <Folder className="size-4 text-muted-foreground" />
+    return <Folder className="size-4 text-muted-foreground/80" />
   }
-  return <FileText className="size-4 text-muted-foreground" />
+  return <FileText className="size-4 text-muted-foreground/80" />
+}
+
+function typeBadgeLabel(type: AgentMentionSearchResult['type']): string {
+  if (type === 'skill') return 'Skill'
+  if (type === 'folder') return 'Folder'
+  return 'File'
 }
 
 export function InlineMentionMenu({
   open,
   items,
-  position,
+  query,
   selectedIndex,
   onHover,
   onSelect,
-  onClose,
 }: InlineMentionMenuProps) {
-  const menuRef = useRef<HTMLDivElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+  const reduceMotion = useReducedMotion()
 
   useEffect(() => {
     if (!open) return
-    const onPointerDown = (event: MouseEvent) => {
-      if (!menuRef.current?.contains(event.target as Node)) {
-        onClose()
-      }
-    }
-    document.addEventListener('mousedown', onPointerDown)
-    return () => document.removeEventListener('mousedown', onPointerDown)
-  }, [open, onClose])
-
-  useEffect(() => {
-    if (!open) return
-    const selected = menuRef.current?.querySelector<HTMLElement>('[data-selected="true"]')
+    const selected = listRef.current?.querySelector<HTMLElement>('[data-selected="true"]')
     selected?.scrollIntoView({ block: 'nearest' })
   }, [open, selectedIndex])
 
-  if (!open) return null
-
-  const bottomPosition =
-    typeof window !== 'undefined' ? window.innerHeight - Math.round(position.y) + 6 : 0
-
   return (
-    <div
-      ref={menuRef}
-      className={cn('fixed z-[20010]', MENU_CONTAINER_STYLE)}
-      style={{
-        left: Math.round(position.x) - 10,
-        bottom: bottomPosition,
-        width: 280,
-        maxWidth: 280,
-        backgroundColor: 'oklch(0.17 0.004 285.9)',
-      }}
-    >
-      <div className="px-3 py-1.5 text-[12px] font-medium text-muted-foreground/70">
-        Files, folders & skills
-      </div>
-      <div className={MENU_LIST_STYLE}>
-        {items.length === 0 ? (
-          <div className="px-3 py-2 text-[12px] text-muted-foreground/60">No results</div>
-        ) : null}
-        {items.map((item, index) => {
-          const isSelected = index === selectedIndex
-          const parentDir = getParentDir(item.relativePath)
-          return (
-            <div
-              key={`${item.type}-${item.absolutePath}`}
-              data-selected={isSelected}
-              onMouseEnter={() => onHover(index)}
-              onMouseDown={(event) => {
-                event.preventDefault()
-                onSelect(item)
-              }}
-              className={cn(MENU_ITEM_STYLE, isSelected && MENU_ITEM_SELECTED)}
-            >
-              <div className="shrink-0">
-                <MentionItemIcon item={item} />
+    <AnimatePresence initial={false}>
+      {open ? (
+        <motion.div
+          key="mention-menu"
+          // Height animation trades layout cost for the natural "composer
+          // grows upward" feel — a one-shot toggle so the cost is paid
+          // once per open/close. Reduced motion drops to opacity only.
+          initial={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+          animate={reduceMotion ? { opacity: 1 } : { height: 'auto', opacity: 1 }}
+          exit={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+          transition={{ duration: 0.18, ease: EASE_OUT }}
+          className="overflow-hidden border-b border-border/40"
+        >
+          <div className="flex items-center justify-between gap-2 px-3 pt-2 pb-1.5">
+            <span className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground/70">
+              Files, folders &amp; skills
+            </span>
+            {query ? (
+              <span className="truncate text-[11px] text-muted-foreground/55">“{query}”</span>
+            ) : null}
+          </div>
+          <div ref={listRef} className="max-h-[280px] overflow-y-auto pb-1">
+            {items.length === 0 ? (
+              <div className="px-3 py-3 text-[12.5px] text-muted-foreground/60">
+                No matches. Try a path fragment like <code>skills/release</code>.
               </div>
-              {item.type === 'skill' ? (
-                <>
-                  <div className="min-w-0 flex-1">
-                    <span className="block truncate">{item.label}</span>
-                  </div>
-                  <span className={MENU_TYPE_BADGE}>Skill</span>
-                </>
-              ) : (
-                <>
-                  <span className="shrink-0">{item.label}</span>
-                  {parentDir ? (
-                    <span className="min-w-0 truncate text-[11px] text-muted-foreground/50">
-                      {parentDir}
+            ) : null}
+            {items.map((item, index) => {
+              const isSelected = index === selectedIndex
+              return (
+                <div
+                  key={`${item.type}-${item.absolutePath}`}
+                  data-selected={isSelected}
+                  onMouseEnter={() => onHover(index)}
+                  onMouseDown={(event) => {
+                    event.preventDefault()
+                    onSelect(item)
+                  }}
+                  className={cn(
+                    'mx-1.5 flex cursor-pointer select-none items-center gap-2.5 rounded-[8px] px-2 py-1.5 text-[13px] transition-colors',
+                    isSelected ? 'bg-foreground/8' : 'hover:bg-foreground/5',
+                  )}
+                >
+                  <MentionItemIcon item={item} />
+                  <div className="flex min-w-0 flex-1 items-baseline gap-2">
+                    <span className="shrink-0 truncate font-medium text-foreground/95">
+                      {item.label}
                     </span>
-                  ) : null}
-                </>
-              )}
-            </div>
-          )
-        })}
-      </div>
-    </div>
+                    <span
+                      className="min-w-0 truncate text-[11.5px] text-muted-foreground/65"
+                      dir="rtl"
+                      // dir=rtl keeps the END of long paths visible when
+                      // they don't fit — the filename/leaf matters most.
+                    >
+                      <bdi>{item.relativePath}</bdi>
+                    </span>
+                  </div>
+                  <span className="shrink-0 rounded-[4px] bg-foreground/5 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground/80">
+                    {typeBadgeLabel(item.type)}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        </motion.div>
+      ) : null}
+    </AnimatePresence>
   )
 }
 
 export function useInlineMention({ inputRef, cwd }: UseInlineMentionOptions) {
   const [open, setOpen] = useState(false)
-  const [position, setPosition] = useState({ x: 0, y: 0 })
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [items, setItems] = useState<AgentMentionSearchResult[]>([])
+  const [query, setQuery] = useState('')
   const [atStart, setAtStart] = useState(-1)
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const searchRequestIdRef = useRef(0)
@@ -236,6 +161,7 @@ export function useInlineMention({ inputRef, cwd }: UseInlineMentionOptions) {
     searchRequestIdRef.current += 1
     setOpen(false)
     setItems([])
+    setQuery('')
     setSelectedIndex(0)
     setAtStart(-1)
     if (searchTimeoutRef.current) {
@@ -283,22 +209,11 @@ export function useInlineMention({ inputRef, cwd }: UseInlineMentionOptions) {
 
       setAtStart(trigger.start)
       setOpen(true)
+      setQuery(trigger.query)
       setSelectedIndex(0)
       runSearch(trigger.query)
-
-      const input = inputRef.current
-      if (!input) return
-      // Anchor the menu's bottom edge to the textarea's top — the composer
-      // can grow/scroll in ways that throw off the caret-mirror trick, and
-      // a stable above-the-input position reads better than a jumpy one
-      // chasing the caret. Caret x is still useful for left alignment when
-      // we can compute it cheaply.
-      const rect = input.getBoundingClientRect()
-      const caretRect = getTextareaCaretRect(input)
-      const xAnchor = caretRect && caretRect.x > 0 ? caretRect.x : rect.left
-      setPosition({ x: xAnchor, y: rect.top })
     },
-    [close, inputRef, runSearch],
+    [close, runSearch],
   )
 
   const selectItem = useCallback(
@@ -352,10 +267,14 @@ export function useInlineMention({ inputRef, cwd }: UseInlineMentionOptions) {
     [close, flatItems, open, selectItem, selectedIndex],
   )
 
+  // `inputRef` is reserved for future use (e.g., closing on focus loss); kept
+  // in the API to avoid churn at the call site.
+  void inputRef
+
   return {
     open,
     items,
-    position,
+    query,
     selectedIndex,
     setSelectedIndex,
     handleInputChange,

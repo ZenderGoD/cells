@@ -26,9 +26,11 @@ import { getDaemonRestartReason, type PtyDaemonVersionInfo } from './pty-daemon-
 import { PerfMonitor, type RendererPerfReport, type TerminalPerfReport } from './perf-monitor'
 import type { TerminalSessionManager } from './terminal-session-manager'
 import type {
+  AgentNotificationContext,
   AgentNotificationSettings,
   AgentMentionSearchResult,
   AgentSessionSnapshot,
+  FocusAgentWindowRequest,
   ProjectsState,
   TerminalSessionBackend,
 } from '../src/types'
@@ -279,6 +281,11 @@ const pendingAgentSessionSnapshots = new Map<string, AgentSessionSnapshot>()
 const previousAgentSessionSnapshots = new Map<string, AgentSessionSnapshot>()
 let pendingAgentSessionFlushTimer: NodeJS.Timeout | null = null
 let cachedAgentNotificationSettings: AgentNotificationSettings | null = null
+const cachedAgentWindowProjectIds = new Map<string, string>()
+let cachedAgentNotificationContext: AgentNotificationContext = {
+  activeProjectId: null,
+  focusedAgentWindowId: null,
+}
 
 app.on('second-instance', () => {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -373,9 +380,11 @@ function readAgentNotificationSettingsFromStateFile() {
   try {
     if (fs.existsSync(STATE_FILE)) {
       const state = readStateFile(STATE_FILE) as ProjectsState
+      syncCachedNotificationState(state)
       return normalizeAgentNotificationSettings(state.agentNotificationSettings)
     }
   } catch {}
+  syncCachedNotificationState(null)
   return DEFAULT_AGENT_NOTIFICATION_SETTINGS
 }
 
@@ -383,6 +392,38 @@ function getAgentNotificationSettings() {
   if (cachedAgentNotificationSettings) return cachedAgentNotificationSettings
   cachedAgentNotificationSettings = readAgentNotificationSettingsFromStateFile()
   return cachedAgentNotificationSettings
+}
+
+function syncCachedNotificationState(state?: ProjectsState | null) {
+  cachedAgentWindowProjectIds.clear()
+
+  if (!state) {
+    cachedAgentNotificationContext = {
+      activeProjectId: null,
+      focusedAgentWindowId: null,
+    }
+    return
+  }
+
+  for (const project of state.projects ?? []) {
+    for (const agentWindow of project.agentWindows ?? []) {
+      cachedAgentWindowProjectIds.set(agentWindow.id, project.id)
+    }
+  }
+
+  const activeProject =
+    state.activeProjectId != null
+      ? (state.projects.find((project) => project.id === state.activeProjectId) ?? null)
+      : null
+
+  cachedAgentNotificationContext = {
+    activeProjectId: state.activeProjectId ?? null,
+    focusedAgentWindowId: activeProject?.focusedAgentWindowId ?? null,
+  }
+}
+
+function getProjectIdForAgentWindow(windowId: string) {
+  return cachedAgentWindowProjectIds.get(windowId) ?? null
 }
 
 function isMainWindowForeground() {
@@ -395,14 +436,31 @@ function isMainWindowForeground() {
   )
 }
 
-function focusMainWindowAndAgentWindow(windowId?: string | null) {
+function shouldDeliverAgentNotification(
+  snapshot: AgentSessionSnapshot,
+  settings: AgentNotificationSettings,
+) {
+  if (!settings.enabled) return false
+  if (!settings.onlyWhenUnfocused) return true
+  if (!isMainWindowForeground()) return true
+
+  const projectId = getProjectIdForAgentWindow(snapshot.windowId)
+  if (!projectId) return true
+
+  return !(
+    cachedAgentNotificationContext.activeProjectId === projectId &&
+    cachedAgentNotificationContext.focusedAgentWindowId === snapshot.windowId
+  )
+}
+
+function focusMainWindowAndAgentWindow(request?: FocusAgentWindowRequest | null) {
   if (!mainWindow || mainWindow.isDestroyed()) return
   if (mainWindow.isMinimized()) mainWindow.restore()
   if (!mainWindow.isVisible()) mainWindow.show()
   mainWindow.focus()
-  if (!windowId) return
+  if (!request?.windowId) return
   try {
-    mainWindow.webContents.send('app:focus-agent-window', windowId)
+    mainWindow.webContents.send('app:focus-agent-window', request)
   } catch {}
 }
 
@@ -412,6 +470,7 @@ async function showSystemNotification(
   options?: {
     playSound?: boolean
     focusAgentWindowId?: string | null
+    focusProjectId?: string | null
   },
 ) {
   const playSound = options?.playSound ?? true
@@ -427,8 +486,13 @@ async function showSystemNotification(
   })
 
   if (options?.focusAgentWindowId) {
+    const focusAgentWindowId = options.focusAgentWindowId
+    const focusProjectId = options.focusProjectId
     notification.on('click', () => {
-      focusMainWindowAndAgentWindow(options.focusAgentWindowId)
+      focusMainWindowAndAgentWindow({
+        windowId: focusAgentWindowId,
+        projectId: focusProjectId,
+      })
     })
   }
 
@@ -538,15 +602,14 @@ function maybeNotifyForAgentSessionUpdate(snapshot: AgentSessionSnapshot) {
   if (!previous) return
 
   const settings = getAgentNotificationSettings()
-  if (!settings.enabled) return
-  if (settings.onlyWhenUnfocused && isMainWindowForeground()) return
-
+  if (!shouldDeliverAgentNotification(snapshot, settings)) return
   const notification = buildAgentNotificationFromSnapshot(previous, snapshot, settings)
   if (!notification) return
 
   void showSystemNotification(notification.title, notification.body, {
     playSound: settings.playSound,
     focusAgentWindowId: snapshot.windowId,
+    focusProjectId: getProjectIdForAgentWindow(snapshot.windowId),
   })
 }
 
@@ -795,6 +858,7 @@ ipcMain.handle('state:load', () => {
     ensureStateDir()
     if (fs.existsSync(STATE_FILE)) {
       const state = readStateFile(STATE_FILE)
+      syncCachedNotificationState(state as ProjectsState)
       cachedAgentNotificationSettings = normalizeAgentNotificationSettings(
         (state as ProjectsState).agentNotificationSettings,
       )
@@ -803,12 +867,14 @@ ipcMain.handle('state:load', () => {
     if (fs.existsSync(LEGACY_STATE_FILE)) {
       const legacyState = readStateFile(LEGACY_STATE_FILE)
       fs.writeFileSync(STATE_FILE, JSON.stringify(legacyState, null, 2))
+      syncCachedNotificationState(legacyState as ProjectsState)
       cachedAgentNotificationSettings = normalizeAgentNotificationSettings(
         (legacyState as ProjectsState).agentNotificationSettings,
       )
       return legacyState
     }
   } catch {}
+  syncCachedNotificationState(null)
   return null
 })
 
@@ -816,12 +882,20 @@ ipcMain.handle('state:save', (_event, state) => {
   try {
     ensureStateDir()
     fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2))
+    syncCachedNotificationState(state)
     refreshTerminalBackendSelection(state)
     cachedAgentNotificationSettings = normalizeAgentNotificationSettings(
       state.agentNotificationSettings,
     )
   } catch (err) {
     console.error('Failed to save state:', err)
+  }
+})
+
+ipcMain.on('app:update-notification-context', (_event, context: AgentNotificationContext) => {
+  cachedAgentNotificationContext = {
+    activeProjectId: context.activeProjectId ?? null,
+    focusedAgentWindowId: context.focusedAgentWindowId ?? null,
   }
 })
 
@@ -1555,7 +1629,11 @@ ipcMain.handle(
     _event,
     title: string,
     body: string,
-    options?: { playSound?: boolean; focusAgentWindowId?: string | null },
+    options?: {
+      playSound?: boolean
+      focusAgentWindowId?: string | null
+      focusProjectId?: string | null
+    },
   ) => {
     return showSystemNotification(title, body, options)
   },

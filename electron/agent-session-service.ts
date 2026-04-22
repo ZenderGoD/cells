@@ -12,6 +12,7 @@ import {
   type SDKSession,
 } from '@anthropic-ai/claude-agent-sdk'
 import type {
+  AgentContextLength,
   AgentUsageStats,
   AgentSessionMessage,
   AgentSessionRequest,
@@ -1390,6 +1391,9 @@ interface ClaudeRuntime extends RuntimeBase {
    *  the next result's usage reporting so the % bar reflects reality. Cleared
    *  after the next user send() starts a fresh turn. */
   postCompactUsedTokens: number | null
+  /** True once the current turn has emitted a context-window-accurate live
+   *  usage snapshot (task_progress/task_notification/compact_boundary). */
+  liveContextUsageUpdatedThisTurn: boolean
   /** Set while the agent has called `ExitPlanMode` and we're blocking the
    *  `canUseTool` return until the user picks approve / reject from the UI. */
   pendingPlanApproval: {
@@ -1547,6 +1551,40 @@ function buildUsageStats(input: {
     usedTokens,
     totalProcessedTokens: totalProcessedTokens > 0 ? totalProcessedTokens : null,
     compactsAutomatically: input.compactsAutomatically,
+    updatedAt: now(),
+  }
+}
+
+function getClaudeRequestedContextWindow(contextLength: AgentContextLength | null | undefined) {
+  return contextLength === 'extended' ? 1_000_000 : 200_000
+}
+
+function buildClaudeLiveUsageStats(input: {
+  usage: Record<string, unknown> | null
+  existingUsage: AgentUsageStats | null | undefined
+  model: string | null
+  contextLength: AgentContextLength | null | undefined
+}): AgentUsageStats | null {
+  const totalTokensRaw = input.usage?.total_tokens
+  const totalTokens =
+    typeof totalTokensRaw === 'number' && Number.isFinite(totalTokensRaw) && totalTokensRaw > 0
+      ? Math.round(totalTokensRaw)
+      : null
+  if (totalTokens == null) return null
+
+  const contextWindow =
+    input.existingUsage?.contextWindow ?? getClaudeRequestedContextWindow(input.contextLength)
+  const usedTokens = Math.min(totalTokens, contextWindow)
+
+  return {
+    model: input.existingUsage?.model ?? input.model,
+    inputTokens: input.existingUsage?.inputTokens ?? 0,
+    outputTokens: input.existingUsage?.outputTokens ?? 0,
+    cachedInputTokens: input.existingUsage?.cachedInputTokens ?? 0,
+    contextWindow,
+    usedTokens,
+    totalProcessedTokens: totalTokens > usedTokens ? totalTokens : null,
+    compactsAutomatically: input.existingUsage?.compactsAutomatically ?? true,
     updatedAt: now(),
   }
 }
@@ -2590,6 +2628,7 @@ export class AgentSessionService extends EventEmitter {
         streamGeneration: 0,
         autoContinueCount: 0,
         postCompactUsedTokens: null,
+        liveContextUsageUpdatedThisTurn: false,
         pendingPlanApproval: null,
         pendingQuestion: null,
       }
@@ -2715,6 +2754,7 @@ export class AgentSessionService extends EventEmitter {
       // post-compaction usage (not the pre-compact remnant), so drop any
       // pinned post-compact value so we don't shadow it.
       runtime.postCompactUsedTokens = null
+      runtime.liveContextUsageUpdatedThisTurn = false
     }
 
     appendMessage(runtime.snapshot, {
@@ -3657,6 +3697,7 @@ export class AgentSessionService extends EventEmitter {
       )
       runtime.session = session
       runtime.closed = false
+      runtime.liveContextUsageUpdatedThisTurn = false
       this.startClaudeStream(runtime)
       return runtime
     }
@@ -4114,6 +4155,23 @@ export class AgentSessionService extends EventEmitter {
     }
     if (
       event.type === 'system' &&
+      ((event as any).subtype === 'task_progress' || (event as any).subtype === 'task_notification')
+    ) {
+      const evt = event as any
+      const liveUsage = buildClaudeLiveUsageStats({
+        usage: asRecord(evt.usage),
+        existingUsage: runtime.snapshot.usage,
+        model: runtime.snapshot.usage?.model ?? runtime.request.model ?? DEFAULT_CLAUDE_MODEL,
+        contextLength: runtime.request.contextLength,
+      })
+      if (liveUsage) {
+        runtime.snapshot.usage = liveUsage
+        runtime.liveContextUsageUpdatedThisTurn = true
+      }
+      return
+    }
+    if (
+      event.type === 'system' &&
       (event as any).subtype === 'status' &&
       (event as any).status === 'compacting'
     ) {
@@ -4156,9 +4214,10 @@ export class AgentSessionService extends EventEmitter {
       // post-compaction count from compact_metadata so the indicator reflects
       // reality, and flag the result handler to skip its usage update.
       runtime.postCompactUsedTokens = postTokens
+      runtime.liveContextUsageUpdatedThisTurn = true
       const window =
         runtime.snapshot.usage?.contextWindow ??
-        (runtime.request.contextLength === 'extended' ? 1_000_000 : 200_000)
+        getClaudeRequestedContextWindow(runtime.request.contextLength)
       const clamped = postTokens != null ? Math.min(postTokens, window) : null
       const existingUsage = runtime.snapshot.usage
       runtime.snapshot.usage = {
@@ -4299,6 +4358,10 @@ export class AgentSessionService extends EventEmitter {
         if (pickEntry) {
           const [pickModel, pick] = pickEntry
           const cached = (pick.cacheReadInputTokens ?? 0) + (pick.cacheCreationInputTokens ?? 0)
+          const liveUsage =
+            runtime.liveContextUsageUpdatedThisTurn && runtime.snapshot.usage?.usedTokens
+              ? runtime.snapshot.usage
+              : null
           const freshUsage = buildUsageStats({
             model: pickModel,
             // Claude reports `inputTokens` as the NEW prompt tokens only —
@@ -4318,17 +4381,39 @@ export class AgentSessionService extends EventEmitter {
           // the boundary instead, but still refresh contextWindow / model /
           // output counts so the rest of the view stays accurate.
           if (runtime.postCompactUsedTokens != null) {
-            const window = freshUsage.contextWindow ?? 200_000
+            const window =
+              freshUsage.contextWindow ??
+              getClaudeRequestedContextWindow(runtime.request.contextLength)
             const pinned = Math.min(runtime.postCompactUsedTokens, window)
             runtime.snapshot.usage = {
               ...freshUsage,
               usedTokens: pinned,
-              totalProcessedTokens: runtime.postCompactUsedTokens,
+              totalProcessedTokens:
+                freshUsage.totalProcessedTokens != null && freshUsage.totalProcessedTokens > pinned
+                  ? freshUsage.totalProcessedTokens
+                  : runtime.postCompactUsedTokens,
             }
             runtime.postCompactUsedTokens = null
+          } else if (liveUsage?.usedTokens != null && liveUsage.usedTokens > 0) {
+            const window = freshUsage.contextWindow ?? liveUsage.contextWindow
+            const pinned =
+              window != null ? Math.min(liveUsage.usedTokens, window) : liveUsage.usedTokens
+            runtime.snapshot.usage = {
+              ...freshUsage,
+              contextWindow: window,
+              usedTokens: pinned,
+              totalProcessedTokens:
+                freshUsage.totalProcessedTokens != null && freshUsage.totalProcessedTokens > pinned
+                  ? freshUsage.totalProcessedTokens
+                  : liveUsage.totalProcessedTokens != null &&
+                      liveUsage.totalProcessedTokens > pinned
+                    ? liveUsage.totalProcessedTokens
+                    : null,
+            }
           } else {
             runtime.snapshot.usage = freshUsage
           }
+          runtime.liveContextUsageUpdatedThisTurn = false
           log('claude.usage', {
             windowId: runtime.snapshot.windowId,
             requested,
@@ -4344,6 +4429,8 @@ export class AgentSessionService extends EventEmitter {
       } else {
         log('claude.usage.missing', { windowId: runtime.snapshot.windowId })
       }
+      runtime.liveContextUsageUpdatedThisTurn = false
+      runtime.postCompactUsedTokens = null
       // Safety net: if any tool rows are still marked in_progress after the
       // turn finished (tool_result event was dropped or mis-matched),
       // close them out so the UI doesn't keep spinning. Assistant text

@@ -1214,7 +1214,8 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                   <SettingsGroup title="Desktop Notifications">
                     <p className="mb-3 text-[10px] text-muted-foreground/40">
                       Native macOS notifications for agent sessions. Cells only sends them on
-                      meaningful state changes, not on every streaming update.
+                      meaningful state changes, not on every streaming update. Smart delivery only
+                      suppresses alerts when the exact agent window is already focused.
                     </p>
                     <div className="space-y-2.5">
                       <SettingsField
@@ -1250,12 +1251,10 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
 
                       <SettingsField
                         label="Delivery"
-                        hint={
-                          agentNotificationSettings.onlyWhenUnfocused ? 'Background only' : 'Always'
-                        }
+                        hint={agentNotificationSettings.onlyWhenUnfocused ? 'Smart' : 'Always'}
                       >
                         <SettingsSwitchRow
-                          label="Only notify when Cells is not focused"
+                          label="Skip notifications when that agent window is already focused"
                           checked={agentNotificationSettings.onlyWhenUnfocused}
                           disabled={!agentNotificationSettings.enabled}
                           onToggle={() =>
