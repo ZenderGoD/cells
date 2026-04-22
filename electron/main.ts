@@ -3629,7 +3629,10 @@ app.whenReady().then(async () => {
             { type: 'separator' },
             { role: 'services' },
             { type: 'separator' },
-            { role: 'hide', label: `Hide ${appName}` },
+            {
+              label: `Hide ${appName}`,
+              click: () => app.hide(),
+            },
             { role: 'hideOthers' },
             { role: 'unhide' },
             { type: 'separator' },
