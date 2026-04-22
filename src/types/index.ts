@@ -182,6 +182,9 @@ export type AgentThinkingLevel = 'off' | 'low' | 'medium' | 'high' | 'max' | 'xh
 /** A user message queued while the agent was running. Persisted on the
  *  AgentWindowNode so the queue survives app restart. */
 export interface QueuedAgentMessage {
+  /** Stable id for React keys + Framer layoutIds — two entries with
+   *  identical content would otherwise collide and one would be hidden. */
+  id: string
   text: string
   attachments: string[]
   /**

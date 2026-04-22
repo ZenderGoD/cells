@@ -1498,7 +1498,6 @@ function getAgentMentionScore(entry: AgentMentionSearchResult, rawQuery: string)
   const relativePath = entry.relativePath.toLowerCase()
 
   let score = 0
-  if (entry.type === 'skill') score += 30
   if (label.startsWith(query)) score += 30
   else if (relativePath.startsWith(query)) score += 24
   else if (label.includes(query)) score += 18
@@ -1506,6 +1505,10 @@ function getAgentMentionScore(entry: AgentMentionSearchResult, rawQuery: string)
   if (compactQuery && isSubsequenceMatch(relativePath.replace(/\s+/g, ''), compactQuery)) {
     score += 8
   }
+  // Small tiebreaker for skills only when they already match the query.
+  // The blanket type bonus used to float unrelated skills above a real
+  // file match (e.g. typing "org.ts" surfaced every SKILL.md first).
+  if (score > 0 && entry.type === 'skill') score += 2
   return score
 }
 

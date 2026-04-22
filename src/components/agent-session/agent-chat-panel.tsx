@@ -49,6 +49,9 @@ import {
   PermissionPicker,
   THINKING_LEVEL_LABEL_MAP,
   ThinkingPicker,
+  cycleAgentModel,
+  cyclePermissionMode,
+  cycleThinkingLevel,
   getDefaultPermissionMode,
   prettifyModelId,
 } from './agent-composer-toolbar'
@@ -89,6 +92,14 @@ const EASE_OUT = [0.25, 0.46, 0.45, 0.94] as const
 // <300ms, transform+opacity only. Slightly slower than the queue's
 // enter/exit so the morph reads as intentional motion, not a jank.
 const EASE_IN_OUT = [0.645, 0.045, 0.355, 1] as const
+// ease-out-quart for height-based expand/collapse — the tail settles gently
+// instead of clipping. Paired with a faster opacity fade so content is
+// legible while the container is still growing.
+const EASE_EXPAND = [0.22, 1, 0.36, 1] as const
+const EXPAND_TRANSITION = {
+  height: { duration: 0.28, ease: EASE_EXPAND },
+  opacity: { duration: 0.18, ease: EASE_EXPAND },
+} as const
 
 function getComposerPlaceholder(agent: AgentWindowNode['agent']) {
   return agent === 'claude' ? 'Message Claude Code…' : 'Message Codex…'
@@ -525,8 +536,20 @@ function ErrorBubble({ message }: { message: AgentSessionMessage }) {
 type QueuedMessage = QueuedAgentMessage
 const ATTACHMENTS_ONLY_TEXT = '(attached files)'
 
+function createQueuedMessageId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `q_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
+}
+
 function sanitizeQueuedMessages(messages: QueuedMessage[]): QueuedMessage[] {
-  return messages.filter((message) => message.mode !== 'stop')
+  // Backfill ids for entries persisted before the id field existed so React
+  // keys and Framer layoutIds stay unique even when two messages have
+  // identical text/attachments/mode.
+  return messages
+    .filter((message) => message.mode !== 'stop')
+    .map((message) => (message.id ? message : { ...message, id: createQueuedMessageId() }))
 }
 
 function getQueuedComposerText(message: QueuedMessage) {
@@ -886,35 +909,37 @@ function CodexPlanBanner({ plan }: { plan: CodexPlanSnapshot }) {
       </button>
       <AnimatePresence initial={false}>
         {!collapsed ? (
-          <motion.ul
+          <motion.div
             key="plan-items"
-            initial={reduceMotion ? false : { opacity: 0, y: -4 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
-            transition={{ duration: 0.18, ease: EASE_OUT }}
-            className="mt-1 flex flex-col gap-0.5"
+            initial={reduceMotion ? false : { height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+            transition={EXPAND_TRANSITION}
+            style={{ overflow: 'hidden' }}
           >
-            {plan.items.map((item, idx) => (
-              <li
-                key={`${idx}-${item.text}`}
-                className="flex items-start gap-2 rounded-[10px] bg-foreground/5 px-2.5 py-1.5 text-[12px] text-foreground/85"
-              >
-                {item.completed ? (
-                  <Check className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/70" />
-                ) : (
-                  <Circle className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/50" />
-                )}
-                <span
-                  className={cn(
-                    'min-w-0 flex-1 break-words leading-[1.45]',
-                    item.completed && 'text-muted-foreground/55 line-through',
-                  )}
+            <ul className="mt-1 flex flex-col gap-0.5">
+              {plan.items.map((item, idx) => (
+                <li
+                  key={`${idx}-${item.text}`}
+                  className="flex items-start gap-2 rounded-[10px] bg-foreground/5 px-2.5 py-1.5 text-[12px] text-foreground/85"
                 >
-                  {item.text}
-                </span>
-              </li>
-            ))}
-          </motion.ul>
+                  {item.completed ? (
+                    <Check className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/70" />
+                  ) : (
+                    <Circle className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/50" />
+                  )}
+                  <span
+                    className={cn(
+                      'min-w-0 flex-1 break-words leading-[1.45]',
+                      item.completed && 'text-muted-foreground/55 line-through',
+                    )}
+                  >
+                    {item.text}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </motion.div>
         ) : null}
       </AnimatePresence>
     </div>
@@ -1536,6 +1561,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   // Queue list collapses by default — the header already shows count + a
   // preview of the next message, mirroring AgentTurnCard's activities stripe.
   const [queueCollapsed, setQueueCollapsed] = useState(true)
+  // ESC-to-stop is a two-step confirmation so a stray keystroke can't kill
+  // a live turn. First press arms the hint; second press within 2s stops.
+  const [stopConfirmArmed, setStopConfirmArmed] = useState(false)
+  const stopConfirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
   // Active drag state for queue reorder — `dragIndex` is the row being dragged,
   // `dragOverIndex` is the row currently under the pointer. Both reset on
@@ -1621,6 +1650,76 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     window.addEventListener('keydown', onKeyDown, true)
     return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [agentWindow.id, focusedAgentWindowId])
+  // Ctrl+M cycles models, Ctrl+T cycles thinking effort, Shift+Tab cycles
+  // permission mode. Scoped to textarea focus so we don't steal Shift+Tab
+  // from real focus traversal elsewhere in the app.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (focusedAgentWindowId !== agentWindow.id) return
+      if (useStore.getState().overlayOpen) return
+      if (event.defaultPrevented) return
+      if (document.activeElement !== textareaRef.current) return
+
+      const store = useStore.getState()
+      const isCtrlOnly = event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey
+      const key = event.key.toLowerCase()
+
+      if (isCtrlOnly && key === 'm') {
+        event.preventDefault()
+        event.stopPropagation()
+        const nextId = cycleAgentModel(agentWindow.agent, agentWindow.model)
+        if (nextId) {
+          store.syncAgentWindow(agentWindow.id, { model: nextId })
+          store.setLastAgentSessionDefaults(agentWindow.agent, { model: nextId })
+        }
+        return
+      }
+
+      if (isCtrlOnly && key === 't') {
+        event.preventDefault()
+        event.stopPropagation()
+        const nextLevel = cycleThinkingLevel(
+          agentWindow.agent,
+          agentWindow.model,
+          agentWindow.thinkingLevel,
+        )
+        if (nextLevel) {
+          store.syncAgentWindow(agentWindow.id, { thinkingLevel: nextLevel })
+          store.setLastAgentSessionDefaults(agentWindow.agent, { thinkingLevel: nextLevel })
+        }
+        return
+      }
+
+      if (
+        event.shiftKey &&
+        event.key === 'Tab' &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey
+      ) {
+        event.preventDefault()
+        event.stopPropagation()
+        const nextMode = cyclePermissionMode(
+          agentWindow.permissionMode ?? getDefaultPermissionMode(),
+        )
+        store.syncAgentWindow(agentWindow.id, { permissionMode: nextMode })
+        store.setLastAgentSessionDefaults(agentWindow.agent, { permissionMode: nextMode })
+        void window.cells.agentSession
+          .updatePermissionMode(agentWindow.id, nextMode)
+          .catch((err: unknown) => console.error('[agent-chat] updatePermissionMode failed', err))
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [
+    agentWindow.agent,
+    agentWindow.id,
+    agentWindow.model,
+    agentWindow.permissionMode,
+    agentWindow.thinkingLevel,
+    focusedAgentWindowId,
+  ])
   // Clear the "done-unviewed" flag the moment the user focuses this window —
   // they've now "checked on" the completed turn.
   useEffect(() => {
@@ -2111,6 +2210,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       // messages once the runtime flips back to idle.
       if (intent === 'stop' && running) {
         const entry: QueuedMessage = {
+          id: createQueuedMessageId(),
           text: value,
           attachments: pinned,
           mode: 'stop',
@@ -2127,6 +2227,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       // behind older after-turn entries.
       if ((intent === 'after-tool' || intent === 'after-turn') && running) {
         const entry: QueuedMessage = {
+          id: createQueuedMessageId(),
           text: value,
           attachments: pinned,
           mode: intent,
@@ -2355,7 +2456,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     const next = queuedMessages[0]
     // Prime the queue→bubble morph. Same key as the exiting queue row; the
     // bubble will claim it on arrival.
-    const queueMorphId = `queue-morph-${next.mode}|${next.text}|${next.attachments.join(',')}`
+    const queueMorphId = `queue-morph-${next.id}`
     queueMicrotask(() => enqueuePendingMorph(queueMorphId))
     setQueuedMessages((q) => q.slice(1))
     void sendToAgent(next.text, next.attachments, {
@@ -2470,6 +2571,26 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
           return
         }
       }
+      if (event.key === 'Escape' && isRunning) {
+        event.preventDefault()
+        event.stopPropagation()
+        if (stopConfirmArmed) {
+          if (stopConfirmTimerRef.current) {
+            clearTimeout(stopConfirmTimerRef.current)
+            stopConfirmTimerRef.current = null
+          }
+          setStopConfirmArmed(false)
+          void handleStop()
+        } else {
+          setStopConfirmArmed(true)
+          if (stopConfirmTimerRef.current) clearTimeout(stopConfirmTimerRef.current)
+          stopConfirmTimerRef.current = setTimeout(() => {
+            setStopConfirmArmed(false)
+            stopConfirmTimerRef.current = null
+          }, 2000)
+        }
+        return
+      }
       if (event.key !== 'Enter') return
       if (event.shiftKey) return
       if ((event as any).isComposing || event.keyCode === 229) return
@@ -2492,9 +2613,36 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     applyInlineMentionSelection,
     commitEditQueued,
     editingIndex,
+    handleStop,
     inlineMention,
+    isRunning,
+    stopConfirmArmed,
     submit,
   ])
+
+  // Disarm + clear the confirmation timer once the session is no longer
+  // running, so the hint doesn't linger after the turn resolves on its own.
+  useEffect(() => {
+    if (isRunning) return
+    if (stopConfirmTimerRef.current) {
+      clearTimeout(stopConfirmTimerRef.current)
+      stopConfirmTimerRef.current = null
+    }
+    // Effect-driven setState is deliberate: we need the armed bit cleared
+    // so the next running turn doesn't start already-armed.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (stopConfirmArmed) setStopConfirmArmed(false)
+  }, [isRunning, stopConfirmArmed])
+
+  useEffect(
+    () => () => {
+      if (stopConfirmTimerRef.current) {
+        clearTimeout(stopConfirmTimerRef.current)
+        stopConfirmTimerRef.current = null
+      }
+    },
+    [],
+  )
 
   useEffect(() => {
     if (hasMessages) return
@@ -2674,7 +2822,11 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                           <div className="relative">
                             <ScrollArea
                               className="max-h-[250px] w-full"
-                              viewportClassName="pr-2"
+                              // `[&>div]:!block` defeats Radix's internal
+                              // `display: table` wrapper — otherwise the
+                              // table grows to fit long titles and `truncate`
+                              // never triggers on the session rows.
+                              viewportClassName="pr-2 [&>div]:!block"
                               viewportRef={recentSessionsViewportRef}
                             >
                               <div className="flex flex-col gap-0.5 pb-2">
@@ -2943,240 +3095,254 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                       </button>
                     )
                   })()}
-                  {!queueCollapsed || queuedMessages.length === 1 ? (
-                    <div
-                      ref={queueScrollRef}
-                      onScroll={updateQueueScrollFade}
-                      // Mask-image creates a subtle fade at whichever edge has
-                      // hidden content. Uses a narrow 10px band and fades to
-                      // 78% (not full transparent) so the effect reads as a
-                      // hint, not a cut. Only the active edge fades, so when
-                      // you're at the top there's just a fade at the bottom
-                      // and vice versa.
-                      style={
-                        queueScrollFade.top || queueScrollFade.bottom
-                          ? {
-                              maskImage: `linear-gradient(to bottom, ${
-                                queueScrollFade.top ? 'rgba(0,0,0,0.78)' : 'black'
-                              } 0, black 10px, black calc(100% - 10px), ${
-                                queueScrollFade.bottom ? 'rgba(0,0,0,0.78)' : 'black'
-                              } 100%)`,
-                              WebkitMaskImage: `linear-gradient(to bottom, ${
-                                queueScrollFade.top ? 'rgba(0,0,0,0.78)' : 'black'
-                              } 0, black 10px, black calc(100% - 10px), ${
-                                queueScrollFade.bottom ? 'rgba(0,0,0,0.78)' : 'black'
-                              } 100%)`,
-                            }
-                          : undefined
-                      }
-                      className={cn(
-                        'flex max-h-[108px] flex-col gap-1 overflow-y-auto overscroll-contain pr-0.5',
-                        queuedMessages.length > 1 && 'mt-1',
-                      )}
-                    >
-                      <AnimatePresence initial={false} mode="popLayout">
-                        {queuedMessages.map((entry, i) => {
-                          const meta = queueModeMeta[entry.mode]
-                          const modelLabel = entry.model
-                            ? prettifyModelId(agentWindow.agent, entry.model)
-                            : null
-                          const thinkingLabel =
-                            entry.thinkingLevel && entry.thinkingLevel !== 'off'
-                              ? THINKING_LEVEL_LABEL_MAP[entry.thinkingLevel]
-                              : null
-                          const permissionOption = entry.permissionMode
-                            ? PERMISSION_MODE_OPTIONS.find((o) => o.id === entry.permissionMode)
-                            : null
-                          const isEditing = editingIndex === i
-                          const isDragging = dragIndex === i
-                          const isDropTarget =
-                            dragOverIndex === i && dragIndex !== null && dragIndex !== i
-                          // Content-derived key. Index keys break AnimatePresence's
-                          // exit/reorder bookkeeping because neighbors shift index
-                          // when an entry is removed; duplicates are theoretically
-                          // possible but visually indistinguishable so we accept it.
-                          const queueKey = `${entry.mode}|${entry.text}|${entry.attachments.join(',')}`
-                          // `layoutId` binds this row to the user bubble that
-                          // will arrive for this exact entry. Disabled under
-                          // reduced motion so the shared-element morph never
-                          // kicks in when the user has asked for less motion.
-                          const queueMorphLayoutId = reduceMotion
-                            ? undefined
-                            : `queue-morph-${queueKey}`
-                          return (
-                            <motion.div
-                              key={queueKey}
-                              layoutId={queueMorphLayoutId}
-                              initial={reduceMotion ? false : { opacity: 0, y: 8, scale: 0.98 }}
-                              animate={{ opacity: 1, y: 0, scale: 1 }}
-                              // Exit slides UP toward the chat history. Pairs with
-                              // the new user-message row's y:6→0 entrance so the
-                              // queue feels like it flows into the conversation
-                              // instead of just popping out.
-                              exit={
-                                reduceMotion ? { opacity: 0 } : { opacity: 0, y: -8, scale: 0.98 }
-                              }
-                              transition={{ duration: 0.22, ease: EASE_OUT }}
-                              draggable={!isEditing}
-                              // motion.div retypes the drag event handlers for
-                              // its own gesture system (MouseEvent | TouchEvent |
-                              // PointerEvent). HTML5 drag-and-drop still fires
-                              // here at runtime — the events are real DragEvents,
-                              // we just have to cast back to access dataTransfer.
-                              onDragStart={(event) => {
-                                if (isEditing) return
-                                const e = event as unknown as React.DragEvent<HTMLDivElement>
-                                setDragIndex(i)
-                                e.dataTransfer.effectAllowed = 'move'
-                                try {
-                                  e.dataTransfer.setData('text/plain', String(i))
-                                } catch {
-                                  // Safari may throw if dataTransfer is locked; drag still works.
+                  <AnimatePresence initial={false}>
+                    {!queueCollapsed || queuedMessages.length === 1 ? (
+                      <motion.div
+                        key="queue-list"
+                        initial={reduceMotion ? false : { height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+                        transition={EXPAND_TRANSITION}
+                        style={{ overflow: 'hidden' }}
+                      >
+                        <div
+                          ref={queueScrollRef}
+                          onScroll={updateQueueScrollFade}
+                          // Mask-image creates a subtle fade at whichever edge has
+                          // hidden content. Uses a narrow 10px band and fades to
+                          // 78% (not full transparent) so the effect reads as a
+                          // hint, not a cut. Only the active edge fades, so when
+                          // you're at the top there's just a fade at the bottom
+                          // and vice versa.
+                          style={
+                            queueScrollFade.top || queueScrollFade.bottom
+                              ? {
+                                  maskImage: `linear-gradient(to bottom, ${
+                                    queueScrollFade.top ? 'rgba(0,0,0,0.78)' : 'black'
+                                  } 0, black 10px, black calc(100% - 10px), ${
+                                    queueScrollFade.bottom ? 'rgba(0,0,0,0.78)' : 'black'
+                                  } 100%)`,
+                                  WebkitMaskImage: `linear-gradient(to bottom, ${
+                                    queueScrollFade.top ? 'rgba(0,0,0,0.78)' : 'black'
+                                  } 0, black 10px, black calc(100% - 10px), ${
+                                    queueScrollFade.bottom ? 'rgba(0,0,0,0.78)' : 'black'
+                                  } 100%)`,
                                 }
-                              }}
-                              onDragOver={(event) => {
-                                if (dragIndex === null || dragIndex === i) return
-                                const e = event as unknown as React.DragEvent<HTMLDivElement>
-                                e.preventDefault()
-                                e.dataTransfer.dropEffect = 'move'
-                                if (dragOverIndex !== i) setDragOverIndex(i)
-                              }}
-                              onDragLeave={() => {
-                                setDragOverIndex((prev) => (prev === i ? null : prev))
-                              }}
-                              onDrop={(event) => {
-                                const e = event as unknown as React.DragEvent<HTMLDivElement>
-                                e.preventDefault()
-                                if (dragIndex !== null && dragIndex !== i) {
-                                  reorderQueue(dragIndex, i)
-                                }
-                                setDragIndex(null)
-                                setDragOverIndex(null)
-                              }}
-                              onDragEnd={() => {
-                                setDragIndex(null)
-                                setDragOverIndex(null)
-                              }}
-                              className={cn(
-                                'group/queued flex gap-2 rounded-[10px] bg-foreground/5 px-2.5 py-1.5 text-[12px] text-foreground/85 transition-colors backdrop-blur-sm',
-                                'items-center',
-                                isEditing && 'bg-cyan-500/10',
-                                isDragging && 'opacity-50',
-                                isDropTarget && 'bg-foreground/10',
-                              )}
-                              title={
-                                isEditing
-                                  ? 'Editing in composer'
-                                  : `${meta.shortcut} · ${meta.hint}`
-                              }
-                            >
-                              <span
-                                className={cn(
-                                  'flex size-3.5 shrink-0 cursor-grab items-center justify-center text-muted-foreground/40 transition-colors hover:text-foreground/70 active:cursor-grabbing',
-                                  isEditing && 'text-cyan-300/80',
-                                )}
-                                aria-label="Drag to reorder"
-                                title="Drag to reorder"
-                              >
-                                <GripVertical className="size-3" />
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => toggleQueuedMode(i)}
-                                aria-label={`Change queue mode from ${meta.label}`}
-                                title={`${meta.label} · click to switch queue mode`}
-                                className="shrink-0 rounded-[6px] p-0.5 hover:bg-foreground/10"
-                              >
-                                <meta.Icon className={cn('size-3.5 shrink-0', meta.tint)} />
-                              </button>
-                              <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                                <button
-                                  type="button"
-                                  onClick={() => beginEditQueued(i)}
+                              : undefined
+                          }
+                          className={cn(
+                            'flex max-h-[108px] flex-col gap-1 overflow-x-hidden overflow-y-auto overscroll-contain pr-0.5',
+                            queuedMessages.length > 1 && 'mt-1',
+                          )}
+                        >
+                          <AnimatePresence initial={false} mode="popLayout">
+                            {queuedMessages.map((entry, i) => {
+                              const meta = queueModeMeta[entry.mode]
+                              const modelLabel = entry.model
+                                ? prettifyModelId(agentWindow.agent, entry.model)
+                                : null
+                              const thinkingLabel =
+                                entry.thinkingLevel && entry.thinkingLevel !== 'off'
+                                  ? THINKING_LEVEL_LABEL_MAP[entry.thinkingLevel]
+                                  : null
+                              const permissionOption = entry.permissionMode
+                                ? PERMISSION_MODE_OPTIONS.find((o) => o.id === entry.permissionMode)
+                                : null
+                              const isEditing = editingIndex === i
+                              const isDragging = dragIndex === i
+                              const isDropTarget =
+                                dragOverIndex === i && dragIndex !== null && dragIndex !== i
+                              // Stable per-entry id. Using content as the key would
+                              // collide when two queued messages have the same
+                              // mode+text+attachments — React would drop one and
+                              // Framer would stack the duplicate layoutIds, showing
+                              // a blank gap where the second row should be.
+                              const queueKey = entry.id
+                              // `layoutId` binds this row to the user bubble that
+                              // will arrive for this exact entry. Disabled under
+                              // reduced motion so the shared-element morph never
+                              // kicks in when the user has asked for less motion.
+                              const queueMorphLayoutId = reduceMotion
+                                ? undefined
+                                : `queue-morph-${queueKey}`
+                              return (
+                                <motion.div
+                                  key={queueKey}
+                                  layoutId={queueMorphLayoutId}
+                                  initial={reduceMotion ? false : { opacity: 0, y: 8, scale: 0.98 }}
+                                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                                  // Exit slides UP toward the chat history. Pairs with
+                                  // the new user-message row's y:6→0 entrance so the
+                                  // queue feels like it flows into the conversation
+                                  // instead of just popping out.
+                                  exit={
+                                    reduceMotion
+                                      ? { opacity: 0 }
+                                      : { opacity: 0, y: -8, scale: 0.98 }
+                                  }
+                                  transition={{ duration: 0.22, ease: EASE_OUT }}
+                                  draggable={!isEditing}
+                                  // motion.div retypes the drag event handlers for
+                                  // its own gesture system (MouseEvent | TouchEvent |
+                                  // PointerEvent). HTML5 drag-and-drop still fires
+                                  // here at runtime — the events are real DragEvents,
+                                  // we just have to cast back to access dataTransfer.
+                                  onDragStart={(event) => {
+                                    if (isEditing) return
+                                    const e = event as unknown as React.DragEvent<HTMLDivElement>
+                                    setDragIndex(i)
+                                    e.dataTransfer.effectAllowed = 'move'
+                                    try {
+                                      e.dataTransfer.setData('text/plain', String(i))
+                                    } catch {
+                                      // Safari may throw if dataTransfer is locked; drag still works.
+                                    }
+                                  }}
+                                  onDragOver={(event) => {
+                                    if (dragIndex === null || dragIndex === i) return
+                                    const e = event as unknown as React.DragEvent<HTMLDivElement>
+                                    e.preventDefault()
+                                    e.dataTransfer.dropEffect = 'move'
+                                    if (dragOverIndex !== i) setDragOverIndex(i)
+                                  }}
+                                  onDragLeave={() => {
+                                    setDragOverIndex((prev) => (prev === i ? null : prev))
+                                  }}
+                                  onDrop={(event) => {
+                                    const e = event as unknown as React.DragEvent<HTMLDivElement>
+                                    e.preventDefault()
+                                    if (dragIndex !== null && dragIndex !== i) {
+                                      reorderQueue(dragIndex, i)
+                                    }
+                                    setDragIndex(null)
+                                    setDragOverIndex(null)
+                                  }}
+                                  onDragEnd={() => {
+                                    setDragIndex(null)
+                                    setDragOverIndex(null)
+                                  }}
                                   className={cn(
-                                    'min-w-0 flex-1 truncate text-left text-muted-foreground/90 hover:text-foreground',
-                                    isEditing && 'text-cyan-100',
+                                    'group/queued flex gap-2 rounded-[10px] bg-foreground/5 px-2.5 py-1.5 text-[12px] text-foreground/85 transition-colors backdrop-blur-sm',
+                                    'items-center',
+                                    isEditing && 'bg-cyan-500/10',
+                                    isDragging && 'opacity-50',
+                                    isDropTarget && 'bg-foreground/10',
                                   )}
-                                  title={isEditing ? 'Editing in composer' : 'Edit in composer'}
+                                  title={
+                                    isEditing
+                                      ? 'Editing in composer'
+                                      : `${meta.shortcut} · ${meta.hint}`
+                                  }
                                 >
-                                  {entry.text.replace(/\n/g, ' ') ||
-                                    (entry.attachments.length > 0 ? ATTACHMENTS_ONLY_TEXT : '')}
-                                </button>
-                                {entry.attachments.length > 0 ? (
-                                  <div className="flex shrink-0 items-center gap-1">
-                                    {entry.attachments.slice(0, 4).map((p) => (
-                                      <QueueAttachmentThumb key={p} path={p} />
-                                    ))}
-                                    {entry.attachments.length > 4 ? (
-                                      <span className="text-[10px] tabular-nums text-muted-foreground/70">
-                                        +{entry.attachments.length - 4}
+                                  <span
+                                    className={cn(
+                                      'flex size-3.5 shrink-0 cursor-grab items-center justify-center text-muted-foreground/40 transition-colors hover:text-foreground/70 active:cursor-grabbing',
+                                      isEditing && 'text-cyan-300/80',
+                                    )}
+                                    aria-label="Drag to reorder"
+                                    title="Drag to reorder"
+                                  >
+                                    <GripVertical className="size-3" />
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleQueuedMode(i)}
+                                    aria-label={`Change queue mode from ${meta.label}`}
+                                    title={`${meta.label} · click to switch queue mode`}
+                                    className="shrink-0 rounded-[6px] p-0.5 hover:bg-foreground/10"
+                                  >
+                                    <meta.Icon className={cn('size-3.5 shrink-0', meta.tint)} />
+                                  </button>
+                                  <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => beginEditQueued(i)}
+                                      className={cn(
+                                        'min-w-0 flex-1 truncate text-left text-muted-foreground/90 hover:text-foreground',
+                                        isEditing && 'text-cyan-100',
+                                      )}
+                                      title={isEditing ? 'Editing in composer' : 'Edit in composer'}
+                                    >
+                                      {entry.text.replace(/\n/g, ' ') ||
+                                        (entry.attachments.length > 0 ? ATTACHMENTS_ONLY_TEXT : '')}
+                                    </button>
+                                    {entry.attachments.length > 0 ? (
+                                      <div className="flex shrink-0 items-center gap-1">
+                                        {entry.attachments.slice(0, 4).map((p) => (
+                                          <QueueAttachmentThumb key={p} path={p} />
+                                        ))}
+                                        {entry.attachments.length > 4 ? (
+                                          <span className="text-[10px] tabular-nums text-muted-foreground/70">
+                                            +{entry.attachments.length - 4}
+                                          </span>
+                                        ) : null}
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                  <div className="flex shrink-0 items-center gap-1 text-[10.5px] text-muted-foreground/80">
+                                    {modelLabel ? (
+                                      <span
+                                        className="rounded-[6px] bg-background/60 px-1.5 py-px"
+                                        title={`Model: ${modelLabel}`}
+                                      >
+                                        {modelLabel}
+                                      </span>
+                                    ) : null}
+                                    {thinkingLabel ? (
+                                      <span
+                                        className="rounded-[6px] bg-background/60 px-1.5 py-px"
+                                        title={`Thinking: ${thinkingLabel}`}
+                                      >
+                                        {thinkingLabel}
+                                      </span>
+                                    ) : null}
+                                    {permissionOption ? (
+                                      <span
+                                        className={cn(
+                                          'inline-flex items-center gap-1 rounded-[6px] bg-background/60 px-1.5 py-px',
+                                          permissionOption.tint,
+                                        )}
+                                        title={`Permission: ${permissionOption.label}`}
+                                      >
+                                        <permissionOption.Icon className="size-2.5" />
+                                        {permissionOption.short}
                                       </span>
                                     ) : null}
                                   </div>
-                                ) : null}
-                              </div>
-                              <div className="flex shrink-0 items-center gap-1 text-[10.5px] text-muted-foreground/80">
-                                {modelLabel ? (
-                                  <span
-                                    className="rounded-[6px] bg-background/60 px-1.5 py-px"
-                                    title={`Model: ${modelLabel}`}
+                                  <button
+                                    type="button"
+                                    onClick={() => sendQueuedImmediately(i)}
+                                    aria-label="Send queued message now"
+                                    title="Send now"
+                                    className="shrink-0 rounded p-0.5 text-muted-foreground/50 transition-colors hover:bg-foreground/10 hover:text-foreground"
                                   >
-                                    {modelLabel}
-                                  </span>
-                                ) : null}
-                                {thinkingLabel ? (
-                                  <span
-                                    className="rounded-[6px] bg-background/60 px-1.5 py-px"
-                                    title={`Thinking: ${thinkingLabel}`}
+                                    <ArrowUp className="size-3" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => beginEditQueued(i)}
+                                    aria-label="Edit queued message"
+                                    title="Edit"
+                                    className="shrink-0 rounded p-0.5 text-muted-foreground/50 transition-colors hover:bg-foreground/10 hover:text-foreground"
                                   >
-                                    {thinkingLabel}
-                                  </span>
-                                ) : null}
-                                {permissionOption ? (
-                                  <span
-                                    className={cn(
-                                      'inline-flex items-center gap-1 rounded-[6px] bg-background/60 px-1.5 py-px',
-                                      permissionOption.tint,
-                                    )}
-                                    title={`Permission: ${permissionOption.label}`}
+                                    <Pencil className="size-3" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => unqueueMessage(i)}
+                                    aria-label="Remove queued message"
+                                    className="shrink-0 rounded p-0.5 text-muted-foreground/50 hover:bg-foreground/10 hover:text-foreground"
                                   >
-                                    <permissionOption.Icon className="size-2.5" />
-                                    {permissionOption.short}
-                                  </span>
-                                ) : null}
-                              </div>
-                              <button
-                                type="button"
-                                onClick={() => sendQueuedImmediately(i)}
-                                aria-label="Send queued message now"
-                                title="Send now"
-                                className="shrink-0 rounded p-0.5 text-muted-foreground/50 transition-colors hover:bg-foreground/10 hover:text-foreground"
-                              >
-                                <ArrowUp className="size-3" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => beginEditQueued(i)}
-                                aria-label="Edit queued message"
-                                title="Edit"
-                                className="shrink-0 rounded p-0.5 text-muted-foreground/50 transition-colors hover:bg-foreground/10 hover:text-foreground"
-                              >
-                                <Pencil className="size-3" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => unqueueMessage(i)}
-                                aria-label="Remove queued message"
-                                className="shrink-0 rounded p-0.5 text-muted-foreground/50 hover:bg-foreground/10 hover:text-foreground"
-                              >
-                                <X className="size-3" />
-                              </button>
-                            </motion.div>
-                          )
-                        })}
-                      </AnimatePresence>
-                    </div>
-                  ) : null}
+                                    <X className="size-3" />
+                                  </button>
+                                </motion.div>
+                              )
+                            })}
+                          </AnimatePresence>
+                        </div>
+                      </motion.div>
+                    ) : null}
+                  </AnimatePresence>
                 </div>
               ) : null}
               {hasBackgroundActivity && visibleSnapshot?.status !== 'running' ? (
@@ -3201,7 +3367,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                 layout={currentComposerMorphId ? true : false}
                 transition={{ layout: { duration: 0.26, ease: EASE_IN_OUT } }}
                 className="group/composer relative overflow-hidden rounded-[12px] shadow-minimal"
-                style={{ backgroundColor: 'oklch(0.17 0.004 285.9)' }}
+                style={{ backgroundColor: 'var(--elevated-surface)' }}
               >
                 <AnimatePresence initial={false}>
                   {isEditingQueuedMessage ? (
@@ -3214,7 +3380,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                       initial={reduceMotion ? false : { height: 0, opacity: 0 }}
                       animate={{ height: 'auto', opacity: 1 }}
                       exit={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
-                      transition={{ duration: 0.2, ease: EASE_OUT }}
+                      transition={EXPAND_TRANSITION}
                       style={{ overflow: 'hidden' }}
                     >
                       <div className="flex items-center justify-between gap-3 bg-cyan-500/6 px-3 py-2 text-[11.5px]">
@@ -3393,6 +3559,23 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                       <span>send</span>
                     </span>
                   ) : null}
+                  <AnimatePresence initial={false}>
+                    {isRunning && stopConfirmArmed ? (
+                      <motion.span
+                        key="stop-confirm-hint"
+                        initial={{ opacity: 0, x: 4 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        exit={{ opacity: 0, x: 4 }}
+                        transition={{ duration: 0.14, ease: EASE_OUT }}
+                        className="inline-flex items-center gap-1 text-[10.5px] text-muted-foreground/80"
+                      >
+                        <Kbd className="h-[18px] min-w-[18px] rounded-[4px] bg-foreground/6 px-1 text-[10px] text-muted-foreground/80">
+                          Esc
+                        </Kbd>
+                        <span>again to stop</span>
+                      </motion.span>
+                    ) : null}
+                  </AnimatePresence>
                   {isEditingQueuedMessage ? (
                     <button
                       type="button"

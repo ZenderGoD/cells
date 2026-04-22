@@ -341,7 +341,9 @@ export function StatusBar() {
   const requestCloseWindow = useStore((s) => s.requestCloseWindow)
   const requestCloseProject = useStore((s) => s.requestCloseProject)
   const setProjectTitleBarHidden = useStore((s) => s.setProjectTitleBarHidden)
-  const windowCount = useStore((s) => s.terminals.length + s.browsers.length)
+  const windowCount = useStore(
+    (s) => s.terminals.length + s.browsers.length + s.agentWindows.length,
+  )
   const terminals = useStore((s) => s.terminals)
   const browsers = useStore((s) => s.browsers)
   const agentWindows = useStore((s) => s.agentWindows)
@@ -710,7 +712,9 @@ export function StatusBar() {
             const isActive = project.id === activeProjectId
             const projectWindowCount = isActive
               ? windowCount
-              : (project.terminals?.length ?? 0) + (project.browsers?.length ?? 0)
+              : (project.terminals?.length ?? 0) +
+                (project.browsers?.length ?? 0) +
+                (project.agentWindows?.length ?? 0)
 
             const projectTerminals = isActive ? terminals : (project.terminals ?? [])
             const attention = getProjectRuntimeAttention(projectTerminals)

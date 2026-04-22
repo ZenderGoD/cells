@@ -33,6 +33,16 @@ const RESPONSE_MAX_HEIGHT = 540
 // feel responsive — fast start, gentle landing — per Emil Kowalski's easing
 // rules. Reused everywhere in this file so paired elements move as a unit.
 const EASE_OUT = [0.25, 0.46, 0.45, 0.94] as const
+// ease-out-quart — smoother landing for height-based expand/collapse so the
+// tail of the motion sits gently instead of clipping to a stop. Use this
+// whenever we animate height: 0 → 'auto'.
+const EASE_EXPAND = [0.22, 1, 0.36, 1] as const
+// Shared expand transition: height leads the eye, opacity fades in faster so
+// content is legible while the container is still growing.
+const EXPAND_TRANSITION = {
+  height: { duration: 0.28, ease: EASE_EXPAND },
+  opacity: { duration: 0.18, ease: EASE_EXPAND },
+} as const
 
 interface AgentTurnCardProps {
   activities: AgentSessionMessage[]
@@ -434,18 +444,19 @@ function ActivityRow({ node, depth }: { node: ActivityNode; depth: number }) {
       </button>
       {/* Regular leaf rows show the raw payload in a <pre> when expanded;
        *  rows with children render those children instead. */}
-      <AnimatePresence mode="popLayout" initial={false}>
+      <AnimatePresence initial={false}>
         {expanded && !hasChildren ? (
           <motion.div
             key="leaf"
-            initial={reduceMotion ? false : { opacity: 0, y: -3 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -3 }}
-            transition={{ duration: 0.14, ease: EASE_OUT }}
+            initial={reduceMotion ? false : { height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+            transition={EXPAND_TRANSITION}
+            style={{ overflow: 'hidden' }}
           >
             <pre
               className={cn(
-                'mt-1 mb-1 whitespace-pre-wrap break-words rounded-[8px] border border-border/40 bg-background/50 px-3 py-2 text-[13px] leading-[1.5]',
+                'mt-1 mb-1 select-text whitespace-pre-wrap break-words rounded-[8px] border border-border/40 bg-background/50 px-3 py-2 text-[13px] leading-[1.5]',
                 message.role === 'reasoning'
                   ? 'font-sans text-foreground/80'
                   : 'font-mono text-foreground/75',
@@ -459,15 +470,17 @@ function ActivityRow({ node, depth }: { node: ActivityNode; depth: number }) {
         {hasChildren && expanded ? (
           <motion.div
             key="children"
-            initial={reduceMotion ? false : { opacity: 0, y: -3 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -3 }}
-            transition={{ duration: 0.14, ease: EASE_OUT }}
-            className="space-y-0.5"
+            initial={reduceMotion ? false : { height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+            transition={EXPAND_TRANSITION}
+            style={{ overflow: 'hidden' }}
           >
-            {children.map((child) => (
-              <ActivityRow key={child.message.id} node={child} depth={depth + 1} />
-            ))}
+            <div className="space-y-0.5">
+              {children.map((child) => (
+                <ActivityRow key={child.message.id} node={child} depth={depth + 1} />
+              ))}
+            </div>
           </motion.div>
         ) : null}
       </AnimatePresence>
@@ -561,15 +574,13 @@ function ResponseCard({ responses }: { responses: AgentSessionMessage[] }) {
     }
   }
 
-  // Lifted surface — Cells's --background is very dark (oklch(0.12)); the
-  // card sits one step brighter so it reads as "elevated" over the window
-  // surface, matching Craft's visual where the response card is clearly
-  // lighter than its surroundings. oklch(0.17) sits between --background
-  // (0.12) and --card (0.21), avoiding the too-bright flat look of bg-card.
+  // Lifted surface — sits between --background and --card in both themes so
+  // the response reads as "elevated" over the window surface, matching
+  // Craft's visual. See --elevated-surface in globals.css.
   return (
     <div
       className="group relative overflow-hidden rounded-[12px] shadow-minimal"
-      style={{ backgroundColor: 'oklch(0.17 0.004 285.9)' }}
+      style={{ backgroundColor: 'var(--elevated-surface)' }}
     >
       <div
         data-search-root="response"
@@ -671,41 +682,45 @@ function ChangedFilesSection({
           {totals.deletions > 0 && <span className="text-rose-400/80">-{totals.deletions}</span>}
         </span>
       </button>
-      <AnimatePresence mode="popLayout" initial={false}>
+      <AnimatePresence initial={false}>
         {open ? (
           <motion.div
             key="files"
-            initial={reduceMotion ? false : { opacity: 0, y: -3 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -3 }}
-            transition={{ duration: 0.14, ease: EASE_OUT }}
-            className="ml-4 mt-0.5 space-y-px"
+            initial={reduceMotion ? false : { height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+            transition={EXPAND_TRANSITION}
+            style={{ overflow: 'hidden' }}
           >
-            {files.map((f) => {
-              const name = f.filePath.split('/').pop() ?? f.filePath
-              const dir = f.filePath.includes('/')
-                ? f.filePath.slice(0, f.filePath.lastIndexOf('/'))
-                : null
-              return (
-                <button
-                  key={f.filePath}
-                  type="button"
-                  onClick={() => void revealChangedFile(f.filePath, cwd)}
-                  className="flex w-full items-center gap-1.5 rounded-[4px] py-0.5 text-left text-[11.5px] text-muted-foreground/80 transition-colors hover:bg-foreground/5 hover:text-foreground/90"
-                  title={f.filePath}
-                >
-                  <FileText className="size-3 shrink-0 opacity-50" />
-                  <span className="truncate font-medium">{name}</span>
-                  {dir ? (
-                    <span className="shrink-0 truncate text-muted-foreground/40">{dir}</span>
-                  ) : null}
-                  <span className="ml-auto inline-flex shrink-0 items-center gap-1 tabular-nums text-[11px]">
-                    {f.additions > 0 && <span className="text-emerald-400/80">+{f.additions}</span>}
-                    {f.deletions > 0 && <span className="text-rose-400/80">-{f.deletions}</span>}
-                  </span>
-                </button>
-              )
-            })}
+            <div className="ml-4 mt-0.5 space-y-px">
+              {files.map((f) => {
+                const name = f.filePath.split('/').pop() ?? f.filePath
+                const dir = f.filePath.includes('/')
+                  ? f.filePath.slice(0, f.filePath.lastIndexOf('/'))
+                  : null
+                return (
+                  <button
+                    key={f.filePath}
+                    type="button"
+                    onClick={() => void revealChangedFile(f.filePath, cwd)}
+                    className="flex w-full items-center gap-1.5 rounded-[4px] py-0.5 text-left text-[11.5px] text-muted-foreground/80 transition-colors hover:bg-foreground/5 hover:text-foreground/90"
+                    title={f.filePath}
+                  >
+                    <FileText className="size-3 shrink-0 opacity-50" />
+                    <span className="truncate font-medium">{name}</span>
+                    {dir ? (
+                      <span className="shrink-0 truncate text-muted-foreground/40">{dir}</span>
+                    ) : null}
+                    <span className="ml-auto inline-flex shrink-0 items-center gap-1 tabular-nums text-[11px]">
+                      {f.additions > 0 && (
+                        <span className="text-emerald-400/80">+{f.additions}</span>
+                      )}
+                      {f.deletions > 0 && <span className="text-rose-400/80">-{f.deletions}</span>}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
           </motion.div>
         ) : null}
       </AnimatePresence>
@@ -792,14 +807,15 @@ export function AgentTurnCard({
                 )}
               />
             </button>
-            <AnimatePresence mode="popLayout" initial={false}>
+            <AnimatePresence initial={false}>
               {showActivities ? (
                 <motion.div
                   key="activity-list"
-                  initial={reduceMotion ? false : { opacity: 0, y: -4 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
-                  transition={{ duration: 0.15, ease: EASE_OUT }}
+                  initial={reduceMotion ? false : { height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+                  transition={EXPAND_TRANSITION}
+                  style={{ overflow: 'hidden' }}
                 >
                   <div className="ml-[13px] mt-1 max-h-[360px] space-y-0.5 overflow-y-auto overscroll-contain border-l-2 border-border/40 pl-3 pr-1 py-0.5">
                     {tree.map((node) => (

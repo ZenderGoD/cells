@@ -3591,14 +3591,25 @@ export function CellTerminal({
         }
       }
 
-      if (!e.metaKey && !e.ctrlKey) return
+      const zoomModifier = e.metaKey || e.ctrlKey
+      const forceCanvasPan = e.shiftKey && !zoomModifier
+      if (!zoomModifier && !forceCanvasPan) return
 
       e.preventDefault()
       e.stopPropagation()
       e.stopImmediatePropagation()
 
-      const rect = container.getBoundingClientRect()
       const current = useStore.getState().canvas
+      if (forceCanvasPan) {
+        useStore.getState().setCanvasTransform({
+          x: current.x - e.deltaX,
+          y: current.y - e.deltaY,
+          scale: current.scale,
+        })
+        return
+      }
+
+      const rect = container.getBoundingClientRect()
       const zoomIntensity = 0.01
       const newScale = Math.max(
         CANVAS_MIN_ZOOM,

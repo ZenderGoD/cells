@@ -161,6 +161,9 @@
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.21 0.006 285.885);
   --card-foreground: oklch(0.985 0 0);
+  /* Sits between --background and --card — used for the composer and response
+   * card so they read as "lifted" without the flat bg-card look. */
+  --elevated-surface: oklch(0.17 0.004 285.9);
   --popover: oklch(0.21 0.006 285.885);
   --popover-foreground: oklch(0.985 0 0);
   --primary: oklch(0.92 0.004 286.32);
@@ -205,6 +208,9 @@
   --foreground: oklch(0.145 0.005 286);
   --card: oklch(0.97 0.002 286);
   --card-foreground: oklch(0.145 0.005 286);
+  /* In light mode --card is darker than --background, so we nudge further
+   * down for a readable "lifted" surface over the light canvas. */
+  --elevated-surface: oklch(0.955 0.003 286);
   --popover: oklch(0.97 0.002 286);
   --popover-foreground: oklch(0.145 0.005 286);
   --primary: oklch(0.25 0.006 286);

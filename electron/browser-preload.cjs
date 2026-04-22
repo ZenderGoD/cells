@@ -41,7 +41,7 @@ window.addEventListener(
   'wheel',
   function (e) {
     const canvasZoomGesture = e.ctrlKey || e.metaKey
-    const canvasPanGesture = e.shiftKey && Math.abs(e.deltaY) > Math.abs(e.deltaX)
+    const canvasPanGesture = e.shiftKey && !canvasZoomGesture
     if (canvasZoomGesture || canvasPanGesture) {
       if (resetTimer) clearTimeout(resetTimer)
       if (gesturePhase === 'overscrolling') resetGesture()

@@ -37,6 +37,12 @@ interface InlineMentionMenuProps {
 }
 
 const EASE_OUT: [number, number, number, number] = [0.25, 0.46, 0.45, 0.94]
+// ease-out-quart — smoother tail for height-based expand/collapse.
+const EASE_EXPAND: [number, number, number, number] = [0.22, 1, 0.36, 1]
+const EXPAND_TRANSITION = {
+  height: { duration: 0.28, ease: EASE_EXPAND },
+  opacity: { duration: 0.18, ease: EASE_EXPAND },
+} as const
 
 function buildMentionText(item: AgentMentionSearchResult): string {
   const kind: AgentComposerMentionKind = item.type
@@ -87,7 +93,7 @@ export function InlineMentionMenu({
           initial={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
           animate={reduceMotion ? { opacity: 1 } : { height: 'auto', opacity: 1 }}
           exit={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
-          transition={{ duration: 0.18, ease: EASE_OUT }}
+          transition={reduceMotion ? { duration: 0.18, ease: EASE_OUT } : EXPAND_TRANSITION}
           className="overflow-hidden border-b border-border/40"
         >
           <div className="flex items-center justify-between gap-2 px-3 pt-2 pb-1.5">

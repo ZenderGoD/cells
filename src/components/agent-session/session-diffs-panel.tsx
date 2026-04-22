@@ -1,9 +1,17 @@
 import { useMemo, useState, useCallback, useRef, useEffect } from 'react'
 import { ChevronRight, FileText, X } from 'lucide-react'
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import type { AgentSessionMessage } from '@/types'
 import { cn } from '@/lib/utils'
 import { groupDiffsByFile, type FileDiffStats } from '@/lib/tool-diff-stats'
 import { ScrollArea } from '@/components/ui/scroll-area'
+
+// ease-out-quart — smoother tail for height-based expand/collapse.
+const EASE_EXPAND: [number, number, number, number] = [0.22, 1, 0.36, 1]
+const EXPAND_TRANSITION = {
+  height: { duration: 0.28, ease: EASE_EXPAND },
+  opacity: { duration: 0.18, ease: EASE_EXPAND },
+} as const
 
 interface SessionDiffsPanelProps {
   messages: AgentSessionMessage[]
@@ -205,6 +213,7 @@ function PatchLines({ patch }: { patch: string }) {
 
 function FileDiffRow({ file }: { file: FileDiffStats }) {
   const [expanded, setExpanded] = useState(false)
+  const reduceMotion = useReducedMotion()
   const name = baseName(file.filePath)
   const dir = file.filePath.slice(0, Math.max(0, file.filePath.length - name.length - 1))
   const patches = file.patches ?? []
@@ -236,25 +245,36 @@ function FileDiffRow({ file }: { file: FileDiffStats }) {
           {file.deletions > 0 ? <span className="text-rose-400/80">-{file.deletions}</span> : null}
         </span>
       </button>
-      {expanded ? (
-        <div className="max-h-[min(55vh,520px)] space-y-1.5 overflow-y-auto overscroll-contain px-3 pb-2 pr-2">
-          {file.edits.map((edit, idx) => (
-            <DiffLines
-              key={`${edit.toolId}-${idx}`}
-              oldString={edit.oldString}
-              newString={edit.newString}
-            />
-          ))}
-          {patches.map((patch, idx) => (
-            <PatchLines key={`patch-${file.filePath}-${idx}`} patch={patch} />
-          ))}
-          {!hasDetails ? (
-            <div className="rounded-[6px] border border-border/25 bg-background/40 px-2.5 py-2 text-[11px] text-muted-foreground/60">
-              Diff summary available, but the full patch was not preserved for this file.
+      <AnimatePresence initial={false}>
+        {expanded ? (
+          <motion.div
+            key="file-diff-body"
+            initial={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+            animate={reduceMotion ? { opacity: 1 } : { height: 'auto', opacity: 1 }}
+            exit={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+            transition={EXPAND_TRANSITION}
+            style={{ overflow: 'hidden' }}
+          >
+            <div className="max-h-[min(55vh,520px)] space-y-1.5 overflow-y-auto overscroll-contain px-3 pb-2 pr-2">
+              {file.edits.map((edit, idx) => (
+                <DiffLines
+                  key={`${edit.toolId}-${idx}`}
+                  oldString={edit.oldString}
+                  newString={edit.newString}
+                />
+              ))}
+              {patches.map((patch, idx) => (
+                <PatchLines key={`patch-${file.filePath}-${idx}`} patch={patch} />
+              ))}
+              {!hasDetails ? (
+                <div className="rounded-[6px] border border-border/25 bg-background/40 px-2.5 py-2 text-[11px] text-muted-foreground/60">
+                  Diff summary available, but the full patch was not preserved for this file.
+                </div>
+              ) : null}
             </div>
-          ) : null}
-        </div>
-      ) : null}
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
     </li>
   )
 }

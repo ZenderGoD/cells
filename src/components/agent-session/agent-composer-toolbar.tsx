@@ -16,6 +16,7 @@ import type {
   AgentUsageStats,
   AgentWindowNode,
 } from '@/types'
+import { Kbd } from '@/components/ui/kbd'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { resolveAgentModelId } from '@/lib/agent-model-selection'
 import { cn } from '@/lib/utils'
@@ -347,6 +348,53 @@ export function prettifyModelId(agent: 'claude' | 'codex', id: string): string {
   return agent === 'codex' ? prettifyCodexModel(id) : prettifyClaudeModel(id)
 }
 
+// Returns the currently-known model list synchronously — uses the live cache
+// when populated, otherwise the hard-coded fallback. Keyboard-shortcut cycling
+// has no time to await the SDK, so we cycle through whatever we know right
+// now and rely on the picker to stay in sync once the fetch lands.
+function getCachedModelsSync(agent: AgentWindowNode['agent']): ModelOption[] {
+  if (agent === 'codex') return codexModelsCache ?? CODEX_MODELS_FALLBACK
+  return claudeModelsCache ?? CLAUDE_MODELS_FALLBACK
+}
+
+export function cycleAgentModel(
+  agent: AgentWindowNode['agent'],
+  currentId: string | null | undefined,
+): string | null {
+  const models = getCachedModelsSync(agent).filter((m) => m.available !== false)
+  if (models.length === 0) return null
+  const resolved = resolveAgentModelId(agent, currentId, models, DEFAULT_MODEL[agent])
+  const idx = models.findIndex((m) => m.id === resolved)
+  const next = models[(idx + 1) % models.length]
+  return next.id
+}
+
+export function cycleThinkingLevel(
+  agent: AgentWindowNode['agent'],
+  modelId: string | null | undefined,
+  currentLevel: AgentThinkingLevel | null | undefined,
+): AgentThinkingLevel | null {
+  const models = getCachedModelsSync(agent)
+  const model = findModel(models, agent, modelId)
+  const efforts = model.supportedEfforts
+  if (efforts.length === 0) return null
+  const effective: AgentThinkingLevel =
+    currentLevel && efforts.includes(currentLevel) ? currentLevel : model.defaultEffort
+  const idx = efforts.indexOf(effective)
+  return efforts[(idx + 1) % efforts.length]
+}
+
+export function cyclePermissionMode(
+  current: AgentPermissionMode | null | undefined,
+  direction: 1 | -1 = 1,
+): AgentPermissionMode {
+  const coerced = coerceLegacyPermissionMode(current as any)
+  const idx = PERMISSION_MODE_OPTIONS.findIndex((m) => m.id === coerced)
+  const safeIdx = idx < 0 ? 0 : idx
+  const len = PERMISSION_MODE_OPTIONS.length
+  return PERMISSION_MODE_OPTIONS[(safeIdx + direction + len) % len].id
+}
+
 const THINKING_LEVEL_LABEL = THINKING_LEVEL_LABEL_MAP
 
 const THINKING_FALLBACK_HINT: Record<AgentThinkingLevel, string> = {
@@ -438,8 +486,9 @@ export function ModelPicker({
         }
       />
       <PopoverContent align="start" side="top" sideOffset={6} className="w-64 p-1">
-        <div className="mb-1 px-2 pt-1 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
-          {agent === 'claude' ? 'Claude models' : 'Codex models'}
+        <div className="mb-1 flex items-center justify-between gap-2 px-2 pt-1 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
+          <span>{agent === 'claude' ? 'Claude models' : 'Codex models'}</span>
+          <ShortcutHint keys={['Ctrl', 'M']} />
         </div>
         {models.map((model) => {
           const active = model.id === current.id
@@ -591,9 +640,12 @@ export function ThinkingPicker({ agent, model, value, onChange }: ThinkingPicker
         }
       />
       <PopoverContent align="start" side="top" sideOffset={6} className="w-60 p-1">
-        <div className="mb-1 flex items-center gap-1.5 px-2 pt-1 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
-          <Brain className="size-3 text-violet-300/80" />
-          Thinking
+        <div className="mb-1 flex items-center justify-between gap-2 px-2 pt-1 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
+          <span className="flex items-center gap-1.5">
+            <Brain className="size-3 text-violet-300/80" />
+            Thinking
+          </span>
+          <ShortcutHint keys={['Ctrl', 'T']} />
         </div>
         {current.supportedEfforts.map((level) => {
           const active = level === effective
@@ -700,6 +752,21 @@ export function ContextUsageIndicator({ usage, agent, contextLength }: ContextUs
   )
 }
 
+function ShortcutHint({ keys }: { keys: string[] }) {
+  return (
+    <span className="flex items-center gap-0.5 normal-case tracking-normal text-muted-foreground/55">
+      {keys.map((k) => (
+        <Kbd
+          key={k}
+          className="h-4 min-w-4 rounded-[3px] bg-foreground/6 px-1 text-[9.5px] font-medium text-muted-foreground/75"
+        >
+          {k}
+        </Kbd>
+      ))}
+    </span>
+  )
+}
+
 export const PERMISSION_MODE_OPTIONS: Array<{
   id: AgentPermissionMode
   label: string
@@ -776,8 +843,9 @@ export function PermissionPicker({ value, onChange }: PermissionPickerProps) {
         }
       />
       <PopoverContent align="start" side="top" sideOffset={6} className="w-64 p-1">
-        <div className="mb-1 px-2 pt-1 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
-          Permission mode
+        <div className="mb-1 flex items-center justify-between gap-2 px-2 pt-1 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
+          <span>Permission mode</span>
+          <ShortcutHint keys={['Shift', 'Tab']} />
         </div>
         {PERMISSION_MODE_OPTIONS.map((mode) => {
           const active = mode.id === current.id
