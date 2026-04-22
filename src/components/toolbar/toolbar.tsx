@@ -44,6 +44,7 @@ import { Logo } from '../logo'
 import { WindowOverviewMap } from '../canvas/window-overview-map'
 import { WorktreeSwitcher } from '../worktree-switcher'
 import { AgentIcon } from '../agent-icon'
+import { AgentWindowColorPicker } from './agent-window-color-picker'
 import { inferAgentFromTitle } from '@/lib/agent-command'
 import { hapticNudge, hapticSuccess, hapticBuzz } from '@/lib/haptics'
 import { getPrimaryModifierLabel, isMacPlatform } from '@/lib/keyboard-shortcuts'
@@ -1062,6 +1063,10 @@ export function StatusBar() {
                     <span className="truncate">{awLocation}</span>
                   </span>
                 ) : null}
+                <AgentWindowColorPicker
+                  agentWindowId={focusedAgentWindowId}
+                  currentColor={aw.color}
+                />
                 <button
                   className="p-1 rounded text-muted-foreground/40 hover:text-foreground hover:bg-muted/40 transition-colors shrink-0"
                   onClick={() =>

@@ -1577,6 +1577,21 @@ export const useStore = create<StoreState>((set, get) => ({
       void get().refreshWorktrees()
     }, 0)
 
+    // Saved canvas transforms can drift — e.g. a window added since last
+    // switch, or a viewport resize — leaving the restored view framing
+    // nothing. Recenter onto the focused window (or nearest window) so
+    // the project always opens on actual content.
+    const after = get()
+    if (after.focusedTerminalId) {
+      after.snapToTerminal(after.focusedTerminalId)
+    } else if (after.focusedBrowserId) {
+      after.snapToBrowser(after.focusedBrowserId)
+    } else if (after.focusedAgentWindowId) {
+      after.snapToAgentWindow(after.focusedAgentWindowId)
+    } else if (after.terminals.length + after.browsers.length + after.agentWindows.length > 0) {
+      after.snapToClosest()
+    }
+
     // Do not recreate the focused terminal on project switch.
     // The renderer cache is the only thing preserving fullscreen / alternate-
     // screen state across switches; forcing a reload destroys that state.

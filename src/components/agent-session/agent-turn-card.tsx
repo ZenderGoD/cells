@@ -450,7 +450,7 @@ function ActivityRow({ node, depth }: { node: ActivityNode; depth: number }) {
             key="leaf"
             initial={reduceMotion ? false : { height: 0, opacity: 0 }}
             animate={{ height: 'auto', opacity: 1 }}
-            exit={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+            exit={reduceMotion ? { opacity: 0 } : { height: 0 }}
             transition={EXPAND_TRANSITION}
             style={{ overflow: 'hidden' }}
           >
@@ -472,7 +472,7 @@ function ActivityRow({ node, depth }: { node: ActivityNode; depth: number }) {
             key="children"
             initial={reduceMotion ? false : { height: 0, opacity: 0 }}
             animate={{ height: 'auto', opacity: 1 }}
-            exit={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+            exit={reduceMotion ? { opacity: 0 } : { height: 0 }}
             transition={EXPAND_TRANSITION}
             style={{ overflow: 'hidden' }}
           >
@@ -688,7 +688,7 @@ function ChangedFilesSection({
             key="files"
             initial={reduceMotion ? false : { height: 0, opacity: 0 }}
             animate={{ height: 'auto', opacity: 1 }}
-            exit={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+            exit={reduceMotion ? { opacity: 0 } : { height: 0 }}
             transition={EXPAND_TRANSITION}
             style={{ overflow: 'hidden' }}
           >
@@ -813,7 +813,7 @@ export function AgentTurnCard({
                   key="activity-list"
                   initial={reduceMotion ? false : { height: 0, opacity: 0 }}
                   animate={{ height: 'auto', opacity: 1 }}
-                  exit={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+                  exit={reduceMotion ? { opacity: 0 } : { height: 0 }}
                   transition={EXPAND_TRANSITION}
                   style={{ overflow: 'hidden' }}
                 >

@@ -8,7 +8,6 @@ import {
   Circle,
   Clock,
   FastForward,
-  FileText,
   Folder,
   GripVertical,
   HelpCircle,
@@ -888,12 +887,12 @@ function CodexPlanBanner({ plan }: { plan: CodexPlanSnapshot }) {
   const done = plan.items.filter((item) => item.completed).length
   if (total === 0) return null
   return (
-    <div className="mb-2 select-none">
+    <div className="mb-2 overflow-hidden rounded-[12px] border border-border/30 bg-background/55 shadow-minimal backdrop-blur-md select-none">
       <button
         type="button"
         onClick={() => setCollapsed((prev) => !prev)}
         title={collapsed ? 'Show plan' : 'Hide plan'}
-        className="flex w-full items-center gap-2 rounded-[8px] px-2 py-1 text-left transition-colors hover:bg-foreground/5 focus:outline-none"
+        className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left transition-colors hover:bg-foreground/[0.04] focus:outline-none"
       >
         <span className="shrink-0 rounded-[4px] bg-background px-1.5 py-0.5 text-[10px] font-medium tabular-nums shadow-minimal">
           {done}/{total}
@@ -913,15 +912,15 @@ function CodexPlanBanner({ plan }: { plan: CodexPlanSnapshot }) {
             key="plan-items"
             initial={reduceMotion ? false : { height: 0, opacity: 0 }}
             animate={{ height: 'auto', opacity: 1 }}
-            exit={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+            exit={reduceMotion ? { opacity: 0 } : { height: 0 }}
             transition={EXPAND_TRANSITION}
             style={{ overflow: 'hidden' }}
           >
-            <ul className="mt-1 flex flex-col gap-0.5">
+            <ul className="flex flex-col gap-px border-t border-border/25 p-1">
               {plan.items.map((item, idx) => (
                 <li
                   key={`${idx}-${item.text}`}
-                  className="flex items-start gap-2 rounded-[10px] bg-foreground/5 px-2.5 py-1.5 text-[12px] text-foreground/85"
+                  className="flex items-start gap-2 rounded-[8px] px-2 py-1.5 text-[12px] text-foreground/85 hover:bg-foreground/[0.03]"
                 >
                   {item.completed ? (
                     <Check className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/70" />
@@ -1649,6 +1648,23 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
 
     window.addEventListener('keydown', onKeyDown, true)
     return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [agentWindow.id, focusedAgentWindowId])
+
+  // Auto-focus the composer whenever this window becomes the focused one.
+  // Skip when a modal/overlay is open (would steal focus from a dialog) or
+  // when the user is already typing in another field.
+  useEffect(() => {
+    if (focusedAgentWindowId !== agentWindow.id) return
+    if (useStore.getState().overlayOpen) return
+    const active = document.activeElement
+    const isEditable =
+      active instanceof HTMLElement &&
+      (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)
+    if (isEditable && active !== textareaRef.current) return
+    const frame = requestAnimationFrame(() => {
+      textareaRef.current?.focus({ preventScroll: true })
+    })
+    return () => cancelAnimationFrame(frame)
   }, [agentWindow.id, focusedAgentWindowId])
   // Ctrl+M cycles models, Ctrl+T cycles thinking effort, Shift+Tab cycles
   // permission mode. Scoped to textarea focus so we don't steal Shift+Tab
@@ -2956,7 +2972,6 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                     )}
                     title="Show session diffs"
                   >
-                    <FileText className="size-3 shrink-0" />
                     <span className="tabular-nums">
                       {sessionDiffStats.additions > 0 ? (
                         <span className="text-emerald-400/80">+{sessionDiffStats.additions}</span>
@@ -2974,7 +2989,6 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                         </span>
                       ) : null}
                     </span>
-                    <span>diffs</span>
                   </button>
                 </div>
               ) : null}
@@ -3101,7 +3115,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                         key="queue-list"
                         initial={reduceMotion ? false : { height: 0, opacity: 0 }}
                         animate={{ height: 'auto', opacity: 1 }}
-                        exit={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+                        exit={reduceMotion ? { opacity: 0 } : { height: 0 }}
                         transition={EXPAND_TRANSITION}
                         style={{ overflow: 'hidden' }}
                       >
@@ -3379,7 +3393,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                       // reasonable trade for the natural expand/collapse feel.
                       initial={reduceMotion ? false : { height: 0, opacity: 0 }}
                       animate={{ height: 'auto', opacity: 1 }}
-                      exit={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+                      exit={reduceMotion ? { opacity: 0 } : { height: 0 }}
                       transition={EXPAND_TRANSITION}
                       style={{ overflow: 'hidden' }}
                     >

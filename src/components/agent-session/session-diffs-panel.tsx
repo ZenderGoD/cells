@@ -251,7 +251,7 @@ function FileDiffRow({ file }: { file: FileDiffStats }) {
             key="file-diff-body"
             initial={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
             animate={reduceMotion ? { opacity: 1 } : { height: 'auto', opacity: 1 }}
-            exit={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+            exit={reduceMotion ? { opacity: 0 } : { height: 0 }}
             transition={EXPAND_TRANSITION}
             style={{ overflow: 'hidden' }}
           >

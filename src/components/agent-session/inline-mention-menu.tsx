@@ -92,7 +92,7 @@ export function InlineMentionMenu({
           // once per open/close. Reduced motion drops to opacity only.
           initial={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
           animate={reduceMotion ? { opacity: 1 } : { height: 'auto', opacity: 1 }}
-          exit={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+          exit={reduceMotion ? { opacity: 0 } : { height: 0 }}
           transition={reduceMotion ? { duration: 0.18, ease: EASE_OUT } : EXPAND_TRANSITION}
           className="overflow-hidden border-b border-border/40"
         >

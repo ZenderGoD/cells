@@ -22,6 +22,7 @@ import { hasPrimaryModifier } from '@/lib/keyboard-shortcuts'
 import { cn } from '@/lib/utils'
 import { AgentChatPanel } from '@/components/agent-session/agent-chat-panel'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { getAgentWindowColor } from '@/lib/agent-window-colors'
 
 type Edge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
 
@@ -234,12 +235,21 @@ export const AgentWindowNode = memo(function AgentWindowNode({
     void requestCloseWindow({ id: agentWindow.id, type: 'agent' })
   }
 
+  const colorSpec = getAgentWindowColor(agentWindow.color)
+  const hasColor = colorSpec.id !== 'none'
+
   return (
     <div
       data-focused={isFocused ? 'true' : 'false'}
       className={cn(
         'agent-window-node group absolute overflow-hidden rounded-lg border bg-background/75 backdrop-blur-xl transition-[box-shadow,border-color,transform] duration-150',
-        isFocused ? 'border-foreground/15 shadow-elevated' : 'border-border/50 shadow-middle',
+        hasColor
+          ? isFocused
+            ? cn(colorSpec.focusedBorderClass, 'shadow-elevated')
+            : cn(colorSpec.unfocusedBorderClass, 'shadow-middle')
+          : isFocused
+            ? 'border-foreground/15 shadow-elevated'
+            : 'border-border/50 shadow-middle',
         isSelected && 'ring-2 ring-primary/35',
         isResizing && 'select-none',
       )}
@@ -252,6 +262,15 @@ export const AgentWindowNode = memo(function AgentWindowNode({
       }}
       onMouseDown={handleNodeMouseDown}
     >
+      {hasColor ? (
+        <div
+          aria-hidden
+          className={cn(
+            'pointer-events-none absolute inset-x-0 top-0 z-20 h-[2px]',
+            colorSpec.accentBarClass,
+          )}
+        />
+      ) : null}
       {/* Chrome-less: a thin drag strip runs across the top so the window can
        * be moved in selection mode, and a hover-only menu button lives in the
        * top-right corner. The title/status now lives in the canvas's bottom

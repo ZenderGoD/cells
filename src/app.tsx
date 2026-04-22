@@ -12,6 +12,7 @@ import { CloseWindowDialog } from './components/close-window-dialog'
 import { CloseProjectDialog } from './components/close-project-dialog'
 import { Toaster } from './components/toast'
 import { PinnedWindow } from './components/pinned-window'
+import { BackgroundAgentSessionHosts } from './components/agent-session/background-agent-session-runner'
 import {
   getCachedTerminalCount,
   reloadAllTerminals,
@@ -496,6 +497,7 @@ function MainApp() {
     >
       {titleBarPosition === 'top' ? <StatusBar /> : null}
       <InfiniteCanvas />
+      <BackgroundAgentSessionHosts />
       {titleBarPosition === 'bottom' ? <StatusBar /> : null}
       <CommandPalette />
       <TerminalSwitcher />

@@ -245,6 +245,9 @@ export interface AgentWindowNode {
    *  window, cleared when the window regains focus. Surfaces a distinct
    *  "done and unchecked" indicator so users can spot completed work. */
   hasUnviewedCompletion?: boolean
+  /** Optional color accent so users can visually group agent windows. See
+   *  `lib/agent-window-colors.ts` for the palette. */
+  color?: import('../lib/agent-window-colors').AgentWindowColorId | null
 }
 
 export interface AgentSessionDefaults {
