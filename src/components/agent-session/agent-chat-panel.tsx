@@ -895,7 +895,9 @@ function CodexPlanBanner({ plan }: { plan: CodexPlanSnapshot }) {
   const reduceMotion = useReducedMotion()
   const total = plan.items.length
   const done = plan.items.filter((item) => item.completed).length
+  const currentItem = plan.items.find((item) => !item.completed)
   if (total === 0) return null
+  const headerLabel = collapsed && currentItem ? currentItem.text : 'Plan'
   return (
     <div className="mb-2 overflow-hidden rounded-[12px] bg-background/55 backdrop-blur-md select-none">
       <button
@@ -908,7 +910,9 @@ function CodexPlanBanner({ plan }: { plan: CodexPlanSnapshot }) {
           {done}/{total}
         </span>
         <ListTodo className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="text-[13px] text-muted-foreground">Plan</span>
+        <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground">
+          {headerLabel}
+        </span>
         <ChevronRight
           className={cn(
             'ml-auto size-3.5 shrink-0 text-muted-foreground/70 transition-transform',
