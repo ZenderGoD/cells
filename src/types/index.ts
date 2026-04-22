@@ -237,6 +237,12 @@ export interface AgentWindowNode {
    *  When 'default' (or null), the regular 200k window is used. */
   contextLength?: AgentContextLength | null
   createdAt?: number | null
+  /** Draft currently sitting in the composer for this window. Persisted so
+   *  switching projects/windows or restarting the app doesn't wipe in-progress
+   *  user input. */
+  composerDraft?: string | null
+  /** Absolute paths of files/images currently attached in the composer draft. */
+  composerAttachments?: string[]
   /** Messages the user queued while a prior turn was in flight. Persisted so
    *  they survive app restart — the chat panel drains them in order on the
    *  next idle. */

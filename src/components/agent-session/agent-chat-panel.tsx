@@ -229,6 +229,16 @@ function isImagePath(p: string): boolean {
   return IMAGE_EXTENSIONS.has(p.slice(i).toLowerCase())
 }
 
+function sanitizeComposerAttachments(paths: string[] | null | undefined): string[] {
+  return Array.from(
+    new Set(
+      (paths ?? []).filter(
+        (path): path is string => typeof path === 'string' && path.trim().length > 0,
+      ),
+    ),
+  )
+}
+
 function useFileThumbnail(path: string, enabled = true, maxHeight = 96) {
   const [url, setUrl] = useState<string | null>(null)
 
@@ -1504,8 +1514,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const [snapshot, setSnapshot] = useState<AgentSessionSnapshot | null>(null)
   const [messages, setMessages] = useState<AgentSessionMessage[]>([])
   const [groups, setGroups] = useState<ChatGroup[]>([])
-  const [input, setInput] = useState('')
-  const [attachments, setAttachments] = useState<string[]>([])
+  const [input, setInput] = useState(() => agentWindow.composerDraft ?? '')
+  const [attachments, setAttachments] = useState<string[]>(() =>
+    sanitizeComposerAttachments(agentWindow.composerAttachments ?? []),
+  )
   const [composerPreviewPath, setComposerPreviewPath] = useState<string | null>(null)
   const activeProjectPath = useStore(
     (state) => state.projects.find((project) => project.id === state.activeProjectId)?.path ?? null,
@@ -1545,6 +1557,13 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       useStore.getState().syncAgentWindow(agentWindow.id, { queuedMessages: sanitized })
     }
   }, [agentWindow.id, agentWindow.queuedMessages])
+  useEffect(() => {
+    const raw = agentWindow.composerAttachments ?? []
+    const sanitized = sanitizeComposerAttachments(raw)
+    if (!areStringArraysEqual(raw, sanitized)) {
+      useStore.getState().syncAgentWindow(agentWindow.id, { composerAttachments: sanitized })
+    }
+  }, [agentWindow.composerAttachments, agentWindow.id])
   // Only gate resume when the session was actually reconstructed from the
   // persisted snapshot after Cells restarted. Project/window remounts within
   // the same app session should not show the "Continue" banner.
@@ -1635,6 +1654,40 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const listRef = useRef<LegendListRef>(null)
   const recentSessionsViewportRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const sendScrollTargetRef = useRef<number | null>(null)
+  const sendScrollFrameRef = useRef<number | null>(null)
+  const scheduleScrollToBottom = useCallback((frames = 2) => {
+    if (sendScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(sendScrollFrameRef.current)
+      sendScrollFrameRef.current = null
+    }
+    const tick = (remaining: number) => {
+      sendScrollFrameRef.current = window.requestAnimationFrame(() => {
+        if (remaining > 1) {
+          tick(remaining - 1)
+          return
+        }
+        sendScrollFrameRef.current = null
+        void listRef.current?.scrollToEnd?.({ animated: false })
+      })
+    }
+    tick(frames)
+  }, [])
+  useEffect(
+    () => () => {
+      if (sendScrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(sendScrollFrameRef.current)
+      }
+    },
+    [],
+  )
+  useEffect(() => {
+    sendScrollTargetRef.current = null
+    if (sendScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(sendScrollFrameRef.current)
+      sendScrollFrameRef.current = null
+    }
+  }, [agentWindow.id])
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (focusedAgentWindowId !== agentWindow.id) return
@@ -1944,21 +1997,6 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     return () => window.clearTimeout(id)
   }, [agentWindow.id])
 
-  const pickAttachments = useCallback(async () => {
-    try {
-      const picked = await window.cells.app.pickFiles()
-      if (!picked || picked.length === 0) return
-      setAttachments((prev) => Array.from(new Set([...prev, ...picked])))
-    } catch (err) {
-      console.error('[agent-chat] pick files failed', err)
-    }
-  }, [])
-
-  const removeAttachment = useCallback((path: string) => {
-    setComposerPreviewPath((current) => (current === path ? null : current))
-    setAttachments((prev) => prev.filter((p) => p !== path))
-  }, [])
-
   const composerPlaceholder = useMemo(
     () => getComposerPlaceholder(agentWindow.agent),
     [agentWindow.agent],
@@ -1975,6 +2013,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const visibleGroups = useMemo(
     () => (snapshotMatchesWindow ? groups : []),
     [groups, snapshotMatchesWindow],
+  )
+  const visibleUserMessageCount = useMemo(
+    () => visibleMessages.filter((message) => message.role === 'user').length,
+    [visibleMessages],
   )
   const userMessages = useMemo(
     () => messages.filter((message) => message.role === 'user'),
@@ -2083,6 +2125,13 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       window.removeEventListener('resize', scheduleUpdate)
     }
   }, [filteredRecentSessions])
+  useEffect(() => {
+    const target = sendScrollTargetRef.current
+    if (target === null) return
+    if (visibleUserMessageCount < target) return
+    sendScrollTargetRef.current = null
+    scheduleScrollToBottom()
+  }, [scheduleScrollToBottom, visibleUserMessageCount])
   const hasBackgroundActivity = backgroundActivities.length > 0
   const isRunning = deriveAgentSessionWindowStatus(visibleSnapshot) === 'running'
   const composerImageAttachments = useMemo(
@@ -2132,12 +2181,49 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     attachmentsRef.current = attachments
   }, [attachments])
 
-  const writeComposer = useCallback((value: string, nextAttachments: string[]) => {
-    setInput(value)
-    inputRef.current = value
-    setAttachments(nextAttachments)
-    attachmentsRef.current = nextAttachments
-  }, [])
+  const writeComposer = useCallback(
+    (value: string, nextAttachments: string[]) => {
+      const sanitizedAttachments = sanitizeComposerAttachments(nextAttachments)
+      setInput(value)
+      inputRef.current = value
+      setAttachments(sanitizedAttachments)
+      attachmentsRef.current = sanitizedAttachments
+      const storedWindow = useStore
+        .getState()
+        .agentWindows.find((entry) => entry.id === agentWindow.id)
+      const storedInput = storedWindow?.composerDraft ?? ''
+      const storedAttachments = sanitizeComposerAttachments(storedWindow?.composerAttachments ?? [])
+      if (storedInput === value && areStringArraysEqual(storedAttachments, sanitizedAttachments)) {
+        return
+      }
+      useStore.getState().syncAgentWindow(agentWindow.id, {
+        composerDraft: value || null,
+        composerAttachments: sanitizedAttachments,
+      })
+    },
+    [agentWindow.id],
+  )
+
+  const pickAttachments = useCallback(async () => {
+    try {
+      const picked = await window.cells.app.pickFiles()
+      if (!picked || picked.length === 0) return
+      writeComposer(inputRef.current, [...attachmentsRef.current, ...picked])
+    } catch (err) {
+      console.error('[agent-chat] pick files failed', err)
+    }
+  }, [writeComposer])
+
+  const removeAttachment = useCallback(
+    (path: string) => {
+      setComposerPreviewPath((current) => (current === path ? null : current))
+      writeComposer(
+        inputRef.current,
+        attachmentsRef.current.filter((candidate) => candidate !== path),
+      )
+    },
+    [writeComposer],
+  )
 
   // Actually ship one message to the agent. Separated from submit() so the
   // queue-flusher effect can call it too.
@@ -2185,15 +2271,14 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const applyInlineMentionSelection = useCallback(
     (selection: { value: string; cursorPosition: number } | null) => {
       if (!selection) return false
-      setInput(selection.value)
-      inputRef.current = selection.value
+      writeComposer(selection.value, attachmentsRef.current)
       window.setTimeout(() => {
         textareaRef.current?.focus()
         textareaRef.current?.setSelectionRange(selection.cursorPosition, selection.cursorPosition)
       }, 0)
       return true
     },
-    [],
+    [writeComposer],
   )
 
   const submit = useCallback(
@@ -2208,11 +2293,8 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       const running = snapshotRef.current?.status === 'running'
 
       // Drain the input optimistically so typing feels instant.
-      setInput('')
-      inputRef.current = ''
+      writeComposer('', [])
       inlineMention.close()
-      setAttachments([])
-      attachmentsRef.current = []
 
       const settings = {
         model: agentWindow.model ?? null,
@@ -2263,6 +2345,8 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       const morphId = `composer-morph-${composerMorphNonceRef.current}`
       enqueuePendingMorph(morphId)
       setComposerMorph({ id: morphId, windowId: agentWindow.id })
+      sendScrollTargetRef.current = visibleUserMessageCount + 1
+      scheduleScrollToBottom()
 
       try {
         await sendToAgent(value, pinned)
@@ -2293,6 +2377,8 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       agentWindow.model,
       agentWindow.thinkingLevel,
       agentWindow.permissionMode,
+      scheduleScrollToBottom,
+      visibleUserMessageCount,
     ],
   )
 
@@ -2543,37 +2629,40 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     [applyInlineMentionSelection, commitEditQueued, editingIndex, inlineMention, submit],
   )
 
-  const absorbDroppedImages = useCallback(async (dataTransfer: DataTransfer) => {
-    const files = Array.from(dataTransfer.files)
-    const images = files.filter((f) => f.type.startsWith('image/'))
-    if (images.length === 0) return
-    const saved: string[] = []
-    for (const file of images) {
-      // Finder / native drags: we already have a path on disk, no need to
-      // copy into the temp dir.
-      try {
-        const existing = window.cells.app.getPathForFile(file)
-        if (existing) {
-          saved.push(existing)
-          continue
+  const absorbDroppedImages = useCallback(
+    async (dataTransfer: DataTransfer) => {
+      const files = Array.from(dataTransfer.files)
+      const images = files.filter((f) => f.type.startsWith('image/'))
+      if (images.length === 0) return
+      const saved: string[] = []
+      for (const file of images) {
+        // Finder / native drags: we already have a path on disk, no need to
+        // copy into the temp dir.
+        try {
+          const existing = window.cells.app.getPathForFile(file)
+          if (existing) {
+            saved.push(existing)
+            continue
+          }
+        } catch {
+          // getPathForFile throws for cross-app / in-memory blobs — fall through
         }
-      } catch {
-        // getPathForFile throws for cross-app / in-memory blobs — fall through
+        try {
+          const buf = new Uint8Array(await file.arrayBuffer())
+          const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg')
+          const name = file.name && file.name.trim() ? file.name : `drop-${Date.now()}.${ext}`
+          const stored = await window.cells.app.saveTempFile(buf, name)
+          if (stored) saved.push(stored)
+        } catch (err) {
+          console.error('[agent-chat] save dropped image failed', err)
+        }
       }
-      try {
-        const buf = new Uint8Array(await file.arrayBuffer())
-        const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg')
-        const name = file.name && file.name.trim() ? file.name : `drop-${Date.now()}.${ext}`
-        const stored = await window.cells.app.saveTempFile(buf, name)
-        if (stored) saved.push(stored)
-      } catch (err) {
-        console.error('[agent-chat] save dropped image failed', err)
+      if (saved.length > 0) {
+        writeComposer(inputRef.current, [...attachmentsRef.current, ...saved])
       }
-    }
-    if (saved.length > 0) {
-      setAttachments((prev) => Array.from(new Set([...prev, ...saved])))
-    }
-  }, [])
+    },
+    [writeComposer],
+  )
 
   // Capture-phase fallback for ancestors that swallow keydown.
   useEffect(() => {
@@ -3457,7 +3546,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                   value={input}
                   onChange={(event) => {
                     const nextValue = event.target.value
-                    setInput(nextValue)
+                    writeComposer(nextValue, attachmentsRef.current)
                     inlineMention.handleInputChange(
                       nextValue,
                       event.target.selectionStart ?? nextValue.length,
@@ -3485,7 +3574,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                       }
                     }
                     if (saved.length > 0) {
-                      setAttachments((prev) => Array.from(new Set([...prev, ...saved])))
+                      writeComposer(inputRef.current, [...attachmentsRef.current, ...saved])
                     }
                   }}
                   placeholder={

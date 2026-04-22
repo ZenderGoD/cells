@@ -16,8 +16,8 @@ Cells is a desktop workspace for arranging terminals and browser panes on an inf
 
 Cells works with CLI agents like Claude Code and OpenAI Codex. You can run them as a plain terminal on the canvas, or open a dedicated agent window with a rich chat UI on top of the same CLI — streaming turns, tool call grouping, inline diffs, and a built-in diffs panel.
 
-![Agent session window with streaming turns, tool groups, and an inline diff panel](docs/screenshots/agent-session.png)
-*Agent session window running on top of the Claude Code / Codex CLI*
+![Dedicated agent window with streaming turns, tool groups, and inline progress states](docs/screenshots/agent-session.png)
+*Dedicated agent window running OpenAI Codex on top of the CLI*
 
 ![Claude Code running in a Cells terminal node](docs/screenshots/claude-code.png)
 *Claude Code in a terminal node*

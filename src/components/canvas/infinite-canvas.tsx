@@ -578,6 +578,7 @@ export function InfiniteCanvas() {
       if ((termNode || browserNode || agentNode) && !zoomModifier && !forceCanvasPan) return
 
       e.preventDefault()
+      e.stopPropagation()
       applyCanvasWheelGesture({
         deltaX: e.deltaX,
         deltaY: e.deltaY,
@@ -672,26 +673,42 @@ export function InfiniteCanvas() {
       snapToTerminal(focusedTerminalId || terms[0].id)
     }
   })
-  useHotkey('Mod+ArrowLeft', () => {
-    if (isEditableTarget(document.activeElement)) return
-    setIsUserDriving(false)
-    snapToNearest('left')
-  })
-  useHotkey('Mod+ArrowRight', () => {
-    if (isEditableTarget(document.activeElement)) return
-    setIsUserDriving(false)
-    snapToNearest('right')
-  })
-  useHotkey('Mod+ArrowUp', () => {
-    if (isEditableTarget(document.activeElement)) return
-    setIsUserDriving(false)
-    snapToNearest('up')
-  })
-  useHotkey('Mod+ArrowDown', () => {
-    if (isEditableTarget(document.activeElement)) return
-    setIsUserDriving(false)
-    snapToNearest('down')
-  })
+  useHotkey(
+    'Mod+ArrowLeft',
+    () => {
+      if (isEditableTarget(document.activeElement)) return
+      setIsUserDriving(false)
+      snapToNearest('left')
+    },
+    { ignoreInputs: true },
+  )
+  useHotkey(
+    'Mod+ArrowRight',
+    () => {
+      if (isEditableTarget(document.activeElement)) return
+      setIsUserDriving(false)
+      snapToNearest('right')
+    },
+    { ignoreInputs: true },
+  )
+  useHotkey(
+    'Mod+ArrowUp',
+    () => {
+      if (isEditableTarget(document.activeElement)) return
+      setIsUserDriving(false)
+      snapToNearest('up')
+    },
+    { ignoreInputs: true },
+  )
+  useHotkey(
+    'Mod+ArrowDown',
+    () => {
+      if (isEditableTarget(document.activeElement)) return
+      setIsUserDriving(false)
+      snapToNearest('down')
+    },
+    { ignoreInputs: true },
+  )
   useHotkey('Mod+0', () => {
     setIsUserDriving(false)
     const {
@@ -735,7 +752,7 @@ export function InfiniteCanvas() {
         selectionMode && !isPanning && !isDragging && !primaryModifierHeld && 'cursor-default',
       )}
       onMouseDown={handleCanvasMouseDown}
-      onWheel={handleWheel}
+      onWheelCapture={handleWheel}
     >
       {/* Transform layer — spring-animated */}
       <motion.div

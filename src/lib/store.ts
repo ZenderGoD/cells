@@ -233,6 +233,8 @@ interface StoreState {
       customTitle?: string | null
       cwd?: string | null
       initialPrompt?: string | null
+      composerDraft?: string | null
+      composerAttachments?: string[]
       claudeSessionId?: string | null
       codexThreadId?: string | null
       model?: string | null
@@ -800,6 +802,8 @@ function projectToWorkingState(project: Project, preserveRuntime = false) {
     zIndex: typeof agentWindow.zIndex === 'number' ? agentWindow.zIndex : index + 1,
     status: agentWindow.status ?? 'idle',
     error: agentWindow.error ?? null,
+    composerDraft: agentWindow.composerDraft ?? null,
+    composerAttachments: agentWindow.composerAttachments ?? [],
   }))
   return {
     terminals,
@@ -3667,6 +3671,8 @@ export const useStore = create<StoreState>((set, get) => ({
       customTitle: options?.customTitle ?? null,
       cwd: options?.cwd ?? get().getActiveProjectPath() ?? null,
       initialPrompt: options?.initialPrompt ?? null,
+      composerDraft: options?.composerDraft ?? null,
+      composerAttachments: options?.composerAttachments ?? [],
       claudeSessionId: options?.claudeSessionId ?? null,
       codexThreadId: options?.codexThreadId ?? null,
       model: options?.model ?? savedDefaults.model ?? null,

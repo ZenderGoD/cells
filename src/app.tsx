@@ -85,6 +85,7 @@ function MainApp() {
   const focusedAgentWindowId = useStore((s) => s.focusedAgentWindowId)
   const suppressWindowFocusTerminalRefocusRef = useRef(false)
   const suppressWindowFocusTerminalRefocusTimerRef = useRef<number | null>(null)
+  const pendingNotificationFocusFrameRef = useRef<number | null>(null)
 
   const [windowFocused, setWindowFocused] = useState(true)
   useEffect(() => {
@@ -119,6 +120,10 @@ function MainApp() {
 
   useEffect(() => {
     return window.cells.app.onFocusAgentWindow(({ windowId, projectId }) => {
+      if (pendingNotificationFocusFrameRef.current != null) {
+        window.cancelAnimationFrame(pendingNotificationFocusFrameRef.current)
+        pendingNotificationFocusFrameRef.current = null
+      }
       suppressWindowFocusTerminalRefocusRef.current = true
       if (suppressWindowFocusTerminalRefocusTimerRef.current != null) {
         window.clearTimeout(suppressWindowFocusTerminalRefocusTimerRef.current)
@@ -140,12 +145,36 @@ function MainApp() {
         state.switchProject(resolvedProjectId)
       }
 
-      const nextState = useStore.getState()
-      const target = nextState.agentWindows.find((entry) => entry.id === windowId)
-      if (!target) return
-      nextState.snapToAgentWindow(windowId)
+      let attempts = 0
+      const focusTarget = () => {
+        const nextState = useStore.getState()
+        const target = nextState.agentWindows.find((entry) => entry.id === windowId)
+        if (!target) {
+          if (attempts >= 5) {
+            pendingNotificationFocusFrameRef.current = null
+            return
+          }
+          attempts += 1
+          pendingNotificationFocusFrameRef.current = window.requestAnimationFrame(focusTarget)
+          return
+        }
+        pendingNotificationFocusFrameRef.current = null
+        nextState.snapToAgentWindow(windowId)
+      }
+
+      pendingNotificationFocusFrameRef.current = window.requestAnimationFrame(focusTarget)
     })
   }, [])
+
+  useEffect(
+    () => () => {
+      if (pendingNotificationFocusFrameRef.current != null) {
+        window.cancelAnimationFrame(pendingNotificationFocusFrameRef.current)
+        pendingNotificationFocusFrameRef.current = null
+      }
+    },
+    [],
+  )
 
   useEffect(() => {
     window.cells.app.updateNotificationContext({
