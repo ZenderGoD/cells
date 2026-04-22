@@ -518,6 +518,7 @@ export interface ProjectsState {
   windowOpacity?: number
   useTransparentWindow?: boolean
   titleBarPosition?: TitleBarPosition
+  titleBarHidden?: boolean
   snapOnFocus?: boolean
   tabSwitchMode?: 'recent' | 'chronological'
   projectSwitchMode?: 'recent' | 'chronological'

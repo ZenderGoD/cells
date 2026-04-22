@@ -94,6 +94,7 @@ interface StoreState {
   windowOpacity: number
   useTransparentWindow: boolean
   titleBarPosition: TitleBarPosition
+  titleBarHidden: boolean
   dimWhenUnfocused: boolean
   hasSeenOnboardingGuide: boolean
   showOnboardingGuide: boolean
@@ -190,6 +191,9 @@ interface StoreState {
   setWindowOpacity(opacity: number): void
   setUseTransparentWindow(enabled: boolean): void
   setTitleBarPosition(position: TitleBarPosition): void
+  setTitleBarHidden(hidden: boolean): void
+  toggleTitleBarHidden(): void
+  toggleTitleBarPosition(): void
   setDimWhenUnfocused(enabled: boolean): void
   openTerminalFind(): void
   closeTerminalFind(): void
@@ -905,6 +909,7 @@ export const useStore = create<StoreState>((set, get) => ({
   windowOpacity: DEFAULT_WINDOW_APPEARANCE.windowOpacity,
   useTransparentWindow: DEFAULT_WINDOW_APPEARANCE.useTransparentWindow,
   titleBarPosition: DEFAULT_TITLE_BAR_POSITION,
+  titleBarHidden: false,
   dimWhenUnfocused: true,
   hasSeenOnboardingGuide: false,
   showOnboardingGuide: false,
@@ -1031,6 +1036,19 @@ export const useStore = create<StoreState>((set, get) => ({
   setTitleBarPosition(position) {
     if (position === get().titleBarPosition) return
     set({ titleBarPosition: position })
+    get().persist()
+  },
+  setTitleBarHidden(hidden) {
+    if (hidden === get().titleBarHidden) return
+    set({ titleBarHidden: hidden })
+    get().persist()
+  },
+  toggleTitleBarHidden() {
+    set({ titleBarHidden: !get().titleBarHidden })
+    get().persist()
+  },
+  toggleTitleBarPosition() {
+    set({ titleBarPosition: get().titleBarPosition === 'top' ? 'bottom' : 'top' })
     get().persist()
   },
   setDimWhenUnfocused(enabled) {
@@ -1216,6 +1234,7 @@ export const useStore = create<StoreState>((set, get) => ({
           useTransparentWindow: ps.useTransparentWindow,
         }),
         titleBarPosition: ps.titleBarPosition ?? DEFAULT_TITLE_BAR_POSITION,
+        titleBarHidden: ps.titleBarHidden ?? false,
         snapOnFocus: ps.snapOnFocus ?? true,
         tabSwitchMode: ps.tabSwitchMode || 'chronological',
         projectSwitchMode: ps.projectSwitchMode || 'recent',
@@ -1341,6 +1360,7 @@ export const useStore = create<StoreState>((set, get) => ({
           useTransparentWindow: (saved as any).useTransparentWindow,
         }),
         titleBarPosition: (saved as any).titleBarPosition ?? DEFAULT_TITLE_BAR_POSITION,
+        titleBarHidden: (saved as any).titleBarHidden ?? false,
         agentNotificationSettings: DEFAULT_AGENT_NOTIFICATION_SETTINGS,
         initialized: true,
       })
@@ -1429,6 +1449,7 @@ export const useStore = create<StoreState>((set, get) => ({
           windowOpacity: freshState.windowOpacity,
           useTransparentWindow: freshState.useTransparentWindow,
           titleBarPosition: freshState.titleBarPosition,
+          titleBarHidden: freshState.titleBarHidden,
           snapOnFocus: freshState.snapOnFocus,
           tabSwitchMode: freshState.tabSwitchMode,
           projectSwitchMode: freshState.projectSwitchMode,
@@ -1480,6 +1501,7 @@ export const useStore = create<StoreState>((set, get) => ({
           windowOpacity: state.windowOpacity,
           useTransparentWindow: state.useTransparentWindow,
           titleBarPosition: state.titleBarPosition,
+          titleBarHidden: state.titleBarHidden,
           snapOnFocus: state.snapOnFocus,
           tabSwitchMode: state.tabSwitchMode,
           projectSwitchMode: state.projectSwitchMode,

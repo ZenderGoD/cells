@@ -10,7 +10,7 @@ import { OnboardingGuide } from './components/onboarding-guide'
 import { ProjectSwitcher } from './components/project-switcher'
 import { CloseWindowDialog } from './components/close-window-dialog'
 import { CloseProjectDialog } from './components/close-project-dialog'
-import { Toaster } from './components/toast'
+import { Toaster, showToast } from './components/toast'
 import { PinnedWindow } from './components/pinned-window'
 import { BackgroundAgentSessionHosts } from './components/agent-session/background-agent-session-runner'
 import {
@@ -41,6 +41,7 @@ function MainApp() {
     windowOpacity,
     useTransparentWindow,
     titleBarPosition,
+    titleBarHidden,
     dimWhenUnfocused,
     requestCloseWindow,
     restoreLastClosedWindow,
@@ -64,6 +65,7 @@ function MainApp() {
       windowOpacity: s.windowOpacity,
       useTransparentWindow: s.useTransparentWindow,
       titleBarPosition: s.titleBarPosition,
+      titleBarHidden: s.titleBarHidden,
       dimWhenUnfocused: s.dimWhenUnfocused,
       requestCloseWindow: s.requestCloseWindow,
       restoreLastClosedWindow: s.restoreLastClosedWindow,
@@ -239,6 +241,35 @@ function MainApp() {
     const bid = useStore.getState().focusedBrowserId
     if (bid) window.cells.browser.goForward(bid)
   })
+
+  // Cmd+S: toggle title bar visibility with two-press confirmation when hiding.
+  // Unhiding is immediate; hiding requires a second press within ~3s so users
+  // don't lose the bar (and the shortcut) by accident.
+  const titleBarHideConfirmRef = useRef<number | null>(null)
+  useHotkey('Mod+S', () => {
+    const { titleBarHidden: hidden, setTitleBarHidden } = useStore.getState()
+    if (hidden) {
+      setTitleBarHidden(false)
+      if (titleBarHideConfirmRef.current !== null) {
+        window.clearTimeout(titleBarHideConfirmRef.current)
+        titleBarHideConfirmRef.current = null
+      }
+      return
+    }
+    if (titleBarHideConfirmRef.current !== null) {
+      window.clearTimeout(titleBarHideConfirmRef.current)
+      titleBarHideConfirmRef.current = null
+      setTitleBarHidden(true)
+      return
+    }
+    showToast('Press ⌘S again to hide the title bar', 'info')
+    titleBarHideConfirmRef.current = window.setTimeout(() => {
+      titleBarHideConfirmRef.current = null
+    }, 3000)
+  })
+
+  // Cmd+Shift+S: toggle the title bar between top and bottom.
+  useHotkey('Mod+Shift+S', () => useStore.getState().toggleTitleBarPosition())
 
   useEffect(() => {
     let keyboardNavigationActive = false
@@ -524,10 +555,10 @@ function MainApp() {
       className="app-shell h-full flex flex-col ring-1 ring-terminal-active/30 rounded-lg overflow-hidden"
       style={shellStyle}
     >
-      {titleBarPosition === 'top' ? <StatusBar /> : null}
+      {!titleBarHidden && titleBarPosition === 'top' ? <StatusBar /> : null}
       <InfiniteCanvas />
       <BackgroundAgentSessionHosts />
-      {titleBarPosition === 'bottom' ? <StatusBar /> : null}
+      {!titleBarHidden && titleBarPosition === 'bottom' ? <StatusBar /> : null}
       <CommandPalette />
       <TerminalSwitcher />
       <ProjectSwitcher />
