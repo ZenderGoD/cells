@@ -897,7 +897,7 @@ function CodexPlanBanner({ plan }: { plan: CodexPlanSnapshot }) {
   const done = plan.items.filter((item) => item.completed).length
   if (total === 0) return null
   return (
-    <div className="mb-2 overflow-hidden rounded-[12px] border border-border/30 bg-background/55 shadow-minimal backdrop-blur-md select-none">
+    <div className="mb-2 overflow-hidden rounded-[12px] bg-background/55 backdrop-blur-md select-none">
       <button
         type="button"
         onClick={() => setCollapsed((prev) => !prev)}
@@ -926,7 +926,7 @@ function CodexPlanBanner({ plan }: { plan: CodexPlanSnapshot }) {
             transition={EXPAND_TRANSITION}
             style={{ overflow: 'hidden' }}
           >
-            <ul className="flex flex-col gap-px border-t border-border/25 p-1">
+            <ul className="flex flex-col gap-px p-1">
               {plan.items.map((item, idx) => (
                 <li
                   key={`${idx}-${item.text}`}
