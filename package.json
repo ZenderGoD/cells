@@ -209,6 +209,9 @@
       "esbuild",
       "node-pty"
     ],
+    "patchedDependencies": {
+      "ghostty-web@0.4.0": "patches/ghostty-web@0.4.0.patch"
+    },
     "supportedArchitectures": {
       "os": [
         "darwin"
@@ -218,8 +221,5 @@
         "arm64"
       ]
     }
-  },
-  "patchedDependencies": {
-    "ghostty-web@0.4.0": "patches/ghostty-web@0.4.0.patch"
   }
 }
