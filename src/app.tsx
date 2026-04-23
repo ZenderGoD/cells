@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useHotkey } from '@tanstack/react-hotkeys'
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { useStore } from './lib/store'
 import { StatusBar } from './components/toolbar/toolbar'
 import { InfiniteCanvas } from './components/canvas/infinite-canvas'
@@ -17,6 +18,7 @@ import {
   getCachedTerminalCount,
   reloadAllTerminals,
 } from './components/terminal/terminal-cache-api'
+import { STATUS_BAR_HEIGHT } from './lib/canvas-navigation'
 import { hasPrimaryModifier, isPrimaryModifierKey } from './lib/keyboard-shortcuts'
 import { buildWindowAppearanceStyle } from './lib/window-appearance'
 import { useShallow } from 'zustand/react/shallow'
@@ -30,6 +32,33 @@ export function App() {
   }
 
   return <MainApp />
+}
+
+// Animated wrapper around StatusBar: the bar lives at a fixed 40px tall, so we
+// collapse height + opacity in lockstep instead of measuring `auto`. Reduced
+// motion skips the slide and just mounts/unmounts. Kept above MainApp so its
+// identity is stable across re-renders.
+function AnimatedTitleBarSlot({ position, show }: { position: 'top' | 'bottom'; show: boolean }) {
+  const reduceMotion = useReducedMotion()
+  return (
+    <AnimatePresence initial={false}>
+      {show ? (
+        <motion.div
+          key={`status-${position}`}
+          initial={reduceMotion ? false : { height: 0, opacity: 0 }}
+          animate={{ height: STATUS_BAR_HEIGHT, opacity: 1 }}
+          exit={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+          transition={{
+            height: { duration: 0.22, ease: [0.2, 0, 0, 1] },
+            opacity: { duration: 0.14, ease: [0.2, 0, 0, 1] },
+          }}
+          style={{ overflow: 'hidden', flexShrink: 0 }}
+        >
+          <StatusBar />
+        </motion.div>
+      ) : null}
+    </AnimatePresence>
+  )
 }
 
 function MainApp() {
@@ -270,6 +299,26 @@ function MainApp() {
 
   // Cmd+Shift+S: toggle the title bar between top and bottom.
   useHotkey('Mod+Shift+S', () => useStore.getState().toggleTitleBarPosition())
+
+  // When the title bar toggles, the effective viewport height changes, so
+  // any canvas math that subtracts the title bar has new answers. Re-snap to
+  // the focused window after the slide animation so the view lines up with
+  // the new viewport (and the extra space gained by hiding is usable).
+  const prevTitleBarHiddenRef = useRef(titleBarHidden)
+  useEffect(() => {
+    if (prevTitleBarHiddenRef.current === titleBarHidden) return
+    prevTitleBarHiddenRef.current = titleBarHidden
+    const resnap = () => {
+      const state = useStore.getState()
+      if (state.focusedTerminalId) state.snapToTerminal(state.focusedTerminalId)
+      else if (state.focusedBrowserId) state.snapToBrowser(state.focusedBrowserId)
+      else if (state.focusedAgentWindowId) state.snapToAgentWindow(state.focusedAgentWindowId)
+    }
+    // Match the 220ms slide animation below so the snap lands on the final
+    // viewport size, not the intermediate height during the collapse.
+    const timer = window.setTimeout(resnap, 240)
+    return () => window.clearTimeout(timer)
+  }, [titleBarHidden])
 
   useEffect(() => {
     let keyboardNavigationActive = false
@@ -555,10 +604,13 @@ function MainApp() {
       className="app-shell h-full flex flex-col ring-1 ring-terminal-active/30 rounded-lg overflow-hidden"
       style={shellStyle}
     >
-      {!titleBarHidden && titleBarPosition === 'top' ? <StatusBar /> : null}
+      <AnimatedTitleBarSlot position="top" show={!titleBarHidden && titleBarPosition === 'top'} />
       <InfiniteCanvas />
       <BackgroundAgentSessionHosts />
-      {!titleBarHidden && titleBarPosition === 'bottom' ? <StatusBar /> : null}
+      <AnimatedTitleBarSlot
+        position="bottom"
+        show={!titleBarHidden && titleBarPosition === 'bottom'}
+      />
       <CommandPalette />
       <TerminalSwitcher />
       <ProjectSwitcher />

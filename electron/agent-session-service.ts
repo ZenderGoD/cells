@@ -1438,6 +1438,14 @@ interface CodexRuntime extends RuntimeBase {
     kind: 'command' | 'file-change'
     resolve: CodexApprovalResolver
   } | null
+  /** Set after Codex emits a `<proposed_plan>` block in agent message text.
+   *  Unlike Claude's blocking `canUseTool` pause, Codex's turn is already
+   *  complete; this is purely UI state so the renderer can show an approval
+   *  banner and the user's choice can drive the next turn. Cleared on
+   *  respondPlan() or when the user sends a new message. */
+  pendingPlanApproval: {
+    plan: string
+  } | null
   /** Monotonic counter bumped on every `turn.started`. The Codex CLI reuses
    *  `item_0`, `item_1`, … across turns, so we prefix item ids with this
    *  counter to keep each turn's items distinct in our message list. */
@@ -1628,6 +1636,44 @@ function appendMessage(snapshot: AgentSessionSnapshot, message: AgentSessionMess
   snapshot.updatedAt = now()
 }
 
+function appendQuestionAnswerMessage(
+  snapshot: AgentSessionSnapshot,
+  windowId: string,
+  questions: Array<{ question: string; header?: string | null }>,
+  pickedByQuestion: Array<{ question: string; picked: string[] }>,
+  note: string,
+  declined: boolean,
+) {
+  const lines: string[] = []
+  if (declined) {
+    lines.push('_Skipped answering._')
+  } else {
+    for (const question of questions) {
+      const entry = pickedByQuestion.find((item) => item.question === question.question)
+      const picked = entry?.picked ?? []
+      const header = question.header ? `**${question.header}** — ` : ''
+      lines.push(`${header}${question.question}`)
+      if (picked.length > 0) {
+        lines.push(...picked.map((label) => `- ${label}`))
+      } else {
+        lines.push('- _(no option selected)_')
+      }
+      lines.push('')
+    }
+  }
+  if (note) {
+    lines.push(`> ${note.replace(/\n/g, '\n> ')}`)
+  }
+  const text = lines.join('\n').trim()
+  if (!text) return
+  appendMessage(snapshot, {
+    id: `${windowId}-question-answer-${now()}`,
+    role: 'user',
+    text,
+    updatedAt: now(),
+  })
+}
+
 function compactText(value: unknown, fallback = '') {
   if (typeof value === 'string') return value.trim()
   if (value == null) return fallback
@@ -1690,6 +1736,22 @@ function codexItemStatus(value: unknown): AgentSessionMessage['status'] {
   if (value === 'failed') return 'failed'
   if (value === 'completed' || value === 'interrupted' || value === 'cancelled') return 'completed'
   return 'in_progress'
+}
+
+// Codex doesn't expose plan-mode as a first-class SDK event — the developer
+// prompt instructs the model to wrap its final plan in a <proposed_plan>
+// block inside a normal agent message. Pull that block out so we can hand the
+// plan markdown to the approval banner and drop the noisy tags from the
+// rendered message body.
+const CODEX_PROPOSED_PLAN_REGEX = /<proposed_plan>\s*\n([\s\S]*?)\n?\s*<\/proposed_plan>/i
+function extractCodexProposedPlan(text: string): { plan: string; stripped: string } | null {
+  if (!text || !text.includes('<proposed_plan>')) return null
+  const match = text.match(CODEX_PROPOSED_PLAN_REGEX)
+  if (!match) return null
+  const plan = match[1].trim()
+  if (!plan) return null
+  const stripped = text.replace(CODEX_PROPOSED_PLAN_REGEX, plan).trim()
+  return { plan, stripped }
 }
 
 function codexItemToMessage(item: Record<string, unknown>): AgentSessionMessage | null {
@@ -2884,6 +2946,18 @@ export class AgentSessionService extends EventEmitter {
     runtime.snapshot.codexPlan = null
     runtime.snapshot.status = 'idle'
     runtime.snapshot.error = null
+    // Finalize any tool/assistant/reasoning messages still marked in_progress.
+    // close() tears down the underlying CLI/session, so their natural
+    // "completed" event will never arrive — without this the background
+    // activity banner keeps showing and the Stop button appears to do
+    // nothing on the next click.
+    const now = Date.now()
+    for (const message of runtime.snapshot.messages) {
+      if (message.status === 'in_progress') {
+        message.status = 'failed'
+        message.updatedAt = now
+      }
+    }
     this.emitUpdate(runtime.snapshot)
   }
 
@@ -3086,7 +3160,41 @@ export class AgentSessionService extends EventEmitter {
     feedback?: string,
   ): Promise<void> {
     const runtime = this.runtimes.get(windowId)
-    if (!runtime || runtime.kind !== 'claude') return
+    if (!runtime) return
+
+    if (runtime.kind === 'claude') {
+      const pending = runtime.pendingPlanApproval
+      if (!pending) return
+
+      runtime.pendingPlanApproval = null
+      runtime.snapshot.pendingPlanApproval = null
+      runtime.snapshot.updatedAt = now()
+
+      if (decision === 'reject') {
+        const trimmed = feedback?.trim()
+        const message = trimmed
+          ? `The user rejected the plan. Their feedback: ${trimmed}\n\nPlease revise the plan based on the feedback — do not start implementing.`
+          : 'The user rejected the plan. Please refine it further — do not start implementing.'
+        log('claude.exitPlanMode.reject', { windowId, hasFeedback: Boolean(trimmed) })
+        this.emitUpdate(runtime.snapshot)
+        pending.resolve({ behavior: 'deny', message })
+        return
+      }
+
+      const nextMode: AgentSessionRequest['permissionMode'] =
+        decision === 'auto-accept' ? 'bypass' : 'ask'
+      log('claude.exitPlanMode.approve', { windowId, nextMode })
+      await this.updatePermissionMode(windowId, nextMode)
+      this.emitUpdate(runtime.snapshot)
+      pending.resolve({ behavior: 'allow', updatedInput: pending.originalInput })
+      return
+    }
+
+    // Codex plan approval: the turn already completed when the model emitted
+    // its <proposed_plan> block, so we don't have a blocking callback to
+    // resolve. We drive the next action by (a) flipping the thread's
+    // permission mode and (b) kicking a follow-up turn with an implement /
+    // refine message. Mirrors t3code's "Implement" vs "Refine" split.
     const pending = runtime.pendingPlanApproval
     if (!pending) return
 
@@ -3096,21 +3204,25 @@ export class AgentSessionService extends EventEmitter {
 
     if (decision === 'reject') {
       const trimmed = feedback?.trim()
-      const message = trimmed
-        ? `The user rejected the plan. Their feedback: ${trimmed}\n\nPlease revise the plan based on the feedback — do not start implementing.`
-        : 'The user rejected the plan. Please refine it further — do not start implementing.'
-      log('claude.exitPlanMode.reject', { windowId, hasFeedback: Boolean(trimmed) })
+      log('codex.proposedPlan.reject', { windowId, hasFeedback: Boolean(trimmed) })
       this.emitUpdate(runtime.snapshot)
-      pending.resolve({ behavior: 'deny', message })
+      if (trimmed) {
+        await this.send(windowId, trimmed)
+      }
       return
     }
 
     const nextMode: AgentSessionRequest['permissionMode'] =
       decision === 'auto-accept' ? 'bypass' : 'ask'
-    log('claude.exitPlanMode.approve', { windowId, nextMode })
+    log('codex.proposedPlan.approve', { windowId, nextMode })
     await this.updatePermissionMode(windowId, nextMode)
     this.emitUpdate(runtime.snapshot)
-    pending.resolve({ behavior: 'allow', updatedInput: pending.originalInput })
+    const trimmed = feedback?.trim()
+    const base = `PLEASE IMPLEMENT THIS PLAN:\n${pending.plan.trim()}`
+    const implementPrompt = trimmed
+      ? `${base}\n\nAdditional guidance from the user: ${trimmed}`
+      : base
+    await this.send(windowId, implementPrompt)
   }
 
   /** Resolve a pending AskUserQuestion prompt.
@@ -3120,9 +3232,16 @@ export class AgentSessionService extends EventEmitter {
    *      continue with its best judgment.
    *  Structured answers are returned through `updatedInput.answers`, which
    *  lets Claude continue the tool call without re-asking the question. */
-  async respondQuestion(windowId: string, answers: Record<string, string[]> | null): Promise<void> {
+  async respondQuestion(
+    windowId: string,
+    answers: Record<string, string[]> | null,
+    note?: string | null,
+  ): Promise<void> {
     const runtime = this.runtimes.get(windowId)
     if (!runtime) return
+
+    const trimmedNote = typeof note === 'string' ? note.trim() : ''
+    const hasNote = trimmedNote.length > 0
 
     if (runtime.kind === 'claude') {
       const pending = runtime.pendingQuestion
@@ -3132,8 +3251,25 @@ export class AgentSessionService extends EventEmitter {
       runtime.snapshot.pendingQuestion = null
       runtime.snapshot.updatedAt = now()
 
-      if (!answers) {
+      const normalizedAnswers: Record<string, string> = {}
+      const pickedByQuestion: Array<{ question: string; picked: string[] }> = []
+      if (answers) {
+        for (const q of pending.questions) {
+          const key = 'id' in q && typeof q.id === 'string' ? q.id : q.question
+          const picked = (answers[key] ?? answers[q.question] ?? []).filter(
+            (value): value is string => typeof value === 'string' && value.trim().length > 0,
+          )
+          pickedByQuestion.push({ question: q.question, picked })
+          const normalized = q.multiSelect ? picked.join(', ') : (picked[0] ?? '')
+          if (normalized) normalizedAnswers[q.question] = normalized
+        }
+      }
+
+      const hasAnySelection = pickedByQuestion.some((entry) => entry.picked.length > 0)
+
+      if (!answers && !hasNote) {
         log('claude.askUserQuestion.declined', { windowId })
+        appendQuestionAnswerMessage(runtime.snapshot, windowId, pending.questions, [], '', true)
         this.emitUpdate(runtime.snapshot)
         pending.resolve({
           behavior: 'deny',
@@ -3143,26 +3279,46 @@ export class AgentSessionService extends EventEmitter {
         return
       }
 
-      const normalizedAnswers: Record<string, string> = {}
-      for (const q of pending.questions) {
-        const key = 'id' in q && typeof q.id === 'string' ? q.id : q.question
-        const picked = (answers[key] ?? answers[q.question] ?? []).filter(
-          (value): value is string => typeof value === 'string' && value.trim().length > 0,
-        )
-        const normalized = q.multiSelect ? picked.join(', ') : (picked[0] ?? '')
-        if (normalized) normalizedAnswers[q.question] = normalized
-      }
-      if (Object.keys(normalizedAnswers).length < pending.questions.length) {
-        log('claude.askUserQuestion.incomplete', {
+      if (hasNote) normalizedAnswers._userNote = trimmedNote
+
+      if (!hasAnySelection && hasNote) {
+        log('claude.askUserQuestion.freeform', { windowId })
+        appendQuestionAnswerMessage(
+          runtime.snapshot,
           windowId,
-          expected: pending.questions.length,
-          actual: Object.keys(normalizedAnswers).length,
-        })
+          pending.questions,
+          pickedByQuestion,
+          trimmedNote,
+          false,
+        )
         this.emitUpdate(runtime.snapshot)
         pending.resolve({
           behavior: 'deny',
-          message:
-            'The user response was incomplete. Ask the question again if you still need clarification.',
+          message: `The user did not pick any of the provided options. Their freeform response: ${trimmedNote}`,
+        })
+        return
+      }
+
+      if (Object.keys(normalizedAnswers).length - (hasNote ? 1 : 0) < pending.questions.length) {
+        log('claude.askUserQuestion.incomplete', {
+          windowId,
+          expected: pending.questions.length,
+          actual: Object.keys(normalizedAnswers).length - (hasNote ? 1 : 0),
+        })
+        appendQuestionAnswerMessage(
+          runtime.snapshot,
+          windowId,
+          pending.questions,
+          pickedByQuestion,
+          trimmedNote,
+          false,
+        )
+        this.emitUpdate(runtime.snapshot)
+        pending.resolve({
+          behavior: 'deny',
+          message: hasNote
+            ? `The user's response was incomplete. Their note: ${trimmedNote}`
+            : 'The user response was incomplete. Ask the question again if you still need clarification.',
         })
         return
       }
@@ -3170,6 +3326,14 @@ export class AgentSessionService extends EventEmitter {
         windowId,
         keys: Object.keys(normalizedAnswers).length,
       })
+      appendQuestionAnswerMessage(
+        runtime.snapshot,
+        windowId,
+        pending.questions,
+        pickedByQuestion,
+        trimmedNote,
+        false,
+      )
       this.emitUpdate(runtime.snapshot)
       pending.resolve({
         behavior: 'allow',
@@ -3189,26 +3353,53 @@ export class AgentSessionService extends EventEmitter {
     runtime.snapshot.updatedAt = now()
 
     const normalizedAnswers: Record<string, string[]> = {}
+    const pickedByQuestion: Array<{ question: string; picked: string[] }> = []
     for (const question of pending.questions) {
       const picked = (answers?.[question.id] ?? answers?.[question.question] ?? []).filter(
         (value): value is string => typeof value === 'string' && value.trim().length > 0,
       )
       normalizedAnswers[question.id] = picked
+      pickedByQuestion.push({ question: question.question, picked })
     }
-    if (!answers || Object.values(normalizedAnswers).some((picked) => picked.length === 0)) {
+
+    if (hasNote) {
+      const first = pending.questions[0]
+      if (first) {
+        normalizedAnswers[first.id] = [
+          ...(normalizedAnswers[first.id] ?? []),
+          `(user note: ${trimmedNote})`,
+        ]
+      }
+    }
+
+    const hasAnySelection = pickedByQuestion.some((entry) => entry.picked.length > 0)
+    const declined = !answers && !hasNote
+
+    if (declined) {
+      log('codex.requestUserInput.declined', { windowId })
+    } else if (!hasAnySelection) {
+      log('codex.requestUserInput.freeform', { windowId })
+    } else if (Object.values(normalizedAnswers).some((picked) => picked.length === 0)) {
       log('codex.requestUserInput.incomplete', {
         windowId,
         expected: pending.questions.length,
         actual: Object.values(normalizedAnswers).filter((picked) => picked.length > 0).length,
       })
-      this.emitUpdate(runtime.snapshot)
-      pending.resolve(codexQuestionResponse(normalizedAnswers))
-      return
+    } else {
+      log('codex.requestUserInput.answered', {
+        windowId,
+        keys: Object.keys(normalizedAnswers).length,
+      })
     }
-    log('codex.requestUserInput.answered', {
+
+    appendQuestionAnswerMessage(
+      runtime.snapshot,
       windowId,
-      keys: Object.keys(normalizedAnswers).length,
-    })
+      pending.questions,
+      pickedByQuestion,
+      trimmedNote,
+      declined,
+    )
     this.emitUpdate(runtime.snapshot)
     pending.resolve(codexQuestionResponse(normalizedAnswers))
   }
@@ -3276,6 +3467,7 @@ export class AgentSessionService extends EventEmitter {
       rejectTurn: null,
       pendingQuestion: null,
       pendingApproval: null,
+      pendingPlanApproval: null,
       closed: false,
       turnCounter: 0,
     } satisfies CodexRuntime
@@ -3662,6 +3854,52 @@ export class AgentSessionService extends EventEmitter {
       next.metadata = runtime.currentTurnUnifiedDiff
     }
     if (method === 'item/started') next.status = 'in_progress'
+    // Codex emits a first-class `plan` item when it finalizes a proposed plan
+    // (this mirrors t3code's `turn.proposed.completed` path — the plan arrives
+    // pre-extracted, no tag parsing needed). Use it as the primary trigger for
+    // the approval banner and skip appending the redundant transcript row.
+    if (method === 'item/completed' && next.title === 'Plan' && next.role === 'system') {
+      const planText = (next.text ?? '').trim()
+      if (planText) {
+        runtime.pendingPlanApproval = { plan: planText }
+        runtime.snapshot.pendingPlanApproval = {
+          plan: planText,
+          createdAt: now(),
+        }
+        runtime.snapshot.updatedAt = now()
+        log('codex.proposedPlan.pending', {
+          windowId: runtime.snapshot.windowId,
+          planLength: planText.length,
+          source: 'planItem',
+        })
+        return
+      }
+    }
+    // Fallback: older Codex builds (or plan mode on non-plan-aware models)
+    // may ship the plan as `<proposed_plan>…</proposed_plan>` inside a
+    // regular assistant message. Strip the tags from the rendered message
+    // and surface the banner from the extracted body.
+    if (
+      method === 'item/completed' &&
+      next.role === 'assistant' &&
+      runtime.request.permissionMode === 'plan'
+    ) {
+      const extracted = extractCodexProposedPlan(next.text ?? '')
+      if (extracted) {
+        next.text = extracted.stripped || extracted.plan
+        runtime.pendingPlanApproval = { plan: extracted.plan }
+        runtime.snapshot.pendingPlanApproval = {
+          plan: extracted.plan,
+          createdAt: now(),
+        }
+        runtime.snapshot.updatedAt = now()
+        log('codex.proposedPlan.pending', {
+          windowId: runtime.snapshot.windowId,
+          planLength: extracted.plan.length,
+          source: 'proposedPlanTag',
+        })
+      }
+    }
     appendMessage(runtime.snapshot, next)
   }
 
@@ -4013,6 +4251,39 @@ export class AgentSessionService extends EventEmitter {
         const id =
           evt.uuid || `${runtime.snapshot.windowId}-user-replay-${runtime.snapshot.messages.length}`
         if (runtime.snapshot.messages.some((m) => m.id === id)) return
+        // When `send()` fires, we append an optimistic user row with id
+        // `{windowId}-user-{timestamp}` so the bubble shows instantly. The SDK
+        // later echoes the same user turn back with its own `evt.uuid`. Naively
+        // appending would leave two bubbles, and the stable-list diff between
+        // the optimistic id (gone) and the new uuid id (new) can visually drop
+        // the row during the swap — the source of "user message disappears".
+        // Adopt the SDK uuid onto the matching optimistic row instead.
+        const optimisticIdPrefix = `${runtime.snapshot.windowId}-user-`
+        const replayIdPrefix = `${runtime.snapshot.windowId}-user-replay-`
+        let optimisticIdx = -1
+        for (let i = runtime.snapshot.messages.length - 1; i >= 0; i -= 1) {
+          const m = runtime.snapshot.messages[i]
+          if (
+            m.role === 'user' &&
+            m.id.startsWith(optimisticIdPrefix) &&
+            !m.id.startsWith(replayIdPrefix) &&
+            m.text === text
+          ) {
+            optimisticIdx = i
+            break
+          }
+        }
+        if (optimisticIdx >= 0) {
+          const existing = runtime.snapshot.messages[optimisticIdx]
+          runtime.snapshot.messages[optimisticIdx] = {
+            ...existing,
+            id,
+            status: 'completed',
+            updatedAt: now(),
+          }
+          runtime.snapshot.updatedAt = now()
+          return
+        }
         appendMessage(runtime.snapshot, {
           id,
           role: 'user',

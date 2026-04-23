@@ -340,7 +340,7 @@ const api: CellsAPI = {
     },
     getPinnedType: () => {
       const params = new URLSearchParams(window.location.search)
-      return params.get('type') as 'terminal' | 'browser' | null
+      return params.get('type') as 'terminal' | 'browser' | 'agent' | null
     },
   },
   git: {
@@ -403,8 +403,17 @@ const api: CellsAPI = {
         decision,
         feedback,
       ) as Promise<void>,
-    respondQuestion: (windowId: string, answers: Record<string, string[]> | null) =>
-      ipcRenderer.invoke('agent-session:respond-question', windowId, answers) as Promise<void>,
+    respondQuestion: (
+      windowId: string,
+      answers: Record<string, string[]> | null,
+      note?: string | null,
+    ) =>
+      ipcRenderer.invoke(
+        'agent-session:respond-question',
+        windowId,
+        answers,
+        note ?? null,
+      ) as Promise<void>,
     respondApproval: (windowId: string, decision: 'accept' | 'acceptForSession' | 'decline') =>
       ipcRenderer.invoke('agent-session:respond-approval', windowId, decision) as Promise<void>,
     listCodexModels: () =>

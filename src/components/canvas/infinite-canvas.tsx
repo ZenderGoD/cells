@@ -59,6 +59,8 @@ export function InfiniteCanvas() {
     setCanvasTransform,
     snapToNearest,
     snapToTerminal,
+    snapToBrowser,
+    snapToAgentWindow,
     snapToClosest,
     snapEnabled,
     snapFast: snapFastFlag,
@@ -82,6 +84,8 @@ export function InfiniteCanvas() {
       setCanvasTransform: s.setCanvasTransform,
       snapToNearest: s.snapToNearest,
       snapToTerminal: s.snapToTerminal,
+      snapToBrowser: s.snapToBrowser,
+      snapToAgentWindow: s.snapToAgentWindow,
       snapToClosest: s.snapToClosest,
       snapEnabled: s.snapEnabled,
       snapFast: s.snapFast,
@@ -97,6 +101,7 @@ export function InfiniteCanvas() {
       focusTerminal: s.focusTerminal,
     })),
   )
+  const titleBarHidden = useStore((s) => s.titleBarHidden)
   const transform = canvas
 
   const containerRef = useRef<HTMLDivElement>(null)
@@ -146,7 +151,11 @@ export function InfiniteCanvas() {
   const animatedX = reducedMotion ? motionX : springX
   const animatedY = reducedMotion ? motionY : springY
   const animatedScale = reducedMotion ? motionScale : springScale
-  const viewportRect = getViewportRect(transform)
+  const viewportRect = getViewportRect(
+    transform,
+    window.innerWidth,
+    window.innerHeight - (titleBarHidden ? 0 : STATUS_BAR_HEIGHT),
+  )
   const terminalViewportRect = useMemo(() => {
     const overscan = TERMINAL_VISIBILITY_OVERSCAN_PX / Math.max(transform.scale, MIN_ZOOM)
     return {
@@ -292,7 +301,8 @@ export function InfiniteCanvas() {
     transform.y,
   ])
 
-  // Schedule a snap — delay scales with how much the closest terminal fills the viewport
+  // Schedule a snap — delay scales with how much the most visible on-canvas
+  // window fills the viewport, and we snap back to that same window.
   const scheduleSnap = useCallback(() => {
     if (!snapEnabled) return
     const { canvas, terminals: terms, browsers, agentWindows: agents } = useStore.getState()
@@ -306,7 +316,7 @@ export function InfiniteCanvas() {
 
     // Find the window with the most overlap with the viewport
     const viewW = window.innerWidth
-    const viewH = window.innerHeight - STATUS_BAR_HEIGHT
+    const viewH = window.innerHeight - (useStore.getState().titleBarHidden ? 0 : STATUS_BAR_HEIGHT)
     const viewL = -canvas.x / canvas.scale
     const viewT = -canvas.y / canvas.scale
     const viewR = viewL + viewW / canvas.scale
@@ -314,6 +324,7 @@ export function InfiniteCanvas() {
     const viewArea = (viewR - viewL) * (viewB - viewT)
 
     let maxCoverage = 0
+    let bestWindow: ReturnType<typeof getCanvasWindows>[number] | null = null
     for (const window of windows) {
       const overlapW = Math.max(
         0,
@@ -324,7 +335,10 @@ export function InfiniteCanvas() {
         Math.min(window.y + window.height, viewB) - Math.max(window.y, viewT),
       )
       const coverage = (overlapW * overlapH) / viewArea
-      if (coverage > maxCoverage) maxCoverage = coverage
+      if (coverage > maxCoverage) {
+        maxCoverage = coverage
+        bestWindow = window
+      }
     }
 
     // More coverage → shorter delay (linear interpolation, clamped)
@@ -335,9 +349,19 @@ export function InfiniteCanvas() {
     snapTimerRef.current = setTimeout(() => {
       setIsUserDriving(false)
       setSnapPaused(false)
-      snapToClosest()
+      if (!bestWindow) {
+        snapToClosest()
+        return
+      }
+      if (bestWindow.type === 'terminal') {
+        snapToTerminal(bestWindow.id)
+      } else if (bestWindow.type === 'agent') {
+        snapToAgentWindow(bestWindow.id)
+      } else {
+        snapToBrowser(bestWindow.id)
+      }
     }, delay)
-  }, [snapToClosest, snapEnabled, setSnapPaused])
+  }, [snapToAgentWindow, snapToBrowser, snapToClosest, snapToTerminal, snapEnabled, setSnapPaused])
 
   const cancelSnap = useCallback(() => {
     if (snapTimerRef.current) {

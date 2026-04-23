@@ -51,17 +51,22 @@ export function getCanvasWindows(
       agent: terminal.agent,
       runtimeStatus: terminal.runtimeStatus ?? null,
     })),
-    ...browsers.map((browser, index) => ({
-      id: browser.id,
-      type: 'browser' as const,
-      title: browser.title || browser.url || 'New Tab',
-      x: browser.x,
-      y: browser.y,
-      width: browser.width,
-      height: browser.height,
-      zIndex: browser.zIndex ?? index + 1,
-      faviconUrl: browser.faviconUrl,
-    })),
+    // Pinned browsers live in their own native window and are removed from the
+    // canvas render tree, so including them here creates "ghost" targets for
+    // snap/overview logic.
+    ...browsers
+      .filter((browser) => !browser.pinned)
+      .map((browser, index) => ({
+        id: browser.id,
+        type: 'browser' as const,
+        title: browser.title || browser.url || 'New Tab',
+        x: browser.x,
+        y: browser.y,
+        width: browser.width,
+        height: browser.height,
+        zIndex: browser.zIndex ?? index + 1,
+        faviconUrl: browser.faviconUrl,
+      })),
     ...agentWindows.map((agentWindow, index) => ({
       id: agentWindow.id,
       type: 'agent' as const,

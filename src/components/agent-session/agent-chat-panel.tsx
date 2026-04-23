@@ -7,7 +7,9 @@ import {
   ChevronRight,
   Circle,
   Clock,
+  Copy,
   FastForward,
+  FileText,
   Folder,
   GripVertical,
   HelpCircle,
@@ -150,6 +152,35 @@ function parseJsonObject(raw: string | null | undefined): Record<string, unknown
   }
 }
 
+// Unwraps shell wrappers Codex emits, e.g. `/bin/zsh -lc "…"` or `bash -c '…'`,
+// and strips leading `export FOO=bar;` / `FOO=bar` env assignments so the
+// activity preview shows the real command (not a `CONVEX_DEPLOY_KEY=secret …`
+// prefix that both leaks the key and pushes the real command past the
+// 160-char truncation).
+function cleanShellCommand(raw: string): string {
+  let cmd = raw.trim()
+  const wrapperMatch = cmd.match(
+    /^(?:\/[^\s]+\/)?(?:sh|bash|zsh|dash|ksh)\s+(?:-[a-zA-Z]*c|-c)\s+(.*)$/s,
+  )
+  if (wrapperMatch) {
+    const inner = wrapperMatch[1].trim()
+    const quote = inner.startsWith('"') ? '"' : inner.startsWith("'") ? "'" : null
+    if (quote && inner.endsWith(quote) && inner.length >= 2) {
+      cmd = inner.slice(1, -1)
+    } else {
+      cmd = inner
+    }
+  }
+  // Drop leading `export FOO=…;` / `FOO=…` assignments, including ones joined
+  // with `;` or `&&`. Regex handles quoted/unquoted values.
+  const envPattern =
+    /^\s*(?:export\s+)?[A-Z_][A-Z0-9_]*=(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\S*)\s*(?:;|&&)\s*/
+  while (envPattern.test(cmd)) {
+    cmd = cmd.replace(envPattern, '')
+  }
+  return cmd.trim() || raw.trim()
+}
+
 function getActivityPreview(message: AgentSessionMessage) {
   const metadata = parseJsonObject(message.metadata)
   const textObject = parseJsonObject(message.text)
@@ -173,12 +204,16 @@ function getActivityPreview(message: AgentSessionMessage) {
         : typeof message.metadata === 'string' && message.metadata.startsWith('/')
           ? message.metadata
           : null
-  const previewSource =
+  const rawPreviewSource =
     description ||
     command ||
     message.text.split('\n').find((line) => line.trim().length > 0) ||
     message.title ||
     'Working'
+  // Only attempt to unwrap when the source was a command (description is
+  // already human-prose from the agent, and we don't want to mangle it).
+  const previewSource =
+    !description && command ? cleanShellCommand(rawPreviewSource) : rawPreviewSource
   return {
     preview: previewSource.length > 160 ? `${previewSource.slice(0, 160)}…` : previewSource,
     cwd,
@@ -983,39 +1018,41 @@ function AgentApprovalBanner({
   )
 
   return (
-    <div className="mb-2 rounded-[12px] border border-amber-400/25 bg-amber-400/5 px-3 py-2.5 text-[12px] text-foreground/90 shadow-minimal backdrop-blur-sm">
-      <div className="mb-2 flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-amber-300/90">
-        <ShieldCheck className="size-3.5" />
-        <span>{approval.title}</span>
+    <div className="mb-2 overflow-hidden rounded-[12px] bg-background/55 p-2.5 backdrop-blur-md">
+      <div className="mb-1.5 flex items-center gap-2 px-0.5">
+        <ShieldCheck className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground">
+          {approval.title}
+        </span>
       </div>
-      <div className="space-y-1.5">
+      <div className="space-y-1">
         {approval.detail ? (
-          <div className="rounded-[8px] border border-border/50 bg-background/50 px-2.5 py-2 text-[12px] leading-[1.45] text-foreground/90">
+          <div className="rounded-[8px] bg-background/60 px-2.5 py-2 text-[12px] leading-[1.45] text-foreground/90 shadow-minimal">
             {approval.detail}
           </div>
         ) : null}
         {approval.reason ? (
-          <div className="text-[11px] leading-[1.45] text-muted-foreground/80">
+          <div className="px-0.5 text-[11px] leading-[1.45] text-muted-foreground/80">
             Reason: {approval.reason}
           </div>
         ) : null}
         {approval.cwd ? (
-          <div className="text-[11px] leading-[1.45] text-muted-foreground/80">
+          <div className="px-0.5 text-[11px] leading-[1.45] text-muted-foreground/80">
             Cwd: {truncateCwd(approval.cwd)}
           </div>
         ) : null}
         {approval.grantRoot ? (
-          <div className="text-[11px] leading-[1.45] text-muted-foreground/80">
+          <div className="px-0.5 text-[11px] leading-[1.45] text-muted-foreground/80">
             Grant root: {truncateCwd(approval.grantRoot)}
           </div>
         ) : null}
       </div>
-      <div className="mt-2.5 flex flex-wrap items-center justify-end gap-1.5">
+      <div className="mt-2 flex flex-wrap items-center justify-end gap-1">
         <button
           type="button"
           disabled={!!busy}
           onClick={() => void respond('decline')}
-          className="rounded-[6px] px-2 py-1 text-[11.5px] text-muted-foreground/80 hover:bg-foreground/5 hover:text-foreground disabled:cursor-wait disabled:opacity-60"
+          className="rounded-[8px] px-2 py-1 text-[12px] text-muted-foreground/80 transition-colors hover:bg-foreground/[0.04] hover:text-foreground disabled:cursor-wait disabled:opacity-60"
         >
           {busy === 'decline' ? 'Declining…' : 'Decline'}
         </button>
@@ -1024,7 +1061,7 @@ function AgentApprovalBanner({
             type="button"
             disabled={!!busy}
             onClick={() => void respond('acceptForSession')}
-            className="rounded-[6px] border border-border/60 bg-background/60 px-2.5 py-1 text-[11.5px] font-medium text-foreground transition-colors hover:border-foreground/30 hover:bg-foreground/5 disabled:cursor-wait disabled:opacity-60"
+            className="rounded-[8px] bg-background/60 px-2.5 py-1 text-[12px] text-foreground/90 shadow-minimal transition-colors hover:bg-background/80 disabled:cursor-wait disabled:opacity-60"
           >
             {busy === 'acceptForSession' ? 'Approving…' : 'Allow for session'}
           </button>
@@ -1033,7 +1070,7 @@ function AgentApprovalBanner({
           type="button"
           disabled={!!busy}
           onClick={() => void respond('accept')}
-          className="rounded-[6px] bg-amber-400 px-2.5 py-1 text-[11.5px] font-medium text-background transition-colors hover:bg-amber-300 disabled:cursor-wait disabled:opacity-60"
+          className="rounded-[8px] bg-foreground/90 px-2.5 py-1 text-[12px] font-medium text-background shadow-minimal transition-colors hover:bg-foreground disabled:cursor-wait disabled:opacity-60"
         >
           {busy === 'accept' ? 'Approving…' : 'Allow once'}
         </button>
@@ -1042,10 +1079,21 @@ function AgentApprovalBanner({
   )
 }
 
-function PlanApprovalBanner({ windowId }: { windowId: string }) {
+function PlanApprovalBanner({
+  windowId,
+  agent,
+  onOpenPlan,
+  planOpen,
+}: {
+  windowId: string
+  agent: AgentWindowNode['agent']
+  onOpenPlan: () => void
+  planOpen: boolean
+}) {
   const [busy, setBusy] = useState<'auto-accept' | 'ask' | 'reject' | null>(null)
   const [showFeedback, setShowFeedback] = useState(false)
   const [feedback, setFeedback] = useState('')
+  const agentName = getAgentDisplayName(agent)
   const respond = useCallback(
     async (decision: 'auto-accept' | 'ask' | 'reject', note?: string) => {
       if (busy) return
@@ -1069,32 +1117,48 @@ function PlanApprovalBanner({ windowId }: { windowId: string }) {
     [busy, windowId],
   )
   const optionClass =
-    'flex w-full items-start gap-2 rounded-[10px] border border-border/60 bg-background/60 px-3 py-2 text-left text-[12px] transition-colors hover:border-foreground/30 hover:bg-foreground/5 disabled:cursor-wait disabled:opacity-60'
+    'flex w-full items-start gap-2 rounded-[10px] px-2.5 py-2 text-left text-[12px] transition-colors hover:bg-foreground/[0.04] disabled:cursor-wait disabled:opacity-60'
   return (
-    <div className="mb-2 rounded-[12px] border border-emerald-400/25 bg-emerald-500/5 px-3 py-2.5 text-[12px] text-foreground/90 shadow-minimal backdrop-blur-sm">
-      <div className="mb-2 flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-emerald-300/90">
-        <ShieldCheck className="size-3.5" />
-        <span>Would you like to proceed?</span>
+    <div className="mb-2 overflow-hidden rounded-[12px] bg-background/55 p-2.5 backdrop-blur-md">
+      <div className="mb-1.5 flex items-center gap-2 px-0.5">
+        <ShieldCheck className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground">
+          {agentName} proposed a plan
+        </span>
+        <button
+          type="button"
+          onClick={onOpenPlan}
+          className={cn(
+            'inline-flex shrink-0 items-center gap-1 rounded-[6px] px-1.5 py-0.5 text-[11px] transition-colors',
+            planOpen
+              ? 'bg-foreground/10 text-foreground/90'
+              : 'text-muted-foreground/80 hover:bg-foreground/5 hover:text-foreground',
+          )}
+          title={planOpen ? 'Hide plan' : 'View plan'}
+        >
+          <FileText className="size-3" />
+          {planOpen ? 'Hide plan' : 'View plan'}
+        </button>
       </div>
-      <div className="flex flex-col gap-1.5">
+      <div className="flex flex-col gap-0.5">
         <button
           type="button"
           disabled={!!busy}
           onClick={() => void respond('auto-accept')}
-          className={cn(optionClass, 'hover:border-emerald-400/60 hover:bg-emerald-500/10')}
+          className={optionClass}
         >
-          <span className="mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded-full bg-emerald-500/20 text-[10px] font-medium text-emerald-300/90">
+          <span className="mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded-full bg-foreground/10 text-[10px] font-medium text-foreground/80">
             1
           </span>
           <span className="flex flex-1 flex-col gap-0.5">
             <span className="font-medium text-foreground">
-              {busy === 'auto-accept' ? 'Starting…' : 'Yes, and auto-accept edits'}
+              {busy === 'auto-accept' ? 'Starting…' : 'Implement — auto-accept edits'}
             </span>
             <span className="text-[11px] text-muted-foreground/80">
-              Switch to Yolo — Claude runs tools without asking.
+              Switch to Yolo — {agentName} runs tools without asking.
             </span>
           </span>
-          <Zap className="mt-0.5 size-3.5 shrink-0 text-emerald-300/80" />
+          <Zap className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/70" />
         </button>
         <button
           type="button"
@@ -1107,10 +1171,10 @@ function PlanApprovalBanner({ windowId }: { windowId: string }) {
           </span>
           <span className="flex flex-1 flex-col gap-0.5">
             <span className="font-medium text-foreground">
-              {busy === 'ask' ? 'Starting…' : 'Yes, and manually approve edits'}
+              {busy === 'ask' ? 'Starting…' : 'Implement — approve each edit'}
             </span>
             <span className="text-[11px] text-muted-foreground/80">
-              Switch to Ask — approve each write/bash individually.
+              Switch to Ask — approve each write / bash individually.
             </span>
           </span>
           <Check className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/70" />
@@ -1125,7 +1189,7 @@ function PlanApprovalBanner({ windowId }: { windowId: string }) {
             3
           </span>
           <span className="flex flex-1 flex-col gap-0.5">
-            <span className="font-medium text-foreground">No, keep planning</span>
+            <span className="font-medium text-foreground">Keep refining</span>
             <span className="text-[11px] text-muted-foreground/80">
               Stay in Plan mode
               {showFeedback ? ' — add feedback below' : ' — optionally add feedback'}.
@@ -1135,13 +1199,13 @@ function PlanApprovalBanner({ windowId }: { windowId: string }) {
         </button>
       </div>
       {showFeedback ? (
-        <div className="mt-2 space-y-1.5">
+        <div className="mt-2 space-y-1.5 px-0.5">
           <textarea
             value={feedback}
             onChange={(e) => setFeedback(e.target.value)}
             rows={2}
-            placeholder="What should Claude change about the plan? (optional)"
-            className="block w-full resize-none rounded-[8px] border border-border/50 bg-background/80 px-2.5 py-1.5 text-[12px] text-foreground placeholder:text-muted-foreground/60 outline-none focus:border-foreground/30"
+            placeholder={`What should ${agentName} change about the plan? (optional)`}
+            className="block w-full resize-none rounded-[8px] bg-foreground/5 px-2.5 py-1.5 text-[12px] text-foreground placeholder:text-muted-foreground/60 outline-none focus:bg-foreground/[0.07]"
           />
           <div className="flex justify-end gap-1.5">
             <button
@@ -1159,13 +1223,103 @@ function PlanApprovalBanner({ windowId }: { windowId: string }) {
               type="button"
               disabled={!!busy}
               onClick={() => void respond('reject', feedback)}
-              className="rounded-[6px] bg-foreground px-2.5 py-1 text-[11.5px] font-medium text-background transition-colors hover:bg-foreground/90 disabled:cursor-wait disabled:opacity-60"
+              className="rounded-[8px] bg-foreground/90 px-2.5 py-1 text-[12px] font-medium text-background transition-colors hover:bg-foreground disabled:cursor-wait disabled:opacity-60"
             >
-              {busy === 'reject' ? 'Sending…' : feedback.trim() ? 'Send feedback' : 'Keep planning'}
+              {busy === 'reject' ? 'Sending…' : feedback.trim() ? 'Send feedback' : 'Keep refining'}
             </button>
           </div>
         </div>
       ) : null}
+    </div>
+  )
+}
+
+// Default width used by the animated side-panel wrapper. We pin to a concrete
+// value so framer-motion's `width: 0 → N → 0` transition has stable endpoints
+// and the panel doesn't wobble during the expand.
+const SIDE_PANEL_DEFAULT_WIDTH = 440
+const SIDE_PANEL_MIN_WIDTH = 320
+const SIDE_PANEL_MAX_WIDTH = 900
+const SIDE_PANEL_WIDTH_STORAGE_KEY = 'agent-chat.sidePanelWidth'
+
+// Right-side side-panel that renders the full proposed plan as markdown.
+// Opened from the PlanApprovalBanner's "View plan" button. The markdown is
+// rendered flush inside the panel (no inner card) so it reads as the primary
+// content of the surface, not a tooltip. A 4px drag handle on the left edge
+// resizes the panel; the chosen width persists to localStorage across reopens.
+function PlanPreviewPanel({
+  agent,
+  plan,
+  width,
+  onClose,
+  onResizeStart,
+}: {
+  agent: AgentWindowNode['agent']
+  plan: string
+  width: number
+  onClose: () => void
+  onResizeStart: (event: React.PointerEvent<HTMLDivElement>) => void
+}) {
+  const [copied, setCopied] = useState(false)
+  const agentName = getAgentDisplayName(agent)
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(plan)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1400)
+    } catch {
+      /* clipboard blocked — ignore */
+    }
+  }, [plan])
+  return (
+    <div
+      className="relative flex h-full min-h-0 shrink-0 flex-col border-l border-border/50 bg-background"
+      style={{ width }}
+    >
+      {/* Resize handle — sits flush on the left edge, invisible until hover /
+          active drag. Pointer events are handled via onPointerDown so the drag
+          continues even if the cursor escapes the 4px strip. */}
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        onPointerDown={onResizeStart}
+        className="group/resize absolute left-0 top-0 z-10 h-full w-1 cursor-col-resize"
+      >
+        <div className="absolute inset-y-0 left-0 w-px bg-transparent transition-colors group-hover/resize:bg-primary/40 group-active/resize:bg-primary/60" />
+      </div>
+      <div className="flex items-center gap-2 border-b border-border/40 px-3 py-2">
+        <FileText className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-foreground">
+          {agentName}'s proposed plan
+        </span>
+        <button
+          type="button"
+          onClick={handleCopy}
+          className={cn(
+            'inline-flex items-center gap-1 rounded-[6px] px-1.5 py-1 text-[11.5px] transition-colors',
+            copied
+              ? 'bg-foreground/10 text-foreground/90'
+              : 'text-muted-foreground/80 hover:bg-foreground/5 hover:text-foreground',
+          )}
+          title="Copy plan markdown"
+        >
+          {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded-[6px] p-1 text-muted-foreground/70 hover:bg-foreground/5 hover:text-foreground"
+          title="Hide plan"
+        >
+          <X className="size-3.5" />
+        </button>
+      </div>
+      <div className="scrollbar-hover min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        <div className="select-text text-sm text-foreground/90">
+          <AgentMarkdown>{plan}</AgentMarkdown>
+        </div>
+      </div>
     </div>
   )
 }
@@ -1190,6 +1344,7 @@ function QuestionBanner({
     for (const q of questions) init[questionKey(q)] = []
     return init
   })
+  const [note, setNote] = useState('')
   const [busy, setBusy] = useState<'submit' | 'cancel' | null>(null)
 
   const toggle = useCallback((q: PendingQuestion, label: string) => {
@@ -1205,61 +1360,67 @@ function QuestionBanner({
     })
   }, [])
 
-  const canSubmit = questions.every((q) => (selections[questionKey(q)]?.length ?? 0) > 0)
+  const trimmedNote = note.trim()
+  const hasAllSelections = questions.every((q) => (selections[questionKey(q)]?.length ?? 0) > 0)
+  const hasAnySelection = questions.some((q) => (selections[questionKey(q)]?.length ?? 0) > 0)
+  const canSubmit = hasAllSelections || trimmedNote.length > 0 || hasAnySelection
 
   const submit = useCallback(async () => {
     if (busy || !canSubmit) return
     setBusy('submit')
     try {
-      await window.cells.agentSession.respondQuestion(windowId, selections)
+      const payload = hasAnySelection || hasAllSelections ? selections : null
+      await window.cells.agentSession.respondQuestion(windowId, payload, trimmedNote || null)
     } catch (err) {
       console.error('[agent-chat] respondQuestion failed', err)
     } finally {
       setBusy(null)
     }
-  }, [busy, canSubmit, selections, windowId])
+  }, [busy, canSubmit, hasAllSelections, hasAnySelection, selections, trimmedNote, windowId])
 
   const cancel = useCallback(async () => {
     if (busy) return
     setBusy('cancel')
     try {
-      await window.cells.agentSession.respondQuestion(windowId, null)
+      await window.cells.agentSession.respondQuestion(windowId, null, trimmedNote || null)
     } catch (err) {
       console.error('[agent-chat] respondQuestion cancel failed', err)
     } finally {
       setBusy(null)
     }
-  }, [busy, windowId])
+  }, [busy, trimmedNote, windowId])
 
   return (
-    <div className="mb-2 rounded-[12px] border border-sky-400/25 bg-sky-500/5 px-3 py-2.5 text-[12px] text-foreground/90 shadow-minimal backdrop-blur-sm">
-      <div className="mb-2 flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-sky-300/90">
-        <HelpCircle className="size-3.5" />
-        <span>
+    <div className="mb-2 overflow-hidden rounded-[12px] bg-background/55 p-2.5 backdrop-blur-md">
+      <div className="mb-2 flex items-center gap-2 px-2">
+        <HelpCircle className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground">
           {questions.length === 1
             ? `${getAgentDisplayName(agent)} needs an answer`
             : `${getAgentDisplayName(agent)} needs ${questions.length} answers`}
         </span>
       </div>
-      <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-2.5">
         {questions.map((q) => {
           const selected = selections[questionKey(q)] ?? []
           return (
-            <div key={questionKey(q)} className="flex flex-col gap-1.5">
-              <div className="flex items-center gap-2">
+            <div key={questionKey(q)} className="flex flex-col gap-1">
+              <div className="flex items-center gap-2 px-2">
                 {q.header ? (
                   <span className="shrink-0 rounded-[4px] bg-background px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-foreground/70 shadow-minimal">
                     {q.header}
                   </span>
                 ) : null}
-                <span className="text-[12.5px] font-medium text-foreground">{q.question}</span>
+                <span className="min-w-0 flex-1 text-[12.5px] text-foreground/90">
+                  {q.question}
+                </span>
                 {q.multiSelect ? (
-                  <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground/60">
+                  <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted-foreground/60">
                     Multi-select
                   </span>
                 ) : null}
               </div>
-              <div className="flex flex-col gap-1">
+              <div className="flex flex-col gap-px">
                 {q.options.map((opt) => {
                   const isSelected = selected.includes(opt.label)
                   return (
@@ -1267,34 +1428,31 @@ function QuestionBanner({
                       key={opt.label}
                       type="button"
                       disabled={!!busy}
+                      aria-pressed={isSelected}
                       onClick={() => toggle(q, opt.label)}
                       className={cn(
-                        'flex w-full items-start gap-2 rounded-[10px] border px-3 py-2 text-left text-[12px] transition-colors disabled:cursor-wait disabled:opacity-60',
-                        isSelected
-                          ? 'border-sky-400/60 bg-sky-500/10'
-                          : 'border-border/60 bg-background/60 hover:border-foreground/30 hover:bg-foreground/5',
+                        'flex w-full items-start gap-2 rounded-[8px] px-2 py-1.5 text-left text-[12px] transition-colors disabled:cursor-wait disabled:opacity-60',
+                        isSelected ? 'bg-foreground/[0.06]' : 'hover:bg-foreground/[0.03]',
                       )}
                     >
                       <span
                         className={cn(
-                          'mt-0.5 inline-flex size-4 shrink-0 items-center justify-center',
-                          q.multiSelect ? 'rounded-[4px]' : 'rounded-full',
-                          isSelected
-                            ? 'bg-sky-500/80 text-background'
-                            : 'border border-border/70 bg-background/60',
+                          'mt-0.5 inline-flex size-3.5 shrink-0 items-center justify-center transition-colors',
+                          q.multiSelect ? 'rounded-[3px]' : 'rounded-full',
+                          isSelected ? 'bg-foreground text-background' : 'bg-foreground/[0.08]',
                         )}
                       >
-                        {isSelected ? <Check className="size-2.5" /> : null}
+                        {isSelected ? <Check className="size-2.5" strokeWidth={3} /> : null}
                       </span>
                       <span className="flex flex-1 flex-col gap-0.5">
-                        <span className="font-medium text-foreground">{opt.label}</span>
+                        <span className="text-foreground/90">{opt.label}</span>
                         {opt.description ? (
-                          <span className="text-[11px] text-muted-foreground/80">
+                          <span className="text-[11px] leading-[1.45] text-muted-foreground/75">
                             {opt.description}
                           </span>
                         ) : null}
                         {opt.preview ? (
-                          <pre className="mt-1 max-h-[120px] overflow-auto whitespace-pre-wrap break-words rounded-[6px] border border-border/40 bg-background/60 px-2 py-1 font-mono text-[11px] leading-[1.45] text-foreground/75">
+                          <pre className="mt-1 max-h-[120px] overflow-auto whitespace-pre-wrap break-words rounded-[6px] bg-background/60 px-2 py-1 font-mono text-[11px] leading-[1.45] text-foreground/75 shadow-minimal">
                             {opt.preview}
                           </pre>
                         ) : null}
@@ -1307,24 +1465,42 @@ function QuestionBanner({
           )
         })}
       </div>
-      <div className="mt-2.5 flex items-center justify-end gap-1.5">
-        {agent === 'claude' ? (
-          <button
-            type="button"
-            disabled={!!busy}
-            onClick={() => void cancel()}
-            className="rounded-[6px] px-2 py-1 text-[11.5px] text-muted-foreground/80 hover:bg-foreground/5 hover:text-foreground disabled:cursor-wait disabled:opacity-60"
-          >
-            {busy === 'cancel' ? 'Dismissing…' : 'Skip'}
-          </button>
-        ) : null}
+      <div className="mt-2">
+        <textarea
+          value={note}
+          onChange={(event) => setNote(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && hasPrimaryModifier(event)) {
+              event.preventDefault()
+              void submit()
+            }
+          }}
+          disabled={!!busy}
+          rows={1}
+          placeholder="Add a note or type a custom answer…"
+          className="block w-full resize-none rounded-[8px] bg-background/60 px-2.5 py-1.5 text-[12px] leading-[1.45] text-foreground/90 shadow-minimal outline-none placeholder:text-muted-foreground/55 focus:bg-background/80 disabled:cursor-wait disabled:opacity-60"
+        />
+      </div>
+      <div className="mt-2 flex items-center justify-end gap-1">
+        <button
+          type="button"
+          disabled={!!busy}
+          onClick={() => void cancel()}
+          className="rounded-[8px] px-2 py-1 text-[12px] text-muted-foreground/80 transition-colors hover:bg-foreground/[0.04] hover:text-foreground disabled:cursor-wait disabled:opacity-60"
+        >
+          {busy === 'cancel' ? 'Skipping…' : 'Skip'}
+        </button>
         <button
           type="button"
           disabled={!!busy || !canSubmit}
           onClick={() => void submit()}
-          className="rounded-[6px] bg-sky-500 px-2.5 py-1 text-[11.5px] font-medium text-background transition-colors hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded-[8px] bg-foreground/90 px-2.5 py-1 text-[12px] font-medium text-background shadow-minimal transition-colors hover:bg-foreground disabled:cursor-not-allowed disabled:opacity-40"
         >
-          {busy === 'submit' ? 'Sending…' : 'Send answer'}
+          {busy === 'submit'
+            ? 'Sending…'
+            : hasAllSelections || hasAnySelection
+              ? 'Send answer'
+              : 'Send note'}
         </button>
       </div>
     </div>
@@ -1658,23 +1834,49 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const sendScrollTargetRef = useRef<number | null>(null)
   const sendScrollFrameRef = useRef<number | null>(null)
-  const scheduleScrollToBottom = useCallback((frames = 2) => {
-    if (sendScrollFrameRef.current !== null) {
-      window.cancelAnimationFrame(sendScrollFrameRef.current)
-      sendScrollFrameRef.current = null
-    }
-    const tick = (remaining: number) => {
-      sendScrollFrameRef.current = window.requestAnimationFrame(() => {
-        if (remaining > 1) {
-          tick(remaining - 1)
-          return
-        }
-        sendScrollFrameRef.current = null
-        void listRef.current?.scrollToEnd?.({ animated: false })
-      })
-    }
-    tick(frames)
+  // Returns the DOM scroll container backing the active LegendList so we can
+  // read scroll position (to gate auto-scroll on "near bottom") and bypass the
+  // list's maintainVisibleContentPosition by setting `scrollTop` directly.
+  const getListScrollElement = useCallback((): HTMLElement | null => {
+    const native = listRef.current?.getNativeScrollRef?.()
+    return native instanceof HTMLElement ? native : null
   }, [])
+  // "Near bottom" means within ~320px of the end, which covers the composer
+  // overlay plus a comfortable reading margin above it. Users scrolled further
+  // up are actively reading history — we don't yank them down on send.
+  const isNearBottom = useCallback((pxThreshold = 320) => {
+    const el = listRef.current?.getNativeScrollRef?.()
+    if (!(el instanceof HTMLElement)) return true
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+    return distance <= pxThreshold
+  }, [])
+  const scheduleScrollToBottom = useCallback(
+    (frames = 4) => {
+      if (sendScrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(sendScrollFrameRef.current)
+        sendScrollFrameRef.current = null
+      }
+      const forceScroll = () => {
+        const el = getListScrollElement()
+        if (el) {
+          el.scrollTop = el.scrollHeight
+        }
+        void listRef.current?.scrollToEnd?.({ animated: false })
+      }
+      const tick = (remaining: number) => {
+        sendScrollFrameRef.current = window.requestAnimationFrame(() => {
+          forceScroll()
+          if (remaining > 1) {
+            tick(remaining - 1)
+            return
+          }
+          sendScrollFrameRef.current = null
+        })
+      }
+      tick(frames)
+    },
+    [getListScrollElement],
+  )
   useEffect(
     () => () => {
       if (sendScrollFrameRef.current !== null) {
@@ -1949,23 +2151,47 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       })
     }
 
-    void window.cells.agentSession
-      .ensure({
-        windowId: agentWindow.id,
-        agent: agentWindow.agent,
-        title: agentWindow.customTitle || agentWindow.title,
-        cwd: agentWindow.cwd ?? null,
-        initialPrompt: agentWindow.initialPrompt ?? null,
-        claudeSessionId: agentWindow.claudeSessionId ?? null,
-        codexThreadId: agentWindow.codexThreadId ?? null,
-        model: agentWindow.model ?? null,
-        permissionMode: agentWindow.permissionMode ?? null,
-        thinkingLevel: agentWindow.thinkingLevel ?? null,
-        contextLength: agentWindow.contextLength ?? null,
-      })
-      .then(sync)
-
+    // Subscribe BEFORE calling ensure() so any snapshot the service emits
+    // while ensure() is awaiting a slow dependency (e.g. the 10s model-catalog
+    // spawn) still reaches us. Previously the subscribe happened after the
+    // await, so those early updates were dropped and the UI stayed stuck on
+    // the skeleton if the ensure() call itself failed silently.
     const unsubscribe = window.cells.agentSession.onUpdate(sync)
+
+    const ensureArgs = {
+      windowId: agentWindow.id,
+      agent: agentWindow.agent,
+      title: agentWindow.customTitle || agentWindow.title,
+      cwd: agentWindow.cwd ?? null,
+      initialPrompt: agentWindow.initialPrompt ?? null,
+      claudeSessionId: agentWindow.claudeSessionId ?? null,
+      codexThreadId: agentWindow.codexThreadId ?? null,
+      model: agentWindow.model ?? null,
+      permissionMode: agentWindow.permissionMode ?? null,
+      thinkingLevel: agentWindow.thinkingLevel ?? null,
+      contextLength: agentWindow.contextLength ?? null,
+    }
+
+    // Surface ensure() failures — silent rejections used to leave the skeleton
+    // on screen forever. On failure we retry once after a short delay; if the
+    // second attempt also fails, the error log is the user-visible signal.
+    const callEnsure = (attempt: number): Promise<void> =>
+      window.cells.agentSession
+        .ensure(ensureArgs)
+        .then((next) => {
+          if (cancelled) return
+          sync(next)
+        })
+        .catch((error) => {
+          console.error('[agent-chat] ensure() failed', { attempt, error })
+          if (cancelled || attempt >= 1) return
+          window.setTimeout(() => {
+            if (!cancelled) void callEnsure(attempt + 1)
+          }, 500)
+        })
+
+    void callEnsure(0)
+
     return () => {
       cancelled = true
       pendingSnapshotRef.current = null
@@ -2347,8 +2573,16 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       const morphId = `composer-morph-${composerMorphNonceRef.current}`
       enqueuePendingMorph(morphId)
       setComposerMorph({ id: morphId, windowId: agentWindow.id })
-      sendScrollTargetRef.current = visibleUserMessageCount + 1
-      scheduleScrollToBottom()
+      // Only pull the viewport down when the user is already close to the end
+      // — if they've scrolled up to reread, leave them there. The effect keyed
+      // on visibleUserMessageCount will re-check the same threshold once the
+      // optimistic bubble is rendered, so late-arriving content still scrolls.
+      if (isNearBottom()) {
+        sendScrollTargetRef.current = visibleUserMessageCount + 1
+        scheduleScrollToBottom()
+      } else {
+        sendScrollTargetRef.current = null
+      }
 
       try {
         await sendToAgent(value, pinned)
@@ -2380,6 +2614,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       agentWindow.thinkingLevel,
       agentWindow.permissionMode,
       scheduleScrollToBottom,
+      isNearBottom,
       visibleUserMessageCount,
     ],
   )
@@ -2797,7 +3032,81 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   )
 
   const sessionDiffStats = useMemo(() => sumDiffStats(visibleMessages), [visibleMessages])
-  const [diffsPanelOpen, setDiffsPanelOpen] = useState(false)
+  // Only one side panel can be open at a time — swap between 'diffs' and
+  // 'plan' (and whatever else we add later) via a single slot. Rendered
+  // through a shared AnimatePresence so opening / closing slides from the
+  // right edge rather than popping in.
+  const [sidePanel, setSidePanel] = useState<'diffs' | 'plan' | null>(null)
+  const diffsPanelOpen = sidePanel === 'diffs'
+  const planPanelOpen = sidePanel === 'plan'
+  const pendingPlanApproval = visibleSnapshot?.pendingPlanApproval
+  // Persist the plan panel width so the size the user picks carries across
+  // sessions, window reopens, and app restarts.
+  const [sidePanelWidth, setSidePanelWidth] = useState<number>(() => {
+    if (typeof window === 'undefined') return SIDE_PANEL_DEFAULT_WIDTH
+    const raw = window.localStorage.getItem(SIDE_PANEL_WIDTH_STORAGE_KEY)
+    const parsed = raw ? Number.parseInt(raw, 10) : NaN
+    if (!Number.isFinite(parsed)) return SIDE_PANEL_DEFAULT_WIDTH
+    return Math.min(SIDE_PANEL_MAX_WIDTH, Math.max(SIDE_PANEL_MIN_WIDTH, parsed))
+  })
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(SIDE_PANEL_WIDTH_STORAGE_KEY, String(sidePanelWidth))
+  }, [sidePanelWidth])
+  // Live-resize the panel as the user drags the left-edge handle. We attach
+  // pointer listeners to window so the drag keeps tracking even when the
+  // cursor leaves the 4px hot strip, and pointer-capture would fight the
+  // AnimatePresence motion.div that wraps the panel.
+  const handleSidePanelResizeStart = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      event.preventDefault()
+      const startX = event.clientX
+      const startWidth = sidePanelWidth
+      const onMove = (ev: PointerEvent) => {
+        const delta = startX - ev.clientX
+        const next = Math.min(
+          SIDE_PANEL_MAX_WIDTH,
+          Math.max(SIDE_PANEL_MIN_WIDTH, startWidth + delta),
+        )
+        setSidePanelWidth(next)
+      }
+      const onUp = () => {
+        window.removeEventListener('pointermove', onMove)
+        window.removeEventListener('pointerup', onUp)
+        window.removeEventListener('pointercancel', onUp)
+        document.body.style.cursor = ''
+        document.body.style.userSelect = ''
+      }
+      window.addEventListener('pointermove', onMove)
+      window.addEventListener('pointerup', onUp)
+      window.addEventListener('pointercancel', onUp)
+      document.body.style.cursor = 'col-resize'
+      document.body.style.userSelect = 'none'
+    },
+    [sidePanelWidth],
+  )
+  // Auto-open the plan panel each time a new proposed plan arrives so the
+  // user sees it without hunting for the "View plan" button. We key on the
+  // createdAt timestamp so re-opens / turn swaps re-trigger naturally, and
+  // auto-close when the plan resolves so the panel doesn't linger empty.
+  const lastAutoOpenedPlanAt = useRef<number | null>(null)
+  useEffect(() => {
+    let frame: number | null = null
+    if (!pendingPlanApproval) {
+      lastAutoOpenedPlanAt.current = null
+      frame = window.requestAnimationFrame(() => {
+        setSidePanel((prev) => (prev === 'plan' ? null : prev))
+      })
+    } else if (lastAutoOpenedPlanAt.current !== pendingPlanApproval.createdAt) {
+      lastAutoOpenedPlanAt.current = pendingPlanApproval.createdAt
+      frame = window.requestAnimationFrame(() => {
+        setSidePanel('plan')
+      })
+    }
+    return () => {
+      if (frame !== null) window.cancelAnimationFrame(frame)
+    }
+  }, [pendingPlanApproval])
   const streamingTurnKey = useMemo(() => {
     if (!isRunning) return null
     for (let i = visibleGroups.length - 1; i >= 0; i -= 1) {
@@ -3056,7 +3365,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                 <div className="mb-2 flex justify-end">
                   <button
                     type="button"
-                    onClick={() => setDiffsPanelOpen((v) => !v)}
+                    onClick={() => setSidePanel((v) => (v === 'diffs' ? null : 'diffs'))}
                     className={cn(
                       'inline-flex items-center gap-1.5 rounded-[6px] bg-foreground/5 px-2 py-0.5 text-[11px] text-muted-foreground/80 backdrop-blur-sm transition-colors hover:bg-foreground/10',
                       diffsPanelOpen && 'bg-foreground/10 text-foreground/90',
@@ -3092,6 +3401,9 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                 <PlanApprovalBanner
                   key={visibleSnapshot.pendingPlanApproval.createdAt}
                   windowId={agentWindow.id}
+                  agent={agentWindow.agent}
+                  planOpen={planPanelOpen}
+                  onOpenPlan={() => setSidePanel((v) => (v === 'plan' ? null : 'plan'))}
                 />
               ) : null}
               {visibleSnapshot?.pendingApproval ? (
@@ -3730,9 +4042,44 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
           </div>
         </div>
       </div>
-      {diffsPanelOpen ? (
-        <SessionDiffsPanel messages={visibleMessages} onClose={() => setDiffsPanelOpen(false)} />
-      ) : null}
+      <AnimatePresence initial={false}>
+        {sidePanel === 'diffs' ? (
+          <motion.div
+            key="diffs"
+            className="relative z-20 flex h-full shrink-0 overflow-hidden"
+            initial={{ width: 0, opacity: 0 }}
+            animate={{ width: 'auto', opacity: 1 }}
+            exit={{ width: 0, opacity: 0 }}
+            transition={{
+              width: { duration: 0.26, ease: EASE_EXPAND },
+              opacity: { duration: 0.18, ease: EASE_EXPAND },
+            }}
+          >
+            <SessionDiffsPanel messages={visibleMessages} onClose={() => setSidePanel(null)} />
+          </motion.div>
+        ) : null}
+        {sidePanel === 'plan' && pendingPlanApproval ? (
+          <motion.div
+            key="plan"
+            className="relative z-20 flex h-full shrink-0 overflow-hidden"
+            initial={{ width: 0, opacity: 0 }}
+            animate={{ width: sidePanelWidth, opacity: 1 }}
+            exit={{ width: 0, opacity: 0 }}
+            transition={{
+              width: { duration: 0.26, ease: EASE_EXPAND },
+              opacity: { duration: 0.18, ease: EASE_EXPAND },
+            }}
+          >
+            <PlanPreviewPanel
+              agent={agentWindow.agent}
+              plan={pendingPlanApproval.plan}
+              width={sidePanelWidth}
+              onClose={() => setSidePanel(null)}
+              onResizeStart={handleSidePanelResizeStart}
+            />
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
     </div>
   )
 }

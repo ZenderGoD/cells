@@ -3,7 +3,12 @@ import { Globe } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
 import { inferAgentFromTitle } from '@/lib/agent-command'
-import { getCanvasWindows, getViewportRect, orderByRecent } from '@/lib/canvas-navigation'
+import {
+  STATUS_BAR_HEIGHT,
+  getCanvasWindows,
+  getViewportRect,
+  orderByRecent,
+} from '@/lib/canvas-navigation'
 import { hapticNudge, hapticSuccess } from '@/lib/haptics'
 import { motion, AnimatePresence } from 'motion/react'
 import { WindowOverviewMap } from './canvas/window-overview-map'
@@ -38,6 +43,7 @@ export function TerminalSwitcher() {
   const setOverlayOpen = useStore((s) => s.setOverlayOpen)
   const tabSwitchMode = useStore((s) => s.tabSwitchMode)
   const reducedMotion = useStore((s) => s.reducedMotion)
+  const titleBarHidden = useStore((s) => s.titleBarHidden)
 
   const [open, setOpenRaw] = useState(false)
   const openRef = useRef(false)
@@ -92,7 +98,11 @@ export function TerminalSwitcher() {
 
   const currentId = focusedTerminalId || focusedBrowserId || focusedAgentWindowId
   const canvasWindows = getCanvasWindows(terminals, browsers, agentWindows)
-  const viewportRect = getViewportRect(canvas)
+  const viewportRect = getViewportRect(
+    canvas,
+    window.innerWidth,
+    window.innerHeight - (titleBarHidden ? 0 : STATUS_BAR_HEIGHT),
+  )
   const items = (
     tabSwitchMode === 'recent' && focusHistory.length > 0
       ? orderByRecent(chronologicalItems, currentId, focusHistory)

@@ -56,6 +56,7 @@ import { terminalThemes } from '@/lib/terminal-themes'
 import { AppSettings } from './settings/app-settings'
 import { NewProjectDialog } from './new-project-dialog'
 import { AgentIcon } from './agent-icon'
+import { StatusBar } from './toolbar/toolbar'
 import { getTerminalRestoreSnapshot } from './terminal/terminal-cache-api'
 import { Logo } from './logo'
 import { Kbd } from './ui/kbd'
@@ -315,6 +316,29 @@ function DynamicCommandInput({
 }: React.ComponentProps<typeof CommandInput> & { multiline?: boolean; searchText?: string }) {
   const selectedValue = useCommandState((state) => state.value) ?? ''
   const prefix = searchText ? matchInputPrefix(searchText) : null
+  const [selectedIconHtml, setSelectedIconHtml] = useState<string | null>(null)
+
+  // Generic fallback: read the icon SVG from the currently selected item in the DOM.
+  // This covers all item types (actions, themes, terminals, browsers, etc.) without
+  // needing an explicit value→icon map for every item.
+  // Uses useLayoutEffect to read synchronously after React commits, avoiding flicker.
+  useEffect(() => {
+    if (!searchText?.trim()) return
+    const raf = requestAnimationFrame(() => {
+      const el = document.querySelector('[cmdk-item][data-selected="true"]')
+      const svg = el?.querySelector(':scope > svg')
+      setSelectedIconHtml(svg ? svg.outerHTML : null)
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [searchText, selectedValue])
+
+  // Empty input → no contextual icon. The selected row's icon (e.g. agent
+  // crab from the "Start a session" group) was leaking into the placeholder
+  // since the input defaulted to showing whatever was selected, which looks
+  // like a stray logo next to "Search, enter URL, or type a prompt…".
+  if (!searchText?.trim()) {
+    return <CommandInput multiline icon={undefined} {...props} />
+  }
 
   let icon: ReactNode = undefined
 
@@ -352,24 +376,6 @@ function DynamicCommandInput({
   ) {
     icon = <TerminalSquare className="size-4 shrink-0 opacity-70" />
   }
-
-  // Resolved icon already found — skip the async DOM fallback entirely
-  const hasKnownIcon = !!icon
-
-  // Generic fallback: read the icon SVG from the currently selected item in the DOM.
-  // This covers all item types (actions, themes, terminals, browsers, etc.) without
-  // needing an explicit value→icon map for every item.
-  // Uses useLayoutEffect to read synchronously after React commits, avoiding flicker.
-  const [selectedIconHtml, setSelectedIconHtml] = useState<string | null>(null)
-  useEffect(() => {
-    if (hasKnownIcon) return
-    const raf = requestAnimationFrame(() => {
-      const el = document.querySelector('[cmdk-item][data-selected="true"]')
-      const svg = el?.querySelector(':scope > svg')
-      setSelectedIconHtml(svg ? svg.outerHTML : null)
-    })
-    return () => cancelAnimationFrame(raf)
-  }, [selectedValue, hasKnownIcon])
 
   // Fallback to the DOM-read icon for any other item type (actions, themes, etc.)
   if (!icon && selectedIconHtml) {
@@ -932,6 +938,14 @@ export function CommandPalette() {
   return (
     <>
       <CommandDialog open={open} onOpenChange={handleOpenChange} showCloseButton={false}>
+        {/* Embedded status bar (focused-window controls) pinned to the TOP of
+            the palette. Mirrors the center/dynamic section of the main bottom
+            title bar — keep <StatusBar embedded /> and the full bar in
+            toolbar.tsx in sync when editing either. Wrapper sits outside
+            <Command> but uses bg-popover to match so there is no color seam. */}
+        <div className="border-b border-border/40 bg-popover">
+          <StatusBar embedded />
+        </div>
         <Command
           loop
           value={cmdkValue}
@@ -1515,13 +1529,22 @@ export function CommandPalette() {
               </>
             ) : null}
           </CommandList>
-          {/* Always render the hint container when agents are available to avoid
-              layout shift — cmdk briefly resets selection on every keystroke, so
-              conditional rendering causes the hint to flash in and out. */}
+          {/* Keep the node mounted when agents are available so cmdk's
+              per-keystroke selection reset doesn't flash the hint in and out,
+              but collapse height when inactive so it doesn't leave a visible
+              gap above the input for git-repo users with no agent selected. */}
           {isGitRepo && sortedAgents.length > 0 && (
             <div
-              className="px-1.5 py-1 text-[11px] text-muted-foreground/40 transition-opacity duration-75"
-              style={{ opacity: cmdkValue.startsWith('agent-') ? 1 : 0 }}
+              aria-hidden={!cmdkValue.startsWith('agent-')}
+              className="overflow-hidden text-[11px] text-muted-foreground/40 transition-[opacity,height,padding] duration-75"
+              style={{
+                opacity: cmdkValue.startsWith('agent-') ? 1 : 0,
+                height: cmdkValue.startsWith('agent-') ? 'auto' : 0,
+                paddingLeft: cmdkValue.startsWith('agent-') ? 6 : 0,
+                paddingRight: cmdkValue.startsWith('agent-') ? 6 : 0,
+                paddingTop: cmdkValue.startsWith('agent-') ? 4 : 0,
+                paddingBottom: cmdkValue.startsWith('agent-') ? 4 : 0,
+              }}
             >
               <Kbd className="text-[10px] h-4 min-w-4">⌘↵</Kbd> to launch in a worktree
             </div>

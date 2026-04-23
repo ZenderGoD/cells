@@ -30,6 +30,7 @@ import { motion, AnimatePresence, Reorder, useDragControls, useReducedMotion } f
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
 import {
+  STATUS_BAR_HEIGHT,
   getCanvasBounds,
   getCanvasWindows,
   getClosestWindow,
@@ -334,9 +335,27 @@ function ProjectTab({
   )
 }
 
-export function StatusBar() {
+/**
+ * Bottom title bar for the main window.
+ *
+ * IMPORTANT — KEEP IN SYNC WITH THE COMMAND PALETTE:
+ *   `<StatusBar embedded />` is also rendered at the top of the command
+ *   palette (see command-palette.tsx) where it shows ONLY the center dynamic
+ *   section (focused-window browser/terminal/agent controls). Project tabs,
+ *   logo, right-side controls, undo chips, and the draggable region are all
+ *   suppressed via `!embedded && …` guards throughout this component.
+ *
+ *   When you add a new element to this bar, decide which bucket it belongs in:
+ *     - center dynamic (focused-window scoped) → gets rendered in both places
+ *     - anything else (project-scoped / app-scoped / chrome) → wrap it in
+ *       `!embedded && (...)` so it stays out of the palette's copy.
+ *   Also re-check spacing: the palette is ~560px wide, so content that looks
+ *   fine across the main bar may feel cramped in the embedded variant.
+ */
+export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
   const reduceMotion = useReducedMotion()
   const titleBarPosition = useStore((s) => s.titleBarPosition)
+  const titleBarHidden = useStore((s) => s.titleBarHidden)
   const addTerminal = useStore((s) => s.addTerminal)
   const addBrowser = useStore((s) => s.addBrowser)
   const requestCloseWindow = useStore((s) => s.requestCloseWindow)
@@ -456,7 +475,11 @@ export function StatusBar() {
   const copyResetRef = useRef<number | null>(null)
   const showCopied = !!focusedBrowser?.url && copiedBrowserId === focusedBrowser.id
   const allWindows = getCanvasWindows(terminals, browsers, agentWindows)
-  const viewportRect = getViewportRect(canvas)
+  const viewportRect = getViewportRect(
+    canvas,
+    window.innerWidth,
+    window.innerHeight - (titleBarHidden ? 0 : STATUS_BAR_HEIGHT),
+  )
   const overviewBounds = getCanvasBounds([viewportRect, ...allWindows])
   const titleBarOverviewHeight = 38
   const titleBarOverviewWidth = overviewBounds
@@ -519,14 +542,18 @@ export function StatusBar() {
     setUrlBarFocused(true)
   }
 
-  // Cmd+L focuses the URL bar when a browser is focused
+  // Cmd+L focuses the URL bar when a browser is focused. Skipped for the
+  // embedded copy inside the command palette — the main bar already owns
+  // these shortcuts, and double-registration would fire handlers twice.
   useHotkey('Mod+L', () => {
+    if (embedded) return
     if (focusedBrowserId) {
       openUrlBar()
     }
   })
 
   useHotkey('Mod+Shift+C', () => {
+    if (embedded) return
     if (!focusedBrowser?.url) return
     navigator.clipboard
       .writeText(focusedBrowser.url)
@@ -670,13 +697,22 @@ export function StatusBar() {
     <>
       <div
         className={cn(
-          'relative z-10 h-10 shrink-0 flex items-stretch overflow-visible text-xs draggable-region transition-colors duration-300',
-          titleBarPosition === 'top' ? 'border-b border-border/50' : 'border-t border-border/50',
+          'relative z-10 shrink-0 flex items-stretch overflow-visible text-xs transition-colors duration-300',
+          embedded ? 'h-9' : 'h-10',
+          !embedded && 'draggable-region',
+          !embedded &&
+            (titleBarPosition === 'top'
+              ? 'border-b border-border/50'
+              : 'border-t border-border/50'),
         )}
         style={{
-          backgroundColor: themeColor
-            ? `color-mix(in oklch, ${themeColor} 15%, var(--background))`
-            : undefined,
+          // Skip the themeColor tint inside the palette — the palette has its
+          // own popover surface and a focused-browser tint bleeding in here
+          // would clash with the dialog's background.
+          backgroundColor:
+            !embedded && themeColor
+              ? `color-mix(in oklch, ${themeColor} 15%, var(--background))`
+              : undefined,
         }}
         onDoubleClick={() => window.cells.app.toggleMaximize()}
         onMouseDown={(e) => {
@@ -689,70 +725,79 @@ export function StatusBar() {
         }}
       >
         {/* Logo — click to zoom out and see all windows */}
-        <button
-          className="flex items-center px-3 shrink-0 no-drag hover:bg-muted/30 transition-colors"
-          onClick={() => {
-            hapticNudge()
-            zoomToFitAll()
-          }}
-          title={`Overview (${formatShortcutLabel(primaryModifierLabel, shiftModifierLabel, 'O')})`}
-        >
-          <Logo className="w-3.5 h-3.5 text-foreground/80" />
-        </button>
+        {!embedded && (
+          <button
+            className="flex items-center px-3 shrink-0 no-drag hover:bg-muted/30 transition-colors"
+            onClick={() => {
+              hapticNudge()
+              zoomToFitAll()
+            }}
+            title={`Overview (${formatShortcutLabel(primaryModifierLabel, shiftModifierLabel, 'O')})`}
+          >
+            <Logo className="w-3.5 h-3.5 text-foreground/80" />
+          </button>
+        )}
 
         {/* Project tabs — left side */}
-        <Reorder.Group
-          as="div"
-          axis="x"
-          values={visibleProjects}
-          onReorder={handleReorder}
-          ref={tabsRef}
-          className="flex items-stretch overflow-x-auto scrollbar-none no-drag shrink-0"
-        >
-          {visibleProjects.map((project) => {
-            const isActive = project.id === activeProjectId
-            const projectWindowCount = isActive
-              ? windowCount
-              : (project.terminals?.length ?? 0) +
-                (project.browsers?.length ?? 0) +
-                (project.agentWindows?.length ?? 0)
-
-            const projectTerminals = isActive ? terminals : (project.terminals ?? [])
-            const attention = getProjectRuntimeAttention(projectTerminals)
-
-            return (
-              <ProjectTab
-                key={project.id}
-                project={project}
-                isActive={isActive}
-                projectWindowCount={projectWindowCount}
-                switchProject={switchProject}
-                setProjectTitleBarHidden={setProjectTitleBarHidden}
-                requestCloseProject={requestCloseProject}
-                allWindows={allWindows}
-                titleBarOverviewWidth={titleBarOverviewWidth}
-                titleBarOverviewHeight={titleBarOverviewHeight}
-                overviewAnchor={overviewAnchor}
-                focusedWindow={focusedWindow}
-                viewportRect={viewportRect}
-                snapToTerminal={snapToTerminal}
-                snapToBrowser={snapToBrowser}
-                snapToAgentWindow={snapToAgentWindow}
-                moveTerminal={moveTerminal}
-                moveBrowser={moveBrowser}
-                moveAgentWindow={moveAgentWindow}
-                attention={attention}
-              />
-            )
-          })}
-          <button
-            onClick={() => setShowNewProject(true)}
-            className="flex items-center px-3 text-muted-foreground/30 hover:text-muted-foreground hover:bg-muted/30 transition-colors shrink-0"
+        {!embedded && (
+          <Reorder.Group
+            as="div"
+            axis="x"
+            values={visibleProjects}
+            onReorder={handleReorder}
+            ref={tabsRef}
+            className="flex items-stretch overflow-x-auto scrollbar-none no-drag shrink-0"
           >
-            <Plus className="w-3 h-3" />
-          </button>
-        </Reorder.Group>
+            {visibleProjects.map((project) => {
+              const isActive = project.id === activeProjectId
+              const projectWindowCount = isActive
+                ? windowCount
+                : (project.terminals?.length ?? 0) +
+                  (project.browsers?.length ?? 0) +
+                  (project.agentWindows?.length ?? 0)
 
+              const projectTerminals = isActive ? terminals : (project.terminals ?? [])
+              const attention = getProjectRuntimeAttention(projectTerminals)
+
+              return (
+                <ProjectTab
+                  key={project.id}
+                  project={project}
+                  isActive={isActive}
+                  projectWindowCount={projectWindowCount}
+                  switchProject={switchProject}
+                  setProjectTitleBarHidden={setProjectTitleBarHidden}
+                  requestCloseProject={requestCloseProject}
+                  allWindows={allWindows}
+                  titleBarOverviewWidth={titleBarOverviewWidth}
+                  titleBarOverviewHeight={titleBarOverviewHeight}
+                  overviewAnchor={overviewAnchor}
+                  focusedWindow={focusedWindow}
+                  viewportRect={viewportRect}
+                  snapToTerminal={snapToTerminal}
+                  snapToBrowser={snapToBrowser}
+                  snapToAgentWindow={snapToAgentWindow}
+                  moveTerminal={moveTerminal}
+                  moveBrowser={moveBrowser}
+                  moveAgentWindow={moveAgentWindow}
+                  attention={attention}
+                />
+              )
+            })}
+            <button
+              onClick={() => setShowNewProject(true)}
+              className="flex items-center px-3 text-muted-foreground/30 hover:text-muted-foreground hover:bg-muted/30 transition-colors shrink-0"
+            >
+              <Plus className="w-3 h-3" />
+            </button>
+          </Reorder.Group>
+        )}
+
+        {/* Center dynamic section — browser/terminal/agent controls for the
+            focused window. ANY change in this block is also visible inside the
+            command palette via `<StatusBar embedded />` — see the JSDoc on
+            StatusBar above. Keep rows at roughly the same height/padding so
+            they line up with the palette's h-9 variant. */}
         {/* Center — browser controls when a browser is focused */}
         {focusedBrowser ? (
           <div className="flex-1 flex items-center gap-1 px-2 min-w-0 no-drag">
@@ -1084,310 +1129,315 @@ export function StatusBar() {
         )}
 
         {/* Draggable spacer - allows dragging from the title bar */}
-        <div className="flex-1" />
+        {!embedded && <div className="flex-1" />}
 
         {/* Right side controls */}
-        <div className="flex items-center gap-3 px-3 shrink-0 no-drag">
-          <AnimatePresence initial={false}>
-            {latestClosedProject && projectUndoSecondsLeft > 0 ? (
-              <motion.button
-                key="undo-close-project"
-                layout
-                initial={reduceMotion ? false : { opacity: 0, x: 12, scale: 0.96 }}
-                animate={{ opacity: 1, x: 0, scale: 1 }}
-                exit={reduceMotion ? { opacity: 0 } : { opacity: 0, x: 12, scale: 0.96 }}
-                transition={{ duration: 0.2, ease: EASE_OUT }}
-                onClick={() => {
-                  hapticSuccess()
-                  restoreLastClosedProject()
-                }}
-                className="flex shrink-0 items-center gap-2 rounded-md border border-amber-500/15 bg-amber-500/6 px-2.5 py-1 text-[10px] text-muted-foreground/75 transition-colors hover:bg-amber-500/10 hover:text-foreground"
-                title="Restore closed project"
-              >
-                <span className="font-medium text-foreground/85">Undo project close</span>
-                <span className="max-w-24 truncate">{latestClosedProject.project.name}</span>
-                <span className="text-[9px] text-muted-foreground/70">
-                  {projectUndoSecondsLeft}s
-                </span>
-              </motion.button>
-            ) : null}
-            {latestClosedWindow && closeUndoTimeoutMs > 0 && undoSecondsLeft > 0 ? (
-              <motion.button
-                key="undo-close"
-                layout
-                initial={reduceMotion ? false : { opacity: 0, x: 12, scale: 0.96 }}
-                animate={{ opacity: 1, x: 0, scale: 1 }}
-                exit={reduceMotion ? { opacity: 0 } : { opacity: 0, x: 12, scale: 0.96 }}
-                transition={{ duration: 0.2, ease: EASE_OUT }}
-                onClick={() => {
-                  hapticSuccess()
-                  restoreLastClosedWindow()
-                }}
-                className="flex shrink-0 items-center gap-2 rounded-md border border-border/30 bg-background/40 px-2.5 py-1 text-[10px] text-muted-foreground/65 transition-colors hover:bg-muted/45 hover:text-foreground"
-                title="Restore closed window"
-              >
-                <span className="font-medium text-foreground/80">Undo close</span>
-                <span className="max-w-24 truncate">{latestClosedWindow.title}</span>
-                <KbdGroup className="gap-0.5">
-                  <Kbd className="h-3.5 min-w-0 px-1 text-[9px]">{primaryModifierLabel}</Kbd>
-                  <Kbd className="h-3.5 min-w-0 px-1 text-[9px]">{shiftModifierLabel}</Kbd>
-                  <Kbd className="h-3.5 min-w-0 px-1 text-[9px]">T</Kbd>
-                  <span className="ml-0.5 text-[9px] text-muted-foreground/70">
-                    {undoSecondsLeft}s
+        {!embedded && (
+          <div className="flex items-center gap-3 px-3 shrink-0 no-drag">
+            <AnimatePresence initial={false}>
+              {latestClosedProject && projectUndoSecondsLeft > 0 ? (
+                <motion.button
+                  key="undo-close-project"
+                  layout
+                  initial={reduceMotion ? false : { opacity: 0, x: 12, scale: 0.96 }}
+                  animate={{ opacity: 1, x: 0, scale: 1 }}
+                  exit={reduceMotion ? { opacity: 0 } : { opacity: 0, x: 12, scale: 0.96 }}
+                  transition={{ duration: 0.2, ease: EASE_OUT }}
+                  onClick={() => {
+                    hapticSuccess()
+                    restoreLastClosedProject()
+                  }}
+                  className="flex shrink-0 items-center gap-2 rounded-md border border-amber-500/15 bg-amber-500/6 px-2.5 py-1 text-[10px] text-muted-foreground/75 transition-colors hover:bg-amber-500/10 hover:text-foreground"
+                  title="Restore closed project"
+                >
+                  <span className="font-medium text-foreground/85">Undo project close</span>
+                  <span className="max-w-24 truncate">{latestClosedProject.project.name}</span>
+                  <span className="text-[9px] text-muted-foreground/70">
+                    {projectUndoSecondsLeft}s
                   </span>
-                </KbdGroup>
-              </motion.button>
-            ) : null}
-          </AnimatePresence>
+                </motion.button>
+              ) : null}
+              {latestClosedWindow && closeUndoTimeoutMs > 0 && undoSecondsLeft > 0 ? (
+                <motion.button
+                  key="undo-close"
+                  layout
+                  initial={reduceMotion ? false : { opacity: 0, x: 12, scale: 0.96 }}
+                  animate={{ opacity: 1, x: 0, scale: 1 }}
+                  exit={reduceMotion ? { opacity: 0 } : { opacity: 0, x: 12, scale: 0.96 }}
+                  transition={{ duration: 0.2, ease: EASE_OUT }}
+                  onClick={() => {
+                    hapticSuccess()
+                    restoreLastClosedWindow()
+                  }}
+                  className="flex shrink-0 items-center gap-2 rounded-md border border-border/30 bg-background/40 px-2.5 py-1 text-[10px] text-muted-foreground/65 transition-colors hover:bg-muted/45 hover:text-foreground"
+                  title="Restore closed window"
+                >
+                  <span className="font-medium text-foreground/80">Undo close</span>
+                  <span className="max-w-24 truncate">{latestClosedWindow.title}</span>
+                  <KbdGroup className="gap-0.5">
+                    <Kbd className="h-3.5 min-w-0 px-1 text-[9px]">{primaryModifierLabel}</Kbd>
+                    <Kbd className="h-3.5 min-w-0 px-1 text-[9px]">{shiftModifierLabel}</Kbd>
+                    <Kbd className="h-3.5 min-w-0 px-1 text-[9px]">T</Kbd>
+                    <span className="ml-0.5 text-[9px] text-muted-foreground/70">
+                      {undoSecondsLeft}s
+                    </span>
+                  </KbdGroup>
+                </motion.button>
+              ) : null}
+            </AnimatePresence>
 
-          {/* Plus button with popover */}
-          <Popover
-            open={plusOpen}
-            onOpenChange={(open) => {
-              setPlusOpen(open)
-              setOverlayOpen(open)
-              if (!open)
-                requestAnimationFrame(() => window.dispatchEvent(new Event('terminal-refocus')))
-            }}
-          >
-            <PopoverTrigger className="text-muted-foreground/40 hover:text-foreground transition-colors">
-              <Plus className="w-3.5 h-3.5" />
-            </PopoverTrigger>
-            <PopoverContent side="top" sideOffset={8} className="w-40 p-1">
-              <button
-                onClick={() => {
-                  hapticSuccess()
-                  addTerminal()
-                  setPlusOpen(false)
-                }}
-                className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-md text-[11px] text-foreground hover:bg-muted/60 transition-colors"
-              >
-                <TerminalSquare className="w-3.5 h-3.5 text-muted-foreground" />
-                Terminal
-              </button>
-              <button
-                onClick={() => {
-                  hapticSuccess()
-                  addBrowser()
-                  setPlusOpen(false)
-                }}
-                className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-md text-[11px] text-foreground hover:bg-muted/60 transition-colors"
-              >
-                <Globe className="w-3.5 h-3.5 text-muted-foreground" />
-                Browser
-              </button>
-            </PopoverContent>
-          </Popover>
-
-          {/* Auto-arrange grid */}
-          {windowCount > 1 && (
-            <Popover>
-              <PopoverTrigger
-                className={cn(
-                  'transition-colors relative',
-                  autoArrangeOnCreate
-                    ? 'text-primary/70 hover:text-primary'
-                    : 'text-muted-foreground/40 hover:text-foreground',
-                )}
-                title="Auto-arrange grid"
-              >
-                <LayoutGrid className="w-3.5 h-3.5" />
-                {autoArrangeOnCreate && (
-                  <span className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-primary" />
-                )}
+            {/* Plus button with popover */}
+            <Popover
+              open={plusOpen}
+              onOpenChange={(open) => {
+                setPlusOpen(open)
+                setOverlayOpen(open)
+                if (!open)
+                  requestAnimationFrame(() => window.dispatchEvent(new Event('terminal-refocus')))
+              }}
+            >
+              <PopoverTrigger className="text-muted-foreground/40 hover:text-foreground transition-colors">
+                <Plus className="w-3.5 h-3.5" />
               </PopoverTrigger>
-              <PopoverContent side="top" sideOffset={8} className="w-48 p-1">
+              <PopoverContent side="top" sideOffset={8} className="w-40 p-1">
                 <button
                   onClick={() => {
                     hapticSuccess()
-                    autoArrangeGrid()
+                    addTerminal()
+                    setPlusOpen(false)
                   }}
                   className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-md text-[11px] text-foreground hover:bg-muted/60 transition-colors"
                 >
-                  <LayoutGrid className="w-3.5 h-3.5 text-muted-foreground" />
-                  Arrange now
+                  <TerminalSquare className="w-3.5 h-3.5 text-muted-foreground" />
+                  Terminal
                 </button>
                 <button
                   onClick={() => {
-                    hapticBuzz()
-                    setAutoArrangeOnCreate(!autoArrangeOnCreate)
+                    hapticSuccess()
+                    addBrowser()
+                    setPlusOpen(false)
                   }}
                   className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-md text-[11px] text-foreground hover:bg-muted/60 transition-colors"
                 >
-                  {autoArrangeOnCreate ? (
-                    <Check className="w-3.5 h-3.5 text-primary" />
-                  ) : (
-                    <span className="w-3.5 h-3.5" />
-                  )}
-                  Auto on create
+                  <Globe className="w-3.5 h-3.5 text-muted-foreground" />
+                  Browser
                 </button>
               </PopoverContent>
             </Popover>
-          )}
 
-          {/* Pin toggle */}
-          {hasFocusedWindow && (
+            {/* Auto-arrange grid */}
+            {windowCount > 1 && (
+              <Popover>
+                <PopoverTrigger
+                  className={cn(
+                    'transition-colors relative',
+                    autoArrangeOnCreate
+                      ? 'text-primary/70 hover:text-primary'
+                      : 'text-muted-foreground/40 hover:text-foreground',
+                  )}
+                  title="Auto-arrange grid"
+                >
+                  <LayoutGrid className="w-3.5 h-3.5" />
+                  {autoArrangeOnCreate && (
+                    <span className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-primary" />
+                  )}
+                </PopoverTrigger>
+                <PopoverContent side="top" sideOffset={8} className="w-48 p-1">
+                  <button
+                    onClick={() => {
+                      hapticSuccess()
+                      autoArrangeGrid()
+                    }}
+                    className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-md text-[11px] text-foreground hover:bg-muted/60 transition-colors"
+                  >
+                    <LayoutGrid className="w-3.5 h-3.5 text-muted-foreground" />
+                    Arrange now
+                  </button>
+                  <button
+                    onClick={() => {
+                      hapticBuzz()
+                      setAutoArrangeOnCreate(!autoArrangeOnCreate)
+                    }}
+                    className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-md text-[11px] text-foreground hover:bg-muted/60 transition-colors"
+                  >
+                    {autoArrangeOnCreate ? (
+                      <Check className="w-3.5 h-3.5 text-primary" />
+                    ) : (
+                      <span className="w-3.5 h-3.5" />
+                    )}
+                    Auto on create
+                  </button>
+                </PopoverContent>
+              </Popover>
+            )}
+
+            {/* Pin toggle */}
+            {hasFocusedWindow && (
+              <button
+                onClick={() => {
+                  hapticBuzz()
+                  togglePinFocused()
+                }}
+                className={cn(
+                  'p-1 rounded-md transition-colors',
+                  focusedWindowPinned
+                    ? 'text-primary/70 hover:text-primary'
+                    : 'text-muted-foreground/40 hover:text-foreground',
+                )}
+                title={
+                  focusedWindowPinned
+                    ? `Pop back in (${formatShortcutLabel(primaryModifierLabel, shiftModifierLabel, 'P')})`
+                    : `Pop out (${formatShortcutLabel(primaryModifierLabel, shiftModifierLabel, 'P')})`
+                }
+              >
+                {focusedWindowPinned ? (
+                  <ArrowDownLeft className="w-3 h-3" />
+                ) : (
+                  <ArrowUpRight className="w-3 h-3" />
+                )}
+              </button>
+            )}
+
+            {/* Snap toggle — selection mode keeps its pill (the count matters and
+              the state is transient); normal snap states drop the pill chrome
+              to match the other icon-only controls in this cluster. */}
             <button
               onClick={() => {
                 hapticBuzz()
-                togglePinFocused()
+                if (selectionMode) {
+                  setSelectionMode(false)
+                  return
+                }
+                toggleSnap()
               }}
               className={cn(
-                'p-1 rounded-md transition-colors',
-                focusedWindowPinned
-                  ? 'text-primary/70 hover:text-primary'
-                  : 'text-muted-foreground/40 hover:text-foreground',
+                'flex items-center gap-1.5 rounded-md transition-colors',
+                selectionMode ? 'bg-primary/15 px-2 py-1 text-primary' : 'px-1 py-1',
+                !selectionMode &&
+                  (!snapEnabled
+                    ? 'text-muted-foreground/35 hover:text-muted-foreground'
+                    : snapPaused
+                      ? 'text-amber-400/80 hover:text-amber-300'
+                      : 'text-primary/80 hover:text-primary'),
               )}
               title={
-                focusedWindowPinned
-                  ? `Pop back in (${formatShortcutLabel(primaryModifierLabel, shiftModifierLabel, 'P')})`
-                  : `Pop out (${formatShortcutLabel(primaryModifierLabel, shiftModifierLabel, 'P')})`
+                selectionMode
+                  ? 'Selection mode active. Click to exit.'
+                  : !snapEnabled
+                    ? 'Snap off — windows move freely'
+                    : snapPaused
+                      ? 'Snap paused'
+                      : 'Snap on'
               }
             >
-              {focusedWindowPinned ? (
-                <ArrowDownLeft className="w-3 h-3" />
-              ) : (
-                <ArrowUpRight className="w-3 h-3" />
+              <Magnet className="w-3 h-3" />
+              {selectionMode ? (
+                <span className="text-[10px]">
+                  {`Select ${selectionCount > 0 ? `(${selectionCount})` : ''}`}
+                </span>
+              ) : !snapEnabled || snapPaused ? (
+                <span className="text-[10px] lowercase text-muted-foreground/55">
+                  {snapPaused ? 'paused' : 'free'}
+                </span>
+              ) : null}
+            </button>
+
+            <div
+              className="flex shrink-0 items-center gap-2 text-[10px] text-muted-foreground/55"
+              title={canvasShortcutHints
+                .map((hint) => `${hint.label}: ${formatShortcutLabel(...hint.keys)} ${hint.suffix}`)
+                .join(' • ')}
+            >
+              {canvasShortcutHints.map((hint, index) => (
+                <div key={hint.label} className="flex items-center gap-1 whitespace-nowrap">
+                  {index > 0 && (
+                    <span
+                      aria-hidden
+                      className="mr-1 size-0.5 rounded-full bg-muted-foreground/25"
+                    />
+                  )}
+                  <span className="text-muted-foreground/55">{hint.label}</span>
+                  <KbdGroup className="gap-0.5">
+                    {hint.keys.map((key) => (
+                      <Kbd
+                        key={`${hint.label}-${key}`}
+                        className="h-3.5 min-w-0 border-border/25 bg-background/30 px-1 text-[9px] text-muted-foreground/70"
+                      >
+                        {key}
+                      </Kbd>
+                    ))}
+                  </KbdGroup>
+                  <span className="lowercase text-muted-foreground/45">{hint.suffix}</span>
+                </div>
+              ))}
+            </div>
+
+            {/* Update indicator */}
+            <AnimatePresence initial={false}>
+              {updateStatus === 'available' && (
+                <motion.button
+                  key="update-download"
+                  layout
+                  initial={reduceMotion ? false : { opacity: 0, x: 8, scale: 0.96 }}
+                  animate={{ opacity: 1, x: 0, scale: 1 }}
+                  exit={reduceMotion ? { opacity: 0 } : { opacity: 0, x: 8, scale: 0.96 }}
+                  transition={{ duration: 0.2, ease: EASE_OUT }}
+                  onClick={() => {
+                    hapticNudge()
+                    window.cells.updater.download()
+                  }}
+                  className="flex shrink-0 items-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] text-primary transition-colors hover:bg-primary/20"
+                >
+                  <Download className="w-2.5 h-2.5" />
+                  <span className="font-medium">v{updateVersion}</span>
+                </motion.button>
+              )}
+              {updateStatus === 'downloading' && (
+                <motion.span
+                  key="update-downloading"
+                  layout
+                  initial={reduceMotion ? false : { opacity: 0, x: 8, scale: 0.96 }}
+                  animate={{ opacity: 1, x: 0, scale: 1 }}
+                  exit={reduceMotion ? { opacity: 0 } : { opacity: 0, x: 8, scale: 0.96 }}
+                  transition={{ duration: 0.2, ease: EASE_OUT }}
+                  className="flex shrink-0 items-center gap-1.5 rounded-md border border-border/30 bg-background/40 px-2 py-0.5 text-[10px] text-muted-foreground/65"
+                >
+                  <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                  Updating...
+                </motion.span>
+              )}
+              {updateStatus === 'ready' && (
+                <motion.button
+                  key="update-ready"
+                  layout
+                  initial={reduceMotion ? false : { opacity: 0, x: 8, scale: 0.96 }}
+                  animate={{ opacity: 1, x: 0, scale: 1 }}
+                  exit={reduceMotion ? { opacity: 0 } : { opacity: 0, x: 8, scale: 0.96 }}
+                  transition={{ duration: 0.2, ease: EASE_OUT }}
+                  onClick={() => {
+                    hapticSuccess()
+                    window.cells.updater.install()
+                  }}
+                  className="flex shrink-0 items-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] text-primary transition-colors hover:bg-primary/20"
+                  title="Compatible daemon updates preserve sessions. Incompatible ones will warn before restart."
+                >
+                  <RotateCw className="w-2.5 h-2.5" />
+                  <span className="font-medium">Restart to update</span>
+                </motion.button>
+              )}
+            </AnimatePresence>
+
+            <button
+              onClick={() => setShowSettings(true)}
+              className="text-muted-foreground/40 hover:text-foreground transition-colors relative"
+            >
+              <Settings className="w-3.5 h-3.5" />
+              {(updateStatus === 'available' || updateStatus === 'ready') && (
+                <span className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-primary" />
               )}
             </button>
-          )}
-
-          {/* Snap toggle — selection mode keeps its pill (the count matters and
-              the state is transient); normal snap states drop the pill chrome
-              to match the other icon-only controls in this cluster. */}
-          <button
-            onClick={() => {
-              hapticBuzz()
-              if (selectionMode) {
-                setSelectionMode(false)
-                return
-              }
-              toggleSnap()
-            }}
-            className={cn(
-              'flex items-center gap-1.5 rounded-md transition-colors',
-              selectionMode ? 'bg-primary/15 px-2 py-1 text-primary' : 'px-1 py-1',
-              !selectionMode &&
-                (!snapEnabled
-                  ? 'text-muted-foreground/35 hover:text-muted-foreground'
-                  : snapPaused
-                    ? 'text-amber-400/80 hover:text-amber-300'
-                    : 'text-primary/80 hover:text-primary'),
-            )}
-            title={
-              selectionMode
-                ? 'Selection mode active. Click to exit.'
-                : !snapEnabled
-                  ? 'Snap off — windows move freely'
-                  : snapPaused
-                    ? 'Snap paused'
-                    : 'Snap on'
-            }
-          >
-            <Magnet className="w-3 h-3" />
-            {selectionMode ? (
-              <span className="text-[10px]">
-                {`Select ${selectionCount > 0 ? `(${selectionCount})` : ''}`}
-              </span>
-            ) : !snapEnabled || snapPaused ? (
-              <span className="text-[10px] lowercase text-muted-foreground/55">
-                {snapPaused ? 'paused' : 'free'}
-              </span>
-            ) : null}
-          </button>
-
-          <div
-            className="flex shrink-0 items-center gap-2 text-[10px] text-muted-foreground/55"
-            title={canvasShortcutHints
-              .map((hint) => `${hint.label}: ${formatShortcutLabel(...hint.keys)} ${hint.suffix}`)
-              .join(' • ')}
-          >
-            {canvasShortcutHints.map((hint, index) => (
-              <div key={hint.label} className="flex items-center gap-1 whitespace-nowrap">
-                {index > 0 && (
-                  <span aria-hidden className="mr-1 size-0.5 rounded-full bg-muted-foreground/25" />
-                )}
-                <span className="text-muted-foreground/55">{hint.label}</span>
-                <KbdGroup className="gap-0.5">
-                  {hint.keys.map((key) => (
-                    <Kbd
-                      key={`${hint.label}-${key}`}
-                      className="h-3.5 min-w-0 border-border/25 bg-background/30 px-1 text-[9px] text-muted-foreground/70"
-                    >
-                      {key}
-                    </Kbd>
-                  ))}
-                </KbdGroup>
-                <span className="lowercase text-muted-foreground/45">{hint.suffix}</span>
-              </div>
-            ))}
           </div>
-
-          {/* Update indicator */}
-          <AnimatePresence initial={false}>
-            {updateStatus === 'available' && (
-              <motion.button
-                key="update-download"
-                layout
-                initial={reduceMotion ? false : { opacity: 0, x: 8, scale: 0.96 }}
-                animate={{ opacity: 1, x: 0, scale: 1 }}
-                exit={reduceMotion ? { opacity: 0 } : { opacity: 0, x: 8, scale: 0.96 }}
-                transition={{ duration: 0.2, ease: EASE_OUT }}
-                onClick={() => {
-                  hapticNudge()
-                  window.cells.updater.download()
-                }}
-                className="flex shrink-0 items-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] text-primary transition-colors hover:bg-primary/20"
-              >
-                <Download className="w-2.5 h-2.5" />
-                <span className="font-medium">v{updateVersion}</span>
-              </motion.button>
-            )}
-            {updateStatus === 'downloading' && (
-              <motion.span
-                key="update-downloading"
-                layout
-                initial={reduceMotion ? false : { opacity: 0, x: 8, scale: 0.96 }}
-                animate={{ opacity: 1, x: 0, scale: 1 }}
-                exit={reduceMotion ? { opacity: 0 } : { opacity: 0, x: 8, scale: 0.96 }}
-                transition={{ duration: 0.2, ease: EASE_OUT }}
-                className="flex shrink-0 items-center gap-1.5 rounded-md border border-border/30 bg-background/40 px-2 py-0.5 text-[10px] text-muted-foreground/65"
-              >
-                <Loader2 className="w-2.5 h-2.5 animate-spin" />
-                Updating...
-              </motion.span>
-            )}
-            {updateStatus === 'ready' && (
-              <motion.button
-                key="update-ready"
-                layout
-                initial={reduceMotion ? false : { opacity: 0, x: 8, scale: 0.96 }}
-                animate={{ opacity: 1, x: 0, scale: 1 }}
-                exit={reduceMotion ? { opacity: 0 } : { opacity: 0, x: 8, scale: 0.96 }}
-                transition={{ duration: 0.2, ease: EASE_OUT }}
-                onClick={() => {
-                  hapticSuccess()
-                  window.cells.updater.install()
-                }}
-                className="flex shrink-0 items-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] text-primary transition-colors hover:bg-primary/20"
-                title="Compatible daemon updates preserve sessions. Incompatible ones will warn before restart."
-              >
-                <RotateCw className="w-2.5 h-2.5" />
-                <span className="font-medium">Restart to update</span>
-              </motion.button>
-            )}
-          </AnimatePresence>
-
-          <button
-            onClick={() => setShowSettings(true)}
-            className="text-muted-foreground/40 hover:text-foreground transition-colors relative"
-          >
-            <Settings className="w-3.5 h-3.5" />
-            {(updateStatus === 'available' || updateStatus === 'ready') && (
-              <span className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-primary" />
-            )}
-          </button>
-        </div>
+        )}
       </div>
 
       <AppSettings open={showSettings} onOpenChange={setShowSettings} />

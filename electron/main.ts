@@ -1970,8 +1970,13 @@ ipcMain.handle(
 
 ipcMain.handle(
   'agent-session:respond-question',
-  async (_event, windowId: string, answers: Record<string, string[]> | null) => {
-    return agentSessionService.respondQuestion(windowId, answers)
+  async (
+    _event,
+    windowId: string,
+    answers: Record<string, string[]> | null,
+    note: string | null,
+  ) => {
+    return agentSessionService.respondQuestion(windowId, answers, note)
   },
 )
 

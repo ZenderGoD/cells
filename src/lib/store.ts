@@ -225,7 +225,7 @@ interface StoreState {
   setCustomTitle(id: string, customTitle: string | null): void
   focusTerminal(id: string | null): void
   bringToFront(id: string): void
-  togglePin(id: string, type?: 'terminal' | 'browser'): void
+  togglePin(id: string, type?: 'terminal' | 'browser' | 'agent'): void
   togglePinFocused(): void
   panToTerminal(id: string): void
   panToBrowser(id: string): void
@@ -1097,6 +1097,10 @@ export const useStore = create<StoreState>((set, get) => ({
           set((s) => ({
             terminals: s.terminals.map((t) => (t.id === id ? { ...t, pinned: false } : t)),
           }))
+        } else if (type === 'agent') {
+          set((s) => ({
+            agentWindows: s.agentWindows.map((a) => (a.id === id ? { ...a, pinned: false } : a)),
+          }))
         } else {
           set((s) => ({
             browsers: s.browsers.map((b) => (b.id === id ? { ...b, pinned: false } : b)),
@@ -1112,6 +1116,14 @@ export const useStore = create<StoreState>((set, get) => ({
               t.id === id
                 ? { ...t, width: Math.max(320, width), height: Math.max(200, height) }
                 : t,
+            ),
+          }))
+        } else if (type === 'agent') {
+          set((s) => ({
+            agentWindows: s.agentWindows.map((a) =>
+              a.id === id
+                ? { ...a, width: Math.max(320, width), height: Math.max(200, height) }
+                : a,
             ),
           }))
         } else {
@@ -1962,7 +1974,8 @@ export const useStore = create<StoreState>((set, get) => ({
 
     // Size: fill the viewport minus padding and status bar
     const width = window.innerWidth - TERMINAL_PAD * 2
-    const height = window.innerHeight - STATUS_BAR_HEIGHT - TERMINAL_PAD * 2
+    const height =
+      window.innerHeight - (get().titleBarHidden ? 0 : STATUS_BAR_HEIGHT) - TERMINAL_PAD * 2
 
     // Place to the right of the rightmost *any* window, or at origin.
     let x = TERMINAL_PAD
@@ -2317,36 +2330,37 @@ export const useStore = create<StoreState>((set, get) => ({
     const node =
       kind === 'terminal'
         ? get().terminals.find((t) => t.id === id)
-        : get().browsers.find((b) => b.id === id)
+        : kind === 'agent'
+          ? get().agentWindows.find((a) => a.id === id)
+          : get().browsers.find((b) => b.id === id)
     if (!node) return
+
+    const applyPinned = (pinned: boolean) => {
+      if (kind === 'terminal') {
+        set((s) => ({
+          terminals: s.terminals.map((t) => (t.id === id ? { ...t, pinned } : t)),
+        }))
+      } else if (kind === 'agent') {
+        set((s) => ({
+          agentWindows: s.agentWindows.map((a) => (a.id === id ? { ...a, pinned } : a)),
+        }))
+      } else {
+        set((s) => ({
+          browsers: s.browsers.map((b) => (b.id === id ? { ...b, pinned } : b)),
+        }))
+      }
+    }
 
     if (node.pinned) {
       // Unpin: close the system window, mark as unpinned
       void window.cells.app.unpinWindow(id)
-      if (kind === 'terminal') {
-        set((s) => ({
-          terminals: s.terminals.map((t) => (t.id === id ? { ...t, pinned: false } : t)),
-        }))
-      } else {
-        set((s) => ({
-          browsers: s.browsers.map((b) => (b.id === id ? { ...b, pinned: false } : b)),
-        }))
-      }
+      applyPinned(false)
     } else {
       // Pin: compute screen bounds and open as system window
       const screenX = node.x * canvas.scale + canvas.x
       const screenY = node.y * canvas.scale + canvas.y
-      // Get the main window's screen position to compute absolute bounds
       const bounds = { x: screenX, y: screenY, width: node.width, height: node.height }
-      if (kind === 'terminal') {
-        set((s) => ({
-          terminals: s.terminals.map((t) => (t.id === id ? { ...t, pinned: true } : t)),
-        }))
-      } else {
-        set((s) => ({
-          browsers: s.browsers.map((b) => (b.id === id ? { ...b, pinned: true } : b)),
-        }))
-      }
+      applyPinned(true)
       const browserUrl = kind === 'browser' ? (node as any).url : undefined
       void window.cells.app.pinWindow(id, kind, bounds, browserUrl)
     }
@@ -2354,9 +2368,10 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   togglePinFocused() {
-    const { focusedTerminalId, focusedBrowserId } = get()
+    const { focusedTerminalId, focusedBrowserId, focusedAgentWindowId } = get()
     if (focusedTerminalId) get().togglePin(focusedTerminalId, 'terminal')
     else if (focusedBrowserId) get().togglePin(focusedBrowserId, 'browser')
+    else if (focusedAgentWindowId) get().togglePin(focusedAgentWindowId, 'agent')
   },
 
   reloadFocused() {
@@ -2459,7 +2474,7 @@ export const useStore = create<StoreState>((set, get) => ({
     const terminal = terminals.find((t) => t.id === id)
     if (!terminal) return
     const viewW = window.innerWidth
-    const viewH = window.innerHeight - STATUS_BAR_HEIGHT
+    const viewH = window.innerHeight - (get().titleBarHidden ? 0 : STATUS_BAR_HEIGHT)
     get().setCanvasTransform({
       ...canvas,
       x: viewW / 2 - (terminal.x + terminal.width / 2) * canvas.scale,
@@ -2472,7 +2487,7 @@ export const useStore = create<StoreState>((set, get) => ({
     const browser = browsers.find((entry) => entry.id === id)
     if (!browser) return
     const viewW = window.innerWidth
-    const viewH = window.innerHeight - STATUS_BAR_HEIGHT
+    const viewH = window.innerHeight - (get().titleBarHidden ? 0 : STATUS_BAR_HEIGHT)
     get().setCanvasTransform({
       ...canvas,
       x: viewW / 2 - (browser.x + browser.width / 2) * canvas.scale,
@@ -2492,7 +2507,7 @@ export const useStore = create<StoreState>((set, get) => ({
       ? { ...state.focusCounts, [id]: (state.focusCounts[id] ?? 0) + 1 }
       : state.focusCounts
     const viewW = window.innerWidth
-    const viewH = window.innerHeight - STATUS_BAR_HEIGHT
+    const viewH = window.innerHeight - (get().titleBarHidden ? 0 : STATUS_BAR_HEIGHT)
     const scale = options?.keepScale
       ? state.canvas.scale
       : Math.min(
@@ -2531,7 +2546,7 @@ export const useStore = create<StoreState>((set, get) => ({
       agentWindows.find((agentWindow) => agentWindow.id === id)
     if (!node) return
     const viewW = window.innerWidth
-    const viewH = window.innerHeight - STATUS_BAR_HEIGHT
+    const viewH = window.innerHeight - (get().titleBarHidden ? 0 : STATUS_BAR_HEIGHT)
     const scale = Math.min(
       viewW / (node.width + TERMINAL_PAD * 2),
       viewH / (node.height + TERMINAL_PAD * 2),
@@ -2590,7 +2605,7 @@ export const useStore = create<StoreState>((set, get) => ({
     if (!node) return
 
     const viewW = window.innerWidth
-    const viewH = window.innerHeight - STATUS_BAR_HEIGHT
+    const viewH = window.innerHeight - (get().titleBarHidden ? 0 : STATUS_BAR_HEIGHT)
     const scale = Math.max(
       CANVAS_MIN_ZOOM,
       Math.min(
@@ -2801,7 +2816,7 @@ export const useStore = create<StoreState>((set, get) => ({
           : null
     if (!node) return
     const width = node.width + TERMINAL_PAD * 2
-    const height = node.height + TERMINAL_PAD * 2 + STATUS_BAR_HEIGHT
+    const height = node.height + TERMINAL_PAD * 2 + (get().titleBarHidden ? 0 : STATUS_BAR_HEIGHT)
     void window.cells.app.resizeToFit(width, height)
     // Re-fit the canvas after the window resizes
     requestAnimationFrame(() => {
@@ -2821,7 +2836,8 @@ export const useStore = create<StoreState>((set, get) => ({
       focusedAgentWindowId,
     } = get()
     const viewW = window.innerWidth - TERMINAL_PAD * 2
-    const viewH = window.innerHeight - STATUS_BAR_HEIGHT - TERMINAL_PAD * 2
+    const viewH =
+      window.innerHeight - (get().titleBarHidden ? 0 : STATUS_BAR_HEIGHT) - TERMINAL_PAD * 2
     if (focusedTerminalId) {
       const t = terminals.find((t) => t.id === focusedTerminalId)
       if (!t) return
@@ -2855,7 +2871,7 @@ export const useStore = create<StoreState>((set, get) => ({
     const nextTransform = getOverviewTransform(
       allNodes,
       window.innerWidth,
-      window.innerHeight - STATUS_BAR_HEIGHT,
+      window.innerHeight - (get().titleBarHidden ? 0 : STATUS_BAR_HEIGHT),
     )
     if (!nextTransform) return
 
@@ -3669,7 +3685,8 @@ export const useStore = create<StoreState>((set, get) => ({
     const savedDefaults =
       get().lastAgentSessionDefaults[agent] ?? DEFAULT_AGENT_SESSION_DEFAULTS[agent]
     const width = window.innerWidth - TERMINAL_PAD * 2
-    const height = window.innerHeight - STATUS_BAR_HEIGHT - TERMINAL_PAD * 2
+    const height =
+      window.innerHeight - (get().titleBarHidden ? 0 : STATUS_BAR_HEIGHT) - TERMINAL_PAD * 2
 
     let x = TERMINAL_PAD
     const y = TERMINAL_PAD
@@ -3851,7 +3868,7 @@ export const useStore = create<StoreState>((set, get) => ({
     const agentWindow = agentWindows.find((entry) => entry.id === id)
     if (!agentWindow) return
     const viewW = window.innerWidth
-    const viewH = window.innerHeight - STATUS_BAR_HEIGHT
+    const viewH = window.innerHeight - (get().titleBarHidden ? 0 : STATUS_BAR_HEIGHT)
     get().setCanvasTransform({
       ...canvas,
       x: viewW / 2 - (agentWindow.x + agentWindow.width / 2) * canvas.scale,
@@ -3871,7 +3888,7 @@ export const useStore = create<StoreState>((set, get) => ({
       ? { ...state.focusCounts, [id]: (state.focusCounts[id] ?? 0) + 1 }
       : state.focusCounts
     const viewW = window.innerWidth
-    const viewH = window.innerHeight - STATUS_BAR_HEIGHT
+    const viewH = window.innerHeight - (get().titleBarHidden ? 0 : STATUS_BAR_HEIGHT)
     const scale = options?.keepScale
       ? state.canvas.scale
       : Math.min(
@@ -3921,7 +3938,8 @@ export const useStore = create<StoreState>((set, get) => ({
     const { terminals, browsers, agentWindows, focusHistory } = get()
 
     const width = window.innerWidth - TERMINAL_PAD * 2
-    const height = window.innerHeight - STATUS_BAR_HEIGHT - TERMINAL_PAD * 2
+    const height =
+      window.innerHeight - (get().titleBarHidden ? 0 : STATUS_BAR_HEIGHT) - TERMINAL_PAD * 2
 
     // Place to the right of all nodes
     let x = TERMINAL_PAD
@@ -4167,7 +4185,7 @@ export const useStore = create<StoreState>((set, get) => ({
     const nextTopZIndex = shouldBringToFront ? state.topZIndex + 1 : state.topZIndex
     const focusHistory = pushFocusHistory(state.focusHistory, id)
     const viewW = window.innerWidth
-    const viewH = window.innerHeight - STATUS_BAR_HEIGHT
+    const viewH = window.innerHeight - (get().titleBarHidden ? 0 : STATUS_BAR_HEIGHT)
     const scale = options?.keepScale
       ? state.canvas.scale
       : Math.min(

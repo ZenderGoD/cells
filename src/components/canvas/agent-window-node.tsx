@@ -8,6 +8,7 @@ import {
   type MouseEvent,
 } from 'react'
 import {
+  ArrowUpRight,
   ClipboardCopy,
   FolderOpen,
   MoreHorizontal,
@@ -15,6 +16,7 @@ import {
   RotateCcw,
   XCircle,
 } from 'lucide-react'
+import { hapticBuzz } from '@/lib/haptics'
 import type { AgentWindowNode as AgentWindowNodeType } from '@/types'
 import { useStore } from '@/lib/store'
 import { useShallow } from 'zustand/react/shallow'
@@ -59,6 +61,7 @@ export const AgentWindowNode = memo(function AgentWindowNode({
     focusAgentWindow,
     bringAgentWindowToFront,
     syncAgentWindow,
+    togglePin,
   } = useStore(
     useShallow((state) => ({
       moveAgentWindow: state.moveAgentWindow,
@@ -67,6 +70,7 @@ export const AgentWindowNode = memo(function AgentWindowNode({
       focusAgentWindow: state.focusAgentWindow,
       bringAgentWindowToFront: state.bringAgentWindowToFront,
       syncAgentWindow: state.syncAgentWindow,
+      togglePin: state.togglePin,
     })),
   )
   const [isEditingTitle, setIsEditingTitle] = useState(false)
@@ -234,6 +238,10 @@ export const AgentWindowNode = memo(function AgentWindowNode({
   const handleClose = () => {
     void requestCloseWindow({ id: agentWindow.id, type: 'agent' })
   }
+  const handleTogglePin = () => {
+    hapticBuzz()
+    togglePin(agentWindow.id, 'agent')
+  }
 
   const colorSpec = getAgentWindowColor(agentWindow.color)
   const hasColor = colorSpec.id !== 'none'
@@ -340,6 +348,11 @@ export const AgentWindowNode = memo(function AgentWindowNode({
               disabled={!cwd}
               onSelect={handleOpenCwd}
             />
+            <MenuItem
+              icon={<ArrowUpRight className="size-3.5" />}
+              label={agentWindow.pinned ? 'Pop back in' : 'Pop out to window'}
+              onSelect={handleTogglePin}
+            />
             <div className="my-1 h-px bg-border/40" />
             <MenuItem
               icon={<RotateCcw className="size-3.5" />}
@@ -356,9 +369,28 @@ export const AgentWindowNode = memo(function AgentWindowNode({
         </Popover>
       </div>
 
-      <div className="h-full bg-gradient-to-b from-background/30 to-background/55">
-        <AgentChatPanel agentWindow={agentWindow} />
-      </div>
+      {agentWindow.pinned ? (
+        <div className="flex h-full w-full flex-col items-center justify-center gap-3 bg-background/92 px-6 text-center">
+          <div className="text-xs font-medium text-foreground/80">Popped out agent</div>
+          <div className="max-w-52 text-[11px] leading-5 text-muted-foreground/60">
+            {currentTitle}
+          </div>
+          <button
+            className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-background/70 px-2.5 py-1.5 text-[11px] text-foreground transition-colors hover:bg-muted/40"
+            onClick={(event) => {
+              event.stopPropagation()
+              handleTogglePin()
+            }}
+          >
+            <ArrowUpRight className="h-3 w-3 rotate-180" />
+            Pop back in
+          </button>
+        </div>
+      ) : (
+        <div className="h-full bg-gradient-to-b from-background/30 to-background/55">
+          <AgentChatPanel agentWindow={agentWindow} />
+        </div>
+      )}
 
       {(['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'] as Edge[]).map((edge) => (
         <div

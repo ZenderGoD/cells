@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ArrowDownLeft } from 'lucide-react'
 import { CellTerminal } from './terminal/cell-terminal'
+import { AgentChatPanel } from './agent-session/agent-chat-panel'
 import { useStore } from '@/lib/store'
 import { getTerminalTheme } from '@/lib/terminal-themes'
 import { hapticBuzz } from '@/lib/haptics'
@@ -10,7 +11,13 @@ import { cn } from '@/lib/utils'
 
 const TITLE_BAR_HEIGHT = 38
 
-export function PinnedWindow({ termId, type }: { termId: string; type: 'terminal' | 'browser' }) {
+export function PinnedWindow({
+  termId,
+  type,
+}: {
+  termId: string
+  type: 'terminal' | 'browser' | 'agent'
+}) {
   const init = useStore((s) => s.init)
   const initialized = useStore((s) => s.initialized)
   const themeName = useStore((s) => s.terminalTheme)
@@ -20,10 +27,19 @@ export function PinnedWindow({ termId, type }: { termId: string; type: 'terminal
     width: window.innerWidth,
     height: Math.max(0, window.innerHeight - TITLE_BAR_HEIGHT),
   })
-  const customTitle = useStore((s) => s.terminals.find((t) => t.id === termId)?.customTitle)
-  const terminal = useStore((s) => s.terminals.find((t) => t.id === termId) ?? null)
-  const [inferredTitle, setInferredTitle] = useState('Terminal')
-  const title = customTitle || inferredTitle
+  const customTitle = useStore((s) =>
+    type === 'agent'
+      ? (s.agentWindows.find((a) => a.id === termId)?.customTitle ?? null)
+      : (s.terminals.find((t) => t.id === termId)?.customTitle ?? null),
+  )
+  const terminal = useStore((s) =>
+    type === 'terminal' ? (s.terminals.find((t) => t.id === termId) ?? null) : null,
+  )
+  const agentWindow = useStore((s) =>
+    type === 'agent' ? (s.agentWindows.find((a) => a.id === termId) ?? null) : null,
+  )
+  const [inferredTitle, setInferredTitle] = useState(type === 'agent' ? 'Agent' : 'Terminal')
+  const title = customTitle || agentWindow?.title || inferredTitle
   const status = getStatusPresentation(terminal?.runtimeStatus, {
     agent: terminal?.agent ?? inferAgentFromTitle(title),
     agentStatus: terminal?.agentStatus,
@@ -52,12 +68,13 @@ export function PinnedWindow({ termId, type }: { termId: string; type: 'terminal
   if (!initialized) return null
 
   const theme = getTerminalTheme(themeName)
-  const terminalProject = projects.find((project) =>
-    project.terminals.some((terminal) => terminal.id === termId),
-  )
+  const terminalProject =
+    type === 'terminal'
+      ? projects.find((project) => project.terminals.some((terminal) => terminal.id === termId))
+      : null
 
   // Browser pop-outs are handled by the main process (loads URL directly),
-  // so this component only renders for terminal pop-outs.
+  // so this component only renders for terminal and agent pop-outs.
   if (type === 'browser') return null
 
   return (
@@ -124,25 +141,33 @@ export function PinnedWindow({ termId, type }: { termId: string; type: 'terminal
         </div>
       </div>
 
-      {/* Terminal content */}
+      {/* Content */}
       <div
         ref={contentRef}
         className="flex-1 min-h-0 min-w-0"
-        style={{ background: theme.background }}
+        style={{ background: type === 'agent' ? undefined : theme.background }}
       >
-        <CellTerminal
-          termId={termId}
-          width={size.width}
-          height={size.height}
-          isVisible={true}
-          isFocused={true}
-          projectId={terminalProject?.id ?? null}
-          projectPath={terminalProject?.path ?? null}
-          onTitleChange={(newTitle) => {
-            setInferredTitle(newTitle)
-            document.title = customTitle || newTitle
-          }}
-        />
+        {type === 'agent' ? (
+          agentWindow ? (
+            <div className="h-full w-full bg-gradient-to-b from-background/30 to-background/55">
+              <AgentChatPanel agentWindow={agentWindow} />
+            </div>
+          ) : null
+        ) : (
+          <CellTerminal
+            termId={termId}
+            width={size.width}
+            height={size.height}
+            isVisible={true}
+            isFocused={true}
+            projectId={terminalProject?.id ?? null}
+            projectPath={terminalProject?.path ?? null}
+            onTitleChange={(newTitle) => {
+              setInferredTitle(newTitle)
+              document.title = customTitle || newTitle
+            }}
+          />
+        )}
       </div>
     </div>
   )

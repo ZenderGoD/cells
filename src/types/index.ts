@@ -254,6 +254,8 @@ export interface AgentWindowNode {
   /** Optional color accent so users can visually group agent windows. See
    *  `lib/agent-window-colors.ts` for the palette. */
   color?: import('../lib/agent-window-colors').AgentWindowColorId | null
+  /** True while this agent window is popped out into its own OS window. */
+  pinned?: boolean
 }
 
 export interface AgentSessionDefaults {
@@ -716,7 +718,11 @@ export interface CellsAPI {
      *  Key = original question text (matches SDK output schema).
      *  Value = array of chosen option labels (single entry for single-select).
      *  Pass `null` to cancel the prompt (treated as declined). */
-    respondQuestion(windowId: string, answers: Record<string, string[]> | null): Promise<void>
+    respondQuestion(
+      windowId: string,
+      answers: Record<string, string[]> | null,
+      note?: string | null,
+    ): Promise<void>
     respondApproval(
       windowId: string,
       decision: 'accept' | 'acceptForSession' | 'decline',
@@ -895,7 +901,7 @@ export interface CellsAPI {
       callback: (id: string, type: string, width: number, height: number) => void,
     ): () => void
     getPinnedId(): string | null
-    getPinnedType(): 'terminal' | 'browser' | null
+    getPinnedType(): 'terminal' | 'browser' | 'agent' | null
     pickFolder(): Promise<string | null>
     pickFiles(): Promise<string[] | null>
     listRecentFiles(): Promise<Array<{ path: string; name: string; mtime: number; source: string }>>

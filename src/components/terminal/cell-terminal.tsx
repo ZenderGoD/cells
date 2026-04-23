@@ -41,6 +41,7 @@ const HISTORY_PAGE_BYTES = 256 * 1024
 const HISTORY_WRITE_BYTES = 64 * 1024
 const TERMINAL_SEARCH_MATCH_LIMIT = 2_000
 const TERMINAL_ATTACH_RETRY_DELAYS_MS = [0, 250, 1000] as const
+const TERMINAL_SETUP_RETRY_DELAY_MS = 1_200
 const SERVER_OWNED_ATTACH_RECOVERY_DELAYS_MS = [800, 1600] as const
 const SERVER_OWNED_WHEEL_HANDLED_KEY = '__cellsServerOwnedWheelHandled'
 const SERVER_OWNED_MOUSE_FLUSH_MS = 16
@@ -1972,6 +1973,12 @@ async function attachTerminalWithRetry(
   throw lastError instanceof Error ? lastError : new Error('Terminal attach failed')
 }
 
+function getTerminalSetupErrorMessage(error: unknown) {
+  const message = error instanceof Error ? error.message.trim() : ''
+  if (!message) return 'Terminal failed to open. Retrying...'
+  return `Terminal failed to open. ${message}`
+}
+
 export function CellTerminal({
   termId,
   width,
@@ -2038,13 +2045,22 @@ export function CellTerminal({
   const searchMatchesRef = useRef<SearchMatch[]>([])
   const searchDebounceRef = useRef<number | null>(null)
   const searchLimitHitRef = useRef(false)
+  const setupRetryTimerRef = useRef<number | null>(null)
   const [dropActive, setDropActive] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
+  const [setupError, setSetupError] = useState<string | null>(null)
   const [, setScrollStatus] = useState<{
     paneInMode: boolean
     scrollPosition: number
     historySize: number
   } | null>(null)
+
+  const clearSetupRetryTimer = useCallback(() => {
+    if (setupRetryTimerRef.current !== null) {
+      window.clearTimeout(setupRetryTimerRef.current)
+      setupRetryTimerRef.current = null
+    }
+  }, [])
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -2707,9 +2723,15 @@ export function CellTerminal({
   useEffect(() => {
     let cancelled = false
     const container = containerRef.current
+    let setupCommittedToCache = false
+    let transientTerm: Terminal | null = null
+    let transientWrapper: HTMLDivElement | null = null
+    let transientCleanups: Array<() => void> = []
 
     async function setup() {
       if (!container) return
+      clearSetupRetryTimer()
+      setSetupError(null)
       const cleanups: Array<() => void> = []
       const bumpPtySize = (cols: number, rows: number) => {
         // Force a real SIGWINCH so shells and fullscreen TUIs redraw after
@@ -2853,6 +2875,7 @@ export function CellTerminal({
       if (cancelled) return
 
       const wrapper = document.createElement('div')
+      transientWrapper = wrapper
       wrapper.className = 'cell-terminal-surface'
       wrapper.style.width = '100%'
       wrapper.style.height = '100%'
@@ -2871,6 +2894,7 @@ export function CellTerminal({
         // how rendererFactory is injected into ghostty-web).
         rendererFactory: (canvas, opts) => new WebGLTerminalRenderer(canvas, opts) as any,
       })
+      transientTerm = term
       patchTerminalViewportPreservation(term)
 
       if (cancelled) {
@@ -3126,6 +3150,7 @@ export function CellTerminal({
       let writeBuf = ''
       let writeRaf = 0
       beginTerminalReplay(term)
+      transientCleanups = cleanups
       let perfWindowStart = performance.now()
       let perfBytes = 0
       let perfWriteCalls = 0
@@ -3301,6 +3326,7 @@ export function CellTerminal({
 
       // Store in cache
       terminalCache.set(termId, { term, fitAddon, wrapper, cleanups, setPollingEnabled })
+      setupCommittedToCache = true
       setPollingEnabled(true)
 
       const dims = fitAddon.proposeDimensions()
@@ -3409,10 +3435,33 @@ export function CellTerminal({
       forceTerminalRepaint(term)
     }
 
-    setup()
+    void setup().catch((error) => {
+      if (cancelled) return
+
+      console.error(`Failed to initialize terminal ${termId}`, error)
+      setSetupError(getTerminalSetupErrorMessage(error))
+      terminalRef.current = null
+      fitAddonRef.current = null
+      inputBufferRef.current = ''
+      backendQueryRemainderRef.current = ''
+
+      if (!setupCommittedToCache) {
+        for (const cleanup of transientCleanups) cleanup()
+        transientTerm?.dispose()
+        transientWrapper?.remove()
+      }
+
+      void window.cells.terminal.unsubscribe(termId).catch(() => {})
+      clearSetupRetryTimer()
+      setupRetryTimerRef.current = window.setTimeout(() => {
+        setupRetryTimerRef.current = null
+        setReloadKey((key) => key + 1)
+      }, TERMINAL_SETUP_RETRY_DELAY_MS)
+    })
 
     return () => {
       cancelled = true
+      clearSetupRetryTimer()
       const cached = terminalCache.get(termId)
       if (cached) {
         setTerminalRenderLoopEnabled(cached.term, false)
@@ -3449,6 +3498,7 @@ export function CellTerminal({
     terminalFindOpen,
     termId,
     trackInputForTitle,
+    clearSetupRetryTimer,
   ])
 
   useEffect(() => {
@@ -3904,6 +3954,14 @@ export function CellTerminal({
             'border-terminal-active/80 bg-terminal-active/10 shadow-[inset_0_0_0_1px_color-mix(in_oklch,var(--color-terminal-active)_45%,transparent)]',
           )}
         />
+      )}
+      {setupError && !terminalExited && (
+        <div className="absolute inset-x-3 bottom-3 z-30 pointer-events-none">
+          <div className="rounded-lg border border-amber-400/15 bg-background/92 px-3 py-2 shadow-lg backdrop-blur">
+            <div className="text-[11px] text-foreground">{setupError}</div>
+            <div className="text-[10px] text-muted-foreground/40">Retrying automatically...</div>
+          </div>
+        </div>
       )}
       {terminalExited && (
         <>

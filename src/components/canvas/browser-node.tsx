@@ -16,6 +16,7 @@ const STATUS_BAR_H = 40 // must match toolbar height
 // keeping them alive is convenient, but expensive. Hibernate quickly once
 // they are no longer focused so the GPU/helper processes can cool down.
 const HIBERNATE_DELAY_MS = 5_000
+const BROWSER_CREATE_RETRY_DELAY_MS = 1_200
 
 type Edge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
 
@@ -80,7 +81,11 @@ export function BrowserNode({
   const contentRef = useRef<HTMLDivElement>(null)
   const createdRef = useRef(false)
   const lastBoundsRef = useRef({ x: 0, y: 0, width: 0, height: 0 })
+  const lastZoomRef = useRef(-1)
   const hibernateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const createRetryTimerRef = useRef<number | null>(null)
+  const [createAttempt, setCreateAttempt] = useState(0)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   // Snapshot url/history into refs so the create effect doesn't re-fire on navigation
   const initialUrlRef = useRef(browser.url)
@@ -99,11 +104,26 @@ export function BrowserNode({
     }
   }, [])
 
+  const clearCreateRetryTimer = useCallback(() => {
+    if (createRetryTimerRef.current) {
+      window.clearTimeout(createRetryTimerRef.current)
+      createRetryTimerRef.current = null
+    }
+  }, [])
+
+  const resetNativeViewMetrics = useCallback(() => {
+    lastBoundsRef.current = { x: 0, y: 0, width: 0, height: 0 }
+    lastZoomRef.current = -1
+  }, [])
+
   const hibernateView = useCallback(async () => {
     clearHibernateTimer()
+    clearCreateRetryTimer()
     if (!createdRef.current) return
     createdRef.current = false
     setViewReady(false)
+    setLoadError(null)
+    resetNativeViewMetrics()
     window.cells.browser.setVisible(browser.id, false)
     try {
       const history = await window.cells.browser.getHistory(browser.id)
@@ -112,25 +132,66 @@ export function BrowserNode({
       }
     } catch {}
     await window.cells.browser.destroy(browser.id)
-  }, [browser.id, clearHibernateTimer, updateBrowserHistory])
+  }, [
+    browser.id,
+    clearCreateRetryTimer,
+    clearHibernateTimer,
+    resetNativeViewMetrics,
+    updateBrowserHistory,
+  ])
 
   // Create or unpark WebContentsView only when the browser is focused.
   useEffect(() => {
     if (!activeProjectId || !isFocused || createdRef.current) return
     clearHibernateTimer()
+    clearCreateRetryTimer()
+    resetNativeViewMetrics()
+    const clearErrorFrame = window.requestAnimationFrame(() => {
+      setLoadError(null)
+    })
     createdRef.current = true
     const url = initialUrlRef.current
     const history = initialHistoryRef.current
-    window.cells.browser
+    let cancelled = false
+
+    void window.cells.browser
       .create(browser.id, activeProjectId, history ?? undefined)
-      .then((result: any) => {
+      .then(async (result: any) => {
+        if (cancelled) return
         setViewReady(true)
         // Only navigate on fresh creation, not when unparking (live page is preserved)
         if (!result?.unparked && url) {
-          window.cells.browser.navigate(browser.id, url, useStore.getState().searchEngine)
+          await window.cells.browser.navigate(browser.id, url, useStore.getState().searchEngine)
         }
       })
-  }, [activeProjectId, browser.id, clearHibernateTimer, hibernateView, isFocused])
+      .catch((error) => {
+        if (cancelled) return
+        console.error(`Failed to create browser view ${browser.id}`, error)
+        createdRef.current = false
+        setViewReady(false)
+        setLoadError('Browser failed to open. Retrying...')
+        resetNativeViewMetrics()
+        window.cells.browser.setVisible(browser.id, false)
+        void window.cells.browser.destroy(browser.id).catch(() => {})
+        createRetryTimerRef.current = window.setTimeout(() => {
+          createRetryTimerRef.current = null
+          setCreateAttempt((attempt) => attempt + 1)
+        }, BROWSER_CREATE_RETRY_DELAY_MS)
+      })
+
+    return () => {
+      cancelled = true
+      window.cancelAnimationFrame(clearErrorFrame)
+    }
+  }, [
+    activeProjectId,
+    browser.id,
+    clearCreateRetryTimer,
+    clearHibernateTimer,
+    createAttempt,
+    isFocused,
+    resetNativeViewMetrics,
+  ])
 
   useEffect(() => {
     if (isFocused) {
@@ -147,9 +208,10 @@ export function BrowserNode({
   useEffect(() => {
     return () => {
       clearHibernateTimer()
+      clearCreateRetryTimer()
       void hibernateView()
     }
-  }, [clearHibernateTimer, hibernateView])
+  }, [clearCreateRetryTimer, clearHibernateTimer, hibernateView])
 
   // Detect network loss — hide native view and auto-reload when back online
   useEffect(() => {
@@ -238,9 +300,6 @@ export function BrowserNode({
     return () => window.removeEventListener('resize', onResize)
   }, [])
 
-  // Position and show the WebContentsView when focused, driven by prop/state changes.
-  const lastZoomRef = useRef(-1)
-
   useEffect(() => {
     if (!viewReady || !isFocused) {
       window.cells.browser.setVisible(browser.id, false)
@@ -287,6 +346,7 @@ export function BrowserNode({
     const shouldBeVisible =
       !overlayOpen &&
       !offline &&
+      !loadError &&
       !dragModeActive &&
       !transitionHidden &&
       bounds.width >= 20 &&
@@ -308,6 +368,7 @@ export function BrowserNode({
     transitionHidden,
     viewReady,
     windowHeight,
+    loadError,
   ])
 
   const handleEdgeMouseDown = useCallback(
@@ -484,11 +545,14 @@ export function BrowserNode({
           !viewReady ||
           overlayOpen ||
           offline ||
+          !!loadError ||
           dragModeActive ||
           transitionHidden) && (
           <div className="w-full h-full flex flex-col items-center justify-center gap-2">
             {offline ? (
               <WifiOff className="w-8 h-8 text-muted-foreground/30" />
+            ) : loadError ? (
+              <EyeOff className="w-6 h-6 text-muted-foreground/25" />
             ) : dragModeActive && isFocused ? (
               <EyeOff className="w-6 h-6 text-muted-foreground/25" />
             ) : isFocused && !viewReady ? (
@@ -499,11 +563,13 @@ export function BrowserNode({
             <span className="text-[11px] text-muted-foreground/30 truncate max-w-[80%] text-center">
               {offline
                 ? 'No internet connection — will reload automatically'
-                : selectionMode && isFocused
-                  ? 'Selection mode active — drag to move this panel'
-                  : isFocused && !viewReady
-                    ? 'Loading...'
-                    : browser.title || browser.url || 'New Tab'}
+                : loadError
+                  ? loadError
+                  : selectionMode && isFocused
+                    ? 'Selection mode active — drag to move this panel'
+                    : isFocused && !viewReady
+                      ? 'Loading...'
+                      : browser.title || browser.url || 'New Tab'}
             </span>
             {dragModeActive && isFocused && (
               <span className="text-[10px] text-muted-foreground/20 mt-1">
