@@ -217,9 +217,45 @@ function fetchClaudeModels(): Promise<ModelOption[]> {
 // Fallback used before the live `codex app-server` `model/list` call resolves.
 const CODEX_MODELS_FALLBACK: ModelOption[] = [
   {
-    id: 'gpt-5-codex',
-    label: 'GPT-5 Codex',
-    hint: 'Default — fastest for coding',
+    id: 'gpt-5.4',
+    label: 'GPT-5.4',
+    hint: 'Strong model for everyday coding.',
+    isDefault: true,
+    supportedEfforts: ['low', 'medium', 'high', 'xhigh'],
+    defaultEffort: 'medium',
+  },
+  {
+    id: 'gpt-5.5',
+    label: 'GPT-5.5',
+    hint: 'Frontier model for complex coding, research, and real-world work.',
+    supportedEfforts: ['low', 'medium', 'high', 'xhigh'],
+    defaultEffort: 'medium',
+  },
+  {
+    id: 'gpt-5.4-mini',
+    label: 'GPT-5.4 Mini',
+    hint: 'Small, fast, and cost-efficient model for simpler coding tasks.',
+    supportedEfforts: ['low', 'medium', 'high', 'xhigh'],
+    defaultEffort: 'medium',
+  },
+  {
+    id: 'gpt-5.3-codex',
+    label: 'GPT-5.3 Codex',
+    hint: 'Coding-optimized model.',
+    supportedEfforts: ['low', 'medium', 'high', 'xhigh'],
+    defaultEffort: 'medium',
+  },
+  {
+    id: 'gpt-5.3-codex-spark',
+    label: 'GPT-5.3 Codex Spark',
+    hint: 'Ultra-fast coding model.',
+    supportedEfforts: ['low', 'medium', 'high', 'xhigh'],
+    defaultEffort: 'high',
+  },
+  {
+    id: 'gpt-5.2',
+    label: 'GPT-5.2',
+    hint: 'Optimized for professional work and long-running agents.',
     supportedEfforts: ['low', 'medium', 'high', 'xhigh'],
     defaultEffort: 'medium',
   },
