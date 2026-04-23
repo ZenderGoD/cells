@@ -2947,6 +2947,7 @@ export function CellTerminal({
         term.textarea.style.position = 'fixed'
         term.textarea.style.left = '-9999px'
         term.textarea.style.top = '-9999px'
+        term.textarea.dataset.cellsTerminalInput = 'true'
       }
 
       term.attachCustomKeyEventHandler((e: KeyboardEvent) => {

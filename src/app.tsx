@@ -74,6 +74,11 @@ function AnimatedTitleBarSlot({ position, show }: { position: 'top' | 'bottom'; 
   )
 }
 
+function isCellsTerminalShortcutTarget(target: EventTarget | null) {
+  if (!(target instanceof Element)) return false
+  return Boolean(target.closest('[data-cells-terminal-input="true"]'))
+}
+
 function MainApp() {
   const {
     initialized,
@@ -422,12 +427,13 @@ function MainApp() {
         case 'snap-down': {
           if (state.overlayOpen) return false
           const direction = command.replace('snap-', '') as 'left' | 'right' | 'up' | 'down'
+          const keepScale = keyboardNavigationActiveRef.current || options?.repeat === true
           if (!keyboardNavigationActiveRef.current) {
             keyboardNavigationActiveRef.current = true
             window.dispatchEvent(new Event('terminal-navigation-start'))
           }
           state.snapToNearest(direction, {
-            keepScale: keyboardNavigationActiveRef.current || options?.repeat === true,
+            keepScale,
           })
           return true
         }
@@ -500,7 +506,40 @@ function MainApp() {
       )
       if (shortcutCommand) {
         const shortcutScope = getCellsShortcutScope(shortcutCommand)
-        if (isEditableTarget(event.target) && shortcutScope === 'canvas') {
+        // Window-navigation carve-out for Cmd+hjkl.
+        //
+        // The default rule below skips canvas-scope shortcuts when focus is on
+        // an editable element so we don't hijack typing. That blanket skip is
+        // what was breaking Cmd+hjkl: in the common case the user has the
+        // agent chat composer textarea focused, so Cmd+H/J/K/L matched
+        // snap-left/down/up/right but got dropped before runShortcutCommand.
+        //
+        // Why bypass here in app.tsx and not somewhere "closer to the input":
+        //  - This window keydown listener is attached in capture phase
+        //    (`addEventListener(..., true)` below), so it fires before any
+        //    descendant element — textarea, xterm hidden textarea, etc. — and
+        //    we stopPropagation when handled. That means downstream handlers
+        //    (xterm's attachCustomKeyEventHandler, the composer's onKeyDown)
+        //    never see these events, so adding hjkl to xterm's metaShortcuts
+        //    whitelist has no effect.
+        //  - The earlier fix added `data-cells-terminal-input` on xterm's
+        //    hidden textarea so terminal focus would still allow snap-*. But
+        //    the agent composer textarea has no such marker, so typing in
+        //    chat (the dominant case) still got blocked. Decided not to
+        //    sprinkle the marker across every textarea — Cmd+hjkl has no
+        //    text-editing semantics, so just always allow it.
+        //
+        // Why letters only and not Cmd+arrows: Cmd+arrows have OS textarea
+        // semantics (jump to line start/end, doc start/end). If we bypassed
+        // for arrows too, typing in the composer would lose those. Cmd+hjkl
+        // is unambiguous — no textarea binds it.
+        const isHjklSnap = shortcutCommand.startsWith('snap-') && /^[hjkl]$/i.test(event.key)
+        if (
+          isEditableTarget(event.target) &&
+          shortcutScope === 'canvas' &&
+          !isHjklSnap &&
+          !isCellsTerminalShortcutTarget(event.target)
+        ) {
           return
         }
         const handled = runShortcutCommand(shortcutCommand, { repeat: event.repeat })

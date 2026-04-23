@@ -50,23 +50,27 @@ interface RendererShortcutContext {
   platform?: string
 }
 
+function keyMatches(input: ShortcutInput, key: string, code?: string) {
+  const normalizedKey = input.key.toLowerCase()
+  if (normalizedKey === key) return true
+  return Boolean(code && input.code === code)
+}
+
 function isZoomInKey(input: ShortcutInput) {
-  const key = input.key.toLowerCase()
   return (
-    key === '+' ||
-    key === '=' ||
-    key === 'add' ||
+    keyMatches(input, '+') ||
+    keyMatches(input, '=') ||
+    keyMatches(input, 'add') ||
     input.code === 'Equal' ||
     input.code === 'NumpadAdd'
   )
 }
 
 function isZoomOutKey(input: ShortcutInput) {
-  const key = input.key.toLowerCase()
   return (
-    key === '-' ||
-    key === '_' ||
-    key === 'subtract' ||
+    keyMatches(input, '-') ||
+    keyMatches(input, '_') ||
+    keyMatches(input, 'subtract') ||
     input.code === 'Minus' ||
     input.code === 'NumpadSubtract'
   )
@@ -80,45 +84,49 @@ export function matchBrowserViewShortcut(
   input: ShortcutInput,
   platform?: string,
 ): CellsShortcutCommand | null {
-  const key = input.key.toLowerCase()
-
   if (hasSecondaryControlModifier(input, platform)) {
-    if (!input.shiftKey && key === 'a') return 'toggle-project-switcher'
-    if (!input.shiftKey && key === 's') return 'toggle-selection-mode'
+    if (!input.shiftKey && keyMatches(input, 'a', 'KeyA')) return 'toggle-project-switcher'
+    if (!input.shiftKey && keyMatches(input, 's', 'KeyS')) return 'toggle-selection-mode'
     return null
   }
 
   if (input.altKey || !hasPrimaryModifier(input, platform)) return null
 
   if (input.shiftKey) {
-    if (key === 't') return 'restore-last-closed'
-    if (key === 'p') return 'toggle-pin-focused'
-    if (key === 'c') return 'copy-browser-url'
-    if (key === 's') return 'toggle-title-bar-position'
-    if (key === 'o') return 'zoom-to-fit-all'
-    if (key === 'enter') return 'resize-focused-to-fit-viewport'
-    if (key === '0') return 'resize-window-to-fit-focused'
+    if (keyMatches(input, 't', 'KeyT')) return 'restore-last-closed'
+    if (keyMatches(input, 'p', 'KeyP')) return 'toggle-pin-focused'
+    if (keyMatches(input, 'c', 'KeyC')) return 'copy-browser-url'
+    if (keyMatches(input, 's', 'KeyS')) return 'toggle-title-bar-position'
+    if (keyMatches(input, 'o', 'KeyO')) return 'zoom-to-fit-all'
+    if (keyMatches(input, 'enter', 'Enter') || input.code === 'NumpadEnter') {
+      return 'resize-focused-to-fit-viewport'
+    }
+    if (keyMatches(input, '0', 'Digit0') || input.code === 'Numpad0') {
+      return 'resize-window-to-fit-focused'
+    }
   }
 
-  if (key === 't') return 'toggle-command-palette'
-  if (key === ',') return 'open-settings'
-  if (key === 'o') return 'zoom-to-fit-all'
-  if (key === 'w') return 'close-window'
-  if (key === 'q') return 'quit-app'
-  if (key === 'r') return 'reload-focused'
-  if (key === '[') return 'browser-back'
-  if (key === ']') return 'browser-forward'
-  if (key === 'l') return 'open-browser-location'
-  if (key === 's') return 'toggle-title-bar-hidden'
-  if (key === 'enter') return 'snap-focused-window'
-  if (key === 'arrowleft') return 'snap-left'
-  if (key === 'arrowright') return 'snap-right'
-  if (key === 'arrowup') return 'snap-up'
-  if (key === 'arrowdown') return 'snap-down'
-  if (key === 'h') return 'snap-left'
-  if (key === 'j') return 'snap-down'
-  if (key === 'k') return 'snap-up'
-  if (key === '0') return 'zoom-to-fit-focused'
+  if (keyMatches(input, 't', 'KeyT')) return 'toggle-command-palette'
+  if (keyMatches(input, ',', 'Comma')) return 'open-settings'
+  if (keyMatches(input, 'o', 'KeyO')) return 'zoom-to-fit-all'
+  if (keyMatches(input, 'w', 'KeyW')) return 'close-window'
+  if (keyMatches(input, 'q', 'KeyQ')) return 'quit-app'
+  if (keyMatches(input, 'r', 'KeyR')) return 'reload-focused'
+  if (keyMatches(input, '[', 'BracketLeft')) return 'browser-back'
+  if (keyMatches(input, ']', 'BracketRight')) return 'browser-forward'
+  if (keyMatches(input, 'l', 'KeyL')) return 'open-browser-location'
+  if (keyMatches(input, 's', 'KeyS')) return 'toggle-title-bar-hidden'
+  if (keyMatches(input, 'enter', 'Enter') || input.code === 'NumpadEnter') {
+    return 'snap-focused-window'
+  }
+  if (keyMatches(input, 'arrowleft', 'ArrowLeft')) return 'snap-left'
+  if (keyMatches(input, 'arrowright', 'ArrowRight')) return 'snap-right'
+  if (keyMatches(input, 'arrowup', 'ArrowUp')) return 'snap-up'
+  if (keyMatches(input, 'arrowdown', 'ArrowDown')) return 'snap-down'
+  if (keyMatches(input, 'h', 'KeyH')) return 'snap-left'
+  if (keyMatches(input, 'j', 'KeyJ')) return 'snap-down'
+  if (keyMatches(input, 'k', 'KeyK')) return 'snap-up'
+  if (keyMatches(input, '0', 'Digit0') || input.code === 'Numpad0') return 'zoom-to-fit-focused'
   if (isZoomInKey(input)) return 'zoom-focused-window-in'
   if (isZoomOutKey(input)) return 'zoom-focused-window-out'
 

@@ -88,11 +88,6 @@ interface AgentChatPanelProps {
 // ../craft-agents-oss/packages/ui/src/components/chat/UserMessageBubble.tsx
 
 const EASE_OUT = [0.25, 0.46, 0.45, 0.94] as const
-// Shared-element morphs read as "one thing moving into another". Emil's
-// guidance: ease-in-out for on-screen movement (not entering/exiting),
-// <300ms, transform+opacity only. Slightly slower than the queue's
-// enter/exit so the morph reads as intentional motion, not a jank.
-const EASE_IN_OUT = [0.645, 0.045, 0.355, 1] as const
 // ease-out-quart for height-based expand/collapse — the tail settles gently
 // instead of clipping. Paired with a faster opacity fade so content is
 // legible while the container is still growing.
@@ -483,61 +478,20 @@ function ComposerAttachmentChip({ path, onRemove }: { path: string; onRemove: ()
   )
 }
 
-function UserBubble({
-  message,
-  morphLayoutId,
-  morphFromComposer,
-  onMorphComplete,
-}: {
-  message: AgentSessionMessage
-  morphLayoutId?: string
-  morphFromComposer?: boolean
-  onMorphComplete?: () => void
-}) {
-  // Deliberately tighter than Craft's bubble — the user asked for a more
-  // compact message pill than Craft's (px-4 py-2.5 text-sm with wider max-w).
+function UserBubble({ message }: { message: AgentSessionMessage }) {
   const attachments = message.attachments ?? []
   const images = attachments.filter(isImagePath)
   const others = attachments.filter((p) => !isImagePath(p))
   const hasText = message.text.trim().length > 0
   const reduceMotion = useReducedMotion()
-  const morphCompletedRef = useRef(false)
-  const onMorphCompleteRef = useRef(onMorphComplete)
-  useEffect(() => {
-    onMorphCompleteRef.current = onMorphComplete
-  })
-  const composerEntry = Boolean(morphFromComposer) && !reduceMotion
+  const animateEntry = !reduceMotion
 
-  useEffect(() => {
-    if (!morphFromComposer || !reduceMotion || morphCompletedRef.current) return
-    morphCompletedRef.current = true
-    onMorphCompleteRef.current?.()
-  }, [morphFromComposer, reduceMotion])
-
-  const handleComposerEntryComplete = () => {
-    if (!morphFromComposer || morphCompletedRef.current) return
-    morphCompletedRef.current = true
-    onMorphCompleteRef.current?.()
-  }
-
-  // Shared layout still handles queue-drain morphs. Composer sends use a
-  // fixed bottom-right slide-up because LegendList's post-send scroll makes
-  // literal rect-to-rect FLIP measurements unreliable.
-  const activeLayoutId = morphFromComposer ? undefined : morphLayoutId
   return (
     <div className="mt-8 flex w-full justify-end">
       <motion.div
-        layoutId={activeLayoutId}
-        initial={composerEntry ? { y: 24, scale: 0.98, opacity: 0 } : false}
-        animate={composerEntry ? { y: 0, scale: 1, opacity: 1 } : undefined}
-        style={composerEntry ? { transformOrigin: 'bottom right' } : undefined}
-        onAnimationComplete={composerEntry ? handleComposerEntryComplete : undefined}
-        onLayoutAnimationComplete={morphFromComposer ? undefined : onMorphComplete}
-        transition={
-          composerEntry
-            ? { duration: 0.22, ease: EASE_OUT }
-            : { layout: { duration: 0.26, ease: EASE_IN_OUT } }
-        }
+        initial={animateEntry ? { opacity: 0, filter: 'blur(8px)', y: 4 } : false}
+        animate={animateEntry ? { opacity: 1, filter: 'blur(0px)', y: 0 } : undefined}
+        transition={{ duration: 0.28, ease: EASE_OUT }}
         className="flex max-w-[78%] flex-col items-end gap-1.5 select-text"
       >
         {images.length > 0 ? (
@@ -1622,28 +1576,15 @@ function GroupRenderer({
   cwd,
   agent,
   isStreamingLastTurn,
-  userMorphLayoutId,
-  userMorphFromComposer,
-  onUserMorphComplete,
 }: {
   group: ChatGroup
   cwd?: string | null
   agent: AgentWindowNode['agent']
   isStreamingLastTurn: boolean
-  userMorphLayoutId?: string
-  userMorphFromComposer?: boolean
-  onUserMorphComplete?: () => void
 }) {
   switch (group.kind) {
     case 'user':
-      return (
-        <UserBubble
-          message={group.message}
-          morphLayoutId={userMorphLayoutId}
-          morphFromComposer={userMorphFromComposer}
-          onMorphComplete={onUserMorphComplete}
-        />
-      )
+      return <UserBubble message={group.message} />
     case 'turn':
       return (
         <AgentTurnCard
@@ -1675,31 +1616,18 @@ const MessageGroupRow = memo(
     cwd,
     agent,
     isStreamingLastTurn,
-    userMorphLayoutId,
-    userMorphFromComposer,
-    onUserMorphComplete,
   }: {
     group: ChatGroup
     cwd?: string | null
     agent: AgentWindowNode['agent']
     isStreamingLastTurn: boolean
-    userMorphLayoutId?: string
-    userMorphFromComposer?: boolean
-    onUserMorphComplete?: () => void
   }) {
     const reduceMotion = useReducedMotion()
-    // `paint` containment clips children to the wrapper's box, which hides
-    // the bubble during the shared-layout queue morph and the composer-origin
-    // slide-up. Drop containment while either morph is active — and skip the
-    // wrapper opacity fade so it doesn't compete with the bubble motion.
-    const hasMorph = Boolean(userMorphLayoutId || userMorphFromComposer)
     return (
       <motion.div
         className="min-w-0 p-[1px]"
-        style={{
-          contain: hasMorph ? 'none' : 'layout style paint',
-        }}
-        initial={reduceMotion || hasMorph ? false : { opacity: 0 }}
+        style={{ contain: 'layout style paint' }}
+        initial={reduceMotion ? false : { opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.18, ease: EASE_OUT }}
       >
@@ -1708,9 +1636,6 @@ const MessageGroupRow = memo(
           cwd={cwd}
           agent={agent}
           isStreamingLastTurn={isStreamingLastTurn}
-          userMorphLayoutId={userMorphLayoutId}
-          userMorphFromComposer={userMorphFromComposer}
-          onUserMorphComplete={onUserMorphComplete}
         />
       </motion.div>
     )
@@ -1719,10 +1644,7 @@ const MessageGroupRow = memo(
     previous.group === next.group &&
     previous.cwd === next.cwd &&
     previous.agent === next.agent &&
-    previous.isStreamingLastTurn === next.isStreamingLastTurn &&
-    previous.userMorphLayoutId === next.userMorphLayoutId &&
-    previous.userMorphFromComposer === next.userMorphFromComposer &&
-    previous.onUserMorphComplete === next.onUserMorphComplete,
+    previous.isStreamingLastTurn === next.isStreamingLastTurn,
 )
 
 export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
@@ -1805,29 +1727,6 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   // drop or drag-end.
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
-  // Morph plumbing. When a new user message appears, the bubble should appear
-  // to morph FROM the source that produced it — the queue row that just
-  // drained, or the composer pill.
-  //
-  // Two strategies, because Motion's shared-layoutId works for one but not
-  // the other:
-  //  - Queue drain: the queue row genuinely unmounts as the bubble mounts,
-  //    which is the pattern Motion supports. We share a `queue-morph-${id}`
-  //    layoutId between the exiting row and the new bubble.
-  //  - Composer send: the composer pill stays mounted, so layoutId-pairing
-  //    is unreliable. Instead the arriving bubble gets a fixed bottom-right
-  //    slide-up entrance that reads as "emerged from the composer" without
-  //    depending on LegendList's post-send scroll settling.
-  //
-  // Flow:
-  //  1. On send, enqueue a morph entry: id, predicted user-index, and source.
-  //  2. When a user message arrives at that index, `liveMorphAssignments`
-  //     binds the entry to the message id so the bubble first renders with
-  //     the right morph payload.
-  const [pendingMorphs, setPendingMorphs] = useState<
-    Array<{ id: string; userIndex: number; windowId: string; source: 'composer' | 'layout' }>
-  >([])
-  const composerMorphNonceRef = useRef(0)
   // Edge-fade state for the queue scroll area. `top` = content above the
   // viewport, `bottom` = content below. We fade each edge only when there's
   // something hidden on that side so the fade itself stays honest.
@@ -2287,45 +2186,6 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     () => visibleMessages.filter((message) => message.role === 'user').length,
     [visibleMessages],
   )
-  const userMessages = useMemo(
-    () => messages.filter((message) => message.role === 'user'),
-    [messages],
-  )
-  const enqueuePendingMorph = useCallback(
-    (id: string, source: 'composer' | 'layout' = 'layout') => {
-      setPendingMorphs((prev) => [
-        ...prev,
-        {
-          id,
-          userIndex:
-            userMessages.length + prev.filter((entry) => entry.windowId === agentWindow.id).length,
-          windowId: agentWindow.id,
-          source,
-        },
-      ])
-    },
-    [agentWindow.id, userMessages.length],
-  )
-  const liveMorphAssignments = useMemo(() => {
-    const assignments: Record<string, { id: string; source: 'composer' | 'layout' }> = {}
-    for (const morph of pendingMorphs) {
-      if (morph.windowId !== agentWindow.id) continue
-      const message = userMessages[morph.userIndex]
-      if (message) assignments[message.id] = { id: morph.id, source: morph.source }
-    }
-    return assignments
-  }, [agentWindow.id, pendingMorphs, userMessages])
-  // Clear a completed morph assignment so future sends can mint a fresh id.
-  const handleUserMorphComplete = useCallback(
-    (messageId: string) => {
-      const consumed = liveMorphAssignments[messageId]
-      if (!consumed) return
-      setPendingMorphs((prev) =>
-        prev.filter((entry) => !(entry.windowId === agentWindow.id && entry.id === consumed.id)),
-      )
-    },
-    [agentWindow.id, liveMorphAssignments],
-  )
   const inlineMention = useInlineMention({
     inputRef: textareaRef,
     cwd: visibleSnapshot?.cwd ?? agentWindow.cwd ?? null,
@@ -2599,12 +2459,6 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         return
       }
 
-      // Prime a composer-origin entry for the message this send produces.
-      // Nonce keeps ids unique across sends so an older bubble's morph id
-      // never collides with a fresh one.
-      composerMorphNonceRef.current += 1
-      const morphId = `composer-morph-${composerMorphNonceRef.current}`
-      enqueuePendingMorph(morphId, 'composer')
       // Only pull the viewport down when the user is already close to the end
       // — if they've scrolled up to reread, leave them there. The effect keyed
       // on visibleUserMessageCount will re-check the same threshold once the
@@ -2619,13 +2473,6 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       try {
         await sendToAgent(value, pinned)
       } catch (err) {
-        // Rollback the pending morph — if the send failed, the bubble will
-        // never arrive to claim it and it would incorrectly bind to the
-        // next message from a later source.
-        setPendingMorphs((prev) => {
-          const idx = prev.findIndex((entry) => entry.id === morphId)
-          return idx < 0 ? prev : [...prev.slice(0, idx), ...prev.slice(idx + 1)]
-        })
         writeComposer(value, pinned)
         console.error('[agent-chat] send failed', err)
       }
@@ -2633,7 +2480,6 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     [
       sendToAgent,
       handleStop,
-      enqueuePendingMorph,
       getQueuedMessagesSnapshot,
       inlineMention,
       setQueuedMessages,
@@ -2791,11 +2637,6 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     if (interruptMessageRef.current) {
       const next = interruptMessageRef.current
       interruptMessageRef.current = null
-      // Even though the original queue row has long since exited, priming the
-      // morph means the bubble still animates in from a sensible layout origin
-      // — Framer falls back to a fresh mount if no shared id is on-screen.
-      const interruptMorphId = `interrupt-morph-${Date.now()}`
-      queueMicrotask(() => enqueuePendingMorph(interruptMorphId))
       void sendToAgent(next.text, next.attachments, {
         model: next.model,
         thinkingLevel: next.thinkingLevel,
@@ -2803,10 +2644,6 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       })
         .catch((err) => {
           console.error('[agent-chat] interrupt send failed', err)
-          setPendingMorphs((prev) => {
-            const idx = prev.findIndex((entry) => entry.id === interruptMorphId)
-            return idx < 0 ? prev : [...prev.slice(0, idx), ...prev.slice(idx + 1)]
-          })
           interruptMessageRef.current = next
           awaitingRunningRef.current = false
         })
@@ -2821,10 +2658,6 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       return
     }
     const next = queuedMessages[0]
-    // Prime the queue→bubble morph. Same key as the exiting queue row; the
-    // bubble will claim it on arrival.
-    const queueMorphId = `queue-morph-${next.id}`
-    queueMicrotask(() => enqueuePendingMorph(queueMorphId))
     setQueuedMessages((q) => q.slice(1))
     window.cells.agentSession.notifyQueuedStart(agentWindow.id)
     void sendToAgent(next.text, next.attachments, {
@@ -2834,10 +2667,6 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     })
       .catch((err) => {
         console.error('[agent-chat] queued send failed', err)
-        setPendingMorphs((prev) => {
-          const idx = prev.findIndex((entry) => entry.id === queueMorphId)
-          return idx < 0 ? prev : [...prev.slice(0, idx), ...prev.slice(idx + 1)]
-        })
         // Put it back at the front so the user can retry / see it.
         setQueuedMessages((q) => [next, ...q])
         awaitingRunningRef.current = false
@@ -2847,7 +2676,6 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       })
   }, [
     agentWindow.id,
-    enqueuePendingMorph,
     queuedMessages,
     resumeGated,
     sendToAgent,
@@ -3334,42 +3162,20 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                 // depends on which turn is currently streaming, so surface that
                 // as extraData; otherwise an older turn can stay visually stuck
                 // in the "Working..." state after a newer turn becomes active.
-                // Morph assignments are folded in so a newly-claimed layoutId
-                // reaches the user bubble the first time it renders.
-                extraData={`${streamingTurnKey ?? ''}|${Object.keys(liveMorphAssignments).join(',')}`}
+                extraData={streamingTurnKey ?? ''}
                 keyExtractor={chatGroupKey}
-                renderItem={({ item }) => {
-                  const morphAssignment =
-                    item.kind === 'user' ? liveMorphAssignments[item.message.id] : undefined
-                  const userId = item.kind === 'user' ? item.message.id : null
-                  // Composer sends get a fixed entrance; queue-drain sends keep
-                  // Framer's shared layoutId because the source row unmounts.
-                  const isComposerMorph = morphAssignment?.source === 'composer'
-                  const userMorphLayoutId =
-                    !isComposerMorph && morphAssignment ? morphAssignment.id : undefined
-                  const userMorphFromComposer = isComposerMorph
-                  return (
-                    <div className="mx-auto w-full min-w-0 max-w-3xl">
-                      <div className="pb-3">
-                        <MessageGroupRow
-                          group={item}
-                          cwd={activeProjectPath ?? visibleSnapshot?.cwd ?? agentWindow.cwd ?? null}
-                          agent={agentWindow.agent}
-                          isStreamingLastTurn={
-                            item.kind === 'turn' && item.key === streamingTurnKey
-                          }
-                          userMorphLayoutId={userMorphLayoutId}
-                          userMorphFromComposer={userMorphFromComposer}
-                          onUserMorphComplete={
-                            userId && morphAssignment
-                              ? () => handleUserMorphComplete(userId)
-                              : undefined
-                          }
-                        />
-                      </div>
+                renderItem={({ item }) => (
+                  <div className="mx-auto w-full min-w-0 max-w-3xl">
+                    <div className="pb-3">
+                      <MessageGroupRow
+                        group={item}
+                        cwd={activeProjectPath ?? visibleSnapshot?.cwd ?? agentWindow.cwd ?? null}
+                        agent={agentWindow.agent}
+                        isStreamingLastTurn={item.kind === 'turn' && item.key === streamingTurnKey}
+                      />
                     </div>
-                  )
-                }}
+                  </div>
+                )}
                 estimatedItemSize={120}
                 initialScrollAtEnd
                 maintainScrollAtEnd
@@ -3589,7 +3395,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                             queuedMessages.length > 1 && 'mt-1',
                           )}
                         >
-                          <AnimatePresence initial={false} mode="popLayout">
+                          <AnimatePresence initial={false}>
                             {queuedMessages.map((entry, i) => {
                               const meta = queueModeMeta[entry.mode]
                               const modelLabel = entry.model
@@ -3606,35 +3412,14 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                               const isDragging = dragIndex === i
                               const isDropTarget =
                                 dragOverIndex === i && dragIndex !== null && dragIndex !== i
-                              // Stable per-entry id. Using content as the key would
-                              // collide when two queued messages have the same
-                              // mode+text+attachments — React would drop one and
-                              // Framer would stack the duplicate layoutIds, showing
-                              // a blank gap where the second row should be.
                               const queueKey = entry.id
-                              // `layoutId` binds this row to the user bubble that
-                              // will arrive for this exact entry. Disabled under
-                              // reduced motion so the shared-element morph never
-                              // kicks in when the user has asked for less motion.
-                              const queueMorphLayoutId = reduceMotion
-                                ? undefined
-                                : `queue-morph-${queueKey}`
                               return (
                                 <motion.div
                                   key={queueKey}
-                                  layoutId={queueMorphLayoutId}
-                                  initial={reduceMotion ? false : { opacity: 0, y: 8, scale: 0.98 }}
-                                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                                  // Exit slides UP toward the chat history. Pairs with
-                                  // the new user-message row's y:6→0 entrance so the
-                                  // queue feels like it flows into the conversation
-                                  // instead of just popping out.
-                                  exit={
-                                    reduceMotion
-                                      ? { opacity: 0 }
-                                      : { opacity: 0, y: -8, scale: 0.98 }
-                                  }
-                                  transition={{ duration: 0.22, ease: EASE_OUT }}
+                                  initial={reduceMotion ? false : { opacity: 0, y: 4 }}
+                                  animate={{ opacity: 1, y: 0 }}
+                                  exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
+                                  transition={{ duration: 0.18, ease: EASE_OUT }}
                                   draggable={!isEditing}
                                   // motion.div retypes the drag event handlers for
                                   // its own gesture system (MouseEvent | TouchEvent |
