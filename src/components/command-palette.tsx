@@ -13,7 +13,6 @@
  * calls to ensure they follow this rule.
  */
 import React, { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
-import { useHotkey } from '@tanstack/react-hotkeys'
 import {
   Globe,
   Plus,
@@ -62,6 +61,10 @@ import { Logo } from './logo'
 import { Kbd } from './ui/kbd'
 import { showToast } from './toast'
 import { hapticNudge, hapticSuccess } from '@/lib/haptics'
+import {
+  CELLS_OPEN_SETTINGS_EVENT,
+  CELLS_TOGGLE_COMMAND_PALETTE_EVENT,
+} from '@/lib/cells-shortcuts'
 import type { SavedAgentSessionSummary } from '@/types'
 
 const AGENT_OPTIONS = [
@@ -600,25 +603,41 @@ export function CommandPalette() {
     return alias && alias.length > 0 ? alias : agent
   }
 
-  const setShowSettings = (v: boolean) => {
-    setShowSettingsRaw(v)
-    setOverlayOpen(v)
-  }
-  const setShowNewProject = (v: boolean) => {
-    setShowNewProjectRaw(v)
-    setOverlayOpen(v)
-  }
+  const setShowSettings = useCallback(
+    (v: boolean) => {
+      setShowSettingsRaw(v)
+      setOverlayOpen('command-palette-settings', v)
+    },
+    [setOverlayOpen],
+  )
+  const setShowNewProject = useCallback(
+    (v: boolean) => {
+      setShowNewProjectRaw(v)
+      setOverlayOpen('command-palette-new-project', v)
+    },
+    [setOverlayOpen],
+  )
 
-  useHotkey('Mod+T', () => {
+  const togglePalette = useCallback(() => {
     setOpen((o) => {
       const next = !o
-      setOverlayOpen(next)
+      setOverlayOpen('command-palette', next)
       if (!next) setSearch('')
       hapticNudge()
       return next
     })
-  })
-  useHotkey('Mod+,', () => setShowSettings(true))
+  }, [setOverlayOpen])
+
+  useEffect(() => {
+    const handleToggle = () => togglePalette()
+    const handleOpenSettings = () => setShowSettings(true)
+    window.addEventListener(CELLS_TOGGLE_COMMAND_PALETTE_EVENT, handleToggle)
+    window.addEventListener(CELLS_OPEN_SETTINGS_EVENT, handleOpenSettings)
+    return () => {
+      window.removeEventListener(CELLS_TOGGLE_COMMAND_PALETTE_EVENT, handleToggle)
+      window.removeEventListener(CELLS_OPEN_SETTINGS_EVENT, handleOpenSettings)
+    }
+  }, [setShowSettings, togglePalette])
 
   useEffect(() => {
     if (open) {
@@ -675,7 +694,7 @@ export function CommandPalette() {
       setOpen(false)
       setSearch('')
       setAttachments([])
-      setOverlayOpen(false)
+      setOverlayOpen('command-palette', false)
       hapticSuccess()
       requestAnimationFrame(() => {
         window.dispatchEvent(new Event('terminal-refocus'))
@@ -726,7 +745,7 @@ export function CommandPalette() {
 
   const handleOpenChange = (o: boolean) => {
     setOpen(o)
-    setOverlayOpen(o)
+    setOverlayOpen('command-palette', o)
     if (!o) {
       setSearch('')
       setAttachments([])

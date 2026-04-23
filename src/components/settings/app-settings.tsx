@@ -1316,6 +1316,22 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                           }
                         />
                       </SettingsField>
+
+                      <SettingsField
+                        label="Queued message starts"
+                        hint={agentNotificationSettings.notifyOnQueuedStart ? 'On' : 'Off'}
+                      >
+                        <SettingsSwitchRow
+                          label="A queued message begins running (silent, no sound)"
+                          checked={agentNotificationSettings.notifyOnQueuedStart}
+                          disabled={!agentNotificationSettings.enabled}
+                          onToggle={() =>
+                            setAgentNotificationSettings({
+                              notifyOnQueuedStart: !agentNotificationSettings.notifyOnQueuedStart,
+                            })
+                          }
+                        />
+                      </SettingsField>
                     </div>
                   </SettingsGroup>
 
@@ -1791,12 +1807,12 @@ const SHORTCUT_GROUPS = [
     title: 'Canvas Navigation',
     shortcuts: [
       { keys: '⌘ ←/→/↑/↓', action: 'Snap to nearest window' },
-      { keys: '⌘ Enter', action: 'Snap to focused terminal' },
+      { keys: '⌘ Enter', action: 'Snap to focused window' },
       { keys: '⌘ 0', action: 'Zoom to fit focused window' },
       { keys: '⌘ ⇧ Enter', action: 'Resize focused window to fill viewport' },
       { keys: '⌘ ⇧ 0', action: 'Resize app to fit focused window' },
       { keys: '⌘ H / J / K / L', action: 'Snap to nearest window left/down/up/right' },
-      { keys: '⌘ ⇧ O', action: 'Zoom to fit all windows' },
+      { keys: '⌘ O / ⌘ ⇧ O', action: 'Zoom to fit all windows' },
       { keys: '⌃ S', action: 'Toggle selection mode' },
       { keys: 'Click + Drag', action: 'Marquee select in selection mode' },
     ],

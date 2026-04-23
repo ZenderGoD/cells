@@ -8,19 +8,8 @@ import {
   type WheelEvent,
 } from 'react'
 import { motion, useMotionValue, useSpring } from 'motion/react'
-import { useHotkey } from '@tanstack/react-hotkeys'
 import { hasPrimaryModifier, isPrimaryModifierKey } from '@/lib/keyboard-shortcuts'
 import { cn } from '@/lib/utils'
-
-function isEditableTarget(target: EventTarget | null) {
-  return (
-    target instanceof HTMLElement &&
-    (target.isContentEditable ||
-      target.tagName === 'INPUT' ||
-      target.tagName === 'TEXTAREA' ||
-      target.tagName === 'SELECT')
-  )
-}
 import { useStore } from '@/lib/store'
 import { STATUS_BAR_HEIGHT, getCanvasWindows, getViewportRect } from '@/lib/canvas-navigation'
 import {
@@ -57,7 +46,6 @@ export function InfiniteCanvas() {
     canvas,
     moveCanvasNodes,
     setCanvasTransform,
-    snapToNearest,
     snapToTerminal,
     snapToBrowser,
     snapToAgentWindow,
@@ -67,7 +55,6 @@ export function InfiniteCanvas() {
     setSnapPaused,
     reducedMotion,
     selectionMode,
-    setSelectionMode,
     selectedNodeIds,
     setSelectedNodeIds,
     focusedTerminalId,
@@ -82,7 +69,6 @@ export function InfiniteCanvas() {
       canvas: s.canvas,
       moveCanvasNodes: s.moveCanvasNodes,
       setCanvasTransform: s.setCanvasTransform,
-      snapToNearest: s.snapToNearest,
       snapToTerminal: s.snapToTerminal,
       snapToBrowser: s.snapToBrowser,
       snapToAgentWindow: s.snapToAgentWindow,
@@ -92,7 +78,6 @@ export function InfiniteCanvas() {
       setSnapPaused: s.setSnapPaused,
       reducedMotion: s.reducedMotion,
       selectionMode: s.selectionMode,
-      setSelectionMode: s.setSelectionMode,
       selectedNodeIds: s.selectedNodeIds,
       setSelectedNodeIds: s.setSelectedNodeIds,
       focusedTerminalId: s.focusedTerminalId,
@@ -673,86 +658,6 @@ export function InfiniteCanvas() {
     },
     [beginSelectionDrag, setSelectedNodeIds],
   )
-
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key.toLowerCase() !== 's' || !event.ctrlKey || event.metaKey || event.altKey) {
-        return
-      }
-
-      event.preventDefault()
-      event.stopPropagation()
-      setSelectionMode(!useStore.getState().selectionMode)
-    }
-
-    window.addEventListener('keydown', handleKeyDown, true)
-    return () => window.removeEventListener('keydown', handleKeyDown, true)
-  }, [setSelectionMode])
-
-  // Keyboard shortcuts
-  useHotkey('Mod+Enter', () => {
-    setIsUserDriving(false)
-    const terms = useStore.getState().terminals
-    if (terms.length > 0) {
-      snapToTerminal(focusedTerminalId || terms[0].id)
-    }
-  })
-  useHotkey(
-    'Mod+ArrowLeft',
-    () => {
-      if (isEditableTarget(document.activeElement)) return
-      setIsUserDriving(false)
-      snapToNearest('left')
-    },
-    { ignoreInputs: true },
-  )
-  useHotkey(
-    'Mod+ArrowRight',
-    () => {
-      if (isEditableTarget(document.activeElement)) return
-      setIsUserDriving(false)
-      snapToNearest('right')
-    },
-    { ignoreInputs: true },
-  )
-  useHotkey(
-    'Mod+ArrowUp',
-    () => {
-      if (isEditableTarget(document.activeElement)) return
-      setIsUserDriving(false)
-      snapToNearest('up')
-    },
-    { ignoreInputs: true },
-  )
-  useHotkey(
-    'Mod+ArrowDown',
-    () => {
-      if (isEditableTarget(document.activeElement)) return
-      setIsUserDriving(false)
-      snapToNearest('down')
-    },
-    { ignoreInputs: true },
-  )
-  useHotkey('Mod+0', () => {
-    setIsUserDriving(false)
-    const {
-      focusedTerminalId,
-      focusedBrowserId,
-      focusedAgentWindowId,
-      terminals,
-      browsers,
-      agentWindows,
-      zoomToFit,
-    } = useStore.getState()
-    const id =
-      focusedTerminalId ||
-      focusedBrowserId ||
-      focusedAgentWindowId ||
-      terminals[0]?.id ||
-      browsers[0]?.id ||
-      agentWindows[0]?.id
-    if (id) zoomToFit(id)
-  })
 
   // Global mouse listeners for drag/pan
   useEffect(() => {

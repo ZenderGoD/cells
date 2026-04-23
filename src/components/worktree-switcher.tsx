@@ -39,7 +39,7 @@ export function WorktreeSwitcher({ termId, className }: WorktreeSwitcherProps) {
   const handleOpenChange = useCallback(
     (next: boolean) => {
       setOpen(next)
-      setOverlayOpen(next)
+      setOverlayOpen('worktree-switcher', next)
       if (next) hapticNudge()
       if (!next) {
         setSearch('')

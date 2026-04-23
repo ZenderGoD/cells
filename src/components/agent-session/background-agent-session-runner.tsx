@@ -295,6 +295,7 @@ function BackgroundAgentSessionRunner({ agentWindow }: { agentWindow: AgentWindo
     awaitingRunningRef.current = true
     setQueuedMessages((queue) => queue.slice(1))
     useStore.getState().syncAgentWindow(agentWindow.id, { status: 'running' })
+    window.cells.agentSession.notifyQueuedStart(agentWindow.id)
     void sendToAgent(next)
       .catch((err) => {
         console.error('[background-agent-session] queued send failed', err)

@@ -125,6 +125,7 @@ interface StoreState {
   agentNotificationSettings: AgentNotificationSettings
   autoArrangeOnCreate: boolean
   overlayOpen: boolean // true when popover/dialog is open — hides browser native views
+  overlayOwners: string[]
   searchEngine: string
   homePage: string
   terminalLinkTarget: 'system' | 'browser'
@@ -285,7 +286,7 @@ interface StoreState {
   resizeFocusedToFitViewport(): void
   zoomToFitAll(): void
   exitOverview(): void
-  setOverlayOpen(open: boolean): void
+  setOverlayOpen(source: string, open: boolean): void
   dismissOnboardingGuide(): void
   openOnboardingGuide(): void
   setSearchEngine(engine: string): void
@@ -866,6 +867,7 @@ export const useStore = create<StoreState>((set, get) => ({
   agentNotificationSettings: DEFAULT_AGENT_NOTIFICATION_SETTINGS,
   autoArrangeOnCreate: false,
   overlayOpen: false,
+  overlayOwners: [],
   searchEngine: DEFAULT_SEARCH_ENGINE,
   homePage: DEFAULT_HOME_PAGE,
   terminalLinkTarget: 'system',
@@ -1092,7 +1094,7 @@ export const useStore = create<StoreState>((set, get) => ({
     // Listen for pinned windows being closed/unpinned — must register before
     // any early return so it works regardless of which state-loading branch runs.
     if (!window.cells.app.getPinnedId()) {
-      window.cells.app.onWindowUnpinned((id, type) => {
+      window.cells.app.onWindowUnpinned((id, type, snapshot) => {
         if (type === 'terminal') {
           set((s) => ({
             terminals: s.terminals.map((t) => (t.id === id ? { ...t, pinned: false } : t)),
@@ -1103,7 +1105,29 @@ export const useStore = create<StoreState>((set, get) => ({
           }))
         } else {
           set((s) => ({
-            browsers: s.browsers.map((b) => (b.id === id ? { ...b, pinned: false } : b)),
+            browsers: s.browsers.map((browser) =>
+              browser.id === id
+                ? {
+                    ...browser,
+                    pinned: false,
+                    url: snapshot?.url ?? browser.url,
+                    title: snapshot?.title ?? browser.title,
+                  }
+                : browser,
+            ),
+            projects: s.projects.map((project) => ({
+              ...project,
+              browsers: (project.browsers ?? []).map((browser) =>
+                browser.id === id
+                  ? {
+                      ...browser,
+                      pinned: false,
+                      url: snapshot?.url ?? browser.url,
+                      title: snapshot?.title ?? browser.title,
+                    }
+                  : browser,
+              ),
+            })),
           }))
         }
         get().persist()
@@ -2362,7 +2386,8 @@ export const useStore = create<StoreState>((set, get) => ({
       const bounds = { x: screenX, y: screenY, width: node.width, height: node.height }
       applyPinned(true)
       const browserUrl = kind === 'browser' ? (node as any).url : undefined
-      void window.cells.app.pinWindow(id, kind, bounds, browserUrl)
+      const browserProjectId = kind === 'browser' ? get().activeProjectId : undefined
+      void window.cells.app.pinWindow(id, kind, bounds, browserUrl, browserProjectId)
     }
     get().persist()
   },
@@ -3061,19 +3086,29 @@ export const useStore = create<StoreState>((set, get) => ({
     debouncedPersist(() => get().persist())
   },
 
-  setOverlayOpen(open) {
-    set({ overlayOpen: open })
+  setOverlayOpen(source, open) {
+    set((state) => {
+      const overlayOwners = open
+        ? state.overlayOwners.includes(source)
+          ? state.overlayOwners
+          : [...state.overlayOwners, source]
+        : state.overlayOwners.filter((entry) => entry !== source)
+      return {
+        overlayOwners,
+        overlayOpen: overlayOwners.length > 0,
+      }
+    })
   },
 
   dismissOnboardingGuide() {
     set({ hasSeenOnboardingGuide: true, showOnboardingGuide: false })
-    get().setOverlayOpen(false)
+    get().setOverlayOpen('onboarding-guide', false)
     get().persist()
   },
 
   openOnboardingGuide() {
     set({ showOnboardingGuide: true })
-    get().setOverlayOpen(true)
+    get().setOverlayOpen('onboarding-guide', true)
   },
 
   setSearchEngine(engine) {

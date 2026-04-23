@@ -16,6 +16,7 @@ function detectPlatform() {
 export function isMacPlatform(platform = detectPlatform()) {
   const normalized = platform.trim().toLowerCase()
   return (
+    normalized === 'darwin' ||
     normalized.includes('mac') ||
     normalized.includes('iphone') ||
     normalized.includes('ipad') ||
@@ -37,4 +38,11 @@ export function getPrimaryModifierLabel(platform = detectPlatform()) {
 
 export function getAltModifierLabel(platform = detectPlatform()) {
   return isMacPlatform(platform) ? '⌥' : 'Alt'
+}
+
+export function isEditableTarget(target: EventTarget | null) {
+  if (!(target instanceof Element)) return false
+  return Boolean(
+    target.closest('input, textarea, select, [contenteditable="true"], [role="textbox"]'),
+  )
 }

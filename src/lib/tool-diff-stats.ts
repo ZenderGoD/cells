@@ -77,6 +77,34 @@ function countLines(text: string): number {
   return text.split('\n').length
 }
 
+// Cap matches `MAX_DIFF_LINES` in session-diffs-panel — keeps LCS from hanging
+// on pathologically large replacements. Past the cap we fall back to "all new
+// lines are additions, all old lines are deletions", which matches the naive
+// `countLines(old) + countLines(new)` behavior.
+const MAX_LCS_LINES = 300
+
+/** LCS-based add/del counts for a single Edit op. Unlike `countLines`, this
+ *  only counts the lines that actually changed — shared context lines inside
+ *  `old_string`/`new_string` don't inflate the totals. */
+function lcsLineCounts(oldStr: string, newStr: string): { additions: number; deletions: number } {
+  if (!oldStr && !newStr) return { additions: 0, deletions: 0 }
+  if (!oldStr) return { additions: countLines(newStr), deletions: 0 }
+  if (!newStr) return { additions: 0, deletions: countLines(oldStr) }
+  const a = oldStr.split('\n')
+  const b = newStr.split('\n')
+  const m = a.length
+  const n = b.length
+  if (m + n > MAX_LCS_LINES) return { additions: n, deletions: m }
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0))
+  for (let i = 1; i <= m; i += 1) {
+    for (let j = 1; j <= n; j += 1) {
+      dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] + 1 : Math.max(dp[i - 1][j], dp[i][j - 1])
+    }
+  }
+  const lcs = dp[m][n]
+  return { additions: n - lcs, deletions: m - lcs }
+}
+
 function normalizeDiffPath(text: string): string | null {
   const trimmed = text.trim()
   if (!trimmed) return null
@@ -296,10 +324,10 @@ function parseFileChangeStats(message: AgentSessionMessage): FileDiffStats[] {
 }
 
 /** Compute {additions, deletions} from an Edit/Write/MultiEdit tool input.
- *  Returns null for non-edit tools or unparseable inputs. Uses a simple
- *  line-count heuristic: additions = lines in new_string, deletions = lines
- *  in old_string. MultiEdit sums over the `edits[]` array. Write treats the
- *  whole content as additions. */
+ *  Returns null for non-edit tools or unparseable inputs. For Edit/MultiEdit
+ *  we run LCS over old/new so context lines the agent had to repeat for
+ *  matching aren't counted as changes. Write/NotebookEdit have no baseline
+ *  available, so they treat the whole new content as additions. */
 export function computeEditWriteDiffStats(
   toolName: string,
   input: Record<string, unknown> | null,
@@ -316,7 +344,7 @@ export function computeEditWriteDiffStats(
   if (title === 'Edit') {
     const oldStr = typeof input.old_string === 'string' ? input.old_string : ''
     const newStr = typeof input.new_string === 'string' ? input.new_string : ''
-    return { additions: countLines(newStr), deletions: countLines(oldStr) }
+    return lcsLineCounts(oldStr, newStr)
   }
 
   if (title === 'MultiEdit') {
@@ -327,8 +355,9 @@ export function computeEditWriteDiffStats(
       const edit = (raw ?? {}) as Record<string, unknown>
       const oldStr = typeof edit.old_string === 'string' ? edit.old_string : ''
       const newStr = typeof edit.new_string === 'string' ? edit.new_string : ''
-      additions += countLines(newStr)
-      deletions += countLines(oldStr)
+      const counts = lcsLineCounts(oldStr, newStr)
+      additions += counts.additions
+      deletions += counts.deletions
     }
     return { additions, deletions }
   }
@@ -361,10 +390,43 @@ export function diffStatsFromMessage(message: AgentSessionMessage): DiffStats | 
   return computed
 }
 
+// Codex emits `turn/diff/updated` repeatedly within a turn, each carrying a
+// cumulative-for-turn unified diff. When that turn also produces multiple
+// `fileChange` items, every item ends up holding a snapshot of the cumulative
+// diff at the time it completed — naively summing those would count the same
+// changed lines once per fileChange item. Keep only the newest File changes
+// message per turn so per-turn cumulative is counted once.
+const CODEX_TURN_PREFIX_RE = /^(t\d+)-/
+
+function dedupeCodexTurnFileChanges(messages: AgentSessionMessage[]): AgentSessionMessage[] {
+  const latestByTurn = new Map<string, AgentSessionMessage>()
+  for (const message of messages) {
+    if (message.role !== 'tool' || message.title !== FILE_CHANGE_TOOL) continue
+    const match = CODEX_TURN_PREFIX_RE.exec(message.id)
+    if (!match) continue
+    const turnKey = match[1]
+    const existing = latestByTurn.get(turnKey)
+    const candidateTime = message.updatedAt ?? 0
+    const existingTime = existing?.updatedAt ?? 0
+    if (!existing || candidateTime >= existingTime) {
+      latestByTurn.set(turnKey, message)
+    }
+  }
+  if (latestByTurn.size === 0) return messages
+  const keepIds = new Set<string>()
+  for (const message of latestByTurn.values()) keepIds.add(message.id)
+  return messages.filter((message) => {
+    if (message.role !== 'tool' || message.title !== FILE_CHANGE_TOOL) return true
+    const match = CODEX_TURN_PREFIX_RE.exec(message.id)
+    if (!match) return true
+    return keepIds.has(message.id)
+  })
+}
+
 /** Sum {additions, deletions} across a list of tool messages. */
 export function sumDiffStats(messages: AgentSessionMessage[]): DiffStats {
   const total: DiffStats = { additions: 0, deletions: 0, changedFiles: 0 }
-  for (const message of messages) {
+  for (const message of dedupeCodexTurnFileChanges(messages)) {
     const stats = diffStatsFromMessage(message)
     if (!stats) continue
     total.additions += stats.additions
@@ -378,7 +440,7 @@ export function sumDiffStats(messages: AgentSessionMessage[]): DiffStats {
  *  diffs side panel to render one entry per touched file. */
 export function groupDiffsByFile(messages: AgentSessionMessage[]): FileDiffStats[] {
   const byPath = new Map<string, FileDiffStats>()
-  for (const message of messages) {
+  for (const message of dedupeCodexTurnFileChanges(messages)) {
     if (message.role !== 'tool' || !message.title) continue
     if (message.title === FILE_CHANGE_TOOL) {
       const patchesByPath = candidateHasLikelyDiff(message.metadata ?? '')

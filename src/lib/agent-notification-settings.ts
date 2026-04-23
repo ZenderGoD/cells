@@ -7,6 +7,7 @@ export const DEFAULT_AGENT_NOTIFICATION_SETTINGS: AgentNotificationSettings = {
   notifyOnDone: true,
   notifyOnAttention: true,
   notifyOnError: true,
+  notifyOnQueuedStart: true,
 }
 
 export function normalizeAgentNotificationSettings(
@@ -21,5 +22,7 @@ export function normalizeAgentNotificationSettings(
     notifyOnAttention:
       value?.notifyOnAttention ?? DEFAULT_AGENT_NOTIFICATION_SETTINGS.notifyOnAttention,
     notifyOnError: value?.notifyOnError ?? DEFAULT_AGENT_NOTIFICATION_SETTINGS.notifyOnError,
+    notifyOnQueuedStart:
+      value?.notifyOnQueuedStart ?? DEFAULT_AGENT_NOTIFICATION_SETTINGS.notifyOnQueuedStart,
   }
 }

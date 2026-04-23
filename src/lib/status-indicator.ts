@@ -9,6 +9,27 @@ import type {
 
 export type ProjectAttention = 'approval' | 'error' | 'waiting' | 'working' | 'done' | null
 
+/** Per-window activity surfaced on a project tab as a colored stripe.
+ *  Derived from each terminal's runtime status and each agent window's status
+ *  so both kinds of sessions contribute equally. Ordered by priority (see
+ *  `getProjectWindowActivities`) so "needs attention" items lead. */
+export type WindowActivityKind =
+  | 'approval'
+  | 'input'
+  | 'error'
+  | 'plan'
+  | 'waiting'
+  | 'unread-done'
+  | 'working'
+  | 'running-process'
+
+export interface ProjectWindowActivity {
+  key: string
+  source: 'terminal' | 'agent'
+  kind: WindowActivityKind
+  updatedAt: number
+}
+
 export interface StatusPresentation {
   ringClass: string
   dotClass: string
@@ -336,6 +357,116 @@ export function getStatusPresentation(
         projectAttention: attention,
       }
   }
+}
+
+const ACTIVITY_PRIORITY: Record<WindowActivityKind, number> = {
+  approval: 80,
+  input: 70,
+  error: 60,
+  plan: 50,
+  waiting: 40,
+  'unread-done': 30,
+  working: 20,
+  'running-process': 10,
+}
+
+function terminalActivityKind(terminal: {
+  runtimeStatus?: TerminalRuntimeStatus | null
+  agent?: AgentName | null
+  agentStatus?: AgentStatus | undefined
+  processRunning?: boolean | undefined
+}): WindowActivityKind | null {
+  const resolved = legacyToRuntimeStatus(terminal.runtimeStatus, terminal)
+  if (!resolved) return null
+  if (resolved.kind === 'process') return 'running-process'
+  if (resolved.kind !== 'agent') return null
+  if (resolved.source === 'fallback:agent-brand') return null
+  switch (resolved.state) {
+    case 'approval':
+      return 'approval'
+    case 'error':
+      return 'error'
+    case 'waiting':
+      return 'waiting'
+    case 'working':
+      return 'working'
+    case 'done':
+      return 'unread-done'
+    default:
+      return null
+  }
+}
+
+function agentWindowActivityKind(window: {
+  status?: AgentWindowStatus
+  hasUnviewedCompletion?: boolean
+}): WindowActivityKind | null {
+  switch (window.status) {
+    case 'awaiting-approval':
+      return 'approval'
+    case 'awaiting-input':
+      return 'input'
+    case 'error':
+      return 'error'
+    case 'plan-ready':
+      return 'plan'
+    case 'running':
+      return 'working'
+    case 'idle':
+    case undefined:
+      return window.hasUnviewedCompletion ? 'unread-done' : null
+    default:
+      return null
+  }
+}
+
+export function getProjectWindowActivities(
+  terminals: Array<{
+    id: string
+    runtimeStatus?: TerminalRuntimeStatus | null
+    agent?: AgentName | null
+    agentStatus?: AgentStatus | undefined
+    processRunning?: boolean | undefined
+  }>,
+  agentWindows: Array<{
+    id: string
+    status?: AgentWindowStatus
+    hasUnviewedCompletion?: boolean
+  }>,
+  options: { limit?: number } = {},
+): ProjectWindowActivity[] {
+  const items: ProjectWindowActivity[] = []
+
+  for (const terminal of terminals) {
+    const kind = terminalActivityKind(terminal)
+    if (!kind) continue
+    items.push({
+      key: `t:${terminal.id}`,
+      source: 'terminal',
+      kind,
+      updatedAt: terminal.runtimeStatus?.updatedAt ?? 0,
+    })
+  }
+
+  for (const window of agentWindows) {
+    const kind = agentWindowActivityKind(window)
+    if (!kind) continue
+    items.push({
+      key: `a:${window.id}`,
+      source: 'agent',
+      kind,
+      updatedAt: 0,
+    })
+  }
+
+  items.sort((a, b) => {
+    const dp = ACTIVITY_PRIORITY[b.kind] - ACTIVITY_PRIORITY[a.kind]
+    if (dp !== 0) return dp
+    return b.updatedAt - a.updatedAt
+  })
+
+  const limit = options.limit ?? 8
+  return items.slice(0, limit)
 }
 
 export function getProjectRuntimeAttention(

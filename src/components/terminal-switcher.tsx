@@ -51,7 +51,7 @@ export function TerminalSwitcher() {
     (v: boolean) => {
       openRef.current = v
       setOpenRaw(v)
-      setOverlayOpen(v)
+      setOverlayOpen('terminal-switcher', v)
     },
     [setOverlayOpen],
   )

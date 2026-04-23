@@ -115,8 +115,10 @@ const api: CellsAPI = {
     destroy: (browserId: string) => ipcRenderer.invoke('browser:destroy', browserId),
     park: (browserId: string) => ipcRenderer.invoke('browser:park', browserId),
     getHistory: (browserId: string) => ipcRenderer.invoke('browser:get-history', browserId),
+    getState: (browserId: string) => ipcRenderer.invoke('browser:get-state', browserId),
     navigate: (browserId: string, url: string, searchEngineUrl?: string) =>
       ipcRenderer.invoke('browser:navigate', browserId, url, searchEngineUrl),
+    focus: (browserId: string) => ipcRenderer.send('browser:focus', browserId),
     goBack: (browserId: string) => ipcRenderer.send('browser:go-back', browserId),
     goForward: (browserId: string) => ipcRenderer.send('browser:go-forward', browserId),
     reload: (browserId: string) => ipcRenderer.send('browser:reload', browserId),
@@ -165,17 +167,35 @@ const api: CellsAPI = {
       ipcRenderer.on('browser:new-window', handler)
       return () => ipcRenderer.removeListener('browser:new-window', handler)
     },
-    onThemeColor: (callback: (browserId: string, color: string) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, browserId: string, color: string) =>
-        callback(browserId, color)
+    onThemeColor: (callback: (browserId: string, color: string | null) => void) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        browserId: string,
+        color: string | null,
+      ) => callback(browserId, color)
       ipcRenderer.on('browser:theme-color', handler)
       return () => ipcRenderer.removeListener('browser:theme-color', handler)
     },
-    onFaviconUpdated: (callback: (browserId: string, faviconUrl: string) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, browserId: string, faviconUrl: string) =>
-        callback(browserId, faviconUrl)
+    onFaviconUpdated: (callback: (browserId: string, faviconUrl: string | null) => void) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        browserId: string,
+        faviconUrl: string | null,
+      ) => callback(browserId, faviconUrl)
       ipcRenderer.on('browser:favicon-updated', handler)
       return () => ipcRenderer.removeListener('browser:favicon-updated', handler)
+    },
+    onLoadFailed: (callback: (browserId: string, failure: any) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, browserId: string, failure: any) =>
+        callback(browserId, failure)
+      ipcRenderer.on('browser:load-failed', handler)
+      return () => ipcRenderer.removeListener('browser:load-failed', handler)
+    },
+    onRenderGone: (callback: (browserId: string, failure: any) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, browserId: string, failure: any) =>
+        callback(browserId, failure)
+      ipcRenderer.on('browser:render-gone', handler)
+      return () => ipcRenderer.removeListener('browser:render-gone', handler)
     },
     getAllHistory: () =>
       ipcRenderer.invoke('browser:get-all-history') as Promise<Record<
@@ -266,6 +286,11 @@ const api: CellsAPI = {
       ipcRenderer.on('app:close-terminal', handler)
       return () => ipcRenderer.removeListener('app:close-terminal', handler)
     },
+    onShortcut: (callback: (payload: any) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, payload: any) => callback(payload)
+      ipcRenderer.on('app:shortcut', handler)
+      return () => ipcRenderer.removeListener('app:shortcut', handler)
+    },
     toggleMaximize: () => ipcRenderer.invoke('app:toggle-maximize'),
     resizeToFit: (width: number, height: number) =>
       ipcRenderer.invoke('app:resize-to-fit', width, height),
@@ -313,11 +338,22 @@ const api: CellsAPI = {
       type: string,
       bounds: { x: number; y: number; width: number; height: number },
       browserUrl?: string,
-    ) => ipcRenderer.invoke('app:pin-window', id, type, bounds, browserUrl),
+      browserProjectId?: string | null,
+    ) => ipcRenderer.invoke('app:pin-window', id, type, bounds, browserUrl, browserProjectId),
     unpinWindow: (id: string) => ipcRenderer.invoke('app:unpin-window', id),
-    onWindowUnpinned: (callback: (id: string, type: string) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, id: string, type: string) =>
-        callback(id, type)
+    onWindowUnpinned: (
+      callback: (
+        id: string,
+        type: string,
+        snapshot?: { url?: string | null; title?: string | null } | null,
+      ) => void,
+    ) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        id: string,
+        type: string,
+        snapshot?: { url?: string | null; title?: string | null } | null,
+      ) => callback(id, type, snapshot)
       ipcRenderer.on('app:window-unpinned', handler)
       return () => ipcRenderer.removeListener('app:window-unpinned', handler)
     },
@@ -373,6 +409,12 @@ const api: CellsAPI = {
     ) => ipcRenderer.invoke('agent-session:send', windowId, input, attachments, overrides),
     close: (windowId: string) => ipcRenderer.invoke('agent-session:close', windowId),
     dispose: (windowId: string) => ipcRenderer.invoke('agent-session:dispose', windowId),
+    reportQueueCount: (windowId: string, count: number) => {
+      ipcRenderer.send('agent-session:report-queue-count', windowId, count)
+    },
+    notifyQueuedStart: (windowId: string) => {
+      ipcRenderer.send('agent-session:notify-queued-start', windowId)
+    },
     getAuth: (agent: 'claude' | 'codex') =>
       ipcRenderer.invoke('agent-session:get-auth', agent) as Promise<{
         agent: 'claude' | 'codex'

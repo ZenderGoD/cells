@@ -4,6 +4,7 @@ import { cn } from '@/lib/utils'
 import { getCanvasBounds, type CanvasRect, type CanvasWindow } from '@/lib/canvas-navigation'
 import { AgentIcon } from '@/components/agent-icon'
 import { getAgentWindowStatusPresentation, getStatusPresentation } from '@/lib/status-indicator'
+import { getAgentWindowColor } from '@/lib/agent-window-colors'
 
 interface WindowOverviewMapProps {
   windows: CanvasWindow[]
@@ -206,6 +207,8 @@ export function WindowOverviewMap({
                 })
               : null
           const isAgent = window.type === 'agent'
+          const agentColor = isAgent ? getAgentWindowColor(window.color) : null
+          const hasAgentColor = !!agentColor && agentColor.id !== 'none'
           const statusClass = isAgent
             ? (agentWindowStatus?.ringClass ?? '')
             : runtimeStatus.ringClass
@@ -217,6 +220,23 @@ export function WindowOverviewMap({
           const statusDotClass = minDim >= 14 ? 'size-2' : 'size-1.5'
           const agentPillHeight = minDim >= 20 ? 'h-[2px]' : 'h-px'
           const agentPillWidth = minDim >= 20 ? 'w-3' : 'w-2'
+          // Top accent bar (agent color). Skips on the smallest rectangles
+          // where a 2px bar starts crowding the icon — border tint still
+          // carries the signal there.
+          const canShowColorBar = hasAgentColor && minDim >= 10
+          // When the rectangle is current (inverted, filled), its own
+          // foreground fill sits over the top border; hide the color bar to
+          // avoid a muddy overlap with the inverted chrome.
+          const showColorBar = canShowColorBar && !isCurrent
+          // Swap the default neutral border for the agent's color tint when
+          // the rectangle isn't already visually claimed by current/focused
+          // chrome. Mirrors the real window's focused/unfocused border tint.
+          const colorBorderOverride =
+            hasAgentColor && !isCurrent && !isFocused
+              ? agentColor.unfocusedBorderClass
+              : hasAgentColor && isFocused && !isCurrent
+                ? agentColor.focusedBorderClass
+                : ''
           const sharedClassName = cn(
             'absolute flex items-center justify-center border transition-[transform,background-color,border-color,opacity,box-shadow] duration-150',
             (onSelect || canDrag) && 'hover:scale-[1.04]',
@@ -229,8 +249,18 @@ export function WindowOverviewMap({
               : isFocused
                 ? 'z-[9] border-white/70 bg-white/16 shadow-[0_0_0_1px_rgba(255,255,255,0.12)]'
                 : 'hover:border-foreground/45',
+            colorBorderOverride,
             statusClass,
           )
+          const colorBar = showColorBar ? (
+            <span
+              className={cn(
+                'pointer-events-none absolute top-[2px] left-1/2 -translate-x-1/2 rounded-full',
+                minDim >= 14 ? 'h-[2px] w-[60%]' : 'h-px w-[55%]',
+                agentColor.accentBarClass,
+              )}
+            />
+          ) : null
 
           if (onSelect || canDrag) {
             return (
@@ -242,9 +272,10 @@ export function WindowOverviewMap({
                 onPointerDown={canDrag ? (e) => handlePointerDown(e, window) : undefined}
                 onPointerMove={canDrag ? (e) => handlePointerMove(e, window) : undefined}
                 onPointerUp={canDrag ? (e) => handlePointerUp(e, window) : undefined}
-                title={`${window.type === 'browser' ? 'Browser' : window.agent ? `Agent (${window.agent})` : 'Terminal'}: ${window.title}${statusTitle ? ` — ${statusTitle}` : ''}`}
+                title={`${window.type === 'browser' ? 'Browser' : window.agent ? `Agent (${window.agent})` : 'Terminal'}: ${window.title}${hasAgentColor ? ` · ${agentColor.label}` : ''}${statusTitle ? ` — ${statusTitle}` : ''}`}
               >
                 {canShowIcon && <WindowIcon window={window} iconSize={iconSize} />}
+                {colorBar}
                 {indicatorDotClass ? (
                   <span
                     className={cn(
@@ -280,6 +311,7 @@ export function WindowOverviewMap({
           return (
             <div key={window.id} className={sharedClassName} style={rectStyle}>
               {canShowIcon && <WindowIcon window={window} iconSize={iconSize} />}
+              {colorBar}
               {indicatorDotClass ? (
                 <span
                   className={cn(

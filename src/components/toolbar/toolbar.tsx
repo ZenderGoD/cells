@@ -1,5 +1,4 @@
 import { useRef, useState, useEffect, useCallback, type KeyboardEvent } from 'react'
-import { useHotkey } from '@tanstack/react-hotkeys'
 import {
   ArrowLeft,
   ArrowRight,
@@ -48,13 +47,43 @@ import { AgentIcon } from '../agent-icon'
 import { AgentWindowColorPicker } from './agent-window-color-picker'
 import { inferAgentFromTitle } from '@/lib/agent-command'
 import { hapticNudge, hapticSuccess, hapticBuzz } from '@/lib/haptics'
+import {
+  CELLS_COPY_BROWSER_URL_EVENT,
+  CELLS_OPEN_BROWSER_LOCATION_EVENT,
+} from '@/lib/cells-shortcuts'
 import { getPrimaryModifierLabel, isMacPlatform } from '@/lib/keyboard-shortcuts'
 import {
   getAgentWindowStatusPresentation,
   getProjectRuntimeAttention,
+  getProjectWindowActivities,
   getStatusPresentation,
   type ProjectAttention,
+  type ProjectWindowActivity,
+  type WindowActivityKind,
 } from '@/lib/status-indicator'
+
+function stripeClass(kind: WindowActivityKind): string {
+  switch (kind) {
+    case 'approval':
+      return 'bg-amber-400 motion-safe:animate-pulse'
+    case 'input':
+      return 'bg-indigo-400 motion-safe:animate-pulse'
+    case 'error':
+      return 'bg-rose-400'
+    case 'plan':
+      return 'bg-violet-400'
+    case 'waiting':
+      return 'bg-sky-400'
+    case 'unread-done':
+      return 'bg-emerald-400'
+    case 'working':
+      return 'bg-sky-400/90 motion-safe:animate-pulse'
+    case 'running-process':
+      return 'bg-white/40'
+    default:
+      return 'bg-muted-foreground/30'
+  }
+}
 
 const EASE_OUT = [0.25, 0.46, 0.45, 0.94] as const
 const EASE_IN_OUT = [0.645, 0.045, 0.355, 1] as const
@@ -129,6 +158,7 @@ function ProjectTab({
   moveBrowser,
   moveAgentWindow,
   attention,
+  activities,
 }: {
   project: { id: string; name: string; hiddenFromTitleBar?: boolean }
   isActive: boolean
@@ -149,6 +179,7 @@ function ProjectTab({
   moveBrowser: (id: string, x: number, y: number) => void
   moveAgentWindow: (id: string, x: number, y: number) => void
   attention: ProjectAttention
+  activities: ProjectWindowActivity[]
 }) {
   const reduceMotion = useReducedMotion()
   const dragControls = useDragControls()
@@ -210,7 +241,7 @@ function ProjectTab({
           dragControls.start(event)
         }}
         className={cn(
-          'flex h-full items-center gap-2 px-4 transition-colors cursor-grab active:cursor-grabbing',
+          'relative flex h-full items-center gap-2 px-4 transition-colors cursor-grab active:cursor-grabbing',
           isActive
             ? 'text-foreground bg-white/40 dark:bg-black/35'
             : 'text-muted-foreground/50 hover:text-muted-foreground hover:bg-white/15 dark:hover:bg-muted/30',
@@ -228,7 +259,7 @@ function ProjectTab({
             {projectWindowCount}
           </span>
         )}
-        {!isActive && attention && (
+        {!isActive && activities.length === 0 && attention && (
           <span
             className={cn(
               'size-1.5 shrink-0 rounded-full',
@@ -240,6 +271,19 @@ function ProjectTab({
             )}
           />
         )}
+        {!isActive && activities.length > 0 ? (
+          <span
+            aria-hidden
+            className="pointer-events-none absolute inset-x-3 bottom-[3px] flex items-center justify-center gap-[3px]"
+          >
+            {activities.map((activity) => (
+              <span
+                key={activity.key}
+                className={cn('h-[2px] w-[10px] rounded-full', stripeClass(activity.kind))}
+              />
+            ))}
+          </span>
+        ) : null}
       </button>
       {menuOpen ? (
         <div className="absolute right-1 top-[calc(100%+4px)] z-20 min-w-36 rounded-lg border border-border/40 bg-popover/95 p-1 shadow-md backdrop-blur no-drag">
@@ -420,12 +464,12 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
   const [showNewProject, setShowNewProjectRaw] = useState(false)
   const setShowSettings = (v: boolean) => {
     setShowSettingsRaw(v)
-    setOverlayOpen(v)
+    setOverlayOpen('toolbar-settings', v)
     if (!v) requestAnimationFrame(() => window.dispatchEvent(new Event('terminal-refocus')))
   }
   const setShowNewProject = (v: boolean) => {
     setShowNewProjectRaw(v)
-    setOverlayOpen(v)
+    setOverlayOpen('toolbar-new-project', v)
     if (!v) requestAnimationFrame(() => window.dispatchEvent(new Event('terminal-refocus')))
   }
   const [plusOpen, setPlusOpen] = useState(false)
@@ -534,26 +578,15 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
       })
       reorderProjects(mergedIds)
     },
-    [activeProjectId, projects, reorderProjects, visibleProjects],
+    [activeProjectId, projects, reorderProjects],
   )
 
-  const openUrlBar = () => {
+  const openUrlBar = useCallback(() => {
     setUrlInput(focusedBrowser?.url ?? '')
     setUrlBarFocused(true)
-  }
+  }, [focusedBrowser?.url])
 
-  // Cmd+L focuses the URL bar when a browser is focused. Skipped for the
-  // embedded copy inside the command palette — the main bar already owns
-  // these shortcuts, and double-registration would fire handlers twice.
-  useHotkey('Mod+L', () => {
-    if (embedded) return
-    if (focusedBrowserId) {
-      openUrlBar()
-    }
-  })
-
-  useHotkey('Mod+Shift+C', () => {
-    if (embedded) return
+  const copyBrowserUrl = useCallback(() => {
     if (!focusedBrowser?.url) return
     navigator.clipboard
       .writeText(focusedBrowser.url)
@@ -568,7 +601,27 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
         }, 3000)
       })
       .catch(() => {})
-  })
+  }, [focusedBrowser])
+
+  useEffect(() => {
+    if (embedded) return
+
+    const handleOpenLocation = () => {
+      if (useStore.getState().focusedBrowserId) {
+        openUrlBar()
+      }
+    }
+    const handleCopyUrl = () => {
+      copyBrowserUrl()
+    }
+
+    window.addEventListener(CELLS_OPEN_BROWSER_LOCATION_EVENT, handleOpenLocation)
+    window.addEventListener(CELLS_COPY_BROWSER_URL_EVENT, handleCopyUrl)
+    return () => {
+      window.removeEventListener(CELLS_OPEN_BROWSER_LOCATION_EVENT, handleOpenLocation)
+      window.removeEventListener(CELLS_COPY_BROWSER_URL_EVENT, handleCopyUrl)
+    }
+  }, [copyBrowserUrl, embedded, openUrlBar])
 
   useEffect(() => {
     return () => {
@@ -587,6 +640,19 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
   // Listen for nav state, loading, and theme color for focused browser
   useEffect(() => {
     if (!focusedBrowserId) return
+
+    let cancelled = false
+    void window.cells.browser.getState(focusedBrowserId).then((state) => {
+      if (cancelled || !state) return
+      setBrowserUi({
+        browserId: focusedBrowserId,
+        canGoBack: state.canGoBack,
+        canGoForward: state.canGoForward,
+        isLoading: state.isLoading,
+        themeColor: state.themeColor,
+      })
+    })
+
     const unsubNav = window.cells.browser.onNavState((id, back, forward) => {
       if (id === focusedBrowserId) {
         setBrowserUi((prev) => ({
@@ -621,6 +687,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
       }
     })
     return () => {
+      cancelled = true
       unsubNav()
       unsubLoading()
       unsubTheme()
@@ -631,6 +698,11 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
     if (!url.trim() || !focusedBrowserId) return
     const searchEngine = useStore.getState().searchEngine
     window.cells.browser.navigate(focusedBrowserId, url.trim(), searchEngine)
+    setUrlBarFocused(false)
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur()
+    }
+    window.cells.browser.focus(focusedBrowserId)
   }
 
   const handleUrlKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
@@ -732,7 +804,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
               hapticNudge()
               zoomToFitAll()
             }}
-            title={`Overview (${formatShortcutLabel(primaryModifierLabel, shiftModifierLabel, 'O')})`}
+            title={`Overview (${formatShortcutLabel(primaryModifierLabel, 'O')})`}
           >
             <Logo className="w-3.5 h-3.5 text-foreground/80" />
           </button>
@@ -757,7 +829,11 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
                   (project.agentWindows?.length ?? 0)
 
               const projectTerminals = isActive ? terminals : (project.terminals ?? [])
+              const projectAgentWindows = isActive ? agentWindows : (project.agentWindows ?? [])
               const attention = getProjectRuntimeAttention(projectTerminals)
+              const activities = getProjectWindowActivities(projectTerminals, projectAgentWindows, {
+                limit: 8,
+              })
 
               return (
                 <ProjectTab
@@ -781,6 +857,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
                   moveBrowser={moveBrowser}
                   moveAgentWindow={moveAgentWindow}
                   attention={attention}
+                  activities={activities}
                 />
               )
             })}
@@ -1191,7 +1268,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
               open={plusOpen}
               onOpenChange={(open) => {
                 setPlusOpen(open)
-                setOverlayOpen(open)
+                setOverlayOpen('toolbar-plus-menu', open)
                 if (!open)
                   requestAnimationFrame(() => window.dispatchEvent(new Event('terminal-refocus')))
               }}

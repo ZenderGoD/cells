@@ -21,6 +21,7 @@ export interface CanvasWindow {
   runtimeStatus?: TerminalRuntimeStatus | null
   agentWindowStatus?: AgentWindowStatus | null
   hasUnviewedCompletion?: boolean
+  color?: import('./agent-window-colors').AgentWindowColorId | null
   faviconUrl?: string
 }
 
@@ -79,6 +80,7 @@ export function getCanvasWindows(
       agent: agentWindow.agent,
       agentWindowStatus: agentWindow.status ?? 'idle',
       hasUnviewedCompletion: agentWindow.hasUnviewedCompletion ?? false,
+      color: agentWindow.color ?? null,
     })),
   ]
 }

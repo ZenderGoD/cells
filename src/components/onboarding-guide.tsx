@@ -20,7 +20,6 @@ const SHORTCUTS = [
     shortcut: (
       <KbdGroup>
         <Kbd>⌘</Kbd>
-        <Kbd>⇧</Kbd>
         <Kbd>O</Kbd>
       </KbdGroup>
     ),

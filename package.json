@@ -1,6 +1,6 @@
 {
   "name": "cells",
-  "version": "0.1.136",
+  "version": "0.1.137",
   "private": true,
   "type": "module",
   "author": "Raj Sharma <r@raj.how>",
@@ -209,9 +209,6 @@
       "esbuild",
       "node-pty"
     ],
-    "patchedDependencies": {
-      "ghostty-web@0.4.0": "patches/ghostty-web@0.4.0.patch"
-    },
     "supportedArchitectures": {
       "os": [
         "darwin"
@@ -221,5 +218,8 @@
         "arm64"
       ]
     }
+  },
+  "patchedDependencies": {
+    "ghostty-web@0.4.0": "patches/ghostty-web@0.4.0.patch"
   }
 }

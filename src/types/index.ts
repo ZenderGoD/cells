@@ -75,6 +75,62 @@ export interface BrowserCanvasWheelGesture {
   shiftKey: boolean
 }
 
+export interface BrowserViewFailure {
+  kind: 'load-failed' | 'crashed'
+  message: string
+  code?: number | null
+  url?: string | null
+  reason?: string | null
+}
+
+export interface BrowserViewStateSnapshot {
+  url: string
+  title: string
+  canGoBack: boolean
+  canGoForward: boolean
+  isLoading: boolean
+  themeColor: string | null
+  faviconUrl: string | null
+  failure: BrowserViewFailure | null
+}
+
+export interface AppShortcutPayload {
+  command:
+    | 'toggle-command-palette'
+    | 'open-settings'
+    | 'toggle-project-switcher'
+    | 'toggle-selection-mode'
+    | 'close-window'
+    | 'restore-last-closed'
+    | 'toggle-pin-focused'
+    | 'quit-app'
+    | 'reload-focused'
+    | 'browser-back'
+    | 'browser-forward'
+    | 'open-browser-location'
+    | 'copy-browser-url'
+    | 'toggle-title-bar-hidden'
+    | 'toggle-title-bar-position'
+    | 'zoom-focused-window-in'
+    | 'zoom-focused-window-out'
+    | 'snap-focused-window'
+    | 'zoom-to-fit-focused'
+    | 'zoom-to-fit-all'
+    | 'snap-left'
+    | 'snap-right'
+    | 'snap-up'
+    | 'snap-down'
+    | 'resize-focused-to-fit-viewport'
+    | 'resize-window-to-fit-focused'
+  source: 'browser-view' | 'menu'
+  browserId?: string | null
+}
+
+export interface UnpinnedWindowSnapshot {
+  url?: string | null
+  title?: string | null
+}
+
 export interface TerminalProcessInfo {
   pid: number
   command: string
@@ -455,6 +511,7 @@ export interface AgentNotificationSettings {
   notifyOnDone: boolean
   notifyOnAttention: boolean
   notifyOnError: boolean
+  notifyOnQueuedStart: boolean
 }
 
 export interface AgentNotificationContext {
@@ -698,6 +755,12 @@ export interface CellsAPI {
     ): Promise<void>
     close(windowId: string): Promise<void>
     dispose(windowId: string): Promise<void>
+    /** Report how many messages are queued for this window so main can suppress
+     *  the "finished" notification when another queued message is about to run. */
+    reportQueueCount(windowId: string, count: number): void
+    /** Tell main that a queued message is about to start running for this window.
+     *  Main emits a silent notification if the user has that setting enabled. */
+    notifyQueuedStart(windowId: string): void
     getAuth(agent: 'claude' | 'codex'): Promise<{
       agent: 'claude' | 'codex'
       binaryPath: string | null
@@ -831,7 +894,9 @@ export interface CellsAPI {
     getHistory(
       browserId: string,
     ): Promise<{ entries: BrowserHistoryEntry[]; activeIndex: number } | null>
+    getState(browserId: string): Promise<BrowserViewStateSnapshot | null>
     navigate(browserId: string, url: string, searchEngineUrl?: string): Promise<void>
+    focus(browserId: string): void
     goBack(browserId: string): void
     goForward(browserId: string): void
     reload(browserId: string): void
@@ -849,12 +914,14 @@ export interface CellsAPI {
     ): () => void
     onLoading(callback: (browserId: string, loading: boolean) => void): () => void
     onNewWindow(callback: (browserId: string, url: string) => void): () => void
-    onFaviconUpdated(callback: (browserId: string, faviconUrl: string) => void): () => void
+    onFaviconUpdated(callback: (browserId: string, faviconUrl: string | null) => void): () => void
+    onLoadFailed(callback: (browserId: string, failure: BrowserViewFailure) => void): () => void
+    onRenderGone(callback: (browserId: string, failure: BrowserViewFailure) => void): () => void
     getAllHistory(): Promise<Record<
       string,
       { entries: Array<{ url: string; title: string }>; activeIndex: number }
     > | null>
-    onThemeColor(callback: (browserId: string, color: string) => void): () => void
+    onThemeColor(callback: (browserId: string, color: string | null) => void): () => void
     onOverscroll(
       callback: (browserId: string, progress: number, direction: string | null) => void,
     ): () => void
@@ -887,6 +954,7 @@ export interface CellsAPI {
     onDaemonDisconnected(callback: () => void): () => void
     onNewTerminal(callback: () => void): () => void
     onCloseTerminal(callback: () => void): () => void
+    onShortcut(callback: (payload: AppShortcutPayload) => void): () => void
     toggleMaximize(): Promise<void>
     resizeToFit(width: number, height: number): Promise<void>
     pinWindow(
@@ -894,9 +962,12 @@ export interface CellsAPI {
       type: string,
       bounds: { x: number; y: number; width: number; height: number },
       browserUrl?: string,
+      browserProjectId?: string | null,
     ): Promise<void>
     unpinWindow(id: string): Promise<void>
-    onWindowUnpinned(callback: (id: string, type: string) => void): () => void
+    onWindowUnpinned(
+      callback: (id: string, type: string, snapshot?: UnpinnedWindowSnapshot | null) => void,
+    ): () => void
     onWindowResized(
       callback: (id: string, type: string, width: number, height: number) => void,
     ): () => void

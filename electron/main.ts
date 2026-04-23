@@ -26,6 +26,8 @@ import { getDaemonRestartReason, type PtyDaemonVersionInfo } from './pty-daemon-
 import { PerfMonitor, type RendererPerfReport, type TerminalPerfReport } from './perf-monitor'
 import type { TerminalSessionManager } from './terminal-session-manager'
 import type {
+  AppShortcutPayload,
+  BrowserViewFailure,
   AgentNotificationContext,
   AgentNotificationSettings,
   AgentMentionSearchResult,
@@ -34,6 +36,10 @@ import type {
   ProjectsState,
   TerminalSessionBackend,
 } from '../src/types'
+import {
+  matchBrowserViewShortcut,
+  shouldFocusRendererForShortcut,
+} from '../src/lib/cells-shortcuts'
 import {
   createTerminalSessionManager,
   describeTerminalBackendRequirement,
@@ -282,6 +288,10 @@ const previousAgentSessionSnapshots = new Map<string, AgentSessionSnapshot>()
 let pendingAgentSessionFlushTimer: NodeJS.Timeout | null = null
 let cachedAgentNotificationSettings: AgentNotificationSettings | null = null
 const cachedAgentWindowProjectIds = new Map<string, string>()
+// Per-window queued-message count reported by the renderer. Used to suppress
+// the "finished" notification when another queued message is about to run —
+// the agent isn't really done, it's just between turns.
+const cachedAgentWindowQueuedCounts = new Map<string, number>()
 // Hold a strong reference to live Notification objects. Without this, the JS
 // objects can be GC'd while the OS notification is still visible, so their
 // 'click' handlers never fire and clicking the notification only triggers the
@@ -344,6 +354,7 @@ const terminalSubscriptionCounts = new Map<string, number>()
 const subscribedTerminals = new Set<string>()
 const pendingTerminalExitDetails = new Map<string, TerminalExitDetails>()
 const pinnedWindows = new Map<string, BrowserWindow>()
+const pinnedWindowTypes = new Map<string, 'terminal' | 'browser' | 'agent'>()
 
 // MessagePort per BrowserWindow for high-throughput terminal data.
 // Bypasses Electron's main IPC event loop — structured clone over a direct
@@ -367,6 +378,11 @@ let terminalBackendSupport = getTerminalBackendSupportStatus(selectedTerminalBac
 function sendCanvasZoomCommand(command: 'fit' | 'in' | 'out') {
   if (mainWindow?.isDestroyed()) return
   mainWindow?.webContents.send('app:canvas-zoom', command)
+}
+
+function sendShortcutToRenderer(payload: AppShortcutPayload) {
+  if (mainWindow?.isDestroyed()) return
+  mainWindow?.webContents.send('app:shortcut', payload)
 }
 
 function getDefaultAgentSessionTitle(agent: AgentSessionSnapshot['agent']) {
@@ -615,7 +631,8 @@ function buildAgentNotificationFromSnapshot(
     previous.status !== 'error' &&
     isAgentSessionBusy(previous) &&
     !isAgentSessionBusy(snapshot) &&
-    snapshot.status !== 'error'
+    snapshot.status !== 'error' &&
+    (cachedAgentWindowQueuedCounts.get(snapshot.windowId) ?? 0) === 0
   ) {
     return {
       title: `${label} finished`,
@@ -629,6 +646,7 @@ function buildAgentNotificationFromSnapshot(
 function clearAgentSessionNotificationState(windowId: string) {
   previousAgentSessionSnapshots.delete(windowId)
   pendingAgentSessionSnapshots.delete(windowId)
+  cachedAgentWindowQueuedCounts.delete(windowId)
 }
 
 function maybeNotifyForAgentSessionUpdate(snapshot: AgentSessionSnapshot) {
@@ -960,6 +978,29 @@ ipcMain.on('app:update-notification-context', (_event, context: AgentNotificatio
     activeProjectId: context.activeProjectId ?? null,
     focusedAgentWindowId: context.focusedAgentWindowId ?? null,
   }
+})
+
+ipcMain.on('agent-session:report-queue-count', (_event, windowId: string, count: number) => {
+  const normalized = Math.max(0, Math.trunc(Number(count) || 0))
+  if (normalized === 0) {
+    cachedAgentWindowQueuedCounts.delete(windowId)
+  } else {
+    cachedAgentWindowQueuedCounts.set(windowId, normalized)
+  }
+})
+
+ipcMain.on('agent-session:notify-queued-start', (_event, windowId: string) => {
+  const settings = getAgentNotificationSettings()
+  if (!settings.enabled || !settings.notifyOnQueuedStart) return
+  const snapshot = previousAgentSessionSnapshots.get(windowId)
+  if (!snapshot) return
+  if (!shouldDeliverAgentNotification(snapshot, settings)) return
+  const label = getSessionNotificationLabel(snapshot)
+  void showSystemNotification(`${label} started next message`, 'Running a queued message.', {
+    playSound: false,
+    focusAgentWindowId: windowId,
+    focusProjectId: getProjectIdForAgentWindow(windowId),
+  })
 })
 
 ipcMain.on('perf:renderer-sample', (_event, sample: RendererPerfReport) => {
@@ -2171,21 +2212,45 @@ ipcMain.handle('app:resize-to-fit', (_event, width: number, height: number) => {
 
 ipcMain.handle(
   'app:pin-window',
-  (
+  async (
     _event,
     id: string,
     type: string,
     bounds: { x: number; y: number; width: number; height: number },
     browserUrl?: string,
+    browserProjectId?: string | null,
   ) => {
     // Close any existing pinned window for this id
     const existing = pinnedWindows.get(id)
     if (existing && !existing.isDestroyed()) existing.close()
 
+    const browserProject =
+      type === 'browser' ? (browserProjectId ?? browserIdToProject.get(id) ?? null) : null
     const isBrowser = type === 'browser' && browserUrl
     const transparentWindow = isTransparentWindowModeEnabled()
     const needsWarmReload = !process.env.VITE_DEV_SERVER_URL && !isBrowser
     let warmReloadDone = !needsWarmReload
+
+    if (browserProject) {
+      spoofChromeUA(browserProject)
+      await ensureExtensionsLoaded(browserProject)
+    }
+
+    const browserWebPreferences = browserProject
+      ? {
+          partition: `persist:browser-${browserProject}`,
+          preload: browserPreloadPath,
+          nodeIntegration: false,
+          contextIsolation: true,
+          sandbox: true,
+          scrollBounce: true,
+          webgl: true,
+        }
+      : {
+          nodeIntegration: false,
+          contextIsolation: true,
+          webgl: true,
+        }
 
     const win = new BrowserWindow({
       width: Math.round(bounds.width),
@@ -2204,7 +2269,7 @@ ipcMain.handle(
       vibrancy: isBrowser || !transparentWindow ? undefined : 'under-window',
       visualEffectState: isBrowser || !transparentWindow ? undefined : 'active',
       webPreferences: isBrowser
-        ? { nodeIntegration: false, contextIsolation: true, webgl: true }
+        ? browserWebPreferences
         : {
             preload: path.join(__dirname, PRELOAD_FILE),
             nodeIntegration: false,
@@ -2214,28 +2279,43 @@ ipcMain.handle(
     })
 
     pinnedWindows.set(id, win)
+    pinnedWindowTypes.set(id, type as 'terminal' | 'browser' | 'agent')
     let unpinNotified = false
 
+    const notifyUnpinned = () => {
+      if (unpinNotified) return
+      unpinNotified = true
+      try {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          const currentUrl = win.webContents.getURL()
+          const snapshot =
+            type === 'browser'
+              ? {
+                  url:
+                    currentUrl && currentUrl !== 'about:blank' ? currentUrl : (browserUrl ?? null),
+                  title: win.webContents.getTitle() || null,
+                }
+              : null
+          mainWindow.webContents.send('app:window-unpinned', id, type, snapshot)
+          mainWindow.focus()
+        }
+      } catch {}
+    }
+
+    win.webContents.on('before-input-event', (event, input) => {
+      if ((input.meta || input.control) && input.key.toLowerCase() === 'w') {
+        event.preventDefault()
+        notifyUnpinned()
+        if (!win.isDestroyed()) win.close()
+      }
+    })
+
     if (isBrowser) {
-      // Browser pop-out: load the URL directly as a web page
+      // Browser pop-out: keep the same project session so cookies, extensions,
+      // and auth state stay aligned with the embedded browser.
       win.loadURL(browserUrl)
     } else {
       // Terminal pop-out: load the app renderer in pinned mode
-      win.webContents.on('before-input-event', (event, input) => {
-        if ((input.meta || input.control) && input.key.toLowerCase() === 'w') {
-          event.preventDefault()
-          if (!unpinNotified) {
-            unpinNotified = true
-            try {
-              if (mainWindow && !mainWindow.isDestroyed()) {
-                mainWindow.webContents.send('app:window-unpinned', id, type)
-                mainWindow.focus()
-              }
-            } catch {}
-          }
-          if (!win.isDestroyed()) win.close()
-        }
-      })
       win.webContents.on('did-finish-load', () => {
         if (win.isDestroyed()) return
         if (!warmReloadDone) {
@@ -2267,18 +2347,12 @@ ipcMain.handle(
     })
 
     win.on('close', () => {
-      if (unpinNotified) return
-      unpinNotified = true
-      try {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('app:window-unpinned', id, type)
-          mainWindow.focus()
-        }
-      } catch {}
+      notifyUnpinned()
     })
 
     win.on('closed', () => {
       pinnedWindows.delete(id)
+      pinnedWindowTypes.delete(id)
     })
 
     win.on('resize', () => {
@@ -2499,14 +2573,69 @@ interface SavedHistory {
 }
 const savedHistories = new Map<string, SavedHistory>()
 
+interface BrowserViewRuntimeState {
+  loading: boolean
+  themeColor: string | null
+  faviconUrl: string | null
+  failure: BrowserViewFailure | null
+  attachedToMainWindow: boolean
+  parked: boolean
+  visible: boolean
+}
+const browserViewStates = new Map<string, BrowserViewRuntimeState>()
+
 // Map browserId → the browserId so overscroll IPC from the preload can be relayed
 const webContentsIdToBrowser = new Map<number, string>()
 const browserIdToProject = new Map<string, string>()
+
+function getBrowserViewState(browserId: string): BrowserViewRuntimeState {
+  const existing = browserViewStates.get(browserId)
+  if (existing) return existing
+  const created: BrowserViewRuntimeState = {
+    loading: false,
+    themeColor: null,
+    faviconUrl: null,
+    failure: null,
+    attachedToMainWindow: false,
+    parked: false,
+    visible: false,
+  }
+  browserViewStates.set(browserId, created)
+  return created
+}
+
+function resetBrowserViewFailure(browserId: string) {
+  getBrowserViewState(browserId).failure = null
+}
+
+function attachBrowserView(browserId: string, view: WebContentsView) {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const state = getBrowserViewState(browserId)
+  if (state.attachedToMainWindow) return
+  try {
+    mainWindow.contentView.addChildView(view)
+  } catch {}
+  state.attachedToMainWindow = true
+}
+
+function detachBrowserView(browserId: string, view: WebContentsView) {
+  const state = getBrowserViewState(browserId)
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    state.attachedToMainWindow = false
+    return
+  }
+  if (!state.attachedToMainWindow) return
+  try {
+    mainWindow.contentView.removeChildView(view)
+  } catch {}
+  state.attachedToMainWindow = false
+}
 
 function setupBrowserView(browserId: string, view: WebContentsView, projectId: string) {
   if (!mainWindow) return
   webContentsIdToBrowser.set(view.webContents.id, browserId)
   browserIdToProject.set(browserId, projectId)
+  const browserState = getBrowserViewState(browserId)
 
   // Intercept app shortcuts before the WebContentsView consumes them
   view.webContents.on('before-input-event', (_e, input) => {
@@ -2530,75 +2659,26 @@ function setupBrowserView(browserId: string, view: WebContentsView, projectId: s
       return
     }
 
-    if (
-      (input.meta || input.control) &&
-      !input.alt &&
-      (input.type === 'keyDown' || input.type === 'rawKeyDown')
-    ) {
-      const key = input.key.toLowerCase()
-      const zoomIn =
-        key === '+' ||
-        key === '=' ||
-        key === 'add' ||
-        input.code === 'Equal' ||
-        input.code === 'NumpadAdd'
-      const zoomOut =
-        key === '-' ||
-        key === '_' ||
-        key === 'subtract' ||
-        input.code === 'Minus' ||
-        input.code === 'NumpadSubtract'
-      if (zoomIn || zoomOut) {
-        _e.preventDefault()
-        sendCanvasZoomCommand(zoomIn ? 'in' : 'out')
-        return
-      }
-    }
+    if (input.type !== 'keyDown' && input.type !== 'rawKeyDown') return
 
-    if (input.meta || input.control) {
-      const key = input.key.toLowerCase()
-      const shouldForwardShortcut =
-        [
-          'l',
-          'r',
-          'w',
-          't',
-          'p',
-          'q',
-          '0',
-          ',',
-          '[',
-          ']',
-          'h',
-          'j',
-          'k',
-          'arrowleft',
-          'arrowright',
-          'arrowup',
-          'arrowdown',
-        ].includes(key) ||
-        (key === 'o' && input.shift) ||
-        (key === 'c' && input.shift)
-      // Forward browser-level app shortcuts back to the renderer so they still work
-      // while the embedded page owns keyboard focus.
-      // Cmd+Shift+C is included so the renderer can copy the current URL and show
-      // inline feedback in the address bar instead of letting the page consume it.
-      if (shouldForwardShortcut) {
-        _e.preventDefault()
-        if (!mainWindow?.isDestroyed()) {
-          mainWindow?.webContents.focus()
-          mainWindow?.webContents.sendInputEvent({
-            type: input.type as 'keyDown' | 'keyUp',
-            keyCode: input.key,
-            modifiers: [
-              ...(input.meta ? ['meta' as const] : []),
-              ...(input.control ? ['control' as const] : []),
-              ...(input.shift ? ['shift' as const] : []),
-            ],
-          })
-        }
-      }
+    const command = matchBrowserViewShortcut(
+      {
+        key: input.key,
+        code: input.code,
+        metaKey: input.meta,
+        ctrlKey: input.control,
+        shiftKey: input.shift,
+        altKey: input.alt,
+      },
+      process.platform,
+    )
+    if (!command) return
+
+    _e.preventDefault()
+    if (shouldFocusRendererForShortcut(command) && !mainWindow?.isDestroyed()) {
+      mainWindow?.webContents.focus()
     }
+    sendShortcutToRenderer({ command, source: 'browser-view', browserId })
   })
 
   // Intercept new-window requests (target=_blank links, window.open)
@@ -2613,6 +2693,8 @@ function setupBrowserView(browserId: string, view: WebContentsView, projectId: s
 
   // Forward loading state
   view.webContents.on('did-start-loading', () => {
+    browserState.loading = true
+    resetBrowserViewFailure(browserId)
     try {
       if (!mainWindow?.isDestroyed()) {
         mainWindow?.webContents.send('browser:loading', browserId, true)
@@ -2620,6 +2702,7 @@ function setupBrowserView(browserId: string, view: WebContentsView, projectId: s
     } catch {}
   })
   view.webContents.on('did-stop-loading', () => {
+    browserState.loading = false
     try {
       if (!mainWindow?.isDestroyed()) {
         mainWindow?.webContents.send('browser:loading', browserId, false)
@@ -2633,13 +2716,66 @@ function setupBrowserView(browserId: string, view: WebContentsView, projectId: s
       })()`,
       )
       .then((color) => {
+        browserState.themeColor = typeof color === 'string' && color.length > 0 ? color : null
         try {
-          if (color && !mainWindow?.isDestroyed()) {
-            mainWindow?.webContents.send('browser:theme-color', browserId, color)
+          if (!mainWindow?.isDestroyed()) {
+            mainWindow?.webContents.send('browser:theme-color', browserId, browserState.themeColor)
           }
         } catch {}
       })
       .catch(() => {})
+  })
+
+  const reportLoadFailure = (
+    errorCode: number,
+    errorDescription: string,
+    validatedURL: string,
+    isMainFrame: boolean,
+  ) => {
+    if (!isMainFrame || errorCode === -3) return
+    browserState.loading = false
+    browserState.failure = {
+      kind: 'load-failed',
+      code: errorCode,
+      message: errorDescription || 'Navigation failed.',
+      url: validatedURL,
+    }
+    try {
+      if (!mainWindow?.isDestroyed()) {
+        mainWindow?.webContents.send('browser:loading', browserId, false)
+        mainWindow?.webContents.send('browser:load-failed', browserId, browserState.failure)
+      }
+    } catch {}
+  }
+
+  view.webContents.on('did-fail-load', (_event, code, description, url, isMainFrame) => {
+    reportLoadFailure(code, description, url, isMainFrame)
+  })
+  view.webContents.on(
+    'did-fail-provisional-load',
+    (_event, code, description, url, isMainFrame) => {
+      reportLoadFailure(code, description, url, isMainFrame)
+    },
+  )
+
+  view.webContents.on('render-process-gone', (_event, details) => {
+    browserState.loading = false
+    browserState.failure = {
+      kind: 'crashed',
+      reason: details.reason,
+      message:
+        details.reason === 'crashed'
+          ? 'This page crashed.'
+          : details.reason === 'killed'
+            ? 'This page was terminated.'
+            : 'The page process went away.',
+    }
+    try {
+      if (!mainWindow?.isDestroyed()) {
+        mainWindow?.webContents.send('browser:loading', browserId, false)
+        mainWindow?.webContents.send('browser:render-gone', browserId, browserState.failure)
+      }
+    } catch {}
   })
 
   // Forward title updates
@@ -2653,9 +2789,10 @@ function setupBrowserView(browserId: string, view: WebContentsView, projectId: s
 
   // Forward favicon updates
   view.webContents.on('page-favicon-updated', (_e, favicons) => {
+    browserState.faviconUrl = favicons[0] ?? null
     try {
-      if (favicons.length > 0 && !mainWindow?.isDestroyed()) {
-        mainWindow?.webContents.send('browser:favicon-updated', browserId, favicons[0])
+      if (!mainWindow?.isDestroyed()) {
+        mainWindow?.webContents.send('browser:favicon-updated', browserId, browserState.faviconUrl)
       }
     } catch {}
   })
@@ -2820,8 +2957,10 @@ ipcMain.handle(
     // If the view already exists (parked from project switch), just re-add it
     const existing = browserViews.get(browserId)
     if (existing) {
+      const browserState = getBrowserViewState(browserId)
+      browserState.parked = false
       try {
-        mainWindow.contentView.addChildView(existing)
+        attachBrowserView(browserId, existing)
       } catch {}
       existing.setBounds({ x: 0, y: 0, width: 0, height: 0 })
       // Send current nav state so the status bar updates
@@ -2851,7 +2990,10 @@ ipcMain.handle(
       },
     })
 
-    mainWindow.contentView.addChildView(view)
+    const browserState = getBrowserViewState(browserId)
+    browserState.parked = false
+    browserState.visible = false
+    attachBrowserView(browserId, view)
     view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
     view.setBorderRadius(5)
     browserViews.set(browserId, view)
@@ -2948,30 +3090,67 @@ ipcMain.handle('browser:get-history', (_event, browserId: string) => {
   }
 })
 
+ipcMain.handle('browser:get-state', async (_event, browserId: string) => {
+  const view = browserViews.get(browserId)
+  if (!view) return null
+  const runtime = getBrowserViewState(browserId)
+
+  let themeColor = runtime.themeColor
+  if (!runtime.loading && themeColor === null) {
+    try {
+      const color = await view.webContents.executeJavaScript(
+        `(function() {
+          var meta = document.querySelector('meta[name="theme-color"]');
+          return meta ? meta.getAttribute('content') : null;
+        })()`,
+      )
+      themeColor = typeof color === 'string' && color.length > 0 ? color : null
+      runtime.themeColor = themeColor
+    } catch {}
+  }
+
+  try {
+    const saved = savedHistories.get(browserId)
+    const nativeBack = view.webContents.navigationHistory.canGoBack()
+    const nativeFwd = view.webContents.navigationHistory.canGoForward()
+    return {
+      url: view.webContents.getURL(),
+      title: view.webContents.getTitle(),
+      canGoBack: nativeBack || (saved ? saved.activeIndex > 0 : false),
+      canGoForward: nativeFwd || (saved ? saved.activeIndex < saved.entries.length - 1 : false),
+      isLoading: runtime.loading,
+      themeColor,
+      faviconUrl: runtime.faviconUrl,
+      failure: runtime.failure,
+    }
+  } catch {
+    return null
+  }
+})
+
 // Park: hide the view but keep it alive (for project switching)
 ipcMain.handle('browser:park', (_event, browserId: string) => {
   const view = browserViews.get(browserId)
   if (!view) return
-  try {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.contentView.removeChildView(view)
-    }
-  } catch {}
+  const state = getBrowserViewState(browserId)
+  state.parked = true
+  state.visible = false
+  detachBrowserView(browserId, view)
 })
 
 // Destroy: permanently remove the view
 ipcMain.handle('browser:destroy', (_event, browserId: string) => {
   const view = browserViews.get(browserId)
   if (!view) return
+  detachBrowserView(browserId, view)
   try {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.contentView.removeChildView(view)
-    }
     ;(view.webContents as any).close?.()
   } catch {}
   webContentsIdToBrowser.delete(view.webContents.id)
   browserViews.delete(browserId)
+  browserIdToProject.delete(browserId)
   savedHistories.delete(browserId)
+  browserViewStates.delete(browserId)
   clearBrowserConsoleLogs(browserId)
 })
 
@@ -2982,14 +3161,28 @@ ipcMain.handle(
     if (!view) return
     // Auto-add protocol if missing
     let finalUrl = url
-    if (!/^https?:\/\//i.test(finalUrl) && !finalUrl.startsWith('about:')) {
-      if (finalUrl.includes('.') && !finalUrl.includes(' ')) {
-        finalUrl = 'https://' + finalUrl
+    if (
+      !/^(https?:\/\/|about:|file:\/\/|chrome-extension:\/\/)/i.test(finalUrl) &&
+      !finalUrl.startsWith('data:')
+    ) {
+      const hostLike = /^[^\s]+\.[^\s]+$/.test(finalUrl)
+      const localhostLike = /^(localhost|\[::1\]|127(?:\.\d{1,3}){3})(?::\d+)?(?:[/?#].*)?$/i.test(
+        finalUrl,
+      )
+      const ipv4Like = /^(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?(?:[/?#].*)?$/.test(finalUrl)
+      const localNetworkLike =
+        /^(?:10|192\.168|172\.(?:1[6-9]|2\d|3[01]))(?:\.\d{1,3}){2}(?::\d+)?(?:[/?#].*)?$/.test(
+          finalUrl,
+        )
+      if ((hostLike || localhostLike || ipv4Like) && !finalUrl.includes(' ')) {
+        const scheme = localhostLike || ipv4Like || localNetworkLike ? 'http://' : 'https://'
+        finalUrl = `${scheme}${finalUrl}`
       } else {
         const engine = searchEngineUrl || 'https://www.google.com/search?q=%s'
         finalUrl = engine.replace('%s', encodeURIComponent(finalUrl))
       }
     }
+    resetBrowserViewFailure(browserId)
     view.webContents.loadURL(finalUrl)
   },
 )
@@ -3036,6 +3229,10 @@ ipcMain.on('browser:reload', (_event, browserId: string) => {
   browserViews.get(browserId)?.webContents.reload()
 })
 
+ipcMain.on('browser:focus', (_event, browserId: string) => {
+  browserViews.get(browserId)?.webContents.focus()
+})
+
 ipcMain.on('browser:set-zoom-factor', (_event, browserId: string, factor: number) => {
   const view = browserViews.get(browserId)
   if (!view) return
@@ -3060,16 +3257,14 @@ ipcMain.on(
 ipcMain.on('browser:set-visible', (_event, browserId: string, visible: boolean) => {
   const view = browserViews.get(browserId)
   if (!view || !mainWindow) return
-  if (visible) {
-    // Re-add if not already a child
-    try {
-      mainWindow.contentView.addChildView(view)
-    } catch {}
-  } else {
-    try {
-      mainWindow.contentView.removeChildView(view)
-    } catch {}
+  const state = getBrowserViewState(browserId)
+  state.visible = visible
+  if (state.parked) {
+    if (!visible) detachBrowserView(browserId, view)
+    return
   }
+  if (visible) attachBrowserView(browserId, view)
+  else detachBrowserView(browserId, view)
 })
 
 ipcMain.on('browser:toggle-devtools', (_event, browserId: string) => {
@@ -3186,11 +3381,9 @@ ipcMain.handle('extensions:hide-popup', () => {
 })
 
 function cleanupBrowserViews() {
-  for (const [, view] of browserViews) {
+  for (const [browserId, view] of browserViews) {
     try {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.contentView.removeChildView(view)
-      }
+      detachBrowserView(browserId, view)
       ;(view.webContents as any).close?.()
     } catch {}
   }
@@ -3701,16 +3894,14 @@ app.whenReady().then(async () => {
               click: () => {
                 const focused = BrowserWindow.getFocusedWindow()
                 if (focused) {
-                  for (const [id, win] of pinnedWindows.entries()) {
+                  for (const [, win] of pinnedWindows.entries()) {
                     if (win === focused && !win.isDestroyed()) {
-                      mainWindow?.webContents.send('app:window-unpinned', id, 'terminal')
-                      mainWindow?.focus()
                       win.close()
                       return
                     }
                   }
                 }
-                mainWindow?.webContents.send('app:close-terminal')
+                sendShortcutToRenderer({ command: 'close-window', source: 'menu' })
               },
             },
           ],

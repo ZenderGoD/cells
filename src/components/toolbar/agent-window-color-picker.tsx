@@ -30,7 +30,7 @@ export function AgentWindowColorPicker({
       open={open}
       onOpenChange={(next) => {
         setOpen(next)
-        setOverlayOpen(next)
+        setOverlayOpen(`agent-window-color-picker:${agentWindowId}`, next)
       }}
     >
       <PopoverTrigger

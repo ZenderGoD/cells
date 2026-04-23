@@ -486,10 +486,12 @@ function ComposerAttachmentChip({ path, onRemove }: { path: string; onRemove: ()
 function UserBubble({
   message,
   morphLayoutId,
+  morphFromComposer,
   onMorphComplete,
 }: {
   message: AgentSessionMessage
   morphLayoutId?: string
+  morphFromComposer?: boolean
   onMorphComplete?: () => void
 }) {
   // Deliberately tighter than Craft's bubble — the user asked for a more
@@ -498,16 +500,44 @@ function UserBubble({
   const images = attachments.filter(isImagePath)
   const others = attachments.filter((p) => !isImagePath(p))
   const hasText = message.text.trim().length > 0
+  const reduceMotion = useReducedMotion()
+  const morphCompletedRef = useRef(false)
+  const onMorphCompleteRef = useRef(onMorphComplete)
+  useEffect(() => {
+    onMorphCompleteRef.current = onMorphComplete
+  })
+  const composerEntry = Boolean(morphFromComposer) && !reduceMotion
+
+  useEffect(() => {
+    if (!morphFromComposer || !reduceMotion || morphCompletedRef.current) return
+    morphCompletedRef.current = true
+    onMorphCompleteRef.current?.()
+  }, [morphFromComposer, reduceMotion])
+
+  const handleComposerEntryComplete = () => {
+    if (!morphFromComposer || morphCompletedRef.current) return
+    morphCompletedRef.current = true
+    onMorphCompleteRef.current?.()
+  }
+
+  // Shared layout still handles queue-drain morphs. Composer sends use a
+  // fixed bottom-right slide-up because LegendList's post-send scroll makes
+  // literal rect-to-rect FLIP measurements unreliable.
+  const activeLayoutId = morphFromComposer ? undefined : morphLayoutId
   return (
     <div className="mt-8 flex w-full justify-end">
       <motion.div
-        // When `morphLayoutId` is set, this bubble pairs with a matching
-        // layoutId on the composer pill or the exiting queue row. Framer
-        // morphs this element FROM the source's bounding box — transform
-        // +opacity only per Emil's animation rules.
-        layoutId={morphLayoutId}
-        onLayoutAnimationComplete={onMorphComplete}
-        transition={{ layout: { duration: 0.26, ease: EASE_IN_OUT } }}
+        layoutId={activeLayoutId}
+        initial={composerEntry ? { y: 24, scale: 0.98, opacity: 0 } : false}
+        animate={composerEntry ? { y: 0, scale: 1, opacity: 1 } : undefined}
+        style={composerEntry ? { transformOrigin: 'bottom right' } : undefined}
+        onAnimationComplete={composerEntry ? handleComposerEntryComplete : undefined}
+        onLayoutAnimationComplete={morphFromComposer ? undefined : onMorphComplete}
+        transition={
+          composerEntry
+            ? { duration: 0.22, ease: EASE_OUT }
+            : { layout: { duration: 0.26, ease: EASE_IN_OUT } }
+        }
         className="flex max-w-[78%] flex-col items-end gap-1.5 select-text"
       >
         {images.length > 0 ? (
@@ -1593,6 +1623,7 @@ function GroupRenderer({
   agent,
   isStreamingLastTurn,
   userMorphLayoutId,
+  userMorphFromComposer,
   onUserMorphComplete,
 }: {
   group: ChatGroup
@@ -1600,6 +1631,7 @@ function GroupRenderer({
   agent: AgentWindowNode['agent']
   isStreamingLastTurn: boolean
   userMorphLayoutId?: string
+  userMorphFromComposer?: boolean
   onUserMorphComplete?: () => void
 }) {
   switch (group.kind) {
@@ -1608,6 +1640,7 @@ function GroupRenderer({
         <UserBubble
           message={group.message}
           morphLayoutId={userMorphLayoutId}
+          morphFromComposer={userMorphFromComposer}
           onMorphComplete={onUserMorphComplete}
         />
       )
@@ -1643,6 +1676,7 @@ const MessageGroupRow = memo(
     agent,
     isStreamingLastTurn,
     userMorphLayoutId,
+    userMorphFromComposer,
     onUserMorphComplete,
   }: {
     group: ChatGroup
@@ -1650,20 +1684,22 @@ const MessageGroupRow = memo(
     agent: AgentWindowNode['agent']
     isStreamingLastTurn: boolean
     userMorphLayoutId?: string
+    userMorphFromComposer?: boolean
     onUserMorphComplete?: () => void
   }) {
     const reduceMotion = useReducedMotion()
-    // `contain: layout style paint` on the wrapper would confine the child's
-    // layout measurements, breaking Framer's cross-tree layoutId pairing for
-    // the shared-element morph. Disable containment while a morph is active.
-    const hasMorph = Boolean(userMorphLayoutId)
+    // `paint` containment clips children to the wrapper's box, which hides
+    // the bubble during the shared-layout queue morph and the composer-origin
+    // slide-up. Drop containment while either morph is active — and skip the
+    // wrapper opacity fade so it doesn't compete with the bubble motion.
+    const hasMorph = Boolean(userMorphLayoutId || userMorphFromComposer)
     return (
       <motion.div
         className="min-w-0 p-[1px]"
         style={{
-          contain: hasMorph ? 'style paint' : 'layout style paint',
+          contain: hasMorph ? 'none' : 'layout style paint',
         }}
-        initial={reduceMotion ? false : { opacity: 0 }}
+        initial={reduceMotion || hasMorph ? false : { opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.18, ease: EASE_OUT }}
       >
@@ -1673,6 +1709,7 @@ const MessageGroupRow = memo(
           agent={agent}
           isStreamingLastTurn={isStreamingLastTurn}
           userMorphLayoutId={userMorphLayoutId}
+          userMorphFromComposer={userMorphFromComposer}
           onUserMorphComplete={onUserMorphComplete}
         />
       </motion.div>
@@ -1684,6 +1721,7 @@ const MessageGroupRow = memo(
     previous.agent === next.agent &&
     previous.isStreamingLastTurn === next.isStreamingLastTurn &&
     previous.userMorphLayoutId === next.userMorphLayoutId &&
+    previous.userMorphFromComposer === next.userMorphFromComposer &&
     previous.onUserMorphComplete === next.onUserMorphComplete,
 )
 
@@ -1767,25 +1805,28 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   // drop or drag-end.
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
-  // Shared-element morph plumbing. When a new user message appears, we want
-  // the bubble to morph FROM whichever source produced it — the queue row
-  // that just drained, or the composer pill. Both live in a different subtree
-  // than the LegendList rows, so Framer needs matching `layoutId`s across the
-  // tree to run the animation.
+  // Morph plumbing. When a new user message appears, the bubble should appear
+  // to morph FROM the source that produced it — the queue row that just
+  // drained, or the composer pill.
+  //
+  // Two strategies, because Motion's shared-layoutId works for one but not
+  // the other:
+  //  - Queue drain: the queue row genuinely unmounts as the bubble mounts,
+  //    which is the pattern Motion supports. We share a `queue-morph-${id}`
+  //    layoutId between the exiting row and the new bubble.
+  //  - Composer send: the composer pill stays mounted, so layoutId-pairing
+  //    is unreliable. Instead the arriving bubble gets a fixed bottom-right
+  //    slide-up entrance that reads as "emerged from the composer" without
+  //    depending on LegendList's post-send scroll settling.
   //
   // Flow:
-  //  1. On send, we enqueue a morph id. Queue drains push
-  //     `queue-morph-${queueKey}` (the same id as the exiting queue row).
-  //     Composer sends push a fresh `composer-morph-${n}` and also set
-  //     `composerMorphId` so the composer pill carries that id.
-  //  2. During render we derive which user messages are newly visible since
-  //     the previous commit and tentatively claim the oldest pending morphs
-  //     for them so the first render already carries the right `layoutId`.
-  //  3. A layout effect commits those claims back into state after render.
+  //  1. On send, enqueue a morph entry: id, predicted user-index, and source.
+  //  2. When a user message arrives at that index, `liveMorphAssignments`
+  //     binds the entry to the message id so the bubble first renders with
+  //     the right morph payload.
   const [pendingMorphs, setPendingMorphs] = useState<
-    Array<{ id: string; userIndex: number; windowId: string }>
+    Array<{ id: string; userIndex: number; windowId: string; source: 'composer' | 'layout' }>
   >([])
-  const [composerMorph, setComposerMorph] = useState<{ id: string; windowId: string } | null>(null)
   const composerMorphNonceRef = useRef(0)
   // Edge-fade state for the queue scroll area. `top` = content above the
   // viewport, `bottom` = content below. We fade each edge only when there's
@@ -2250,10 +2291,8 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     () => messages.filter((message) => message.role === 'user'),
     [messages],
   )
-  const currentComposerMorphId =
-    composerMorph?.windowId === agentWindow.id ? composerMorph.id : null
   const enqueuePendingMorph = useCallback(
-    (id: string) => {
+    (id: string, source: 'composer' | 'layout' = 'layout') => {
       setPendingMorphs((prev) => [
         ...prev,
         {
@@ -2261,35 +2300,29 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
           userIndex:
             userMessages.length + prev.filter((entry) => entry.windowId === agentWindow.id).length,
           windowId: agentWindow.id,
+          source,
         },
       ])
     },
     [agentWindow.id, userMessages.length],
   )
   const liveMorphAssignments = useMemo(() => {
-    const assignments: Record<string, string> = {}
+    const assignments: Record<string, { id: string; source: 'composer' | 'layout' }> = {}
     for (const morph of pendingMorphs) {
       if (morph.windowId !== agentWindow.id) continue
       const message = userMessages[morph.userIndex]
-      if (message) assignments[message.id] = morph.id
+      if (message) assignments[message.id] = { id: morph.id, source: morph.source }
     }
     return assignments
   }, [agentWindow.id, pendingMorphs, userMessages])
-  // Clear a completed morph assignment — and the composer's stale layoutId
-  // if this bubble was the one consuming it — so the next send mints a
-  // fresh id instead of colliding with the old bubble's.
+  // Clear a completed morph assignment so future sends can mint a fresh id.
   const handleUserMorphComplete = useCallback(
     (messageId: string) => {
       const consumed = liveMorphAssignments[messageId]
       if (!consumed) return
       setPendingMorphs((prev) =>
-        prev.filter((entry) => !(entry.windowId === agentWindow.id && entry.id === consumed)),
+        prev.filter((entry) => !(entry.windowId === agentWindow.id && entry.id === consumed.id)),
       )
-      if (consumed.startsWith('composer-morph-')) {
-        setComposerMorph((prev) =>
-          prev?.windowId === agentWindow.id && prev.id === consumed ? null : prev,
-        )
-      }
     },
     [agentWindow.id, liveMorphAssignments],
   )
@@ -2566,13 +2599,12 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         return
       }
 
-      // Prime a composer→bubble morph for the message this send produces.
-      // Nonce keeps ids unique across sends so an older (already-morphed)
-      // bubble's layoutId never collides with a fresh one.
+      // Prime a composer-origin entry for the message this send produces.
+      // Nonce keeps ids unique across sends so an older bubble's morph id
+      // never collides with a fresh one.
       composerMorphNonceRef.current += 1
       const morphId = `composer-morph-${composerMorphNonceRef.current}`
-      enqueuePendingMorph(morphId)
-      setComposerMorph({ id: morphId, windowId: agentWindow.id })
+      enqueuePendingMorph(morphId, 'composer')
       // Only pull the viewport down when the user is already close to the end
       // — if they've scrolled up to reread, leave them there. The effect keyed
       // on visibleUserMessageCount will re-check the same threshold once the
@@ -2594,9 +2626,6 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
           const idx = prev.findIndex((entry) => entry.id === morphId)
           return idx < 0 ? prev : [...prev.slice(0, idx), ...prev.slice(idx + 1)]
         })
-        setComposerMorph((prev) =>
-          prev?.windowId === agentWindow.id && prev.id === morphId ? null : prev,
-        )
         writeComposer(value, pinned)
         console.error('[agent-chat] send failed', err)
       }
@@ -2609,7 +2638,6 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       inlineMention,
       setQueuedMessages,
       writeComposer,
-      agentWindow.id,
       agentWindow.model,
       agentWindow.thinkingLevel,
       agentWindow.permissionMode,
@@ -2798,6 +2826,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     const queueMorphId = `queue-morph-${next.id}`
     queueMicrotask(() => enqueuePendingMorph(queueMorphId))
     setQueuedMessages((q) => q.slice(1))
+    window.cells.agentSession.notifyQueuedStart(agentWindow.id)
     void sendToAgent(next.text, next.attachments, {
       model: next.model,
       thinkingLevel: next.thinkingLevel,
@@ -2817,6 +2846,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         sendingQueuedRef.current = false
       })
   }, [
+    agentWindow.id,
     enqueuePendingMorph,
     queuedMessages,
     resumeGated,
@@ -3309,9 +3339,15 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                 extraData={`${streamingTurnKey ?? ''}|${Object.keys(liveMorphAssignments).join(',')}`}
                 keyExtractor={chatGroupKey}
                 renderItem={({ item }) => {
-                  const userMorphId =
+                  const morphAssignment =
                     item.kind === 'user' ? liveMorphAssignments[item.message.id] : undefined
                   const userId = item.kind === 'user' ? item.message.id : null
+                  // Composer sends get a fixed entrance; queue-drain sends keep
+                  // Framer's shared layoutId because the source row unmounts.
+                  const isComposerMorph = morphAssignment?.source === 'composer'
+                  const userMorphLayoutId =
+                    !isComposerMorph && morphAssignment ? morphAssignment.id : undefined
+                  const userMorphFromComposer = isComposerMorph
                   return (
                     <div className="mx-auto w-full min-w-0 max-w-3xl">
                       <div className="pb-3">
@@ -3322,9 +3358,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                           isStreamingLastTurn={
                             item.kind === 'turn' && item.key === streamingTurnKey
                           }
-                          userMorphLayoutId={userMorphId}
+                          userMorphLayoutId={userMorphLayoutId}
+                          userMorphFromComposer={userMorphFromComposer}
                           onUserMorphComplete={
-                            userId && userMorphId
+                            userId && morphAssignment
                               ? () => handleUserMorphComplete(userId)
                               : undefined
                           }
@@ -3771,18 +3808,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                   }}
                 />
               ) : null}
-              <motion.div
-                // When a composer send is in flight, `currentComposerMorphId` carries
-                // the layoutId that the incoming user bubble will match. The
-                // composer itself doesn't unmount, so we rely on Framer's
-                // mid-animation duplicate-id handling: the newly-mounted bubble
-                // animates from this pill's bounding box and `onLayoutAnimationComplete`
-                // clears the id on the bubble side. `layout` is enabled only
-                // while a morph is pending — otherwise every textarea growth
-                // would animate the composer's own size changes.
-                layoutId={reduceMotion ? undefined : (currentComposerMorphId ?? undefined)}
-                layout={currentComposerMorphId ? true : false}
-                transition={{ layout: { duration: 0.26, ease: EASE_IN_OUT } }}
+              <div
                 className="group/composer relative overflow-hidden rounded-[12px] shadow-minimal"
                 style={{ backgroundColor: 'var(--elevated-surface)' }}
               >
@@ -4037,7 +4063,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                     </button>
                   )}
                 </div>
-              </motion.div>
+              </div>
             </div>
           </div>
         </div>

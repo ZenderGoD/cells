@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useHotkey } from '@tanstack/react-hotkeys'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { useStore } from './lib/store'
 import { StatusBar } from './components/toolbar/toolbar'
@@ -19,7 +18,21 @@ import {
   reloadAllTerminals,
 } from './components/terminal/terminal-cache-api'
 import { STATUS_BAR_HEIGHT } from './lib/canvas-navigation'
-import { hasPrimaryModifier, isPrimaryModifierKey } from './lib/keyboard-shortcuts'
+import {
+  hasPrimaryModifier,
+  isEditableTarget,
+  isPrimaryModifierKey,
+} from './lib/keyboard-shortcuts'
+import {
+  CELLS_COPY_BROWSER_URL_EVENT,
+  CELLS_OPEN_BROWSER_LOCATION_EVENT,
+  CELLS_OPEN_SETTINGS_EVENT,
+  CELLS_TOGGLE_COMMAND_PALETTE_EVENT,
+  CELLS_TOGGLE_PROJECT_SWITCHER_EVENT,
+  getCellsShortcutScope,
+  type CellsShortcutCommand,
+  matchRendererShortcut,
+} from './lib/cells-shortcuts'
 import { buildWindowAppearanceStyle } from './lib/window-appearance'
 import { useShallow } from 'zustand/react/shallow'
 
@@ -73,12 +86,8 @@ function MainApp() {
     titleBarHidden,
     dimWhenUnfocused,
     requestCloseWindow,
-    restoreLastClosedWindow,
-    restoreLastClosedProject,
     pendingCloseDialog,
     pendingProjectCloseDialog,
-    pendingClosedWindows,
-    pendingClosedProjects,
     closeUndoTimeoutMs,
     confirmPendingClose,
     cancelPendingClose,
@@ -97,12 +106,8 @@ function MainApp() {
       titleBarHidden: s.titleBarHidden,
       dimWhenUnfocused: s.dimWhenUnfocused,
       requestCloseWindow: s.requestCloseWindow,
-      restoreLastClosedWindow: s.restoreLastClosedWindow,
-      restoreLastClosedProject: s.restoreLastClosedProject,
       pendingCloseDialog: s.pendingCloseDialog,
       pendingProjectCloseDialog: s.pendingProjectCloseDialog,
-      pendingClosedWindows: s.pendingClosedWindows,
-      pendingClosedProjects: s.pendingClosedProjects,
       closeUndoTimeoutMs: s.closeUndoTimeoutMs,
       confirmPendingClose: s.confirmPendingClose,
       cancelPendingClose: s.cancelPendingClose,
@@ -117,6 +122,7 @@ function MainApp() {
   const suppressWindowFocusTerminalRefocusRef = useRef(false)
   const suppressWindowFocusTerminalRefocusTimerRef = useRef<number | null>(null)
   const pendingNotificationFocusFrameRef = useRef<number | null>(null)
+  const keyboardNavigationActiveRef = useRef(false)
 
   const [windowFocused, setWindowFocused] = useState(true)
   useEffect(() => {
@@ -214,6 +220,38 @@ function MainApp() {
     })
   }, [activeProjectId, focusedAgentWindowId])
 
+  // Push each agent window's queued-message count to main so it can suppress
+  // the "finished" notification when more queued work is about to run.
+  useEffect(() => {
+    const lastReported = new Map<string, number>()
+    const push = () => {
+      const state = useStore.getState()
+      const counts = new Map<string, number>()
+      for (const agentWindow of state.agentWindows) {
+        counts.set(agentWindow.id, agentWindow.queuedMessages?.length ?? 0)
+      }
+      for (const project of state.projects) {
+        for (const agentWindow of project.agentWindows ?? []) {
+          counts.set(agentWindow.id, agentWindow.queuedMessages?.length ?? 0)
+        }
+      }
+      for (const [id, count] of counts) {
+        if (lastReported.get(id) !== count) {
+          lastReported.set(id, count)
+          window.cells.agentSession.reportQueueCount(id, count)
+        }
+      }
+      for (const id of [...lastReported.keys()]) {
+        if (!counts.has(id)) {
+          lastReported.delete(id)
+          window.cells.agentSession.reportQueueCount(id, 0)
+        }
+      }
+    }
+    push()
+    return useStore.subscribe(push)
+  }, [])
+
   useEffect(() => {
     return window.cells.app.onDaemonDisconnected(() => {
       reloadAllTerminals()
@@ -247,35 +285,11 @@ function MainApp() {
     void requestCloseWindow()
   }, [requestCloseWindow])
 
-  useHotkey('Mod+W', () => closeWindow())
-  useHotkey('Mod+Shift+T', () => {
-    if (pendingClosedWindows.length > 0) {
-      restoreLastClosedWindow()
-      return
-    }
-    if (pendingClosedProjects.length > 0) {
-      restoreLastClosedProject()
-    }
-  })
-  useHotkey('Mod+Shift+P', () => useStore.getState().togglePinFocused())
-  useHotkey('Mod+Q', () => {
-    void window.cells.app.requestQuit()
-  })
-  useHotkey('Mod+R', () => useStore.getState().reloadFocused())
-  useHotkey('Mod+[', () => {
-    const bid = useStore.getState().focusedBrowserId
-    if (bid) window.cells.browser.goBack(bid)
-  })
-  useHotkey('Mod+]', () => {
-    const bid = useStore.getState().focusedBrowserId
-    if (bid) window.cells.browser.goForward(bid)
-  })
-
   // Cmd+S: toggle title bar visibility with two-press confirmation when hiding.
   // Unhiding is immediate; hiding requires a second press within ~3s so users
   // don't lose the bar (and the shortcut) by accident.
   const titleBarHideConfirmRef = useRef<number | null>(null)
-  useHotkey('Mod+S', () => {
+  const toggleTitleBarHidden = useCallback(() => {
     const { titleBarHidden: hidden, setTitleBarHidden } = useStore.getState()
     if (hidden) {
       setTitleBarHidden(false)
@@ -295,10 +309,142 @@ function MainApp() {
     titleBarHideConfirmRef.current = window.setTimeout(() => {
       titleBarHideConfirmRef.current = null
     }, 3000)
-  })
+  }, [])
 
-  // Cmd+Shift+S: toggle the title bar between top and bottom.
-  useHotkey('Mod+Shift+S', () => useStore.getState().toggleTitleBarPosition())
+  const runShortcutCommand = useCallback(
+    (command: CellsShortcutCommand, options?: { repeat?: boolean }) => {
+      const state = useStore.getState()
+      switch (command) {
+        case 'toggle-command-palette':
+          window.dispatchEvent(new Event(CELLS_TOGGLE_COMMAND_PALETTE_EVENT))
+          return true
+        case 'open-settings':
+          window.dispatchEvent(new Event(CELLS_OPEN_SETTINGS_EVENT))
+          return true
+        case 'toggle-project-switcher':
+          window.dispatchEvent(new Event(CELLS_TOGGLE_PROJECT_SWITCHER_EVENT))
+          return true
+        case 'toggle-selection-mode':
+          state.setSelectionMode(!state.selectionMode)
+          return true
+        case 'close-window':
+          closeWindow()
+          return true
+        case 'restore-last-closed':
+          if (state.pendingClosedWindows.length > 0) {
+            state.restoreLastClosedWindow()
+            return true
+          }
+          if (state.pendingClosedProjects.length > 0) {
+            state.restoreLastClosedProject()
+            return true
+          }
+          return false
+        case 'toggle-pin-focused':
+          state.togglePinFocused()
+          return true
+        case 'quit-app':
+          void window.cells.app.requestQuit()
+          return true
+        case 'reload-focused':
+          state.reloadFocused()
+          return true
+        case 'browser-back':
+          if (state.overlayOpen) return false
+          if (!state.focusedBrowserId) return false
+          window.cells.browser.goBack(state.focusedBrowserId)
+          return true
+        case 'browser-forward':
+          if (state.overlayOpen) return false
+          if (!state.focusedBrowserId) return false
+          window.cells.browser.goForward(state.focusedBrowserId)
+          return true
+        case 'open-browser-location':
+          if (state.overlayOpen) return false
+          if (!state.focusedBrowserId) return false
+          window.dispatchEvent(new Event(CELLS_OPEN_BROWSER_LOCATION_EVENT))
+          return true
+        case 'copy-browser-url':
+          if (state.overlayOpen) return false
+          if (!state.focusedBrowserId) return false
+          window.dispatchEvent(new Event(CELLS_COPY_BROWSER_URL_EVENT))
+          return true
+        case 'toggle-title-bar-hidden':
+          toggleTitleBarHidden()
+          return true
+        case 'toggle-title-bar-position':
+          state.toggleTitleBarPosition()
+          return true
+        case 'zoom-focused-window-in':
+          if (state.overlayOpen) return false
+          state.zoomFocusedWindow('in')
+          return true
+        case 'zoom-focused-window-out':
+          if (state.overlayOpen) return false
+          state.zoomFocusedWindow('out')
+          return true
+        case 'snap-focused-window':
+          if (state.overlayOpen) return false
+          if (state.focusedTerminalId) {
+            state.snapToTerminal(state.focusedTerminalId)
+            return true
+          }
+          if (state.focusedBrowserId) {
+            state.snapToBrowser(state.focusedBrowserId)
+            return true
+          }
+          if (state.focusedAgentWindowId) {
+            state.snapToAgentWindow(state.focusedAgentWindowId)
+            return true
+          }
+          return false
+        case 'zoom-to-fit-focused': {
+          if (state.overlayOpen) return false
+          const id =
+            state.focusedTerminalId ||
+            state.focusedBrowserId ||
+            state.focusedAgentWindowId ||
+            state.terminals[0]?.id ||
+            state.browsers[0]?.id ||
+            state.agentWindows[0]?.id
+          if (!id) return false
+          state.zoomToFit(id)
+          return true
+        }
+        case 'zoom-to-fit-all':
+          if (state.overlayOpen) return false
+          state.zoomToFitAll()
+          if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+          return true
+        case 'snap-left':
+        case 'snap-right':
+        case 'snap-up':
+        case 'snap-down': {
+          if (state.overlayOpen) return false
+          const direction = command.replace('snap-', '') as 'left' | 'right' | 'up' | 'down'
+          if (!keyboardNavigationActiveRef.current) {
+            keyboardNavigationActiveRef.current = true
+            window.dispatchEvent(new Event('terminal-navigation-start'))
+          }
+          state.snapToNearest(direction, {
+            keepScale: keyboardNavigationActiveRef.current || options?.repeat === true,
+          })
+          return true
+        }
+        case 'resize-focused-to-fit-viewport':
+          if (state.overlayOpen) return false
+          state.resizeFocusedToFitViewport()
+          return true
+        case 'resize-window-to-fit-focused':
+          if (state.overlayOpen) return false
+          state.resizeWindowToFitFocused()
+          return true
+        default:
+          return false
+      }
+    },
+    [closeWindow, toggleTitleBarHidden],
+  )
 
   // When the title bar toggles, the effective viewport height changes, so
   // any canvas math that subtracts the title bar has new answers. Re-snap to
@@ -321,17 +467,15 @@ function MainApp() {
   }, [titleBarHidden])
 
   useEffect(() => {
-    let keyboardNavigationActive = false
-
     const beginKeyboardNavigation = () => {
-      if (keyboardNavigationActive) return
-      keyboardNavigationActive = true
+      if (keyboardNavigationActiveRef.current) return
+      keyboardNavigationActiveRef.current = true
       window.dispatchEvent(new Event('terminal-navigation-start'))
     }
 
     const endKeyboardNavigation = () => {
-      if (!keyboardNavigationActive) return
-      keyboardNavigationActive = false
+      if (!keyboardNavigationActiveRef.current) return
+      keyboardNavigationActiveRef.current = false
       window.dispatchEvent(new Event('terminal-navigation-end'))
       requestAnimationFrame(() => window.dispatchEvent(new Event('terminal-refocus')))
     }
@@ -340,29 +484,35 @@ function MainApp() {
       const state = useStore.getState()
       const key = event.key.toLowerCase()
       const primaryModifier = hasPrimaryModifier(event)
-      if (state.overlayOpen || event.altKey) return
-
-      const zoomIn =
-        primaryModifier &&
-        (key === '+' ||
-          key === '=' ||
-          key === 'add' ||
-          event.code === 'Equal' ||
-          event.code === 'NumpadAdd')
-      const zoomOut =
-        primaryModifier &&
-        (key === '-' ||
-          key === '_' ||
-          key === 'subtract' ||
-          event.code === 'Minus' ||
-          event.code === 'NumpadSubtract')
-
-      if (zoomIn || zoomOut) {
-        event.preventDefault()
-        event.stopPropagation()
-        state.zoomFocusedWindow(zoomIn ? 'in' : 'out')
-        return
+      const shortcutCommand = matchRendererShortcut(
+        {
+          key: event.key,
+          code: event.code,
+          metaKey: event.metaKey,
+          ctrlKey: event.ctrlKey,
+          shiftKey: event.shiftKey,
+          altKey: event.altKey,
+        },
+        {
+          browserFocused: Boolean(state.focusedBrowserId),
+          platform: navigator.platform,
+        },
+      )
+      if (shortcutCommand) {
+        const shortcutScope = getCellsShortcutScope(shortcutCommand)
+        if (isEditableTarget(event.target) && shortcutScope === 'canvas') {
+          return
+        }
+        const handled = runShortcutCommand(shortcutCommand, { repeat: event.repeat })
+        if (handled) {
+          event.preventDefault()
+          event.stopPropagation()
+          if (shortcutCommand.startsWith('snap-')) beginKeyboardNavigation()
+          return
+        }
       }
+
+      if (state.overlayOpen || event.altKey) return
 
       if (key === 'f' && primaryModifier && state.focusedTerminalId) {
         event.preventDefault()
@@ -370,36 +520,6 @@ function MainApp() {
         state.openTerminalFind()
         window.dispatchEvent(new Event('terminal-find-focus'))
         return
-      }
-
-      // Cmd+HJKL for canvas navigation (no Ctrl+Arrow — reserved for macOS text cursor)
-      const direction = primaryModifier
-        ? key === 'h'
-          ? 'left'
-          : key === 'l'
-            ? 'right'
-            : key === 'k'
-              ? 'up'
-              : key === 'j'
-                ? 'down'
-                : null
-        : null
-
-      if (direction) {
-        event.preventDefault()
-        event.stopPropagation()
-        const keepScale = keyboardNavigationActive || event.repeat
-        beginKeyboardNavigation()
-        state.snapToNearest(direction, { keepScale })
-        return
-      }
-
-      if (key === 'o' && event.shiftKey && primaryModifier) {
-        event.preventDefault()
-        event.stopPropagation()
-        state.zoomToFitAll()
-        // Remove text input focus so keystrokes don't go to a terminal
-        if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
       }
 
       // ESC in overview mode → return to previously focused window.
@@ -417,18 +537,6 @@ function MainApp() {
         event.preventDefault()
         event.stopPropagation()
         state.exitOverview()
-      }
-
-      if (key === 'enter' && event.shiftKey && primaryModifier) {
-        event.preventDefault()
-        event.stopPropagation()
-        state.resizeFocusedToFitViewport()
-      }
-
-      if (key === '0' && event.shiftKey && primaryModifier) {
-        event.preventDefault()
-        event.stopPropagation()
-        state.resizeWindowToFitFocused()
       }
     }
 
@@ -450,7 +558,13 @@ function MainApp() {
       window.removeEventListener('keyup', handleKeyUp, true)
       window.removeEventListener('blur', handleBlur)
     }
-  }, [])
+  }, [runShortcutCommand])
+
+  useEffect(() => {
+    return window.cells.app.onShortcut((payload) => {
+      runShortcutCommand(payload.command)
+    })
+  }, [runShortcutCommand])
 
   useEffect(() => {
     init()
@@ -476,8 +590,8 @@ function MainApp() {
 
   useEffect(() => {
     if (!pendingCloseDialog && !pendingProjectCloseDialog) return
-    setOverlayOpen(true)
-    return () => setOverlayOpen(false)
+    setOverlayOpen('app-close-dialogs', true)
+    return () => setOverlayOpen('app-close-dialogs', false)
   }, [pendingCloseDialog, pendingProjectCloseDialog, setOverlayOpen])
 
   useEffect(() => {

@@ -8,6 +8,7 @@ import { WindowOverviewMap } from './canvas/window-overview-map'
 import type { Project } from '@/types'
 import { hapticNudge, hapticSuccess } from '@/lib/haptics'
 import { getProjectRuntimeAttention, type ProjectAttention } from '@/lib/status-indicator'
+import { CELLS_TOGGLE_PROJECT_SWITCHER_EVENT } from '@/lib/cells-shortcuts'
 
 interface ProjectSwitcherItem {
   id: string
@@ -59,7 +60,7 @@ export function ProjectSwitcher() {
     (nextOpen: boolean) => {
       openRef.current = nextOpen
       setOpenRaw(nextOpen)
-      setOverlayOpen(nextOpen)
+      setOverlayOpen('project-switcher', nextOpen)
     },
     [setOverlayOpen],
   )
@@ -180,23 +181,6 @@ export function ProjectSwitcher() {
         return
       }
 
-      if (
-        event.key === 'a' &&
-        event.ctrlKey &&
-        !event.metaKey &&
-        !event.altKey &&
-        !event.shiftKey
-      ) {
-        event.preventDefault()
-        event.stopPropagation()
-        if (openRef.current) {
-          cancel()
-        } else {
-          openManual()
-        }
-        return
-      }
-
       if (event.key === 'Control') {
         ctrlHeld.current = true
       }
@@ -255,6 +239,18 @@ export function ProjectSwitcher() {
     })
     return unsub
   }, [cycle])
+
+  useEffect(() => {
+    const handleToggle = () => {
+      if (openRef.current) {
+        cancel()
+      } else {
+        openManual()
+      }
+    }
+    window.addEventListener(CELLS_TOGGLE_PROJECT_SWITCHER_EVENT, handleToggle)
+    return () => window.removeEventListener(CELLS_TOGGLE_PROJECT_SWITCHER_EVENT, handleToggle)
+  }, [cancel, openManual])
 
   if (items.length < 2) return null
 

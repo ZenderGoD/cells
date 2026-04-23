@@ -96,17 +96,92 @@ function buildHunks(ops: DiffOp[]): Array<DiffOp | 'ellipsis'> {
   return result
 }
 
+// Convert a unified-diff patch into our DiffOp stream so it can render in the
+// same table as the Claude (LCS) hunks. Hunk headers / file headers collapse
+// to a single ellipsis so the visual matches "skip unchanged context".
+function patchToOps(patch: string): Array<DiffOp | 'ellipsis'> {
+  const out: Array<DiffOp | 'ellipsis'> = []
+  let pendingEllipsis = false
+  const pushEllipsis = () => {
+    if (pendingEllipsis) return
+    if (out.length === 0) return
+    out.push('ellipsis')
+    pendingEllipsis = true
+  }
+  for (const line of patch.split('\n')) {
+    if (
+      line.startsWith('diff --git ') ||
+      line.startsWith('index ') ||
+      line.startsWith('@@') ||
+      line.startsWith('--- ') ||
+      line.startsWith('+++ ') ||
+      line.startsWith('rename ') ||
+      line.startsWith('similarity index ') ||
+      line.startsWith('new file mode ') ||
+      line.startsWith('deleted file mode ') ||
+      line.startsWith('Binary files ')
+    ) {
+      pushEllipsis()
+      continue
+    }
+    if (line.startsWith('+')) {
+      out.push({ op: 'add', text: line.slice(1) })
+      pendingEllipsis = false
+      continue
+    }
+    if (line.startsWith('-')) {
+      out.push({ op: 'del', text: line.slice(1) })
+      pendingEllipsis = false
+      continue
+    }
+    if (line === '' || line.startsWith(' ')) {
+      out.push({ op: 'eq', text: line.startsWith(' ') ? line.slice(1) : '' })
+      pendingEllipsis = false
+    }
+  }
+  return out
+}
+
+// Merge LCS hunks from each Claude edit and parsed unified-diff patches into
+// one continuous stream so the file row renders a single cumulative diff
+// instead of N separately-bordered blocks.
+function combinedFileHunks(
+  edits: ReadonlyArray<{ oldString: string; newString: string }>,
+  patches: ReadonlyArray<string>,
+): Array<DiffOp | 'ellipsis'> {
+  const out: Array<DiffOp | 'ellipsis'> = []
+  const appendSection = (section: Array<DiffOp | 'ellipsis'>) => {
+    if (section.length === 0) return
+    if (out.length > 0 && out[out.length - 1] !== 'ellipsis' && section[0] !== 'ellipsis') {
+      out.push('ellipsis')
+    }
+    for (const item of section) {
+      if (item === 'ellipsis' && out.length > 0 && out[out.length - 1] === 'ellipsis') continue
+      out.push(item)
+    }
+  }
+  for (const edit of edits) {
+    appendSection(buildHunks(lineDiff(edit.oldString, edit.newString)))
+  }
+  for (const patch of patches) {
+    appendSection(patchToOps(patch))
+  }
+  if (out.length > 0 && out[out.length - 1] === 'ellipsis') out.pop()
+  return out
+}
+
 // ─── Components ───────────────────────────────────────────────────────────────
 
-function DiffLines({ oldString, newString }: { oldString: string; newString: string }) {
-  const hunks = useMemo(() => buildHunks(lineDiff(oldString, newString)), [oldString, newString])
-  if (hunks.length === 0) return null
+const MAX_RENDERED_HUNK_ROWS = 800
 
+function HunksTable({ hunks }: { hunks: Array<DiffOp | 'ellipsis'> }) {
+  const truncated = hunks.length > MAX_RENDERED_HUNK_ROWS
+  const rows = truncated ? hunks.slice(0, MAX_RENDERED_HUNK_ROWS) : hunks
   return (
-    <div className="max-h-[320px] overflow-auto rounded-[6px] border border-border/30 bg-[oklch(0.10_0.004_285)] text-[11px] leading-[1.6] overscroll-contain">
+    <div className="max-h-[min(55vh,520px)] overflow-auto rounded-[6px] border border-border/30 bg-[oklch(0.10_0.004_285)] text-[11px] leading-[1.6] overscroll-contain">
       <table className="min-w-full border-collapse font-mono">
         <tbody>
-          {hunks.map((item, idx) => {
+          {rows.map((item, idx) => {
             if (item === 'ellipsis') {
               return (
                 <tr key={`ellipsis-${idx}`}>
@@ -148,63 +223,16 @@ function DiffLines({ oldString, newString }: { oldString: string; newString: str
               </tr>
             )
           })}
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
-function PatchLines({ patch }: { patch: string }) {
-  const lines = useMemo(() => patch.split('\n').slice(0, 400), [patch])
-  if (lines.length === 0) return null
-
-  return (
-    <div className="max-h-[320px] overflow-auto rounded-[6px] border border-border/30 bg-[oklch(0.10_0.004_285)] text-[11px] leading-[1.6] overscroll-contain">
-      <table className="min-w-full border-collapse font-mono">
-        <tbody>
-          {lines.map((line, idx) => {
-            const isAdd = line.startsWith('+') && !line.startsWith('+++')
-            const isDel = line.startsWith('-') && !line.startsWith('---')
-            const isMeta =
-              line.startsWith('diff --git ') ||
-              line.startsWith('index ') ||
-              line.startsWith('@@') ||
-              line.startsWith('--- ') ||
-              line.startsWith('+++ ') ||
-              line.startsWith('rename ')
-            return (
-              <tr
-                key={idx}
-                className={cn(
-                  isDel && 'bg-rose-500/[0.08]',
-                  isAdd && 'bg-emerald-500/[0.08]',
-                  isMeta && 'bg-foreground/[0.04]',
-                )}
-              >
-                <td
-                  className={cn(
-                    'w-5 select-none border-r border-border/20 px-1.5 text-center font-medium',
-                    isDel && 'border-rose-500/20 text-rose-400/70',
-                    isAdd && 'border-emerald-500/20 text-emerald-400/70',
-                    !isAdd && !isDel && 'text-muted-foreground/25',
-                  )}
-                >
-                  {isDel ? '−' : isAdd ? '+' : ' '}
-                </td>
-                <td
-                  className={cn(
-                    'whitespace-pre-wrap break-all px-2 py-px',
-                    isDel && 'text-rose-200/80',
-                    isAdd && 'text-emerald-200/80',
-                    isMeta && 'text-sky-200/75',
-                    !isAdd && !isDel && !isMeta && 'text-foreground/55',
-                  )}
-                >
-                  {line}
-                </td>
-              </tr>
-            )
-          })}
+          {truncated ? (
+            <tr>
+              <td className="w-5 select-none border-r border-border/20 px-1.5 text-center text-muted-foreground/30">
+                ⋯
+              </td>
+              <td className="px-2 py-1 text-muted-foreground/55">
+                Diff truncated — {hunks.length - MAX_RENDERED_HUNK_ROWS} more rows
+              </td>
+            </tr>
+          ) : null}
         </tbody>
       </table>
     </div>
@@ -216,8 +244,11 @@ function FileDiffRow({ file }: { file: FileDiffStats }) {
   const reduceMotion = useReducedMotion()
   const name = baseName(file.filePath)
   const dir = file.filePath.slice(0, Math.max(0, file.filePath.length - name.length - 1))
-  const patches = file.patches ?? []
-  const hasDetails = file.edits.length > 0 || patches.length > 0
+  const combinedHunks = useMemo(
+    () => combinedFileHunks(file.edits, file.patches ?? []),
+    [file.edits, file.patches],
+  )
+  const hasDetails = combinedHunks.length > 0
   return (
     <li className="border-b border-border/20 last:border-b-0">
       <button
@@ -255,22 +286,14 @@ function FileDiffRow({ file }: { file: FileDiffStats }) {
             transition={EXPAND_TRANSITION}
             style={{ overflow: 'hidden' }}
           >
-            <div className="max-h-[min(55vh,520px)] space-y-1.5 overflow-y-auto overscroll-contain px-3 pb-2 pr-2">
-              {file.edits.map((edit, idx) => (
-                <DiffLines
-                  key={`${edit.toolId}-${idx}`}
-                  oldString={edit.oldString}
-                  newString={edit.newString}
-                />
-              ))}
-              {patches.map((patch, idx) => (
-                <PatchLines key={`patch-${file.filePath}-${idx}`} patch={patch} />
-              ))}
-              {!hasDetails ? (
+            <div className="px-3 pb-2 pr-2">
+              {hasDetails ? (
+                <HunksTable hunks={combinedHunks} />
+              ) : (
                 <div className="rounded-[6px] border border-border/25 bg-background/40 px-2.5 py-2 text-[11px] text-muted-foreground/60">
                   Diff summary available, but the full patch was not preserved for this file.
                 </div>
-              ) : null}
+              )}
             </div>
           </motion.div>
         ) : null}
