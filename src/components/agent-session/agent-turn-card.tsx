@@ -43,6 +43,11 @@ const EXPAND_TRANSITION = {
   height: { duration: 0.28, ease: EASE_EXPAND },
   opacity: { duration: 0.18, ease: EASE_EXPAND },
 } as const
+// Assistant-turn text should start on the same x-axis as ResponseCard content.
+// If the visible text sits inside a padded affordance, offset the wrapper by
+// that affordance's inner padding so the glyphs, not the container edge, align.
+const RESPONSE_TEXT_INSET_CLASS = 'pl-4'
+const TOOL_GROUP_COUNT_TEXT_INSET_CLASS = 'pl-2.5'
 
 interface AgentTurnCardProps {
   activities: AgentSessionMessage[]
@@ -540,7 +545,8 @@ function LeadTextBlock({ text, className }: { text: string; className?: string }
   return (
     <div
       className={cn(
-        'agent-response select-text pl-1.5 pr-2.5 text-sm leading-relaxed text-foreground/85 [&_p:last-child]:mb-0',
+        'agent-response select-text pr-2.5 text-sm leading-relaxed text-foreground/85 [&_p:last-child]:mb-0',
+        RESPONSE_TEXT_INSET_CLASS,
         className,
       )}
     >
@@ -671,7 +677,10 @@ function ChangedFilesSection({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-1.5 rounded-[6px] px-1 py-0.5 text-left text-[12px] text-muted-foreground/70 transition-colors hover:bg-foreground/5"
+        className={cn(
+          'flex w-full items-center gap-1.5 rounded-[6px] py-0.5 pr-1 text-left text-[12px] text-muted-foreground/70 transition-colors hover:bg-foreground/5',
+          RESPONSE_TEXT_INSET_CLASS,
+        )}
       >
         <ChevronRight className={cn('size-3 shrink-0 transition-transform', open && 'rotate-90')} />
         <span className="shrink-0">
@@ -760,7 +769,10 @@ export function AgentTurnCard({
             <button
               type="button"
               onClick={() => setCollapsed((v) => !v)}
-              className="flex w-full items-center gap-2 overflow-hidden rounded-[8px] py-1.5 pl-1.5 pr-2.5 text-left transition-colors hover:bg-foreground/5 focus:outline-none"
+              className={cn(
+                'flex w-full items-center gap-2 overflow-hidden rounded-[8px] py-1.5 pr-2.5 text-left transition-colors hover:bg-foreground/5 focus:outline-none',
+                TOOL_GROUP_COUNT_TEXT_INSET_CLASS,
+              )}
             >
               <span className="shrink-0 rounded-[4px] bg-background px-1.5 py-0.5 text-[10px] font-medium tabular-nums shadow-minimal">
                 {activities.length}
@@ -832,7 +844,10 @@ export function AgentTurnCard({
           <LoadingIndicator
             label={agent === 'claude' ? 'Claude is thinking…' : 'Codex is thinking…'}
             showElapsed
-            className="px-3 py-1.5 text-[13px] text-muted-foreground"
+            className={cn(
+              'py-1.5 pr-3 text-[13px] text-muted-foreground',
+              RESPONSE_TEXT_INSET_CLASS,
+            )}
           />
         ) : null}
 
