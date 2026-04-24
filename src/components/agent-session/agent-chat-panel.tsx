@@ -2081,6 +2081,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     }
 
     const sync = (next: AgentSessionSnapshot) => {
+      if (next.windowId !== agentWindow.id) return
       pendingSnapshotRef.current = next
       if (pendingFrameRef.current !== null) return
       pendingFrameRef.current = window.requestAnimationFrame(() => {
@@ -2973,6 +2974,16 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     }
     return null
   }, [isRunning, visibleGroups])
+  const streamingTextSignature = useMemo(() => {
+    if (!streamingTurnKey) return ''
+    for (let i = visibleGroups.length - 1; i >= 0; i -= 1) {
+      const group = visibleGroups[i]
+      if (group.kind !== 'turn' || group.key !== streamingTurnKey) continue
+      const response = group.responses[group.responses.length - 1]
+      return response ? `${response.id}:${response.text.length}` : streamingTurnKey
+    }
+    return streamingTurnKey
+  }, [streamingTurnKey, visibleGroups])
   // Show the Craft-style "working" pill whenever the agent is running and the
   // last rendered group isn't a turn (= model hasn't emitted anything yet).
   const showPendingLoader =
@@ -3094,14 +3105,9 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                             Recent Sessions
                           </div>
                           <div className="relative">
-                            <ScrollArea
-                              className="max-h-[250px] w-full"
-                              // `[&>div]:!block` defeats Radix's internal
-                              // `display: table` wrapper — otherwise the
-                              // table grows to fit long titles and `truncate`
-                              // never triggers on the session rows.
-                              viewportClassName="pr-2 [&>div]:!block"
-                              viewportRef={recentSessionsViewportRef}
+                            <div
+                              ref={recentSessionsViewportRef}
+                              className="max-h-[250px] w-full overflow-y-auto overscroll-contain pr-2"
                             >
                               <div className="flex flex-col gap-0.5 pb-2">
                                 {filteredRecentSessions.map((session) => (
@@ -3138,7 +3144,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                                   </button>
                                 ))}
                               </div>
-                            </ScrollArea>
+                            </div>
                             {recentSessionsFade.top ? (
                               <div className="pointer-events-none absolute inset-x-0 top-0 h-8 bg-gradient-to-b from-background via-background/95 to-transparent" />
                             ) : null}
@@ -3162,7 +3168,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                 // depends on which turn is currently streaming, so surface that
                 // as extraData; otherwise an older turn can stay visually stuck
                 // in the "Working..." state after a newer turn becomes active.
-                extraData={streamingTurnKey ?? ''}
+                extraData={streamingTextSignature || streamingTurnKey || ''}
                 keyExtractor={chatGroupKey}
                 renderItem={({ item }) => (
                   <div className="mx-auto w-full min-w-0 max-w-3xl">
@@ -3178,7 +3184,11 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                 )}
                 estimatedItemSize={120}
                 initialScrollAtEnd
-                maintainScrollAtEnd
+                maintainScrollAtEnd={
+                  streamingTurnKey && !reduceMotion
+                    ? { animated: true, on: { dataChange: true, itemLayout: true, layout: true } }
+                    : true
+                }
                 maintainScrollAtEndThreshold={0.1}
                 maintainVisibleContentPosition
                 className="h-full overscroll-y-contain"

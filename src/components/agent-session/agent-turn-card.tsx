@@ -587,19 +587,26 @@ function ResponseCard({ responses }: { responses: AgentSessionMessage[] }) {
   return (
     <div
       className="group relative overflow-hidden rounded-[12px] shadow-minimal"
-      style={{ backgroundColor: 'var(--elevated-surface)' }}
+      style={{ backgroundColor: 'var(--elevated-surface)', overflowAnchor: 'none' }}
     >
       <div
         data-search-root="response"
         className="scrollbar-hover select-text overflow-y-auto px-4 pt-1 text-sm text-foreground/90"
-        style={{ maxHeight: RESPONSE_MAX_HEIGHT }}
+        style={{
+          maxHeight: RESPONSE_MAX_HEIGHT,
+          overflowAnchor: 'none',
+          scrollbarGutter: 'stable',
+        }}
       >
         {visible.map((response, idx) => (
           <div key={response.id} className={cn(idx > 0 && 'mt-3 border-t border-border/30 pt-3')}>
             {viewMode === 'source' ? (
               <pre className="whitespace-pre-wrap break-words font-sans py-2">{response.text}</pre>
             ) : (
-              <AgentMarkdown breaks={response.status === 'in_progress'}>
+              <AgentMarkdown
+                breaks={response.status === 'in_progress'}
+                streamingReveal={response.status === 'in_progress'}
+              >
                 {response.text}
               </AgentMarkdown>
             )}

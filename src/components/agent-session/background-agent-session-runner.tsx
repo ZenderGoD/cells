@@ -203,6 +203,7 @@ function BackgroundAgentSessionRunner({ agentWindow }: { agentWindow: AgentWindo
     }
 
     const sync = (next: AgentSessionSnapshot) => {
+      if (next.windowId !== agentWindow.id) return
       pendingSnapshotRef.current = next
       if (pendingFrameRef.current !== null) return
       pendingFrameRef.current = window.requestAnimationFrame(() => {
