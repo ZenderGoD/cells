@@ -545,7 +545,8 @@ function LeadTextBlock({ text, className }: { text: string; className?: string }
   return (
     <div
       className={cn(
-        'agent-response select-text pr-2.5 text-sm leading-relaxed text-foreground/85 [&_p:last-child]:mb-0',
+        'agent-response select-text pt-1 pr-2.5 text-sm leading-relaxed text-foreground/85 [&_p:last-child]:mb-0',
+        '[&_.agent-markdown>:first-child]:mt-0',
         RESPONSE_TEXT_INSET_CLASS,
         className,
       )}
