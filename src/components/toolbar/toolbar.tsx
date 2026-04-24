@@ -769,8 +769,8 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
     <>
       <div
         className={cn(
-          'relative z-10 shrink-0 flex items-stretch overflow-visible text-xs transition-colors duration-300',
-          embedded ? 'h-9' : 'h-10',
+          'relative z-10 shrink-0 flex items-stretch text-xs transition-colors duration-300',
+          embedded ? 'h-9 w-full min-w-0 overflow-hidden' : 'h-10 overflow-visible',
           !embedded && 'draggable-region',
           !embedded &&
             (titleBarPosition === 'top'
@@ -998,7 +998,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
               processRunning: ft?.processRunning,
             })
             return (
-              <div className="flex-1 flex items-center gap-2 px-3 min-w-0 no-drag">
+              <div className="flex min-w-0 flex-1 items-center gap-2 px-3 no-drag">
                 {ftAgent ? (
                   <AgentIcon agent={ftAgent} className="h-3 w-3 shrink-0" size={12} />
                 ) : (
@@ -1031,7 +1031,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
                   />
                 ) : (
                   <span
-                    className="text-[11px] font-medium truncate min-w-0 text-muted-foreground cursor-text"
+                    className="min-w-0 flex-1 truncate text-[11px] font-medium text-muted-foreground cursor-text"
                     onDoubleClick={(event) => {
                       event.preventDefault()
                       event.stopPropagation()
@@ -1160,7 +1160,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
                   />
                 ) : (
                   <span
-                    className="text-[11px] font-medium truncate min-w-0 text-muted-foreground cursor-text"
+                    className="min-w-0 flex-1 truncate text-[11px] font-medium text-muted-foreground cursor-text"
                     onDoubleClick={(event) => {
                       event.preventDefault()
                       event.stopPropagation()

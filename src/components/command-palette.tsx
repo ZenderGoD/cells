@@ -962,7 +962,7 @@ export function CommandPalette() {
             title bar — keep <StatusBar embedded /> and the full bar in
             toolbar.tsx in sync when editing either. Wrapper sits outside
             <Command> but uses bg-popover to match so there is no color seam. */}
-        <div className="border-b border-border/40 bg-popover">
+        <div className="min-w-0 overflow-hidden border-b border-border/40 bg-popover">
           <StatusBar embedded />
         </div>
         <Command
