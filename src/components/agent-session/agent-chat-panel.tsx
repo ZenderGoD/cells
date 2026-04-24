@@ -548,6 +548,22 @@ function CompactionLine({ message }: { message: AgentSessionMessage }) {
   )
 }
 
+function getReconnectStatus(text: string | null | undefined): {
+  attempt: number | null
+  total: number | null
+} | null {
+  const trimmed = text?.trim() ?? ''
+  if (!trimmed) return null
+  const match = trimmed.match(/^reconnecting(?:\.{3}|…)?\s*(?:(\d+)\s*\/\s*(\d+))?$/i)
+  if (!match) return null
+  const attempt = match[1] ? Number(match[1]) : null
+  const total = match[2] ? Number(match[2]) : null
+  return {
+    attempt: Number.isFinite(attempt) ? attempt : null,
+    total: Number.isFinite(total) ? total : null,
+  }
+}
+
 function ErrorBubble({ message }: { message: AgentSessionMessage }) {
   return (
     <div className="flex w-full justify-start">
@@ -557,6 +573,36 @@ function ErrorBubble({ message }: { message: AgentSessionMessage }) {
         </div>
         <div className="whitespace-pre-wrap break-words">{message.text}</div>
       </div>
+    </div>
+  )
+}
+
+function SessionErrorBanner({ error, agent }: { error: string; agent: AgentWindowNode['agent'] }) {
+  const reconnect = getReconnectStatus(error)
+  if (reconnect) {
+    const attemptLabel =
+      reconnect.attempt != null && reconnect.total != null
+        ? `${reconnect.attempt}/${reconnect.total}`
+        : null
+    return (
+      <div className="mb-2 flex items-center gap-2 rounded-[10px] bg-background/60 px-2.5 py-1.5 text-[12px] text-foreground/85 shadow-minimal backdrop-blur-md">
+        <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground/70" />
+        <span className="min-w-0 flex-1 truncate text-muted-foreground/90">
+          {getAgentDisplayName(agent)} reconnecting
+        </span>
+        {attemptLabel ? (
+          <span className="shrink-0 rounded-[4px] bg-background px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground/80 shadow-minimal">
+            {attemptLabel}
+          </span>
+        ) : null}
+      </div>
+    )
+  }
+
+  return (
+    <div className="mb-2 flex items-center gap-2 rounded-[10px] border border-red-500/20 bg-red-500/7 px-2.5 py-1.5 text-[12px] text-red-300 shadow-minimal backdrop-blur-md">
+      <X className="size-3.5 shrink-0 text-red-300/80" />
+      <span className="min-w-0 flex-1 truncate">{error}</span>
     </div>
   )
 }
@@ -794,6 +840,7 @@ function groupMessages(messages: AgentSessionMessage[]): ChatGroup[] {
   }
 
   for (const message of messages) {
+    if (message.role === 'error' && getReconnectStatus(message.text)) continue
     // Subagent traffic (anything with a parentToolUseId) belongs INSIDE the
     // Task tool row, not as its own group. The parent Task row renders it
     // hierarchically via AgentTurnCard. We still push those messages into the
@@ -3246,9 +3293,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                 </div>
               ) : null}
               {visibleSnapshot?.error ? (
-                <div className="mb-2 rounded-[12px] bg-red-500/12 px-3 py-2 text-[12px] text-red-300 backdrop-blur-sm">
-                  {visibleSnapshot.error}
-                </div>
+                <SessionErrorBanner error={visibleSnapshot.error} agent={agentWindow.agent} />
               ) : null}
               {visibleSnapshot?.pendingPlanApproval ? (
                 <PlanApprovalBanner
