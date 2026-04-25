@@ -20,7 +20,7 @@ interface AgentMarkdownProps {
   inline?: boolean
   /** Treat single newlines as hard line breaks (for user-typed messages). */
   breaks?: boolean
-  /** Word-stagger the trailing text while a response streams. */
+  /** Reveal the trailing text while a response streams. */
   streamingReveal?: boolean
 }
 
@@ -34,37 +34,45 @@ function splitTrailingWords(text: string) {
   return {
     stable: text.slice(0, start),
     reveal: text.slice(start),
+    revealStart: start,
   }
 }
 
-function StreamingRevealTail({ text }: { text: string }) {
+function StreamingRevealTail({ text, startOffset }: { text: string; startOffset: number }) {
   const segments = text.match(/\S+|\s+/g) ?? [text]
   const characterCount = segments.reduce((count, segment) => {
     if (/^\s+$/.test(segment)) return count
     return count + Array.from(segment).length
   }, 0)
   let characterIndex = 0
+  let textOffset = 0
+  const renderedParts: React.ReactNode[] = []
 
-  return (
-    <span key={text.length} className="streaming-reveal-tail whitespace-pre-wrap">
-      {segments.map((segment, segmentIndex) => {
-        if (/^\s+$/.test(segment)) return segment
-        return Array.from(segment).map((character, index) => {
-          const ratio = characterCount <= 1 ? 1 : characterIndex / (characterCount - 1)
-          characterIndex += 1
-          return (
-            <span
-              key={`${segmentIndex}:${index}`}
-              className="streaming-reveal-character"
-              style={{ '--streaming-reveal-ratio': ratio } as CSSProperties}
-            >
-              {character}
-            </span>
-          )
-        })
-      })}
-    </span>
-  )
+  for (const segment of segments) {
+    if (/^\s+$/.test(segment)) {
+      renderedParts.push(segment)
+      textOffset += segment.length
+      continue
+    }
+
+    for (const character of Array.from(segment)) {
+      const ratio = characterCount <= 1 ? 1 : characterIndex / (characterCount - 1)
+      const key = startOffset + textOffset
+      characterIndex += 1
+      textOffset += character.length
+      renderedParts.push(
+        <span
+          key={key}
+          className="streaming-reveal-character"
+          style={{ '--streaming-reveal-ratio': ratio } as CSSProperties}
+        >
+          {character}
+        </span>,
+      )
+    }
+  }
+
+  return <span className="streaming-reveal-tail whitespace-pre-wrap">{renderedParts}</span>
 }
 
 function revealTrailingText(children: React.ReactNode): React.ReactNode {
@@ -80,7 +88,7 @@ function revealTrailingText(children: React.ReactNode): React.ReactNode {
       return (
         <>
           {split.stable}
-          <StreamingRevealTail text={split.reveal} />
+          <StreamingRevealTail text={split.reveal} startOffset={split.revealStart} />
         </>
       )
     }

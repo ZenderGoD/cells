@@ -2746,15 +2746,16 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         }
       }
       if (event.key !== 'Enter') return
-      if (event.shiftKey) return // Shift+Enter → newline
+      const hasPrimary = hasPrimaryModifier(event.nativeEvent)
+      if (event.shiftKey && !hasPrimary && !event.altKey) return // Shift+Enter → newline
       if (editingIndex !== null) {
         event.preventDefault()
         event.stopPropagation()
         commitEditQueued()
         return
       }
-      // Mod+Enter: interrupt the running turn and send this message next.
-      if (hasPrimaryModifier(event.nativeEvent)) {
+      // Mod+Enter and Mod+Shift+Enter: interrupt the running turn and send this message next.
+      if (hasPrimary) {
         event.preventDefault()
         event.stopPropagation()
         void submit('stop')
@@ -2843,13 +2844,14 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         return
       }
       if (event.key !== 'Enter') return
-      if (event.shiftKey) return
+      const hasPrimary = hasPrimaryModifier(event)
+      if (event.shiftKey && !hasPrimary && !event.altKey) return
       if ((event as any).isComposing || event.keyCode === 229) return
       event.preventDefault()
       event.stopPropagation()
       if (editingIndex !== null) {
         commitEditQueued()
-      } else if (hasPrimaryModifier(event)) {
+      } else if (hasPrimary) {
         void submit('stop')
       } else if (event.altKey) {
         void submit('after-tool')
