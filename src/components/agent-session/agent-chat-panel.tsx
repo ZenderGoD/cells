@@ -10,7 +10,6 @@ import {
   Copy,
   FastForward,
   FileText,
-  Folder,
   GitBranch,
   GripVertical,
   HelpCircle,
@@ -57,6 +56,8 @@ import {
   cycleThinkingLevel,
   getDefaultPermissionMode,
   prettifyModelId,
+  resolveAgentPickerModelId,
+  resolveThinkingLevelForModel,
 } from './agent-composer-toolbar'
 import { AgentTurnCard } from './agent-turn-card'
 import { LoadingIndicator } from './agent-loading-indicator'
@@ -74,10 +75,13 @@ import {
 } from '@/lib/keyboard-shortcuts'
 import { cn } from '@/lib/utils'
 import { computeStableList, createEmptyStableListState } from '@/lib/stable-list'
+import { getVerticalScrollFadeMask, useVerticalScrollFades } from '@/lib/use-scroll-fades'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Kbd } from '@/components/ui/kbd'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { showToast } from '@/components/toast'
+import { WorktreeManager } from '@/components/worktree-manager'
 import { LegendList, type LegendListRef } from '@legendapp/list/react'
 
 interface AgentChatPanelProps {
@@ -670,14 +674,32 @@ function ComposerAttachmentChip({ path, onRemove }: { path: string; onRemove: ()
   )
 }
 
-function UserBubble({ message }: { message: AgentSessionMessage }) {
-  const attachments = message.attachments ?? []
-  const images = attachments.filter(isImagePath)
-  const others = attachments.filter((p) => !isImagePath(p))
-  const hasText = message.text.trim().length > 0
+const USER_BUBBLE_MAX_HEIGHT = 540
+const USER_BUBBLE_MARKDOWN_LIMIT = 12000
+const USER_BUBBLE_TEXT_PREVIEW_LIMIT = 24000
+
+const UserBubble = memo(function UserBubble({ message }: { message: AgentSessionMessage }) {
+  const text = message.text
+  const attachments = message.attachments
+  const images = useMemo(() => (attachments ?? []).filter(isImagePath), [attachments])
+  const others = useMemo(() => (attachments ?? []).filter((p) => !isImagePath(p)), [attachments])
+  const hasText = text.length > 0 && /\S/.test(text)
+  const isLargeText = text.length > USER_BUBBLE_MARKDOWN_LIMIT
+  const canPreviewText = text.length > USER_BUBBLE_TEXT_PREVIEW_LIMIT
   const reduceMotion = useReducedMotion()
-  const animateEntry = !reduceMotion
+  const animateEntry = !reduceMotion && !isLargeText
   const [previewPath, setPreviewPath] = useState<string | null>(null)
+  const [renderLargeMarkdown, setRenderLargeMarkdown] = useState(true)
+  const [showFullLargeText, setShowFullLargeText] = useState(false)
+  const [setUserScrollElement, userFade] = useVerticalScrollFades(
+    `${text.length}:${renderLargeMarkdown}:${showFullLargeText}`,
+  )
+  const userMask = getVerticalScrollFadeMask(userFade, 14, 14)
+  const renderAsPlainText = isLargeText && !renderLargeMarkdown
+  const previewingPlainText = renderAsPlainText && canPreviewText && !showFullLargeText
+  const visiblePlainText = previewingPlainText
+    ? `${text.slice(0, USER_BUBBLE_TEXT_PREVIEW_LIMIT)}\n\n...`
+    : text
 
   return (
     <div className="mt-8 flex w-full justify-end">
@@ -685,7 +707,7 @@ function UserBubble({ message }: { message: AgentSessionMessage }) {
         initial={animateEntry ? { opacity: 0, filter: 'blur(8px)', y: 4 } : false}
         animate={animateEntry ? { opacity: 1, filter: 'blur(0px)', y: 0 } : undefined}
         transition={{ duration: 0.28, ease: EASE_OUT }}
-        className="flex max-w-[78%] flex-col items-end gap-1.5 select-text"
+        className="group flex max-w-[78%] flex-col items-end gap-1.5 select-text"
       >
         <UserAttachmentPreviewDialog path={previewPath} onClose={() => setPreviewPath(null)} />
         {images.length > 0 ? (
@@ -696,10 +718,51 @@ function UserBubble({ message }: { message: AgentSessionMessage }) {
           </div>
         ) : null}
         {hasText ? (
-          <div className="break-words rounded-[12px] bg-foreground/5 px-3.5 py-2 text-[13px] leading-[1.45] text-foreground shadow-minimal">
-            <AgentMarkdown inline breaks>
-              {message.text}
-            </AgentMarkdown>
+          <div className="rounded-[12px] bg-foreground/5 shadow-minimal">
+            <div
+              ref={setUserScrollElement}
+              className="scrollbar-hover overflow-y-auto overscroll-contain break-words px-3.5 py-2 text-[13px] leading-[1.45] text-foreground"
+              style={{
+                maxHeight: USER_BUBBLE_MAX_HEIGHT,
+                maskImage: userMask,
+                WebkitMaskImage: userMask,
+                contentVisibility: 'auto',
+                containIntrinsicSize: '0 180px',
+              }}
+            >
+              {renderAsPlainText ? (
+                <pre className="m-0 whitespace-pre-wrap break-words font-sans leading-[1.45]">
+                  {visiblePlainText}
+                </pre>
+              ) : (
+                <AgentMarkdown inline breaks>
+                  {text}
+                </AgentMarkdown>
+              )}
+            </div>
+            {isLargeText ? (
+              <div className="flex items-center justify-between gap-3 border-t border-border/30 px-3.5 py-1.5 text-[11px] text-muted-foreground/70">
+                <span>{text.length.toLocaleString()} chars</span>
+                <div className="flex items-center gap-1">
+                  {renderAsPlainText && canPreviewText ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowFullLargeText((value) => !value)}
+                      className="rounded-[5px] px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+                    >
+                      {showFullLargeText ? 'Preview' : 'Show full'}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => setRenderLargeMarkdown((value) => !value)}
+                    className="rounded-[5px] px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+                  >
+                    {renderLargeMarkdown ? 'Plain text' : 'Render markdown'}
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </div>
         ) : null}
         {others.length > 0 ? (
@@ -712,7 +775,7 @@ function UserBubble({ message }: { message: AgentSessionMessage }) {
       </motion.div>
     </div>
   )
-}
+})
 
 function SystemLine({ message }: { message: AgentSessionMessage }) {
   return (
@@ -802,6 +865,7 @@ function SessionErrorBanner({ error, agent }: { error: string; agent: AgentWindo
 }
 
 type QueuedMessage = QueuedAgentMessage
+type QueuedMessageSettings = Pick<QueuedMessage, 'model' | 'thinkingLevel' | 'permissionMode'>
 const ATTACHMENTS_ONLY_TEXT = '(attached files)'
 
 function createQueuedMessageId(): string {
@@ -1966,6 +2030,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const [stopConfirmArmed, setStopConfirmArmed] = useState(false)
   const stopConfirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
+  const [queuedEditSettings, setQueuedEditSettings] = useState<QueuedMessageSettings | null>(null)
   // Active drag state for queue reorder — `dragIndex` is the row being dragged,
   // `dragOverIndex` is the row currently under the pointer. Both reset on
   // drop or drag-end.
@@ -2012,6 +2077,105 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     },
     [setQueuedMessages],
   )
+  const getRememberedThinkingLevelForModel = useCallback(
+    (modelId: string | null | undefined) => {
+      const resolvedModelId = resolveAgentPickerModelId(agentWindow.agent, modelId)
+      const remembered = resolvedModelId
+        ? (useStore.getState().lastAgentSessionDefaults[agentWindow.agent]?.thinkingLevelsByModel?.[
+            resolvedModelId
+          ] ?? null)
+        : null
+      return resolveThinkingLevelForModel(agentWindow.agent, resolvedModelId, remembered)
+    },
+    [agentWindow.agent],
+  )
+  const rememberThinkingLevelForModel = useCallback(
+    (modelId: string | null | undefined, level: AgentThinkingLevel | null) => {
+      const resolvedModelId = resolveAgentPickerModelId(agentWindow.agent, modelId)
+      if (!resolvedModelId || !level) return
+      useStore.getState().setLastAgentSessionDefaults(agentWindow.agent, {
+        thinkingLevel: level,
+        thinkingLevelsByModel: { [resolvedModelId]: level },
+      })
+    },
+    [agentWindow.agent],
+  )
+  const updateActiveComposerModel = useCallback(
+    (modelId: string) => {
+      const nextThinkingLevel = getRememberedThinkingLevelForModel(modelId)
+      const previousModelId = resolveAgentPickerModelId(agentWindow.agent, agentWindow.model)
+      const previousThinkingLevel = agentWindow.thinkingLevel ?? null
+      const store = useStore.getState()
+      store.syncAgentWindow(agentWindow.id, {
+        model: modelId,
+        thinkingLevel: nextThinkingLevel,
+      })
+      store.setLastAgentSessionDefaults(agentWindow.agent, {
+        model: modelId,
+        thinkingLevel: nextThinkingLevel,
+        thinkingLevelsByModel: {
+          ...(previousModelId && previousThinkingLevel
+            ? { [previousModelId]: previousThinkingLevel }
+            : {}),
+          ...(nextThinkingLevel ? { [modelId]: nextThinkingLevel } : {}),
+        },
+      })
+    },
+    [
+      agentWindow.agent,
+      agentWindow.id,
+      agentWindow.model,
+      agentWindow.thinkingLevel,
+      getRememberedThinkingLevelForModel,
+    ],
+  )
+  const updateActiveComposerThinking = useCallback(
+    (level: AgentThinkingLevel) => {
+      const modelId = resolveAgentPickerModelId(agentWindow.agent, agentWindow.model)
+      const store = useStore.getState()
+      store.syncAgentWindow(agentWindow.id, { thinkingLevel: level })
+      store.setLastAgentSessionDefaults(agentWindow.agent, {
+        thinkingLevel: level,
+        thinkingLevelsByModel: modelId ? { [modelId]: level } : {},
+      })
+    },
+    [agentWindow.agent, agentWindow.id, agentWindow.model],
+  )
+  const updateQueuedEditModel = useCallback(
+    (modelId: string) => {
+      const nextThinkingLevel = getRememberedThinkingLevelForModel(modelId)
+      setQueuedEditSettings((current) => ({
+        model: modelId,
+        thinkingLevel: nextThinkingLevel,
+        permissionMode: current?.permissionMode ?? null,
+      }))
+    },
+    [getRememberedThinkingLevelForModel],
+  )
+  const updateQueuedEditThinking = useCallback(
+    (level: AgentThinkingLevel) => {
+      const fallbackModelId = resolveAgentPickerModelId(
+        agentWindow.agent,
+        queuedEditSettings?.model,
+      )
+      rememberThinkingLevelForModel(fallbackModelId, level)
+      setQueuedEditSettings((current) => {
+        return {
+          model: current?.model ?? fallbackModelId,
+          thinkingLevel: level,
+          permissionMode: current?.permissionMode ?? null,
+        }
+      })
+    },
+    [agentWindow.agent, queuedEditSettings?.model, rememberThinkingLevelForModel],
+  )
+  const updateQueuedEditPermission = useCallback((mode: AgentPermissionMode) => {
+    setQueuedEditSettings((current) => ({
+      model: current?.model ?? null,
+      thinkingLevel: current?.thinkingLevel ?? null,
+      permissionMode: mode,
+    }))
+  }, [])
   const scrollViewportRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<LegendListRef>(null)
   const recentSessionsViewportRef = useRef<HTMLDivElement>(null)
@@ -2117,17 +2281,20 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       if (event.defaultPrevented) return
       if (document.activeElement !== textareaRef.current) return
 
-      const store = useStore.getState()
       const isCtrlOnly = event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey
       const key = event.key.toLowerCase()
+      const editingQueued = editingIndex !== null
 
       if (isCtrlOnly && key === 'm') {
         event.preventDefault()
         event.stopPropagation()
-        const nextId = cycleAgentModel(agentWindow.agent, agentWindow.model)
+        const nextId = cycleAgentModel(
+          agentWindow.agent,
+          editingQueued ? queuedEditSettings?.model : agentWindow.model,
+        )
         if (nextId) {
-          store.syncAgentWindow(agentWindow.id, { model: nextId })
-          store.setLastAgentSessionDefaults(agentWindow.agent, { model: nextId })
+          if (editingQueued) updateQueuedEditModel(nextId)
+          else updateActiveComposerModel(nextId)
         }
         return
       }
@@ -2137,12 +2304,12 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         event.stopPropagation()
         const nextLevel = cycleThinkingLevel(
           agentWindow.agent,
-          agentWindow.model,
-          agentWindow.thinkingLevel,
+          editingQueued ? queuedEditSettings?.model : agentWindow.model,
+          editingQueued ? queuedEditSettings?.thinkingLevel : agentWindow.thinkingLevel,
         )
         if (nextLevel) {
-          store.syncAgentWindow(agentWindow.id, { thinkingLevel: nextLevel })
-          store.setLastAgentSessionDefaults(agentWindow.agent, { thinkingLevel: nextLevel })
+          if (editingQueued) updateQueuedEditThinking(nextLevel)
+          else updateActiveComposerThinking(nextLevel)
         }
         return
       }
@@ -2157,13 +2324,19 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         event.preventDefault()
         event.stopPropagation()
         const nextMode = cyclePermissionMode(
-          agentWindow.permissionMode ?? getDefaultPermissionMode(),
+          (editingQueued ? queuedEditSettings?.permissionMode : agentWindow.permissionMode) ??
+            getDefaultPermissionMode(),
         )
-        store.syncAgentWindow(agentWindow.id, { permissionMode: nextMode })
-        store.setLastAgentSessionDefaults(agentWindow.agent, { permissionMode: nextMode })
-        void window.cells.agentSession
-          .updatePermissionMode(agentWindow.id, nextMode)
-          .catch((err: unknown) => console.error('[agent-chat] updatePermissionMode failed', err))
+        if (editingQueued) {
+          updateQueuedEditPermission(nextMode)
+        } else {
+          const store = useStore.getState()
+          store.syncAgentWindow(agentWindow.id, { permissionMode: nextMode })
+          store.setLastAgentSessionDefaults(agentWindow.agent, { permissionMode: nextMode })
+          void window.cells.agentSession
+            .updatePermissionMode(agentWindow.id, nextMode)
+            .catch((err: unknown) => console.error('[agent-chat] updatePermissionMode failed', err))
+        }
       }
     }
 
@@ -2175,7 +2348,14 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     agentWindow.model,
     agentWindow.permissionMode,
     agentWindow.thinkingLevel,
+    editingIndex,
     focusedAgentWindowId,
+    queuedEditSettings,
+    updateActiveComposerModel,
+    updateActiveComposerThinking,
+    updateQueuedEditModel,
+    updateQueuedEditPermission,
+    updateQueuedEditThinking,
   ])
   // Clear the "done-unviewed" flag the moment the user focuses this window —
   // they've now "checked on" the completed turn.
@@ -2515,6 +2695,13 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const canSubmit = hasComposerPayload && !isRunning
   const isEditingQueuedMessage = editingIndex !== null
   const canSaveQueuedEdit = isEditingQueuedMessage && hasComposerPayload
+  const composerPermissionMode = isEditingQueuedMessage
+    ? queuedEditSettings?.permissionMode
+    : agentWindow.permissionMode
+  const composerModel = isEditingQueuedMessage ? queuedEditSettings?.model : agentWindow.model
+  const composerThinkingLevel = isEditingQueuedMessage
+    ? queuedEditSettings?.thinkingLevel
+    : agentWindow.thinkingLevel
   const branchTargets = useMemo(
     () =>
       (['claude', 'codex'] as const).map((agent) => ({
@@ -2833,6 +3020,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         const restore = queuedEditRestoreRef.current
         queuedEditRestoreRef.current = null
         setEditingIndex(null)
+        setQueuedEditSettings(null)
         writeComposer(restore?.input ?? '', restore?.attachments ?? [])
       }
       setQueuedMessages((q) => q.filter((_, i) => i !== index))
@@ -2852,6 +3040,11 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         }
       }
       setEditingIndex(index)
+      setQueuedEditSettings({
+        model: entry.model ?? null,
+        thinkingLevel: entry.thinkingLevel ?? null,
+        permissionMode: entry.permissionMode ?? null,
+      })
       writeComposer(getQueuedComposerText(entry), [...entry.attachments])
       setQueueCollapsed(false)
       window.setTimeout(() => textareaRef.current?.focus(), 0)
@@ -2864,21 +3057,33 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     const nextText = getQueuedStoredText(inputRef.current, attachmentsRef.current)
     if (!nextText) return
     const nextAttachments = [...attachmentsRef.current]
+    const nextSettings = queuedEditSettings
     setQueuedMessages((q) =>
       q.map((m, i) =>
-        i === editingIndex ? { ...m, text: nextText, attachments: nextAttachments } : m,
+        i === editingIndex
+          ? {
+              ...m,
+              text: nextText,
+              attachments: nextAttachments,
+              model: nextSettings?.model ?? null,
+              thinkingLevel: nextSettings?.thinkingLevel ?? null,
+              permissionMode: nextSettings?.permissionMode ?? null,
+            }
+          : m,
       ),
     )
     const restore = queuedEditRestoreRef.current
     queuedEditRestoreRef.current = null
     setEditingIndex(null)
+    setQueuedEditSettings(null)
     writeComposer(restore?.input ?? '', restore?.attachments ?? [])
-  }, [editingIndex, setQueuedMessages, writeComposer])
+  }, [editingIndex, queuedEditSettings, setQueuedMessages, writeComposer])
 
   const cancelEditQueued = useCallback(() => {
     const restore = queuedEditRestoreRef.current
     queuedEditRestoreRef.current = null
     setEditingIndex(null)
+    setQueuedEditSettings(null)
     writeComposer(restore?.input ?? '', restore?.attachments ?? [])
   }, [writeComposer])
 
@@ -2890,6 +3095,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         const restore = queuedEditRestoreRef.current
         queuedEditRestoreRef.current = null
         setEditingIndex(null)
+        setQueuedEditSettings(null)
         writeComposer(restore?.input ?? '', restore?.attachments ?? [])
       }
       interruptMessageRef.current = { ...entry, mode: 'stop' }
@@ -3405,10 +3611,9 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                           New {getAgentDisplayName(agentWindow.agent)} session
                         </p>
                         {cwdDisplay ? (
-                          <p className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-muted-foreground/85">
-                            <Folder className="h-3 w-3" />
-                            <span className="font-mono">{cwdDisplay}</span>
-                          </p>
+                          <div className="flex justify-center">
+                            <WorktreeManager agentWindowId={agentWindow.id} />
+                          </div>
                         ) : (
                           <p className="text-[11.5px] text-muted-foreground/60">
                             No working directory
@@ -4067,8 +4272,12 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                     <Paperclip className="size-3.5" />
                   </button>
                   <PermissionPicker
-                    value={agentWindow.permissionMode ?? getDefaultPermissionMode()}
+                    value={composerPermissionMode ?? getDefaultPermissionMode()}
                     onChange={(mode: AgentPermissionMode) => {
+                      if (isEditingQueuedMessage) {
+                        updateQueuedEditPermission(mode)
+                        return
+                      }
                       const store = useStore.getState()
                       store.syncAgentWindow(agentWindow.id, { permissionMode: mode })
                       store.setLastAgentSessionDefaults(agentWindow.agent, { permissionMode: mode })
@@ -4083,37 +4292,39 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                   />
                   <ModelPicker
                     agent={agentWindow.agent}
-                    value={agentWindow.model}
-                    contextLength={agentWindow.contextLength}
+                    value={composerModel}
+                    contextLength={isEditingQueuedMessage ? null : agentWindow.contextLength}
                     onChange={(modelId) => {
-                      const store = useStore.getState()
-                      store.syncAgentWindow(agentWindow.id, { model: modelId })
-                      store.setLastAgentSessionDefaults(agentWindow.agent, { model: modelId })
+                      if (isEditingQueuedMessage) updateQueuedEditModel(modelId)
+                      else updateActiveComposerModel(modelId)
                     }}
-                    onContextLengthChange={(length: AgentContextLength) => {
-                      const store = useStore.getState()
-                      store.syncAgentWindow(agentWindow.id, { contextLength: length })
-                      store.setLastAgentSessionDefaults(agentWindow.agent, {
-                        contextLength: length,
-                      })
-                      // Claude session has to be reopened to pick up / drop the
-                      // context-1m beta flag — the backend handles that inside
-                      // updateContextLength by closing the runtime.
-                      void window.cells.agentSession
-                        .updateContextLength(agentWindow.id, length)
-                        .catch((err: unknown) =>
-                          console.error('[agent-chat] updateContextLength failed', err),
-                        )
-                    }}
+                    onContextLengthChange={
+                      isEditingQueuedMessage
+                        ? undefined
+                        : (length: AgentContextLength) => {
+                            const store = useStore.getState()
+                            store.syncAgentWindow(agentWindow.id, { contextLength: length })
+                            store.setLastAgentSessionDefaults(agentWindow.agent, {
+                              contextLength: length,
+                            })
+                            // Claude session has to be reopened to pick up / drop the
+                            // context-1m beta flag — the backend handles that inside
+                            // updateContextLength by closing the runtime.
+                            void window.cells.agentSession
+                              .updateContextLength(agentWindow.id, length)
+                              .catch((err: unknown) =>
+                                console.error('[agent-chat] updateContextLength failed', err),
+                              )
+                          }
+                    }
                   />
                   <ThinkingPicker
                     agent={agentWindow.agent}
-                    model={agentWindow.model}
-                    value={agentWindow.thinkingLevel}
+                    model={composerModel}
+                    value={composerThinkingLevel}
                     onChange={(level) => {
-                      const store = useStore.getState()
-                      store.syncAgentWindow(agentWindow.id, { thinkingLevel: level })
-                      store.setLastAgentSessionDefaults(agentWindow.agent, { thinkingLevel: level })
+                      if (isEditingQueuedMessage) updateQueuedEditThinking(level)
+                      else updateActiveComposerThinking(level)
                     }}
                   />
                   <ContextUsageIndicator
@@ -4121,26 +4332,40 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                     agent={agentWindow.agent}
                     contextLength={agentWindow.contextLength}
                   />
-                  {hasMessages && visibleSnapshot ? (
-                    <div className="ml-1 hidden items-center gap-1 border-l border-border/45 pl-1.5 sm:flex">
-                      {branchTargets.map((target) => (
-                        <button
-                          key={target.agent}
-                          type="button"
-                          disabled={isRunning || isEditingQueuedMessage}
-                          onClick={() => branchToAgent(target.agent)}
-                          className={cn(
-                            'inline-flex h-7 shrink-0 items-center gap-1.5 rounded-[8px] bg-foreground/5 px-2 text-[11.5px] text-muted-foreground/85 transition-colors hover:bg-foreground/10 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-45',
-                            target.isCurrent && 'text-foreground/80',
-                          )}
-                          title={`Branch into ${target.label}`}
-                        >
-                          <GitBranch className="size-3.5" />
-                          <AgentIcon agent={target.agent} className="size-3.5" size={14} />
-                          <span>{target.agent === 'claude' ? 'Claude' : 'Codex'}</span>
-                        </button>
-                      ))}
-                    </div>
+                  {hasMessages && visibleSnapshot && hasComposerText && !isEditingQueuedMessage ? (
+                    <Popover>
+                      <PopoverTrigger
+                        className="ml-1 inline-flex size-7 shrink-0 items-center justify-center rounded-[8px] text-muted-foreground/55 transition-colors hover:bg-foreground/8 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-45"
+                        disabled={isRunning}
+                        title="Branch draft"
+                        aria-label="Branch draft"
+                      >
+                        <GitBranch className="size-3.5" />
+                      </PopoverTrigger>
+                      <PopoverContent
+                        align="center"
+                        side="top"
+                        sideOffset={6}
+                        className="!w-auto min-w-0 gap-0 rounded-[10px] p-1"
+                      >
+                        <div className="flex items-center gap-0.5">
+                          {branchTargets.map((target) => (
+                            <button
+                              key={target.agent}
+                              type="button"
+                              onClick={() => branchToAgent(target.agent)}
+                              className="flex h-7 items-center gap-1.5 rounded-md px-2 text-[11.5px] text-muted-foreground/90 transition-colors hover:bg-foreground/8 hover:text-foreground"
+                              title={`Branch into ${target.label}`}
+                            >
+                              <AgentIcon agent={target.agent} className="size-3.5" size={14} />
+                              <span className="whitespace-nowrap">
+                                {target.agent === 'claude' ? 'Claude' : 'Codex'}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      </PopoverContent>
+                    </Popover>
                   ) : null}
                   <div className="flex-1" />
                   {!isRunning && !isEditingQueuedMessage ? (

@@ -9,6 +9,8 @@ import type {
   AgentThinkingLevel,
   CellsAPI,
   DaemonStatus,
+  GitWorktreeCreateOptions,
+  GitWorktreeRemoveOptions,
   PerfEventRecord,
   PerfMonitorStatus,
   ProjectsState,
@@ -387,10 +389,15 @@ const api: CellsAPI = {
     isRepo: (cwd: string) => ipcRenderer.invoke('git:is-repo', cwd),
     repoRoot: (cwd: string) => ipcRenderer.invoke('git:repo-root', cwd),
     listWorktrees: (cwd: string) => ipcRenderer.invoke('git:list-worktrees', cwd),
-    createWorktree: (cwd: string, branch: string, targetDir?: string, baseBranch?: string) =>
-      ipcRenderer.invoke('git:create-worktree', cwd, branch, targetDir, baseBranch),
-    removeWorktree: (cwd: string, worktreePath: string) =>
-      ipcRenderer.invoke('git:remove-worktree', cwd, worktreePath),
+    createWorktree: (cwd: string, options: GitWorktreeCreateOptions) =>
+      ipcRenderer.invoke('git:create-worktree', cwd, options),
+    removeWorktree: (cwd: string, worktreePath: string, options?: GitWorktreeRemoveOptions) =>
+      ipcRenderer.invoke('git:remove-worktree', cwd, worktreePath, options),
+    pruneWorktrees: (cwd: string) => ipcRenderer.invoke('git:prune-worktrees', cwd),
+    validateBranch: (cwd: string, branchName: string) =>
+      ipcRenderer.invoke('git:validate-branch', cwd, branchName),
+    statusWorktree: (worktreePath: string) =>
+      ipcRenderer.invoke('git:status-worktree', worktreePath),
   },
   agent: {
     checkAvailable: (aliases?: Record<string, string>, paths?: Record<string, string>) =>

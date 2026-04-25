@@ -16,6 +16,8 @@ Cells is a desktop workspace for arranging terminals and browser panes on an inf
 
 Cells works with CLI agents like Claude Code and OpenAI Codex. You can run them as a plain terminal on the canvas, or open a dedicated agent window with a rich chat UI on top of the same CLI — streaming turns, tool call grouping, inline diffs, and a built-in diffs panel.
 
+Agent and terminal windows can also run inside Git worktrees. The worktree manager is available from the focused window toolbar, terminal chrome, agent window menu, and command palette. It can create worktrees, show dirty/ahead/behind state, open terminals or agents in any worktree, move focused terminals, branch agent sessions into another worktree, reveal/copy paths, and safely remove worktrees after attached windows and uncommitted changes are handled.
+
 ![Dedicated agent window with streaming turns, tool groups, and inline progress states](docs/screenshots/agent-session.png)
 *Dedicated agent window running OpenAI Codex on top of the CLI*
 

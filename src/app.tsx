@@ -532,12 +532,13 @@ function MainApp() {
         // Why letters only and not Cmd+arrows: Cmd+arrows have OS textarea
         // semantics (jump to line start/end, doc start/end). If we bypassed
         // for arrows too, typing in the composer would lose those. Cmd+hjkl
-        // is unambiguous — no textarea binds it.
+        // and overview are unambiguous — no textarea binds them.
         const isHjklSnap = shortcutCommand.startsWith('snap-') && /^[hjkl]$/i.test(event.key)
+        const allowFromEditableTarget = isHjklSnap || shortcutCommand === 'zoom-to-fit-all'
         if (
           isEditableTarget(event.target) &&
           shortcutScope === 'canvas' &&
-          !isHjklSnap &&
+          !allowFromEditableTarget &&
           !isCellsTerminalShortcutTarget(event.target)
         ) {
           return

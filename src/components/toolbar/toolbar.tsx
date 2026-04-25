@@ -6,7 +6,6 @@ import {
   ChevronDown,
   ChevronUp,
   Code,
-  GitBranch,
   Globe,
   LayoutGrid,
   Download,
@@ -42,7 +41,7 @@ import { AppSettings } from '../settings/app-settings'
 import { NewProjectDialog } from '../new-project-dialog'
 import { Logo } from '../logo'
 import { WindowOverviewMap } from '../canvas/window-overview-map'
-import { WorktreeSwitcher } from '../worktree-switcher'
+import { WorktreeManager } from '../worktree-manager'
 import { AgentIcon } from '../agent-icon'
 import { AgentWindowColorPicker } from './agent-window-color-picker'
 import { inferAgentFromTitle } from '@/lib/agent-command'
@@ -107,35 +106,6 @@ function shortenUrl(url?: string): string {
   } catch {
     return url
   }
-}
-
-function shortenPath(path: string): string {
-  return path.replace(/^\/Users\/[^/]+/, '~')
-}
-
-function getAgentLocationLabel(
-  cwd: string | null | undefined,
-  worktrees: Array<{ path: string; branch: string; isBare?: boolean }>,
-): string | null {
-  if (!cwd) return null
-  const normalizedCwd = cwd.replace(/\\/g, '/')
-  const matchingWorktree = worktrees
-    .filter((worktree) => !worktree.isBare)
-    .filter(
-      (worktree) =>
-        normalizedCwd === worktree.path || normalizedCwd.startsWith(`${worktree.path}/`),
-    )
-    .sort((left, right) => right.path.length - left.path.length)[0]
-
-  if (matchingWorktree) {
-    const relativePath = normalizedCwd.slice(matchingWorktree.path.length).replace(/^\/+/, '')
-    return relativePath ? `${matchingWorktree.branch} · ${relativePath}` : matchingWorktree.branch
-  }
-
-  const shortened = shortenPath(normalizedCwd)
-  const segments = shortened.split('/').filter(Boolean)
-  if (segments.length === 0) return shortened
-  return segments.length === 1 ? segments[0] : segments.slice(-2).join('/')
 }
 
 function ProjectTab({
@@ -419,7 +389,6 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
   )
   const projects = useStore((s) => s.projects)
   const activeProjectId = useStore((s) => s.activeProjectId)
-  const worktrees = useStore((s) => s.worktrees)
   const switchProject = useStore((s) => s.switchProject)
   const reorderProjects = useStore((s) => s.reorderProjects)
   const snapEnabled = useStore((s) => s.snapEnabled)
@@ -1047,7 +1016,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
                     {ftTitle}
                   </span>
                 )}
-                <WorktreeSwitcher termId={focusedTerminalId} />
+                <WorktreeManager terminalId={focusedTerminalId} />
                 {ftStatus.detail ? (
                   <span
                     className={cn(
@@ -1117,7 +1086,6 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
             const awTitle =
               aw.customTitle || aw.title || (aw.agent === 'claude' ? 'Claude Code' : 'Codex')
             const awStatus = aw.status || 'idle'
-            const awLocation = getAgentLocationLabel(aw.cwd ?? null, worktrees)
             const isEditingAgentTitle = editingTitleForAgentId === focusedAgentWindowId
             const awStatusPill = getAgentWindowStatusPresentation(awStatus, {
               hasUnviewedCompletion: aw.hasUnviewedCompletion,
@@ -1176,15 +1144,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
                     {awTitle}
                   </span>
                 )}
-                {awLocation ? (
-                  <span
-                    className="inline-flex min-w-0 max-w-52 shrink items-center gap-1 text-[10px] leading-none text-muted-foreground/55"
-                    title={shortenPath(aw.cwd ?? awLocation)}
-                  >
-                    <GitBranch className="h-2.5 w-2.5 shrink-0 opacity-60" />
-                    <span className="truncate">{awLocation}</span>
-                  </span>
-                ) : null}
+                <WorktreeManager agentWindowId={focusedAgentWindowId} />
                 <AgentWindowColorPicker
                   agentWindowId={focusedAgentWindowId}
                   currentColor={aw.color}

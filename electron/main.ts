@@ -33,6 +33,8 @@ import type {
   AgentMentionSearchResult,
   AgentSessionSnapshot,
   FocusAgentWindowRequest,
+  GitWorktree,
+  GitWorktreeCreateOptions,
   ProjectsState,
   TerminalSessionBackend,
 } from '../src/types'
@@ -1778,54 +1780,182 @@ function gitExec(args: string[], cwd: string): string {
   }).trim()
 }
 
-function parseWorktreeList(output: string): Array<{
-  path: string
-  branch: string
-  isMain: boolean
-  isBare: boolean
-}> {
-  const worktrees: Array<{
-    path: string
-    branch: string
-    isMain: boolean
-    isBare: boolean
-  }> = []
-  let current: { path?: string; branch?: string; bare?: boolean } = {}
+function parseWorktreeList(output: string): GitWorktree[] {
+  const worktrees: GitWorktree[] = []
+  let current: {
+    path?: string
+    branch?: string | null
+    branchRef?: string | null
+    head?: string | null
+    bare?: boolean
+    detached?: boolean
+    lockedReason?: string | null
+    prunable?: boolean
+    prunableReason?: string | null
+  } = {}
+
+  const pushCurrent = () => {
+    if (!current.path) return
+    worktrees.push({
+      path: current.path,
+      repoRoot: '',
+      head: current.head ?? null,
+      branch: current.detached ? null : (current.branch ?? null),
+      branchRef: current.branchRef ?? null,
+      isMain: worktrees.length === 0,
+      isBare: current.bare ?? false,
+      isDetached: current.detached ?? false,
+      isMissing: false,
+      isDirty: false,
+      dirtyCount: 0,
+      ahead: null,
+      behind: null,
+      upstream: null,
+      prunable: current.prunable ?? false,
+      lockedReason: current.lockedReason ?? current.prunableReason ?? null,
+    })
+  }
 
   for (const line of output.split('\n')) {
     if (line.startsWith('worktree ')) {
       current.path = line.slice('worktree '.length)
     } else if (line.startsWith('HEAD ')) {
-      // skip
+      current.head = line.slice('HEAD '.length) || null
     } else if (line.startsWith('branch ')) {
-      current.branch = line.slice('branch '.length).replace(/^refs\/heads\//, '')
+      const branchRef = line.slice('branch '.length)
+      current.branchRef = branchRef
+      current.branch = branchRef.replace(/^refs\/heads\//, '')
     } else if (line === 'bare') {
       current.bare = true
     } else if (line === 'detached') {
-      current.branch = current.branch ?? '(detached)'
+      current.detached = true
+      current.branch = null
+      current.branchRef = null
+    } else if (line.startsWith('locked')) {
+      current.lockedReason = line.slice('locked'.length).trim() || null
+    } else if (line.startsWith('prunable')) {
+      current.prunable = true
+      current.prunableReason = line.slice('prunable'.length).trim() || null
     } else if (line === '') {
-      if (current.path) {
-        worktrees.push({
-          path: current.path,
-          branch: current.branch ?? '(unknown)',
-          isMain: worktrees.length === 0,
-          isBare: current.bare ?? false,
-        })
-      }
+      pushCurrent()
       current = {}
     }
   }
   // Handle last entry if no trailing newline
-  if (current.path) {
-    worktrees.push({
-      path: current.path,
-      branch: current.branch ?? '(unknown)',
-      isMain: worktrees.length === 0,
-      isBare: current.bare ?? false,
-    })
-  }
+  pushCurrent()
 
   return worktrees
+}
+
+function parseWorktreeStatus(output: string): Partial<GitWorktree> {
+  let head: string | null = null
+  let branch: string | null = null
+  let upstream: string | null = null
+  let ahead: number | null = null
+  let behind: number | null = null
+  let dirtyCount = 0
+
+  for (const line of output.split('\n')) {
+    if (!line) continue
+    if (line.startsWith('# branch.oid ')) {
+      const value = line.slice('# branch.oid '.length).trim()
+      head = value && value !== '(initial)' ? value : null
+      continue
+    }
+    if (line.startsWith('# branch.head ')) {
+      const value = line.slice('# branch.head '.length).trim()
+      branch = value && value !== '(detached)' ? value : null
+      continue
+    }
+    if (line.startsWith('# branch.upstream ')) {
+      upstream = line.slice('# branch.upstream '.length).trim() || null
+      continue
+    }
+    if (line.startsWith('# branch.ab ')) {
+      const match = line.match(/\+(\d+)\s+-(\d+)/)
+      if (match) {
+        ahead = Number(match[1])
+        behind = Number(match[2])
+      }
+      continue
+    }
+    if (!line.startsWith('#')) dirtyCount += 1
+  }
+
+  return {
+    head,
+    branch,
+    upstream,
+    ahead,
+    behind,
+    dirtyCount,
+    isDirty: dirtyCount > 0,
+  }
+}
+
+function enrichWorktree(raw: GitWorktree, repoRoot: string): GitWorktree {
+  const exists = fs.existsSync(raw.path)
+  if (!exists || raw.isBare) {
+    return {
+      ...raw,
+      repoRoot,
+      isMissing: !exists,
+      prunable: raw.prunable || !exists,
+    }
+  }
+
+  try {
+    const status = parseWorktreeStatus(gitExec(['status', '--porcelain=v2', '--branch'], raw.path))
+    const branch = raw.branch ?? status.branch ?? null
+    return {
+      ...raw,
+      ...status,
+      repoRoot,
+      branch,
+      branchRef: raw.branchRef ?? (branch ? `refs/heads/${branch}` : null),
+      isDetached: raw.isDetached || !branch,
+      isMissing: false,
+      prunable: raw.prunable,
+      dirtyCount: status.dirtyCount ?? 0,
+      isDirty: status.isDirty ?? false,
+    }
+  } catch {
+    return {
+      ...raw,
+      repoRoot,
+      isMissing: false,
+    }
+  }
+}
+
+function listEnrichedWorktrees(cwd: string): GitWorktree[] {
+  const repoRoot = gitExec(['rev-parse', '--show-toplevel'], cwd)
+  const output = gitExec(['worktree', 'list', '--porcelain', '-v'], cwd)
+  return parseWorktreeList(output).map((worktree) => enrichWorktree(worktree, repoRoot))
+}
+
+function sanitizeWorktreeSlug(branch: string) {
+  const slug = branch
+    .trim()
+    .replace(/^refs\/heads\//, '')
+    .replace(/[\\/]+/g, '-')
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  return slug || `worktree-${Date.now().toString(36)}`
+}
+
+function validateBranchName(cwd: string, branchName: string) {
+  const trimmed = branchName.trim()
+  if (!trimmed) return { valid: false, message: 'Branch name is required.' }
+  try {
+    gitExec(['check-ref-format', '--branch', trimmed], cwd)
+    return { valid: true, message: null }
+  } catch (err) {
+    return {
+      valid: false,
+      message: err instanceof Error ? err.message : 'Invalid branch name.',
+    }
+  }
 }
 
 ipcMain.handle('git:is-repo', (_event, cwd: string) => {
@@ -1847,8 +1977,7 @@ ipcMain.handle('git:repo-root', (_event, cwd: string) => {
 
 ipcMain.handle('git:list-worktrees', (_event, cwd: string) => {
   try {
-    const output = gitExec(['worktree', 'list', '--porcelain'], cwd)
-    return parseWorktreeList(output)
+    return listEnrichedWorktrees(cwd)
   } catch {
     return []
   }
@@ -1856,33 +1985,90 @@ ipcMain.handle('git:list-worktrees', (_event, cwd: string) => {
 
 ipcMain.handle(
   'git:create-worktree',
-  (_event, cwd: string, branch: string, targetDir?: string, baseBranch?: string) => {
+  (_event, cwd: string, optionsOrBranch: GitWorktreeCreateOptions | string) => {
+    const options: GitWorktreeCreateOptions =
+      typeof optionsOrBranch === 'string' ? { branchName: optionsOrBranch } : optionsOrBranch
+    const branch = options.branchName.trim()
+    const validation = validateBranchName(cwd, branch)
+    if (!validation.valid) {
+      throw new Error(validation.message || 'Invalid branch name.')
+    }
     const repoRoot = gitExec(['rev-parse', '--show-toplevel'], cwd)
-    const dest = targetDir
-      ? path.join(targetDir, branch)
-      : path.join(path.dirname(repoRoot), `${path.basename(repoRoot)}-${branch}`)
+    const slug = sanitizeWorktreeSlug(branch)
+    const dest = options.targetDir
+      ? path.join(options.targetDir, slug)
+      : path.join(path.dirname(repoRoot), `${path.basename(repoRoot)}-${slug}`)
 
-    try {
-      // Try to create from existing branch first
+    if (fs.existsSync(dest)) {
+      throw new Error(`Worktree path already exists: ${dest}`)
+    }
+
+    if (options.checkoutExistingBranch) {
       gitExec(['worktree', 'add', dest, branch], cwd)
-    } catch {
-      // Branch doesn't exist — create a new one from baseBranch (or HEAD)
+    } else {
       const args = ['worktree', 'add', '-b', branch, dest]
-      if (baseBranch) args.push(baseBranch)
+      if (options.baseRef) args.push(options.baseRef)
       gitExec(args, cwd)
     }
 
     // Return the new worktree info
-    const output = gitExec(['worktree', 'list', '--porcelain'], cwd)
-    const all = parseWorktreeList(output)
+    const all = listEnrichedWorktrees(cwd)
     const created = all.find((w) => w.path === dest)
     if (!created) throw new Error(`Worktree created but not found: ${dest}`)
     return created
   },
 )
 
-ipcMain.handle('git:remove-worktree', (_event, cwd: string, worktreePath: string) => {
-  gitExec(['worktree', 'remove', worktreePath], cwd)
+ipcMain.handle(
+  'git:remove-worktree',
+  (_event, cwd: string, worktreePath: string, options?: { force?: boolean }) => {
+    const worktree = listEnrichedWorktrees(cwd).find((entry) => entry.path === worktreePath)
+    if (!worktree) throw new Error(`Worktree not found: ${worktreePath}`)
+    if (worktree.isMain) throw new Error('Cannot remove the main worktree.')
+    if (worktree.isDirty && !options?.force) {
+      throw new Error('Worktree has uncommitted changes.')
+    }
+    const args = ['worktree', 'remove']
+    if (options?.force) args.push('--force')
+    args.push(worktreePath)
+    gitExec(args, cwd)
+  },
+)
+
+ipcMain.handle('git:prune-worktrees', (_event, cwd: string) => {
+  gitExec(['worktree', 'prune'], cwd)
+})
+
+ipcMain.handle('git:validate-branch', (_event, cwd: string, branchName: string) => {
+  return validateBranchName(cwd, branchName)
+})
+
+ipcMain.handle('git:status-worktree', (_event, worktreePath: string) => {
+  try {
+    const repoRoot = gitExec(['rev-parse', '--show-toplevel'], worktreePath)
+    const branch = gitExec(['branch', '--show-current'], worktreePath) || null
+    const raw: GitWorktree = {
+      path: worktreePath,
+      repoRoot,
+      head: null,
+      branch,
+      branchRef: branch ? `refs/heads/${branch}` : null,
+      isMain: false,
+      isBare: false,
+      isDetached: !branch,
+      isMissing: !fs.existsSync(worktreePath),
+      isDirty: false,
+      dirtyCount: 0,
+      ahead: null,
+      behind: null,
+      upstream: null,
+      prunable: false,
+      lockedReason: null,
+    }
+    return enrichWorktree(raw, repoRoot)
+  } catch {
+    return null
+  }
 })
 
 ipcMain.handle(

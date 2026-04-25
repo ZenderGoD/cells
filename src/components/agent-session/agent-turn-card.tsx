@@ -13,6 +13,7 @@ import {
 import type { AgentSessionMessage, AgentWindowNode } from '@/types'
 import { cn } from '@/lib/utils'
 import { resolveToolIcon } from '@/lib/tool-icons'
+import { getVerticalScrollFadeMask, useVerticalScrollFades } from '@/lib/use-scroll-fades'
 import {
   diffStatsFromMessage,
   groupDiffsByFile,
@@ -570,6 +571,10 @@ function ResponseCard({ responses }: { responses: AgentSessionMessage[] }) {
   const [viewMode, setViewMode] = useState<'rendered' | 'source'>('rendered')
   const isStreaming = visible.length > 0 && visible[visible.length - 1].status === 'in_progress'
   const combinedText = useMemo(() => visible.map((r) => r.text).join('\n\n'), [visible])
+  const [setResponseScrollElement, responseFade] = useVerticalScrollFades(
+    `${viewMode}:${combinedText}`,
+  )
+  const responseMask = getVerticalScrollFadeMask(responseFade, 16, 16)
 
   const handleCopy = async () => {
     try {
@@ -590,12 +595,15 @@ function ResponseCard({ responses }: { responses: AgentSessionMessage[] }) {
       style={{ backgroundColor: 'var(--elevated-surface)', overflowAnchor: 'none' }}
     >
       <div
+        ref={setResponseScrollElement}
         data-search-root="response"
         className="scrollbar-hover select-text overflow-y-auto px-4 pt-1 text-sm text-foreground/90"
         style={{
           maxHeight: RESPONSE_MAX_HEIGHT,
           overflowAnchor: 'none',
           scrollbarGutter: 'stable',
+          maskImage: responseMask,
+          WebkitMaskImage: responseMask,
         }}
       >
         {visible.map((response, idx) => (

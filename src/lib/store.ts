@@ -7,6 +7,7 @@ import type {
   AgentName,
   BrowserNode,
   CanvasTransform,
+  GitWorktreeCreateOptions,
   GitWorktree,
   InputPrefix,
   Project,
@@ -206,7 +207,7 @@ interface StoreState {
     limitHit?: boolean,
   ): void
 
-  addTerminal(): TerminalNode
+  addTerminal(options?: { cwd?: string | null; title?: string }): TerminalNode
   addTerminalWithCommand(command: string, title?: string): TerminalNode
   addTerminalInWorktree(
     command: string,
@@ -223,6 +224,7 @@ interface StoreState {
   moveTerminal(id: string, x: number, y: number): void
   resizeTerminal(id: string, width: number, height: number): void
   updateTerminalTitle(id: string, title: string): void
+  setTerminalCwd(id: string, cwd: string | null): void
   setCustomTitle(id: string, customTitle: string | null): void
   focusTerminal(id: string | null): void
   bringToFront(id: string): void
@@ -324,10 +326,32 @@ interface StoreState {
   getSearchUrl(query: string): string
 
   // Worktree actions
-  refreshWorktrees(): Promise<void>
+  refreshWorktrees(options?: { includeStatus?: boolean }): Promise<void>
   switchTerminalWorktree(termId: string, worktreePath: string): Promise<void>
+  moveTerminalToWorktree(
+    termId: string,
+    worktreePath: string,
+    options?: { relaunchProcess?: boolean },
+  ): Promise<void>
   moveTerminalsToWorktree(termIds: string[], worktreePath: string): Promise<void>
-  createWorktree(branch: string): Promise<GitWorktree>
+  openTerminalInWorktree(worktreePath: string): TerminalNode
+  openAgentInWorktree(
+    agent: Extract<AgentName, 'claude' | 'codex'>,
+    worktreePath: string,
+    options?: {
+      title?: string
+      initialPrompt?: string | null
+      model?: string | null
+      permissionMode?: import('../types').AgentPermissionMode | null
+      thinkingLevel?: import('../types').AgentThinkingLevel | null
+      contextLength?: import('../types').AgentContextLength | null
+    },
+  ): AgentWindowNode
+  createWorktree(options: GitWorktreeCreateOptions): Promise<GitWorktree>
+  removeWorktreeSafely(
+    worktreePath: string,
+    options?: { force?: boolean; moveAttachedToMain?: boolean; closeAttached?: boolean },
+  ): Promise<void>
   setWorktreesDir(dir: string): void
   getWorktreesDir(): string | undefined
   setWorktreeBaseBranch(branch: string): void
@@ -381,12 +405,14 @@ const DEFAULT_AGENT_SESSION_DEFAULTS: Record<
     model: null,
     permissionMode: null,
     thinkingLevel: null,
+    thinkingLevelsByModel: {},
     contextLength: null,
   },
   codex: {
     model: null,
     permissionMode: null,
     thinkingLevel: null,
+    thinkingLevelsByModel: {},
     contextLength: null,
   },
 }
@@ -401,10 +427,16 @@ function normalizeAgentSessionDefaults(
     claude: {
       ...DEFAULT_AGENT_SESSION_DEFAULTS.claude,
       ...(value?.claude ?? {}),
+      thinkingLevelsByModel: {
+        ...(value?.claude?.thinkingLevelsByModel ?? {}),
+      },
     },
     codex: {
       ...DEFAULT_AGENT_SESSION_DEFAULTS.codex,
       ...(value?.codex ?? {}),
+      thinkingLevelsByModel: {
+        ...(value?.codex?.thinkingLevelsByModel ?? {}),
+      },
     },
   }
 }
@@ -1991,7 +2023,7 @@ export const useStore = create<StoreState>((set, get) => ({
     get().persist()
   },
 
-  addTerminal() {
+  addTerminal(options) {
     const id = nanoid(8)
     const newZ = get().topZIndex + 1
     const { terminals, browsers, agentWindows, focusHistory } = get()
@@ -2019,7 +2051,8 @@ export const useStore = create<StoreState>((set, get) => ({
       y,
       width,
       height,
-      title: 'Terminal',
+      title: options?.title ?? 'Terminal',
+      cwd: options?.cwd ?? null,
       zIndex: newZ,
     }
     set((s) => ({
@@ -2071,6 +2104,7 @@ export const useStore = create<StoreState>((set, get) => ({
 
   addTerminalInWorktree(command, title, worktreePath) {
     const terminal = get().addTerminalWithCommand(command, title)
+    get().setTerminalCwd(terminal.id, worktreePath)
     pendingWorktreePaths.set(terminal.id, worktreePath)
     return terminal
   },
@@ -2483,6 +2517,13 @@ export const useStore = create<StoreState>((set, get) => ({
     set((s) => ({
       terminals: s.terminals.map((t) => (t.id === id && !t.customTitle ? { ...t, title } : t)),
     }))
+  },
+
+  setTerminalCwd(id, cwd) {
+    set((s) => ({
+      terminals: s.terminals.map((t) => (t.id === id ? { ...t, cwd: cwd || null } : t)),
+    }))
+    debouncedPersist(() => get().persist())
   },
 
   setCustomTitle(id, customTitle) {
@@ -3162,6 +3203,10 @@ export const useStore = create<StoreState>((set, get) => ({
         [agent]: {
           ...state.lastAgentSessionDefaults[agent],
           ...patch,
+          thinkingLevelsByModel: {
+            ...(state.lastAgentSessionDefaults[agent]?.thinkingLevelsByModel ?? {}),
+            ...(patch.thinkingLevelsByModel ?? {}),
+          },
         },
       },
     }))
@@ -3606,7 +3651,7 @@ export const useStore = create<StoreState>((set, get) => ({
 
   // ---- Worktree actions ----
 
-  async refreshWorktrees() {
+  async refreshWorktrees(_options) {
     const projectPath = get().getActiveProjectPath()
     if (!projectPath) {
       set({ worktrees: [], isGitRepo: false, worktreesLoading: false })
@@ -3627,13 +3672,21 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   async switchTerminalWorktree(termId, worktreePath) {
+    await get().moveTerminalToWorktree(termId, worktreePath, { relaunchProcess: true })
+  },
+
+  async moveTerminalToWorktree(termId, worktreePath, options) {
     // Get the current running process before killing
     const processInfo = await window.cells.terminal.getProcessInfo(termId)
-    const command = processInfo && !processInfo.isShell ? processInfo.command : null
+    const command =
+      options?.relaunchProcess !== false && processInfo && !processInfo.isShell
+        ? processInfo.command
+        : null
 
     // Kill the PTY and destroy cached terminal
     destroyCachedTerminal(termId)
     await window.cells.terminal.detach(termId).catch(() => {})
+    get().setTerminalCwd(termId, worktreePath)
 
     // Trigger reload — the terminal component will re-mount and re-attach
     // with the new cwd via the pending worktree path
@@ -3647,7 +3700,7 @@ export const useStore = create<StoreState>((set, get) => ({
   async moveTerminalsToWorktree(termIds, worktreePath) {
     // Move terminals sequentially to avoid race conditions with PTY management
     for (const termId of termIds) {
-      await get().switchTerminalWorktree(termId, worktreePath)
+      await get().moveTerminalToWorktree(termId, worktreePath, { relaunchProcess: true })
     }
     // Exit selection mode after bulk move
     if (get().selectionMode) {
@@ -3655,20 +3708,71 @@ export const useStore = create<StoreState>((set, get) => ({
     }
   },
 
-  async createWorktree(branch) {
+  openTerminalInWorktree(worktreePath) {
+    const terminal = get().addTerminal({ cwd: worktreePath, title: 'Terminal' })
+    pendingWorktreePaths.set(terminal.id, worktreePath)
+    return terminal
+  },
+
+  openAgentInWorktree(agent, worktreePath, options) {
+    return get().addAgentWindow(agent, {
+      title: options?.title ?? (agent === 'claude' ? 'Claude Code' : 'Codex'),
+      cwd: worktreePath,
+      initialPrompt: options?.initialPrompt ?? null,
+      model: options?.model ?? null,
+      permissionMode: options?.permissionMode ?? null,
+      thinkingLevel: options?.thinkingLevel ?? null,
+      contextLength: options?.contextLength ?? null,
+    })
+  },
+
+  async createWorktree(options) {
     const projectPath = get().getActiveProjectPath()
     if (!projectPath) throw new Error('No active project')
     const project = get().getActiveProject()
-    const worktreesDir = project?.worktreesDir || undefined
-    const baseBranch = project?.worktreeBaseBranch || undefined
-    const created = await window.cells.git.createWorktree(
-      projectPath,
-      branch,
-      worktreesDir,
-      baseBranch,
-    )
+    const created = await window.cells.git.createWorktree(projectPath, {
+      ...options,
+      targetDir: options.targetDir ?? project?.worktreesDir ?? null,
+      baseRef: options.baseRef ?? project?.worktreeBaseBranch ?? null,
+    })
     await get().refreshWorktrees()
     return created
+  },
+
+  async removeWorktreeSafely(worktreePath, options) {
+    const projectPath = get().getActiveProjectPath()
+    if (!projectPath) throw new Error('No active project')
+    const mainWorktree = get().worktrees.find((worktree) => worktree.isMain)
+
+    const attachedTerminals = get().terminals.filter((terminal) => terminal.cwd === worktreePath)
+    const attachedAgents = get().agentWindows.filter(
+      (agentWindow) => agentWindow.cwd === worktreePath,
+    )
+
+    if (attachedTerminals.length > 0 || attachedAgents.length > 0) {
+      if (options?.moveAttachedToMain && mainWorktree) {
+        for (const terminal of attachedTerminals) {
+          await get().moveTerminalToWorktree(terminal.id, mainWorktree.path, {
+            relaunchProcess: false,
+          })
+        }
+        set((s) => ({
+          agentWindows: s.agentWindows.map((agentWindow) =>
+            agentWindow.cwd === worktreePath
+              ? { ...agentWindow, cwd: mainWorktree.path }
+              : agentWindow,
+          ),
+        }))
+      } else if (options?.closeAttached) {
+        for (const terminal of attachedTerminals) get().removeTerminal(terminal.id)
+        for (const agentWindow of attachedAgents) get().removeAgentWindow(agentWindow.id)
+      } else {
+        throw new Error('Close or move attached windows before removing this worktree.')
+      }
+    }
+
+    await window.cells.git.removeWorktree(projectPath, worktreePath, { force: options?.force })
+    await get().refreshWorktrees()
   },
 
   setWorktreesDir(dir) {
@@ -3751,7 +3855,16 @@ export const useStore = create<StoreState>((set, get) => ({
       codexThreadId: options?.codexThreadId ?? null,
       model: options?.model ?? savedDefaults.model ?? null,
       permissionMode: options?.permissionMode ?? savedDefaults.permissionMode ?? null,
-      thinkingLevel: options?.thinkingLevel ?? savedDefaults.thinkingLevel ?? null,
+      thinkingLevel:
+        options?.thinkingLevel ??
+        (options?.model
+          ? (savedDefaults.thinkingLevelsByModel?.[options.model] ?? undefined)
+          : undefined) ??
+        (savedDefaults.model
+          ? (savedDefaults.thinkingLevelsByModel?.[savedDefaults.model] ?? undefined)
+          : undefined) ??
+        savedDefaults.thinkingLevel ??
+        null,
       contextLength: options?.contextLength ?? savedDefaults.contextLength ?? null,
       status: 'idle',
       error: null,

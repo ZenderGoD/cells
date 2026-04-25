@@ -3332,10 +3332,10 @@ export function CellTerminal({
 
       const dims = fitAddon.proposeDimensions()
       const worktreeCwd = consumePendingWorktreePath(termId)
-      const projectPath = worktreeCwd ?? getAttachProjectPath()
+      const terminalState = useStore.getState().terminals.find((terminal) => terminal.id === termId)
+      const projectPath = worktreeCwd ?? terminalState?.cwd ?? getAttachProjectPath()
       const reloadSnapshot = consumeTerminalReloadSnapshot(termId)
       const avoidSyntheticResize = shouldAvoidSyntheticResizeForTerminal(term)
-      const terminalState = useStore.getState().terminals.find((terminal) => terminal.id === termId)
       const restoredOutput = terminalState?.restoredOutput ?? ''
       const shouldRestorePersistedOutput = Boolean(
         terminalState?.exited && restoredOutput.length > 0,

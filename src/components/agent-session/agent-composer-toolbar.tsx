@@ -371,6 +371,15 @@ function findModel(
   return models.find((m) => m.id === resolvedId) ?? models[0]
 }
 
+function resolveModelThinkingLevel(
+  model: ModelOption | undefined,
+  requested: AgentThinkingLevel | null | undefined,
+): AgentThinkingLevel | null {
+  const efforts = model?.supportedEfforts ?? []
+  if (efforts.length === 0) return null
+  return requested && efforts.includes(requested) ? requested : (model?.defaultEffort ?? efforts[0])
+}
+
 export const THINKING_LEVEL_LABEL_MAP: Record<AgentThinkingLevel, string> = {
   off: 'Off',
   low: 'Low',
@@ -391,6 +400,21 @@ export function prettifyModelId(agent: 'claude' | 'codex', id: string): string {
 function getCachedModelsSync(agent: AgentWindowNode['agent']): ModelOption[] {
   if (agent === 'codex') return codexModelsCache ?? CODEX_MODELS_FALLBACK
   return claudeModelsCache ?? CLAUDE_MODELS_FALLBACK
+}
+
+export function resolveAgentPickerModelId(
+  agent: AgentWindowNode['agent'],
+  modelId: string | null | undefined,
+): string | null {
+  return findModel(getCachedModelsSync(agent), agent, modelId)?.id ?? null
+}
+
+export function resolveThinkingLevelForModel(
+  agent: AgentWindowNode['agent'],
+  modelId: string | null | undefined,
+  requested: AgentThinkingLevel | null | undefined,
+): AgentThinkingLevel | null {
+  return resolveModelThinkingLevel(findModel(getCachedModelsSync(agent), agent, modelId), requested)
 }
 
 export function cycleAgentModel(
@@ -656,8 +680,7 @@ export function ThinkingPicker({ agent, model, value, onChange }: ThinkingPicker
   }, [agent])
   const models = agent === 'claude' ? claudeModels : codexModels
   const current = findModel(models, agent, model)
-  const effective: AgentThinkingLevel =
-    value && current.supportedEfforts.includes(value) ? value : current.defaultEffort
+  const effective = resolveModelThinkingLevel(current, value)
   if (current.supportedEfforts.length === 0) return null
 
   return (
@@ -667,10 +690,12 @@ export function ThinkingPicker({ agent, model, value, onChange }: ThinkingPicker
           <button
             type="button"
             className="inline-flex h-7 min-w-0 shrink-0 items-center gap-1.5 rounded-[8px] bg-foreground/5 px-2 text-[11px] text-foreground/85 transition-colors hover:bg-foreground/10"
-            title={`Thinking: ${THINKING_LEVEL_LABEL[effective]}`}
+            title={`Thinking: ${THINKING_LEVEL_LABEL[effective ?? current.defaultEffort]}`}
           >
             <Brain className="size-3 text-violet-300/90" />
-            <span className="truncate font-medium">{THINKING_LEVEL_LABEL[effective]}</span>
+            <span className="truncate font-medium">
+              {THINKING_LEVEL_LABEL[effective ?? current.defaultEffort]}
+            </span>
             <ChevronDown className="size-3 text-muted-foreground/70" />
           </button>
         }

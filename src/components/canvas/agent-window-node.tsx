@@ -11,6 +11,7 @@ import {
   ArrowUpRight,
   ClipboardCopy,
   FolderOpen,
+  GitBranch,
   MoreHorizontal,
   PencilLine,
   RotateCcw,
@@ -25,6 +26,7 @@ import { cn } from '@/lib/utils'
 import { AgentChatPanel } from '@/components/agent-session/agent-chat-panel'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { getAgentWindowColor } from '@/lib/agent-window-colors'
+import { WorktreeManager } from '@/components/worktree-manager'
 
 type Edge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
 
@@ -348,6 +350,13 @@ export const AgentWindowNode = memo(function AgentWindowNode({
               disabled={!cwd}
               onSelect={handleOpenCwd}
             />
+            <div className="flex items-center gap-2 rounded-[6px] px-2 py-1.5 text-[12.5px] text-foreground/90">
+              <span className="flex size-4 shrink-0 items-center justify-center text-muted-foreground/70">
+                <GitBranch className="size-3.5" />
+              </span>
+              <span className="min-w-0 flex-1 truncate">Worktrees</span>
+              <WorktreeManager agentWindowId={agentWindow.id} compact side="right" align="start" />
+            </div>
             <MenuItem
               icon={<ArrowUpRight className="size-3.5" />}
               label={agentWindow.pinned ? 'Pop back in' : 'Pop out to window'}

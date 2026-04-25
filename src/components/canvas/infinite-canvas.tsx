@@ -61,6 +61,7 @@ export function InfiniteCanvas() {
     focusedBrowserId,
     focusedAgentWindowId,
     focusTerminal,
+    activeProjectId,
   } = useStore(
     useShallow((s) => ({
       terminals: s.terminals,
@@ -84,6 +85,7 @@ export function InfiniteCanvas() {
       focusedBrowserId: s.focusedBrowserId,
       focusedAgentWindowId: s.focusedAgentWindowId,
       focusTerminal: s.focusTerminal,
+      activeProjectId: s.activeProjectId,
     })),
   )
   const titleBarHidden = useStore((s) => s.titleBarHidden)
@@ -290,7 +292,13 @@ export function InfiniteCanvas() {
   // window fills the viewport, and we snap back to that same window.
   const scheduleSnap = useCallback(() => {
     if (!snapEnabled) return
-    const { canvas, terminals: terms, browsers, agentWindows: agents } = useStore.getState()
+    const {
+      activeProjectId: scheduledProjectId,
+      canvas,
+      terminals: terms,
+      browsers,
+      agentWindows: agents,
+    } = useStore.getState()
     if (canvas.scale < SNAP_DISABLE_ZOOM) {
       setSnapPaused(true)
       return
@@ -332,6 +340,8 @@ export function InfiniteCanvas() {
 
     if (snapTimerRef.current) clearTimeout(snapTimerRef.current)
     snapTimerRef.current = setTimeout(() => {
+      snapTimerRef.current = null
+      if (useStore.getState().activeProjectId !== scheduledProjectId) return
       setIsUserDriving(false)
       setSnapPaused(false)
       if (!bestWindow) {
@@ -354,6 +364,59 @@ export function InfiniteCanvas() {
       snapTimerRef.current = null
     }
   }, [])
+
+  useEffect(() => {
+    return () => cancelSnap()
+  }, [cancelSnap])
+
+  // Project switches replace the entire node set; don't let in-flight gestures
+  // or springs from the previous project animate the new project into place.
+  const activeProjectIdRef = useRef(activeProjectId)
+  useEffect(() => {
+    if (activeProjectIdRef.current === activeProjectId) return
+    activeProjectIdRef.current = activeProjectId
+
+    cancelSnap()
+    panRef.current = null
+    dragRef.current = null
+    marqueeRef.current = null
+    prevTransformRef.current = { x: transform.x, y: transform.y, scale: transform.scale }
+    isSnapAnimatingRef.current = false
+
+    motionX.jump(transform.x)
+    motionY.jump(transform.y)
+    motionScale.jump(transform.scale)
+    springX.jump(transform.x)
+    springY.jump(transform.y)
+    springScale.jump(transform.scale)
+
+    let cancelled = false
+    queueMicrotask(() => {
+      if (cancelled) return
+      setIsPanning(false)
+      setIsDragging(false)
+      setIsUserDriving(false)
+      setIsSnapAnimating(false)
+      setMarqueeBox(null)
+      setPrimaryModifierHeld(false)
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    activeProjectId,
+    cancelSnap,
+    motionScale,
+    motionX,
+    motionY,
+    springScale,
+    springX,
+    springY,
+    transform.scale,
+    transform.x,
+    transform.y,
+  ])
 
   const applyCanvasWheelGesture = useCallback(
     (gesture: {

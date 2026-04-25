@@ -61,6 +61,7 @@ import { Logo } from './logo'
 import { Kbd } from './ui/kbd'
 import { showToast } from './toast'
 import { hapticNudge, hapticSuccess } from '@/lib/haptics'
+import { createPromptBranchName, getWorktreeName, shortenFsPath } from '@/lib/worktree-utils'
 import {
   CELLS_OPEN_SETTINGS_EVENT,
   CELLS_TOGGLE_COMMAND_PALETTE_EVENT,
@@ -186,10 +187,10 @@ function launchAgentAction(
       return
     }
 
-    const tempBranch = `cells-${Date.now().toString(36)}`
+    const branchName = `${createPromptBranchName(prompt || label)}-${Date.now().toString(36).slice(-4)}`
     useStore
       .getState()
-      .createWorktree(tempBranch)
+      .createWorktree({ branchName })
       .then((wt) => {
         openWindow(wt.path)
       })
@@ -229,16 +230,15 @@ function launchAgentAction(
     return
   }
 
-  // Create a worktree with a generated temp branch, then launch the agent in it
-  const tempBranch = `cells-${Date.now().toString(36)}`
+  // Create a named worktree branch, then launch the agent in it.
+  const branchName = `${createPromptBranchName(prompt || label)}-${Date.now().toString(36).slice(-4)}`
   useStore
     .getState()
-    .createWorktree(tempBranch)
+    .createWorktree({ branchName })
     .then((wt) => {
-      const branchInstruction = `First, create a descriptive git branch name for this task and switch to it with \`git checkout -b <branch-name>\`. Then delete the temporary branch that was used to set up this worktree with \`git branch -D ${tempBranch}\`. Then:\n\n`
       const finalPrompt = initialCommand.fullPromptText
-        ? branchInstruction + initialCommand.fullPromptText
-        : branchInstruction + 'Waiting for instructions.'
+        ? initialCommand.fullPromptText
+        : 'Waiting for instructions.'
       const worktreeCommand = buildAgentCommand(id, cmd, finalPrompt, attachments, {
         claudeSessionId: initialCommand.claudeSessionId,
       })
@@ -451,6 +451,7 @@ export function CommandPalette() {
   const isGitRepo = useStore((s) => s.isGitRepo)
   const worktrees = useStore((s) => s.worktrees)
   const focusedTerminalId = useStore((s) => s.focusedTerminalId)
+  const focusedAgentWindowId = useStore((s) => s.focusedAgentWindowId)
   const selectionMode = useStore((s) => s.selectionMode)
   const selectedNodeIds = useStore((s) => s.selectedNodeIds)
   // Always surface all supported agents — the detection heuristic occasionally
@@ -1216,6 +1217,9 @@ export function CommandPalette() {
                       ? [focusedTerminalId]
                       : []
                 const hasMoveTargets = selectedTermIds.length > 0 && nonBare.length > 1
+                const focusedAgentWindow = focusedAgentWindowId
+                  ? agentWindows.find((agentWindow) => agentWindow.id === focusedAgentWindowId)
+                  : null
                 const moveLabel =
                   selectionMode && selectedTermIds.length > 1
                     ? `Move ${selectedTermIds.length} terminals to`
@@ -1228,19 +1232,50 @@ export function CommandPalette() {
                       {nonBare.map((wt) => (
                         <CommandItem
                           key={`wt-open-${wt.path}`}
-                          value={`open worktree terminal ${wt.branch} ${wt.path}`}
+                          value={`open worktree terminal ${getWorktreeName(wt)} ${wt.path}`}
                           onSelect={() =>
                             runAction(() => {
-                              const term = useStore.getState().addTerminal()
-                              useStore.getState().switchTerminalWorktree(term.id, wt.path)
+                              useStore.getState().openTerminalInWorktree(wt.path)
                             })
                           }
                         >
                           <GitBranch className="text-muted-foreground" />
-                          Open terminal in {wt.branch}
+                          Open terminal in {getWorktreeName(wt)}
                           <span className="ml-auto text-[10px] text-muted-foreground/40 truncate max-w-40">
-                            {wt.path.replace(/^\/Users\/[^/]+/, '~')}
+                            {shortenFsPath(wt.path)}
                           </span>
+                        </CommandItem>
+                      ))}
+                      {nonBare.map((wt) => (
+                        <CommandItem
+                          key={`wt-codex-${wt.path}`}
+                          value={`open codex agent in worktree ${getWorktreeName(wt)} ${wt.path}`}
+                          onSelect={() =>
+                            runAction(() => {
+                              useStore.getState().openAgentInWorktree('codex', wt.path, {
+                                title: 'Codex',
+                              })
+                            })
+                          }
+                        >
+                          <AgentIcon agent="codex" className="text-muted-foreground" size={16} />
+                          Open Codex in {getWorktreeName(wt)}
+                        </CommandItem>
+                      ))}
+                      {nonBare.map((wt) => (
+                        <CommandItem
+                          key={`wt-claude-${wt.path}`}
+                          value={`open claude agent in worktree ${getWorktreeName(wt)} ${wt.path}`}
+                          onSelect={() =>
+                            runAction(() => {
+                              useStore.getState().openAgentInWorktree('claude', wt.path, {
+                                title: 'Claude Code',
+                              })
+                            })
+                          }
+                        >
+                          <AgentIcon agent="claude" className="text-muted-foreground" size={16} />
+                          Open Claude in {getWorktreeName(wt)}
                         </CommandItem>
                       ))}
                       {search.trim() && !nonBare.some((wt) => wt.branch === search.trim()) && (
@@ -1248,7 +1283,9 @@ export function CommandPalette() {
                           forceMount
                           value="create-worktree-new-branch"
                           onSelect={() =>
-                            runAction(() => useStore.getState().createWorktree(search.trim()))
+                            runAction(() =>
+                              useStore.getState().createWorktree({ branchName: search.trim() }),
+                            )
                           }
                         >
                           <Plus className="text-muted-foreground" />
@@ -1261,7 +1298,7 @@ export function CommandPalette() {
                         {nonBare.map((wt) => (
                           <CommandItem
                             key={`wt-${wt.path}`}
-                            value={`move to worktree ${wt.branch} ${wt.path}`}
+                            value={`move to worktree ${getWorktreeName(wt)} ${wt.path}`}
                             onSelect={() =>
                               runAction(() => {
                                 useStore
@@ -1271,15 +1308,45 @@ export function CommandPalette() {
                             }
                           >
                             <GitBranch className="text-muted-foreground" />
-                            {wt.branch}
+                            {getWorktreeName(wt)}
                             {wt.isMain && (
                               <span className="ml-1 text-[10px] text-muted-foreground/40">
                                 main
                               </span>
                             )}
                             <span className="ml-auto text-[10px] text-muted-foreground/40 truncate max-w-40">
-                              {wt.path.replace(/^\/Users\/[^/]+/, '~')}
+                              {shortenFsPath(wt.path)}
                             </span>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    )}
+                    {focusedAgentWindow && (
+                      <CommandGroup heading="Branch focused agent into">
+                        {nonBare.map((wt) => (
+                          <CommandItem
+                            key={`agent-wt-${wt.path}`}
+                            value={`branch focused agent into worktree ${getWorktreeName(wt)} ${wt.path}`}
+                            onSelect={() =>
+                              runAction(() => {
+                                useStore
+                                  .getState()
+                                  .openAgentInWorktree(focusedAgentWindow.agent, wt.path, {
+                                    title: `${focusedAgentWindow.customTitle || focusedAgentWindow.title} (${getWorktreeName(wt)})`,
+                                    model: focusedAgentWindow.model ?? null,
+                                    permissionMode: focusedAgentWindow.permissionMode ?? null,
+                                    thinkingLevel: focusedAgentWindow.thinkingLevel ?? null,
+                                    contextLength: focusedAgentWindow.contextLength ?? null,
+                                  })
+                              })
+                            }
+                          >
+                            <AgentIcon
+                              agent={focusedAgentWindow.agent}
+                              className="text-muted-foreground"
+                              size={16}
+                            />
+                            {getWorktreeName(wt)}
                           </CommandItem>
                         ))}
                       </CommandGroup>
@@ -1565,7 +1632,8 @@ export function CommandPalette() {
                 paddingBottom: cmdkValue.startsWith('agent-') ? 4 : 0,
               }}
             >
-              <Kbd className="text-[10px] h-4 min-w-4">⌘↵</Kbd> to launch in a worktree
+              <Kbd className="text-[10px] h-4 min-w-4">⌘↵</Kbd> creates{' '}
+              {createPromptBranchName(search.trim() || 'new-agent-worktree')}
             </div>
           )}
           {attachments.length > 0 && (

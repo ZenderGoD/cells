@@ -45,6 +45,7 @@ export interface TerminalNode {
   width: number
   height: number
   title: string
+  cwd?: string | null
   customTitle?: string | null
   zIndex?: number
   pinned?: boolean
@@ -188,9 +189,37 @@ export interface DaemonStatus {
 
 export interface GitWorktree {
   path: string
-  branch: string
+  repoRoot: string
+  head: string | null
+  branch: string | null
+  branchRef: string | null
   isMain: boolean
-  isBare?: boolean
+  isBare: boolean
+  isDetached: boolean
+  isMissing: boolean
+  isDirty: boolean
+  dirtyCount: number
+  ahead: number | null
+  behind: number | null
+  upstream: string | null
+  prunable: boolean
+  lockedReason: string | null
+}
+
+export interface GitWorktreeCreateOptions {
+  branchName: string
+  baseRef?: string | null
+  targetDir?: string | null
+  checkoutExistingBranch?: boolean
+}
+
+export interface GitWorktreeRemoveOptions {
+  force?: boolean
+}
+
+export interface GitBranchValidation {
+  valid: boolean
+  message?: string | null
 }
 
 export interface BrowserNode {
@@ -318,6 +347,7 @@ export interface AgentSessionDefaults {
   model?: AgentModel | null
   permissionMode?: AgentPermissionMode | null
   thinkingLevel?: AgentThinkingLevel | null
+  thinkingLevelsByModel?: Record<string, AgentThinkingLevel | null>
   contextLength?: AgentContextLength | null
 }
 
@@ -830,13 +860,15 @@ export interface CellsAPI {
     isRepo(cwd: string): Promise<boolean>
     repoRoot(cwd: string): Promise<string | null>
     listWorktrees(cwd: string): Promise<GitWorktree[]>
-    createWorktree(
+    createWorktree(cwd: string, options: GitWorktreeCreateOptions): Promise<GitWorktree>
+    removeWorktree(
       cwd: string,
-      branch: string,
-      targetDir?: string,
-      baseBranch?: string,
-    ): Promise<GitWorktree>
-    removeWorktree(cwd: string, worktreePath: string): Promise<void>
+      worktreePath: string,
+      options?: GitWorktreeRemoveOptions,
+    ): Promise<void>
+    pruneWorktrees(cwd: string): Promise<void>
+    validateBranch(cwd: string, branchName: string): Promise<GitBranchValidation>
+    statusWorktree(worktreePath: string): Promise<GitWorktree | null>
   }
   agent: {
     checkAvailable(
