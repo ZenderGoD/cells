@@ -808,7 +808,7 @@ export const terminalThemes: Record<string, TerminalTheme> = {
   },
 }
 
-export const DEFAULT_THEME = 'ghost'
+export const DEFAULT_THEME = 'linear'
 export const DEFAULT_LIGHT_THEME = 'daylight'
 export const DARK_TERMINAL_THEME_KEYS = Object.keys(terminalThemes).filter(
   (key) => terminalThemes[key]?.scheme === 'dark',

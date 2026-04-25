@@ -1,6 +1,6 @@
 import type { TerminalSessionBackend } from '../types'
 
-export const DEFAULT_TERMINAL_SESSION_BACKEND: TerminalSessionBackend = 'tmux'
+export const DEFAULT_TERMINAL_SESSION_BACKEND: TerminalSessionBackend = 'zellij'
 
 export const TERMINAL_SESSION_BACKEND_OPTIONS: Array<{
   value: TerminalSessionBackend
@@ -10,12 +10,12 @@ export const TERMINAL_SESSION_BACKEND_OPTIONS: Array<{
   {
     value: 'tmux',
     label: 'tmux',
-    hint: 'Default private server with the best Cells compatibility',
+    hint: 'Disabled. Existing users are migrated to Zellij.',
   },
   {
     value: 'zellij',
     label: 'Zellij',
-    hint: 'Optional app-scoped backend with separate server/client sessions',
+    hint: 'Default app-scoped backend with separate server/client sessions',
   },
 ]
 
@@ -23,7 +23,9 @@ export function normalizeTerminalSessionBackend(
   value: unknown,
   fallback: TerminalSessionBackend = DEFAULT_TERMINAL_SESSION_BACKEND,
 ): TerminalSessionBackend {
-  return value === 'tmux' || value === 'zellij' ? value : fallback
+  if (value === 'zellij') return 'zellij'
+  if (value === 'tmux') return 'zellij'
+  return fallback
 }
 
 export function isServerOwnedTerminalBackend(backend: string | null | undefined) {

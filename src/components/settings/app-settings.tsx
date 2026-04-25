@@ -687,29 +687,37 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                     <div className="space-y-2.5">
                       <SettingsField
                         label="Backend"
-                        hint="Applies after relaunch. New installs default to tmux."
+                        hint="Applies after relaunch. New installs and existing profiles use Zellij."
                       >
                         <div className="space-y-0.5">
-                          {TERMINAL_SESSION_BACKEND_OPTIONS.map((option) => (
-                            <button
-                              key={option.value}
-                              onClick={() => setTerminalSessionBackend(option.value)}
-                              className={cn(
-                                'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
-                                terminalSessionBackend === option.value
-                                  ? 'bg-accent text-accent-foreground'
-                                  : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
-                              )}
-                            >
-                              <span className="flex-1">{option.label}</span>
-                              <span className="text-[10px] text-muted-foreground/40">
-                                {option.hint}
-                              </span>
-                              {terminalSessionBackend === option.value && (
-                                <Check className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
-                              )}
-                            </button>
-                          ))}
+                          {TERMINAL_SESSION_BACKEND_OPTIONS.map((option) => {
+                            const disabled = option.value === 'tmux'
+                            return (
+                              <button
+                                key={option.value}
+                                disabled={disabled}
+                                onClick={() => {
+                                  if (!disabled) setTerminalSessionBackend(option.value)
+                                }}
+                                className={cn(
+                                  'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
+                                  terminalSessionBackend === option.value
+                                    ? 'bg-accent text-accent-foreground'
+                                    : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
+                                  disabled &&
+                                    'cursor-not-allowed opacity-45 hover:bg-transparent hover:text-muted-foreground/70',
+                                )}
+                              >
+                                <span className="flex-1">{option.label}</span>
+                                <span className="text-[10px] text-muted-foreground/40">
+                                  {option.hint}
+                                </span>
+                                {terminalSessionBackend === option.value && (
+                                  <Check className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
+                                )}
+                              </button>
+                            )
+                          })}
                         </div>
                       </SettingsField>
                     </div>
