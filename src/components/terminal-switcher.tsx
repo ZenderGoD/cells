@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from 'react'
+import { useEffect, useState, useRef, useCallback, useLayoutEffect } from 'react'
 import { Globe } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
@@ -60,6 +60,8 @@ export function TerminalSwitcher() {
   const selectedIdRef = useRef<string | null>(null)
   const ctrlHeld = useRef(false)
   const mouseActivated = useRef(false)
+  const overviewContainerRef = useRef<HTMLDivElement | null>(null)
+  const [overviewAvailableWidth, setOverviewAvailableWidth] = useState(0)
 
   const updateSelected = useCallback((index: number, id: string | null) => {
     selectedIndexRef.current = index
@@ -109,6 +111,25 @@ export function TerminalSwitcher() {
       : chronologicalItems
   ).slice(0, 12)
   const selectedItemId = items[selectedIndex]?.id ?? currentId ?? null
+  const desiredOverviewWidth = Math.min(980, Math.max(560, items.length * 118))
+  const overviewWidth =
+    overviewAvailableWidth > 0
+      ? Math.min(desiredOverviewWidth, overviewAvailableWidth)
+      : Math.min(desiredOverviewWidth, Math.max(240, window.innerWidth * 0.98 - 32))
+
+  useLayoutEffect(() => {
+    const node = overviewContainerRef.current
+    if (!node) return
+
+    const updateWidth = () => {
+      setOverviewAvailableWidth(node.clientWidth)
+    }
+
+    updateWidth()
+    const resizeObserver = new ResizeObserver(updateWidth)
+    resizeObserver.observe(node)
+    return () => resizeObserver.disconnect()
+  }, [])
 
   const cycle = useCallback(
     (direction: 1 | -1) => {
@@ -240,20 +261,20 @@ export function TerminalSwitcher() {
           className="fixed inset-0 z-[10000] flex items-center justify-center pointer-events-none"
         >
           <div
-            className="bg-card/92 rounded-xl ring-1 ring-border/40 p-3 pointer-events-auto max-w-[min(98vw,700px)]"
+            className="w-[min(98vw,700px)] max-w-[min(98vw,700px)] bg-card/92 rounded-xl ring-1 ring-border/40 p-3 pointer-events-auto"
             onMouseMove={() => {
               mouseActivated.current = true
             }}
           >
-            <div className="px-1 pb-2">
+            <div ref={overviewContainerRef} className="min-w-0 px-1 pb-2">
               <WindowOverviewMap
                 windows={canvasWindows}
                 currentId={selectedItemId}
                 focusedId={currentId}
                 viewport={viewportRect}
-                width={Math.min(980, Math.max(560, items.length * 118))}
+                width={overviewWidth}
                 height={142}
-                className="mx-auto border-0 bg-transparent rounded-none"
+                className="mx-auto max-w-full border-0 bg-transparent rounded-none"
                 onSelect={(window) => {
                   const nextIndex = items.findIndex((item) => item.id === window.id)
                   if (nextIndex !== -1) updateSelected(nextIndex, window.id)

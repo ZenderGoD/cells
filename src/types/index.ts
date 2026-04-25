@@ -983,6 +983,7 @@ export interface CellsAPI {
     openExternal(url: string): Promise<void>
     statPath(targetPath: string): Promise<{ kind: 'file' | 'dir' | 'missing'; resolved: string }>
     revealPath(targetPath: string): Promise<void>
+    copyAttachmentToClipboard(targetPath: string): Promise<{ kind: 'image' | 'path' }>
     requestQuit(): Promise<void>
     relaunch(): Promise<void>
     repairTerminalFonts(): Promise<void>

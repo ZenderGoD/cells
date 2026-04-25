@@ -11,11 +11,13 @@ import {
   FastForward,
   FileText,
   Folder,
+  GitBranch,
   GripVertical,
   HelpCircle,
   History,
   ListTodo,
   Loader2,
+  MessageSquarePlus,
   MessageSquare,
   Paperclip,
   Pencil,
@@ -75,6 +77,7 @@ import { computeStableList, createEmptyStableListState } from '@/lib/stable-list
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Kbd } from '@/components/ui/kbd'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
+import { showToast } from '@/components/toast'
 import { LegendList, type LegendListRef } from '@legendapp/list/react'
 
 interface AgentChatPanelProps {
@@ -96,6 +99,7 @@ const EXPAND_TRANSITION = {
   height: { duration: 0.28, ease: EASE_EXPAND },
   opacity: { duration: 0.18, ease: EASE_EXPAND },
 } as const
+const BRANCH_IMPORT_MAX_CHARS = 80_000
 
 function getComposerPlaceholder(agent: AgentWindowNode['agent']) {
   return agent === 'claude' ? 'Message Claude Code…' : 'Message Codex…'
@@ -103,6 +107,99 @@ function getComposerPlaceholder(agent: AgentWindowNode['agent']) {
 
 function getAgentDisplayName(agent: AgentWindowNode['agent']) {
   return agent === 'claude' ? 'Claude Code' : 'Codex'
+}
+
+function getSourceSessionLabel(snapshot: AgentSessionSnapshot, sourceWindow: AgentWindowNode) {
+  if (snapshot.agent === 'claude') {
+    return snapshot.claudeSessionId
+      ? `Claude Code session ${snapshot.claudeSessionId}`
+      : `Claude Code window ${sourceWindow.id}`
+  }
+  return snapshot.codexThreadId
+    ? `Codex thread ${snapshot.codexThreadId}`
+    : `Codex window ${sourceWindow.id}`
+}
+
+function formatImportedMessage(message: AgentSessionMessage) {
+  const roleLabel =
+    message.role === 'user'
+      ? 'User'
+      : message.role === 'assistant'
+        ? 'Assistant'
+        : message.role === 'reasoning'
+          ? 'Reasoning'
+          : message.role === 'tool'
+            ? `Tool${message.title ? `: ${message.title}` : ''}`
+            : message.role === 'error'
+              ? 'Error'
+              : message.role === 'compaction'
+                ? 'Compaction'
+                : 'System'
+  const text = message.text?.trim()
+  const attachments =
+    message.attachments && message.attachments.length > 0
+      ? `\nAttachments:\n${message.attachments.map((path) => `- ${path}`).join('\n')}`
+      : ''
+  if (!text && !attachments) return ''
+  return `### ${roleLabel}\n${text || '(no text)'}${attachments}`
+}
+
+function buildBranchImportPrompt({
+  sourceWindow,
+  snapshot,
+  targetAgent,
+  continuation,
+  continuationAttachments,
+}: {
+  sourceWindow: AgentWindowNode
+  snapshot: AgentSessionSnapshot
+  targetAgent: AgentWindowNode['agent']
+  continuation: string
+  continuationAttachments: string[]
+}) {
+  const sourceAgent = getAgentDisplayName(snapshot.agent)
+  const targetName = getAgentDisplayName(targetAgent)
+  const sourceLabel = getSourceSessionLabel(snapshot, sourceWindow)
+  const cwd = snapshot.cwd ?? sourceWindow.cwd ?? null
+  const exportedAt = new Date().toISOString()
+  const renderedMessages = snapshot.messages
+    .map(formatImportedMessage)
+    .filter((entry) => entry.trim().length > 0)
+  let transcript = renderedMessages.join('\n\n')
+  if (transcript.length > BRANCH_IMPORT_MAX_CHARS) {
+    transcript = transcript.slice(transcript.length - BRANCH_IMPORT_MAX_CHARS)
+    transcript = `[Earlier transcript omitted to keep the import within context.]\n\n${transcript}`
+  }
+  const attachmentBlock =
+    continuationAttachments.length > 0
+      ? `\n\nContinuation attachments:\n${continuationAttachments.map((path) => `- ${path}`).join('\n')}`
+      : ''
+  const continuationBlock = continuation.trim()
+    ? `\n\n## Continue From Here\n${continuation.trim()}${attachmentBlock}`
+    : attachmentBlock
+      ? `\n\n## Continue From Here${attachmentBlock}`
+      : '\n\n## Continue From Here\nConfirm you understand the imported context and wait for the next instruction.'
+
+  return [
+    `This is an imported handoff from ${sourceAgent} into ${targetName}.`,
+    `Source: ${sourceLabel}`,
+    `Imported at: ${exportedAt}`,
+    cwd ? `Working directory: ${cwd}` : null,
+    '',
+    'The transcript below is portable context, not native provider state. Continue from it without assuming hidden session memory, pending approvals, or provider-specific tool IDs were preserved.',
+    '',
+    '## Imported Transcript',
+    transcript || '(No transcript messages were available.)',
+    continuationBlock,
+  ]
+    .filter((line): line is string => line !== null)
+    .join('\n')
+}
+
+function getDraftSessionTitle(agent: AgentWindowNode['agent'], value: string) {
+  const candidate = value.replace(/\s+/g, ' ').trim()
+  if (!candidate) return getAgentDisplayName(agent)
+  return candidate.length <= 50 ? candidate : `${candidate.slice(0, 47).trimEnd()}...`
 }
 
 function truncateCwd(cwd: string | null | undefined) {
@@ -291,17 +388,26 @@ function useFileThumbnail(path: string, enabled = true, maxHeight = 96) {
   return enabled ? url : null
 }
 
-function AttachmentThumbnail({ path }: { path: string }) {
+async function copyAttachmentToClipboard(path: string) {
+  try {
+    const result = await window.cells.app.copyAttachmentToClipboard(path)
+    showToast(
+      result.kind === 'image' ? 'Copied image to clipboard' : 'Copied attachment path',
+      'info',
+    )
+  } catch {
+    showToast('Could not copy attachment')
+  }
+}
+
+function AttachmentThumbnail({ path, onPreview }: { path: string; onPreview: () => void }) {
   const url = useFileThumbnail(path)
   const name = path.split('/').pop() || path
-  const open = () => {
-    void window.cells.app.revealPath(path).catch(() => {})
-  }
   if (!url) {
     return (
       <button
         type="button"
-        onClick={open}
+        onClick={onPreview}
         title={`Open ${path}`}
         className="flex h-16 w-16 shrink-0 items-center justify-center rounded-[8px] bg-foreground/10 text-[10px] text-muted-foreground/70 transition-opacity hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-foreground/30"
       >
@@ -310,30 +416,57 @@ function AttachmentThumbnail({ path }: { path: string }) {
     )
   }
   return (
-    <button
-      type="button"
-      onClick={open}
-      title={`Open ${path}`}
-      className="shrink-0 rounded-[8px] transition-opacity hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-foreground/30"
-    >
-      <img
-        src={url}
-        alt={name}
-        className="h-16 w-16 rounded-[8px] border border-border/30 object-cover"
-      />
-    </button>
+    <div className="group/attachment relative shrink-0">
+      <button
+        type="button"
+        onClick={onPreview}
+        title={`Open ${path}`}
+        className="rounded-[8px] transition-opacity hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-foreground/30"
+      >
+        <img
+          src={url}
+          alt={name}
+          className="h-16 w-16 rounded-[8px] border border-border/30 object-cover"
+        />
+      </button>
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation()
+          void copyAttachmentToClipboard(path)
+        }}
+        aria-label={`Copy ${name}`}
+        title="Copy to clipboard"
+        className="absolute right-1 top-1 rounded-md border border-black/20 bg-black/55 p-1 text-white/80 opacity-0 backdrop-blur transition-opacity hover:bg-black/75 hover:text-white group-hover/attachment:opacity-100 focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+      >
+        <Copy className="size-3" />
+      </button>
+    </div>
   )
 }
 
 function AttachmentPill({ path }: { path: string }) {
   const name = path.split('/').pop() || path
   return (
-    <span
-      className="inline-flex items-center gap-1 rounded-[6px] bg-foreground/5 px-2 py-0.5 text-[11px] text-muted-foreground/90"
-      title={path}
-    >
-      <Paperclip className="size-3" />
-      <span className="truncate max-w-[180px] font-mono">{name}</span>
+    <span className="inline-flex items-center gap-1 rounded-[6px] bg-foreground/5 py-0.5 pl-2 pr-1 text-[11px] text-muted-foreground/90">
+      <button
+        type="button"
+        onClick={() => void window.cells.app.revealPath(path).catch(() => {})}
+        className="inline-flex min-w-0 items-center gap-1 rounded-[5px] hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-foreground/30"
+        title={path}
+      >
+        <Paperclip className="size-3 shrink-0" />
+        <span className="max-w-[180px] truncate font-mono">{name}</span>
+      </button>
+      <button
+        type="button"
+        onClick={() => void copyAttachmentToClipboard(path)}
+        aria-label={`Copy ${name}`}
+        title="Copy to clipboard"
+        className="rounded p-0.5 text-muted-foreground/60 hover:bg-foreground/10 hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-foreground/30"
+      >
+        <Copy className="size-3" />
+      </button>
     </span>
   )
 }
@@ -403,6 +536,65 @@ function ComposerImagePreviewDialog({
             ) : (
               <div className="flex h-40 w-40 items-center justify-center rounded-[8px] border border-border/30 bg-background/30 text-muted-foreground/70">
                 <Paperclip className="size-7" />
+              </div>
+            )}
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function UserAttachmentPreviewDialog({
+  path,
+  onClose,
+}: {
+  path: string | null
+  onClose: () => void
+}) {
+  const name = path?.split('/').pop() || path || ''
+  const isImage = Boolean(path && isImagePath(path))
+  const url = useFileThumbnail(path ?? '', isImage, 1400)
+
+  return (
+    <Dialog
+      open={Boolean(path)}
+      onOpenChange={(open) => {
+        if (!open) onClose()
+      }}
+    >
+      <DialogContent
+        showCloseButton
+        className="max-h-[calc(100vh-1.5rem)] w-[calc(100vw-1.5rem)] max-w-[1280px] overflow-hidden border border-border/40 bg-[oklch(0.12_0.004_285)] p-0"
+      >
+        <DialogTitle className="sr-only">{name || 'Attachment preview'}</DialogTitle>
+        <div className="flex min-h-0 max-h-[calc(100vh-1.5rem)] flex-col">
+          <div className="flex shrink-0 items-center gap-2 px-2 py-1.5 pr-9">
+            <span className="min-w-0 flex-1 truncate text-[12px] text-muted-foreground/80">
+              {name}
+            </span>
+            {path ? (
+              <button
+                type="button"
+                onClick={() => void copyAttachmentToClipboard(path)}
+                className="inline-flex h-6 shrink-0 items-center gap-1 rounded-[6px] px-2 text-[11px] text-muted-foreground/80 transition-colors hover:bg-foreground/10 hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-foreground/30"
+              >
+                <Copy className="size-3" />
+                Copy
+              </button>
+            ) : null}
+          </div>
+          <div className="flex min-h-0 flex-1 items-center justify-center bg-black/60 p-1">
+            {url ? (
+              <img
+                src={url}
+                alt={name}
+                className="max-h-[calc(100vh-6rem)] max-w-full rounded-[8px] object-contain shadow-2xl"
+              />
+            ) : (
+              <div className="flex h-40 w-40 flex-col items-center justify-center gap-2 rounded-[8px] border border-border/30 bg-background/30 text-muted-foreground/70">
+                <Paperclip className="size-7" />
+                <span className="max-w-36 truncate text-[11px]">{name}</span>
               </div>
             )}
           </div>
@@ -485,6 +677,7 @@ function UserBubble({ message }: { message: AgentSessionMessage }) {
   const hasText = message.text.trim().length > 0
   const reduceMotion = useReducedMotion()
   const animateEntry = !reduceMotion
+  const [previewPath, setPreviewPath] = useState<string | null>(null)
 
   return (
     <div className="mt-8 flex w-full justify-end">
@@ -494,10 +687,11 @@ function UserBubble({ message }: { message: AgentSessionMessage }) {
         transition={{ duration: 0.28, ease: EASE_OUT }}
         className="flex max-w-[78%] flex-col items-end gap-1.5 select-text"
       >
+        <UserAttachmentPreviewDialog path={previewPath} onClose={() => setPreviewPath(null)} />
         {images.length > 0 ? (
           <div className="flex flex-wrap justify-end gap-1.5">
             {images.map((p) => (
-              <AttachmentThumbnail key={p} path={p} />
+              <AttachmentThumbnail key={p} path={p} onPreview={() => setPreviewPath(p)} />
             ))}
           </div>
         ) : null}
@@ -2316,10 +2510,20 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   )
   const visibleComposerPreviewPath =
     composerPreviewPath && attachments.includes(composerPreviewPath) ? composerPreviewPath : null
+  const hasComposerText = Boolean(input.trim())
   const hasComposerPayload = Boolean(input.trim()) || attachments.length > 0
   const canSubmit = hasComposerPayload && !isRunning
   const isEditingQueuedMessage = editingIndex !== null
   const canSaveQueuedEdit = isEditingQueuedMessage && hasComposerPayload
+  const branchTargets = useMemo(
+    () =>
+      (['claude', 'codex'] as const).map((agent) => ({
+        agent,
+        label: getAgentDisplayName(agent),
+        isCurrent: agent === agentWindow.agent,
+      })),
+    [agentWindow.agent],
+  )
 
   const ensureSession = useCallback(async () => {
     await window.cells.agentSession.ensure({
@@ -2440,6 +2644,41 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     }
   }, [])
 
+  const branchToAgent = useCallback(
+    (targetAgent: AgentWindowNode['agent']) => {
+      const currentSnapshot = snapshotRef.current
+      if (!currentSnapshot || currentSnapshot.windowId !== agentWindow.id) return
+      const continuation = inputRef.current.trim()
+      const continuationAttachments = [...attachmentsRef.current]
+      const initialPrompt = buildBranchImportPrompt({
+        sourceWindow: agentWindow,
+        snapshot: currentSnapshot,
+        targetAgent,
+        continuation,
+        continuationAttachments,
+      })
+      const titleSource =
+        currentSnapshot.title || agentWindow.title || getAgentDisplayName(targetAgent)
+      const targetWindow = useStore.getState().addAgentWindow(targetAgent, {
+        title: `${titleSource} (branch)`,
+        cwd: currentSnapshot.cwd ?? agentWindow.cwd ?? null,
+        initialPrompt,
+        model: targetAgent === agentWindow.agent ? (agentWindow.model ?? null) : null,
+        permissionMode: agentWindow.permissionMode ?? null,
+        thinkingLevel: agentWindow.thinkingLevel ?? null,
+        contextLength: targetAgent === 'claude' ? (agentWindow.contextLength ?? null) : null,
+      })
+      if (continuation || continuationAttachments.length > 0) {
+        writeComposer('', [])
+      }
+      showToast(`Branched into ${getAgentDisplayName(targetAgent)}`, 'info')
+      window.setTimeout(() => {
+        useStore.getState().snapToAgentWindow(targetWindow.id)
+      }, 0)
+    },
+    [agentWindow, writeComposer],
+  )
+
   const applyInlineMentionSelection = useCallback(
     (selection: { value: string; cursorPosition: number } | null) => {
       if (!selection) return false
@@ -2543,6 +2782,50 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       visibleUserMessageCount,
     ],
   )
+
+  const startNewSessionFromComposer = useCallback(() => {
+    const draft = inputRef.current
+    const selectionStart = textareaRef.current?.selectionStart ?? 0
+    const selectionEnd = textareaRef.current?.selectionEnd ?? 0
+    const hasSelection = selectionEnd > selectionStart
+    const selectedValue = hasSelection ? draft.slice(selectionStart, selectionEnd).trim() : ''
+    const rawValue = selectedValue || draft.trim()
+    const pinned = [...attachmentsRef.current]
+    if (!rawValue && pinned.length === 0) return
+
+    const value = rawValue || ATTACHMENTS_ONLY_TEXT
+    const store = useStore.getState()
+    const nextWindow = store.addAgentWindow(agentWindow.agent, {
+      title: getDraftSessionTitle(agentWindow.agent, rawValue),
+      cwd: visibleSnapshot?.cwd ?? agentWindow.cwd ?? store.getActiveProjectPath() ?? null,
+      model: agentWindow.model ?? null,
+      permissionMode: agentWindow.permissionMode ?? null,
+      thinkingLevel: agentWindow.thinkingLevel ?? null,
+      contextLength: agentWindow.contextLength ?? null,
+    })
+
+    store.syncAgentWindow(nextWindow.id, {
+      queuedMessages: [
+        {
+          id: createQueuedMessageId(),
+          text: value,
+          attachments: pinned,
+          mode: 'after-turn',
+          model: agentWindow.model ?? null,
+          thinkingLevel: agentWindow.thinkingLevel ?? null,
+          permissionMode: agentWindow.permissionMode ?? null,
+        },
+      ],
+    })
+  }, [
+    agentWindow.agent,
+    agentWindow.contextLength,
+    agentWindow.cwd,
+    agentWindow.model,
+    agentWindow.permissionMode,
+    agentWindow.thinkingLevel,
+    visibleSnapshot?.cwd,
+  ])
 
   const unqueueMessage = useCallback(
     (index: number) => {
@@ -3838,6 +4121,27 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                     agent={agentWindow.agent}
                     contextLength={agentWindow.contextLength}
                   />
+                  {hasMessages && visibleSnapshot ? (
+                    <div className="ml-1 hidden items-center gap-1 border-l border-border/45 pl-1.5 sm:flex">
+                      {branchTargets.map((target) => (
+                        <button
+                          key={target.agent}
+                          type="button"
+                          disabled={isRunning || isEditingQueuedMessage}
+                          onClick={() => branchToAgent(target.agent)}
+                          className={cn(
+                            'inline-flex h-7 shrink-0 items-center gap-1.5 rounded-[8px] bg-foreground/5 px-2 text-[11.5px] text-muted-foreground/85 transition-colors hover:bg-foreground/10 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-45',
+                            target.isCurrent && 'text-foreground/80',
+                          )}
+                          title={`Branch into ${target.label}`}
+                        >
+                          <GitBranch className="size-3.5" />
+                          <AgentIcon agent={target.agent} className="size-3.5" size={14} />
+                          <span>{target.agent === 'claude' ? 'Claude' : 'Codex'}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
                   <div className="flex-1" />
                   {!isRunning && !isEditingQueuedMessage ? (
                     <span className="hidden items-center gap-1 text-[10.5px] text-muted-foreground/60 sm:inline-flex">
@@ -3864,6 +4168,18 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                       </motion.span>
                     ) : null}
                   </AnimatePresence>
+                  {!isEditingQueuedMessage && hasComposerText ? (
+                    <button
+                      type="button"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={startNewSessionFromComposer}
+                      aria-label="Start new session from composer"
+                      title="Start new session from selection"
+                      className="inline-flex size-7 shrink-0 items-center justify-center rounded-full bg-foreground/5 text-muted-foreground/70 transition-colors hover:bg-foreground/10 hover:text-foreground"
+                    >
+                      <MessageSquarePlus className="size-3.5" />
+                    </button>
+                  ) : null}
                   {isEditingQueuedMessage ? (
                     <button
                       type="button"

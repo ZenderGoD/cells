@@ -1702,6 +1702,21 @@ ipcMain.handle('app:reveal-path', async (_event, targetPath: string) => {
   await shell.openPath(resolved)
 })
 
+ipcMain.handle('app:copy-attachment-to-clipboard', async (_event, targetPath: string) => {
+  const resolved = expandHomePath(targetPath)
+  const stat = fs.statSync(resolved)
+  if (!stat.isFile()) throw new Error('Attachment is not a file')
+
+  const image = nativeImage.createFromPath(resolved)
+  if (!image.isEmpty()) {
+    clipboard.writeImage(image)
+    return { kind: 'image' as const }
+  }
+
+  clipboard.writeText(resolved)
+  return { kind: 'path' as const }
+})
+
 ipcMain.handle('app:search-agent-mentions', async (_event, cwd: string, query: string) => {
   try {
     return searchAgentMentions(cwd, query)

@@ -317,6 +317,10 @@ const api: CellsAPI = {
       }>,
     revealPath: (targetPath: string) =>
       ipcRenderer.invoke('app:reveal-path', targetPath) as Promise<void>,
+    copyAttachmentToClipboard: (targetPath: string) =>
+      ipcRenderer.invoke('app:copy-attachment-to-clipboard', targetPath) as Promise<{
+        kind: 'image' | 'path'
+      }>,
     requestQuit: () => ipcRenderer.invoke('app:request-quit'),
     relaunch: () => ipcRenderer.invoke('app:relaunch'),
     repairTerminalFonts: () => ipcRenderer.invoke('app:repair-terminal-fonts'),

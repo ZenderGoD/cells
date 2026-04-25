@@ -316,7 +316,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                   className={cn(
                     'w-full rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
                     activeSection === section.id
-                      ? 'bg-accent text-foreground'
+                      ? 'bg-accent text-accent-foreground'
                       : 'text-muted-foreground/60 hover:bg-muted/30 hover:text-foreground',
                   )}
                 >
@@ -368,7 +368,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                           className={cn(
                             'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
                             colorScheme === opt.value
-                              ? 'bg-accent text-foreground'
+                              ? 'bg-accent text-accent-foreground'
                               : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
                           )}
                         >
@@ -396,7 +396,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                             className={cn(
                               'rounded-[6px] px-2.5 py-1 text-[10px] font-medium transition-colors',
                               appearanceThemeSchemeTab === tab.value
-                                ? 'bg-accent text-foreground'
+                                ? 'bg-accent text-accent-foreground'
                                 : 'text-muted-foreground/60 hover:text-foreground',
                             )}
                           >
@@ -405,32 +405,23 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                         ))}
                       </div>
 
-                      <div className="grid grid-cols-3 gap-1">
+                      <div className="grid grid-cols-2 gap-2">
                         {appearanceVisibleThemeKeys.map((key) => {
                           const theme = terminalThemes[key]
                           const selectedTheme =
                             appearanceThemeSchemeTab === 'dark' ? appDarkTheme : appLightTheme
 
                           return (
-                            <button
+                            <ThemePreviewButton
                               key={key}
+                              themeKey={key}
+                              selected={key === selectedTheme}
+                              active={key === activeAppThemeKey}
                               onClick={() => {
                                 setAppearanceThemeSchemeTab(theme.scheme)
                                 setAppTheme(key)
                               }}
-                              className={cn(
-                                'flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] transition-colors',
-                                key === selectedTheme
-                                  ? 'bg-accent text-foreground'
-                                  : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
-                              )}
-                            >
-                              <ThemePreviewDots themeKey={key} />
-                              <span className="truncate">{theme.name}</span>
-                              {key === activeAppThemeKey ? (
-                                <Check className="ml-auto h-2.5 w-2.5 shrink-0 text-muted-foreground" />
-                              ) : null}
-                            </button>
+                            />
                           )
                         })}
                       </div>
@@ -505,7 +496,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                           className={cn(
                             'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
                             titleBarPosition === option.value
-                              ? 'bg-accent text-foreground'
+                              ? 'bg-accent text-accent-foreground'
                               : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
                           )}
                         >
@@ -585,7 +576,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                               className={cn(
                                 'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
                                 tabSwitchMode === mode.value
-                                  ? 'bg-accent text-foreground'
+                                  ? 'bg-accent text-accent-foreground'
                                   : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
                               )}
                             >
@@ -610,7 +601,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                               className={cn(
                                 'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
                                 projectSwitchMode === mode.value
-                                  ? 'bg-accent text-foreground'
+                                  ? 'bg-accent text-accent-foreground'
                                   : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
                               )}
                             >
@@ -664,7 +655,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                             className={cn(
                               'rounded-[6px] px-2.5 py-1 text-[10px] font-medium transition-colors',
                               terminalThemeSchemeTab === tab.value
-                                ? 'bg-accent text-foreground'
+                                ? 'bg-accent text-accent-foreground'
                                 : 'text-muted-foreground/60 hover:text-foreground',
                             )}
                           >
@@ -673,26 +664,19 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                         ))}
                       </div>
 
-                      <div className="grid grid-cols-3 gap-1">
+                      <div className="grid grid-cols-2 gap-2">
                         {terminalVisibleThemeKeys.map((key) => {
                           const theme = terminalThemes[key]
                           return (
-                            <button
+                            <ThemePreviewButton
                               key={key}
+                              themeKey={key}
+                              selected={key === terminalTheme}
                               onClick={() => {
                                 setTerminalThemeSchemeTab(theme.scheme)
                                 setTerminalTheme(key)
                               }}
-                              className={cn(
-                                'flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] transition-colors',
-                                key === terminalTheme
-                                  ? 'bg-accent text-foreground'
-                                  : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
-                              )}
-                            >
-                              <ThemePreviewDots themeKey={key} />
-                              <span className="truncate">{theme.name}</span>
-                            </button>
+                            />
                           )
                         })}
                       </div>
@@ -713,7 +697,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                               className={cn(
                                 'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
                                 terminalSessionBackend === option.value
-                                  ? 'bg-accent text-foreground'
+                                  ? 'bg-accent text-accent-foreground'
                                   : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
                               )}
                             >
@@ -740,7 +724,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                           className={cn(
                             'rounded-md px-2.5 py-1 text-[11px] tabular-nums transition-colors',
                             size === fontSize
-                              ? 'bg-accent text-foreground'
+                              ? 'bg-accent text-accent-foreground'
                               : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
                           )}
                         >
@@ -759,7 +743,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                           className={cn(
                             'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
                             fontFamily === font.value
-                              ? 'bg-accent text-foreground'
+                              ? 'bg-accent text-accent-foreground'
                               : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
                           )}
                           style={{ fontFamily: font.value }}
@@ -784,7 +768,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                               className={cn(
                                 'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
                                 terminalCursorStyle === option.value
-                                  ? 'bg-accent text-foreground'
+                                  ? 'bg-accent text-accent-foreground'
                                   : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
                               )}
                             >
@@ -1085,7 +1069,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                           className={cn(
                             'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
                             searchEngine === engine.value
-                              ? 'bg-accent text-foreground'
+                              ? 'bg-accent text-accent-foreground'
                               : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
                           )}
                         >
@@ -1469,26 +1453,82 @@ interface SettingsFieldProps {
   children: React.ReactNode
 }
 
-function ThemePreviewDots({ themeKey }: { themeKey: string }) {
+function ThemePreviewButton({
+  themeKey,
+  selected,
+  active = false,
+  onClick,
+}: {
+  themeKey: string
+  selected: boolean
+  active?: boolean
+  onClick: () => void
+}) {
   const theme = terminalThemes[themeKey]
 
   if (!theme) return null
 
   return (
-    <div className="flex shrink-0 gap-0.5">
+    <button
+      type="button"
+      aria-pressed={selected}
+      onClick={onClick}
+      className={cn(
+        'group flex h-[82px] min-w-0 flex-col rounded-lg border p-1.5 text-left outline-none transition-colors focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40',
+        selected
+          ? 'border-primary/35 bg-accent text-accent-foreground shadow-minimal'
+          : 'border-border/20 bg-background/35 text-muted-foreground/75 hover:border-border/45 hover:bg-muted/35 hover:text-foreground',
+      )}
+    >
       <div
-        className="h-1.5 w-1.5 rounded-full border border-black/5 dark:border-white/5"
-        style={{ background: theme.background }}
-      />
-      <div
-        className="h-1.5 w-1.5 rounded-full border border-black/5 dark:border-white/5"
-        style={{ background: theme.green }}
-      />
-      <div
-        className="h-1.5 w-1.5 rounded-full border border-black/5 dark:border-white/5"
-        style={{ background: theme.blue }}
-      />
-    </div>
+        className="relative h-10 overflow-hidden rounded-md border shadow-minimal"
+        style={{
+          background: theme.background,
+          borderColor: `${theme.foreground}1f`,
+          color: theme.foreground,
+        }}
+      >
+        <div
+          className="flex h-4 items-center gap-1 border-b px-1.5"
+          style={{ borderColor: `${theme.foreground}16` }}
+        >
+          <span className="size-1 rounded-full" style={{ background: theme.red }} />
+          <span className="size-1 rounded-full" style={{ background: theme.yellow }} />
+          <span className="size-1 rounded-full" style={{ background: theme.green }} />
+        </div>
+        <div className="space-y-0.5 px-1.5 py-1 font-mono text-[8.5px] leading-none">
+          <div>
+            <span style={{ color: theme.blue }}>src</span>
+            <span style={{ color: theme.foreground }}>/app.tsx</span>
+          </div>
+          <div>
+            <span style={{ color: theme.green }}>$</span>{' '}
+            <span style={{ color: theme.cyan }}>pnpm</span>{' '}
+            <span style={{ color: theme.yellow }}>dev</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-1 flex h-2 overflow-hidden rounded-[4px]">
+        {[theme.red, theme.green, theme.yellow, theme.blue, theme.magenta, theme.cyan].map(
+          (color) => (
+            <span key={color} className="min-w-0 flex-1" style={{ background: color }} />
+          ),
+        )}
+      </div>
+
+      <div className="mt-1 flex min-w-0 items-center gap-1">
+        <span className="min-w-0 flex-1 truncate text-[11px] font-medium">{theme.name}</span>
+        {active || selected ? (
+          <Check
+            className={cn(
+              'size-3 shrink-0',
+              selected ? 'text-accent-foreground/80' : 'text-muted-foreground/70',
+            )}
+          />
+        ) : null}
+      </div>
+    </button>
   )
 }
 
