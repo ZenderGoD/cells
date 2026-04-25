@@ -1,5 +1,6 @@
 import { cloneElement, isValidElement, memo, useMemo } from 'react'
-import { motion, useReducedMotion } from 'motion/react'
+import type { CSSProperties } from 'react'
+import { useReducedMotion } from 'motion/react'
 import ReactMarkdown from 'react-markdown'
 import remarkBreaks from 'remark-breaks'
 import remarkGfm from 'remark-gfm'
@@ -23,13 +24,7 @@ interface AgentMarkdownProps {
   streamingReveal?: boolean
 }
 
-const STREAMING_REVEAL_TRANSITION = {
-  duration: 0.2,
-  ease: [0.25, 0.46, 0.45, 0.94],
-} as const
-
 const STREAMING_REVEAL_WORDS = 9
-const STREAMING_REVEAL_STAGGER = 0.018
 
 function splitTrailingWords(text: string) {
   const matches = Array.from(text.matchAll(/\S+\s*/g))
@@ -42,37 +37,33 @@ function splitTrailingWords(text: string) {
   }
 }
 
-function StreamingRevealWords({ text }: { text: string }) {
-  const parts = text.split(/(\s+)/)
-  const keyedParts = parts.map((part, index) => {
-    if (!part || /^\s+$/.test(part)) return { part, index, delay: null }
-    const wordIndex = parts
-      .slice(0, index)
-      .filter((candidate) => candidate && !/^\s+$/.test(candidate)).length
-    const delay = Math.min(wordIndex * STREAMING_REVEAL_STAGGER, 0.12)
-    return { part, index, delay }
-  })
+function StreamingRevealTail({ text }: { text: string }) {
+  const segments = text.match(/\S+|\s+/g) ?? [text]
+  const characterCount = segments.reduce((count, segment) => {
+    if (/^\s+$/.test(segment)) return count
+    return count + Array.from(segment).length
+  }, 0)
+  let characterIndex = 0
+
   return (
-    <>
-      {keyedParts.map(({ part, index, delay }) => {
-        if (!part) return null
-        if (/^\s+$/.test(part)) return part
-        return (
-          <motion.span
-            key={`${index}:${part}`}
-            className="inline-block whitespace-pre-wrap will-change-[filter,opacity]"
-            initial={{ opacity: 0.58, y: 1.5, filter: 'blur(3px)' }}
-            animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
-            transition={{
-              ...STREAMING_REVEAL_TRANSITION,
-              delay: delay ?? 0,
-            }}
-          >
-            {part}
-          </motion.span>
-        )
+    <span key={text.length} className="streaming-reveal-tail whitespace-pre-wrap">
+      {segments.map((segment, segmentIndex) => {
+        if (/^\s+$/.test(segment)) return segment
+        return Array.from(segment).map((character, index) => {
+          const ratio = characterCount <= 1 ? 1 : characterIndex / (characterCount - 1)
+          characterIndex += 1
+          return (
+            <span
+              key={`${segmentIndex}:${index}`}
+              className="streaming-reveal-character"
+              style={{ '--streaming-reveal-ratio': ratio } as CSSProperties}
+            >
+              {character}
+            </span>
+          )
+        })
       })}
-    </>
+    </span>
   )
 }
 
@@ -89,7 +80,7 @@ function revealTrailingText(children: React.ReactNode): React.ReactNode {
       return (
         <>
           {split.stable}
-          <StreamingRevealWords text={split.reveal} />
+          <StreamingRevealTail text={split.reveal} />
         </>
       )
     }

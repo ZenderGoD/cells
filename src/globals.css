@@ -419,6 +419,31 @@ textarea[data-ghostty] {
   background: var(--muted-foreground);
 }
 
+.streaming-reveal-tail {
+  display: inline;
+}
+
+.streaming-reveal-character {
+  --streaming-reveal-ratio: 0;
+  display: inline-block;
+  white-space: pre;
+  animation: streaming-reveal-character 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: calc(var(--streaming-reveal-ratio) * 140ms);
+  transform: translateZ(0);
+  will-change: filter, opacity;
+}
+
+@keyframes streaming-reveal-character {
+  from {
+    opacity: calc(1 - (var(--streaming-reveal-ratio) * 0.92));
+    filter: blur(calc(var(--streaming-reveal-ratio) * 3.8px));
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+
 /* Elevation utilities — matches Craft Agents OSS exactly.
  * Source: ../craft-agents-oss/packages/ui/src/styles/index.css --shadow-minimal
  * Five-layer stack: two zero-layers (Craft compat), foreground-tinted 1px border,

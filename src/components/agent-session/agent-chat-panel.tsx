@@ -1556,7 +1556,7 @@ function BackgroundActivityBanner({
   const agentName = getAgentDisplayName(agent)
 
   return (
-    <div className="mb-2 select-none">
+    <div className="mb-2 min-w-0 select-none">
       <div className="mb-1.5 flex items-center gap-2 px-1">
         <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground/70" />
         <div className="min-w-0 flex-1">
@@ -1580,21 +1580,24 @@ function BackgroundActivityBanner({
           Stop
         </button>
       </div>
-      <div className="flex flex-col gap-1">
+      <div className="flex min-w-0 flex-col gap-1">
         {activities.slice(0, 3).map((activity) => {
           const details = getActivityPreview(activity)
           const started = activity.startedAt ? formatElapsedMs(activity.startedAt) : null
           return (
             <div
               key={activity.id}
-              className="flex items-center gap-2 rounded-[10px] bg-foreground/5 px-2.5 py-1.5 text-[12px] text-foreground/85"
+              className="flex min-w-0 items-center gap-2 overflow-hidden rounded-[10px] bg-foreground/5 px-2.5 py-1.5 text-[12px] text-foreground/85"
             >
               <Clock className="size-3.5 shrink-0 text-muted-foreground/60" />
-              <span className="shrink-0 truncate font-medium text-foreground/90">
+              <span className="max-w-[28%] shrink-0 truncate font-medium text-foreground/90">
                 {activity.title || 'Activity'}
               </span>
               {details.preview ? (
-                <span className="min-w-0 flex-1 truncate text-[11.5px] text-muted-foreground/75">
+                <span
+                  className="min-w-0 flex-1 truncate text-[11.5px] text-muted-foreground/75"
+                  title={details.preview}
+                >
                   {details.preview}
                 </span>
               ) : (
