@@ -49,6 +49,8 @@ const EXPAND_TRANSITION = {
 // that affordance's inner padding so the glyphs, not the container edge, align.
 const RESPONSE_TEXT_INSET_CLASS = 'pl-4'
 const TOOL_GROUP_COUNT_TEXT_INSET_CLASS = 'pl-2.5'
+const TOOL_GROUP_COUNT_BADGE_CLASS = 'h-7 w-7'
+const TOOL_GROUP_ACTIVITY_RAIL_CLASS = 'ml-6'
 
 interface AgentTurnCardProps {
   activities: AgentSessionMessage[]
@@ -790,7 +792,12 @@ export function AgentTurnCard({
                 TOOL_GROUP_COUNT_TEXT_INSET_CLASS,
               )}
             >
-              <span className="shrink-0 rounded-[4px] bg-background px-1.5 py-0.5 text-[10px] font-medium tabular-nums shadow-minimal">
+              <span
+                className={cn(
+                  'inline-flex shrink-0 items-center justify-center rounded-[4px] bg-background text-[10px] font-medium tabular-nums shadow-minimal',
+                  TOOL_GROUP_COUNT_BADGE_CLASS,
+                )}
+              >
                 {activities.length}
               </span>
               {isStreaming ? (
@@ -845,7 +852,12 @@ export function AgentTurnCard({
                   transition={EXPAND_TRANSITION}
                   style={{ overflow: 'hidden' }}
                 >
-                  <div className="ml-[13px] mt-1 max-h-[360px] space-y-0.5 overflow-y-auto overscroll-contain border-l-2 border-border/40 pl-3 pr-1 py-0.5">
+                  <div
+                    className={cn(
+                      'mt-1 max-h-[360px] space-y-0.5 overflow-y-auto overscroll-contain border-l-2 border-border/40 pl-3 pr-1 py-0.5',
+                      TOOL_GROUP_ACTIVITY_RAIL_CLASS,
+                    )}
+                  >
                     {tree.map((node) => (
                       <ActivityRow key={node.message.id} node={node} depth={0} />
                     ))}
