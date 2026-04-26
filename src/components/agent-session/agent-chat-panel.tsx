@@ -2716,7 +2716,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const canSaveQueuedEdit = isEditingQueuedMessage && hasComposerPayload
   const shortcutStatusMode =
     !isEditingQueuedMessage && hasComposerPayload
-      ? composerShortcutMode === 'branch' && hasComposerText && !isRunning
+      ? composerShortcutMode === 'branch' && hasComposerText
         ? 'branch'
         : composerShortcutMode === 'interrupt'
           ? 'interrupt'
@@ -4497,42 +4497,63 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                   ) : null}
                   <div className="flex-1" />
                   <AnimatePresence initial={false} mode="popLayout">
-                    {!isRunning && !isEditingQueuedMessage ? (
-                      branchShortcutActive ? (
-                        <motion.span
-                          key="branch-shortcut-hint"
-                          initial={{ opacity: 0, x: 4 }}
-                          animate={{ opacity: 1, x: 0 }}
-                          exit={{ opacity: 0, x: 4 }}
-                          transition={{ duration: 0.14, ease: EASE_OUT }}
-                          className="hidden items-center gap-1 text-[10.5px] text-emerald-200/85 sm:inline-flex"
-                        >
-                          <Kbd className="h-[18px] min-w-[18px] rounded-[4px] bg-emerald-400/14 px-1 text-[10px] text-emerald-100/90">
-                            {getPrimaryModifierLabel()}
-                          </Kbd>
-                          <Kbd className="h-[18px] min-w-[18px] rounded-[4px] bg-emerald-400/14 px-1 text-[10px] text-emerald-100/90">
-                            ⇧
-                          </Kbd>
-                          <Kbd className="h-[18px] min-w-[18px] rounded-[4px] bg-emerald-400/14 px-1 text-[10px] text-emerald-100/90">
-                            ↵
-                          </Kbd>
-                          <span>branch with message</span>
-                        </motion.span>
-                      ) : (
-                        <motion.span
-                          key="send-shortcut-hint"
-                          initial={{ opacity: 0 }}
-                          animate={{ opacity: 1 }}
-                          exit={{ opacity: 0 }}
-                          transition={{ duration: 0.1, ease: EASE_OUT }}
-                          className="hidden items-center gap-1 text-[10.5px] text-muted-foreground/60 sm:inline-flex"
-                        >
-                          <Kbd className="h-[18px] min-w-[18px] rounded-[4px] bg-foreground/6 px-1 text-[10px] text-muted-foreground/80">
-                            ↵
-                          </Kbd>
-                          <span>send</span>
-                        </motion.span>
-                      )
+                    {!isEditingQueuedMessage && (shortcutStatusMode || !isRunning) ? (
+                      <motion.span
+                        key={shortcutStatusMode ?? 'send'}
+                        initial={{ opacity: 0, x: shortcutStatusMode ? 4 : 0 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        exit={{ opacity: 0, x: shortcutStatusMode ? 4 : 0 }}
+                        transition={{ duration: 0.14, ease: EASE_OUT }}
+                        className={cn(
+                          'hidden items-center gap-1 text-[10.5px] sm:inline-flex',
+                          shortcutStatusMode === 'branch' && 'text-emerald-200/85',
+                          shortcutStatusMode === 'interrupt' && 'text-rose-200/85',
+                          shortcutStatusMode === 'after-tool' && 'text-violet-200/85',
+                          !shortcutStatusMode && 'text-muted-foreground/60',
+                        )}
+                      >
+                        {shortcutStatusMode === 'branch' ? (
+                          <>
+                            <Kbd className="h-[18px] min-w-[18px] rounded-[4px] bg-emerald-400/14 px-1 text-[10px] text-emerald-100/90">
+                              {getPrimaryModifierLabel()}
+                            </Kbd>
+                            <Kbd className="h-[18px] min-w-[18px] rounded-[4px] bg-emerald-400/14 px-1 text-[10px] text-emerald-100/90">
+                              ⇧
+                            </Kbd>
+                            <Kbd className="h-[18px] min-w-[18px] rounded-[4px] bg-emerald-400/14 px-1 text-[10px] text-emerald-100/90">
+                              ↵
+                            </Kbd>
+                            <span>branch with message</span>
+                          </>
+                        ) : shortcutStatusMode === 'interrupt' ? (
+                          <>
+                            <Kbd className="h-[18px] min-w-[18px] rounded-[4px] bg-rose-400/14 px-1 text-[10px] text-rose-100/90">
+                              {getPrimaryModifierLabel()}
+                            </Kbd>
+                            <Kbd className="h-[18px] min-w-[18px] rounded-[4px] bg-rose-400/14 px-1 text-[10px] text-rose-100/90">
+                              ↵
+                            </Kbd>
+                            <span>kill thread + send</span>
+                          </>
+                        ) : shortcutStatusMode === 'after-tool' ? (
+                          <>
+                            <Kbd className="h-[18px] min-w-[18px] rounded-[4px] bg-violet-400/14 px-1 text-[10px] text-violet-100/90">
+                              {getAltModifierLabel()}
+                            </Kbd>
+                            <Kbd className="h-[18px] min-w-[18px] rounded-[4px] bg-violet-400/14 px-1 text-[10px] text-violet-100/90">
+                              ↵
+                            </Kbd>
+                            <span>send after next tool</span>
+                          </>
+                        ) : (
+                          <>
+                            <Kbd className="h-[18px] min-w-[18px] rounded-[4px] bg-foreground/6 px-1 text-[10px] text-muted-foreground/80">
+                              ↵
+                            </Kbd>
+                            <span>send</span>
+                          </>
+                        )}
+                      </motion.span>
                     ) : null}
                   </AnimatePresence>
                   <AnimatePresence initial={false}>
