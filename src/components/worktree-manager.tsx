@@ -34,6 +34,7 @@ import {
 } from '@/components/ui/combobox'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   Dialog,
   DialogContent,
@@ -590,67 +591,71 @@ export function WorktreeManager({
             </div>
           </div>
 
-          <div className="max-h-80 overflow-y-auto p-1.5">
-            <div className="px-2 py-1.5 text-[11px] font-medium text-muted-foreground">
-              {primaryActionLabel}
-            </div>
-            {nonBare.length === 0 ? (
-              <div className="px-2 py-6 text-center text-[12px] text-muted-foreground/65">
-                No worktrees found.
+          <ScrollArea className="max-h-80" maskHeight={16}>
+            <div className="p-1.5">
+              <div className="px-2 py-1.5 text-[11px] font-medium text-muted-foreground">
+                {primaryActionLabel}
               </div>
-            ) : filteredWorktrees.length === 0 ? (
-              <div className="px-2 py-6 text-center text-[12px] text-muted-foreground/65">
-                No worktrees match.
-              </div>
-            ) : (
-              filteredWorktrees.map((worktree) => {
-                const selected = currentWorktree?.path === worktree.path
-                return (
-                  <div
-                    key={worktree.path}
-                    className={cn(
-                      'group flex min-w-0 items-start gap-2 rounded-lg px-2 py-2 transition-colors hover:bg-foreground/5',
-                      selected && 'bg-foreground/6',
-                    )}
-                  >
-                    <Button
-                      variant="ghost"
-                      className="h-auto min-w-0 flex-1 justify-start gap-2 px-0 py-0 text-left hover:bg-transparent"
-                      onClick={() => void runPrimaryAction(worktree)}
+              {nonBare.length === 0 ? (
+                <div className="px-2 py-6 text-center text-[12px] text-muted-foreground/65">
+                  No worktrees found.
+                </div>
+              ) : filteredWorktrees.length === 0 ? (
+                <div className="px-2 py-6 text-center text-[12px] text-muted-foreground/65">
+                  No worktrees match.
+                </div>
+              ) : (
+                filteredWorktrees.map((worktree) => {
+                  const selected = currentWorktree?.path === worktree.path
+                  return (
+                    <div
+                      key={worktree.path}
+                      className={cn(
+                        'group flex min-w-0 items-start gap-2 rounded-lg px-2 py-2 transition-colors hover:bg-foreground/5',
+                        selected && 'bg-foreground/6',
+                      )}
                     >
-                      <GitBranch className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/65" />
-                      <div className="min-w-0 flex-1 space-y-1">
-                        <div className="flex min-w-0 items-center gap-2">
-                          <span className="truncate text-[12.5px] font-medium text-foreground/90">
-                            {getWorktreeName(worktree)}
-                          </span>
-                          {selected ? <Check className="size-3 shrink-0 text-primary/70" /> : null}
-                          <AttachedWindows worktreePath={worktree.path} />
+                      <Button
+                        variant="ghost"
+                        className="h-auto min-w-0 flex-1 justify-start gap-2 px-0 py-0 text-left hover:bg-transparent"
+                        onClick={() => void runPrimaryAction(worktree)}
+                      >
+                        <GitBranch className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/65" />
+                        <div className="min-w-0 flex-1 space-y-1">
+                          <div className="flex min-w-0 items-center gap-2">
+                            <span className="truncate text-[12.5px] font-medium text-foreground/90">
+                              {getWorktreeName(worktree)}
+                            </span>
+                            {selected ? (
+                              <Check className="size-3 shrink-0 text-primary/70" />
+                            ) : null}
+                            <AttachedWindows worktreePath={worktree.path} />
+                          </div>
+                          <div className="truncate font-mono text-[10.5px] text-muted-foreground/55">
+                            {shortenFsPath(worktree.path)}
+                          </div>
+                          <WorktreeBadges worktree={worktree} />
                         </div>
-                        <div className="truncate font-mono text-[10.5px] text-muted-foreground/55">
-                          {shortenFsPath(worktree.path)}
-                        </div>
-                        <WorktreeBadges worktree={worktree} />
-                      </div>
-                    </Button>
-                    <span className="mt-0.5 hidden shrink-0 text-[10.5px] text-muted-foreground/55 group-hover:inline">
-                      {primaryActionLabel}
-                    </span>
-                    <WorktreeActionMenu
-                      worktree={worktree}
-                      canRemove={!worktree.isMain}
-                      onOpenTerminal={() => openTerminal(worktree)}
-                      onOpenCodex={() => openAgent('codex', worktree)}
-                      onOpenClaude={() => openAgent('claude', worktree)}
-                      onCopyPath={() => void navigator.clipboard.writeText(worktree.path)}
-                      onReveal={() => void window.cells.app.revealPath(worktree.path)}
-                      onRemove={() => setCleanup(worktree)}
-                    />
-                  </div>
-                )
-              })
-            )}
-          </div>
+                      </Button>
+                      <span className="mt-0.5 hidden shrink-0 text-[10.5px] text-muted-foreground/55 group-hover:inline">
+                        {primaryActionLabel}
+                      </span>
+                      <WorktreeActionMenu
+                        worktree={worktree}
+                        canRemove={!worktree.isMain}
+                        onOpenTerminal={() => openTerminal(worktree)}
+                        onOpenCodex={() => openAgent('codex', worktree)}
+                        onOpenClaude={() => openAgent('claude', worktree)}
+                        onCopyPath={() => void navigator.clipboard.writeText(worktree.path)}
+                        onReveal={() => void window.cells.app.revealPath(worktree.path)}
+                        onRemove={() => setCleanup(worktree)}
+                      />
+                    </div>
+                  )
+                })
+              )}
+            </div>
+          </ScrollArea>
 
           <div className="border-t border-border/35 p-2">
             <div className="flex items-center gap-1.5">

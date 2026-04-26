@@ -2,6 +2,7 @@ import { useStore } from '@/lib/store'
 import { useShallow } from 'zustand/react/shallow'
 import { Button } from '@/components/ui/button'
 import { Kbd, KbdGroup } from '@/components/ui/kbd'
+import { ScrollArea } from '@/components/ui/scroll-area'
 import { X } from 'lucide-react'
 
 const SHORTCUTS = [
@@ -78,8 +79,9 @@ export function OnboardingGuide() {
       className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm"
       onClick={handleBackdropClick}
     >
-      <div
-        className="bg-card ring-1 ring-foreground/10 rounded-2xl max-w-2xl w-full mx-4 max-h-[85vh] overflow-y-auto"
+      <ScrollArea
+        className="bg-card ring-1 ring-foreground/10 rounded-2xl max-w-2xl w-full mx-4 max-h-[85vh]"
+        maskHeight={16}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -120,7 +122,7 @@ export function OnboardingGuide() {
         <div className="border-t border-border/20 px-6 py-4 bg-muted/30 flex justify-end">
           <Button onClick={dismissOnboardingGuide}>Got it</Button>
         </div>
-      </div>
+      </ScrollArea>
     </div>
   )
 }

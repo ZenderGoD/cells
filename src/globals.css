@@ -313,13 +313,13 @@ body {
 
 /* Scrollbar styling */
 ::-webkit-scrollbar {
-  width: 4px;
-  height: 4px;
+  width: 3px;
+  height: 3px;
 }
 
 *:hover::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 4px;
+  height: 4px;
 }
 
 ::-webkit-scrollbar-track {
@@ -434,26 +434,26 @@ textarea[data-ghostty] {
 }
 
 .scrollbar-hover::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 5px;
+  height: 5px;
 }
 .scrollbar-hover::-webkit-scrollbar-track {
   background: transparent;
 }
 .scrollbar-hover::-webkit-scrollbar-thumb {
-  border: 3px solid transparent;
+  border: 2px solid transparent;
   border-radius: 999px;
   background: var(--border);
   background-clip: padding-box;
 }
 .scrollbar-hover:hover::-webkit-scrollbar-thumb,
 .group:hover .scrollbar-hover::-webkit-scrollbar-thumb {
-  border-width: 1px;
+  border-width: 0.5px;
   background: var(--scrollbar-thumb-hover);
 }
 .scrollbar-hover::-webkit-scrollbar-thumb:hover,
 .group:hover .scrollbar-hover::-webkit-scrollbar-thumb:hover {
-  border-width: 1px;
+  border-width: 0.5px;
   background: var(--muted-foreground);
 }
 

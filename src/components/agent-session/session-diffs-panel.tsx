@@ -178,7 +178,11 @@ function HunksTable({ hunks }: { hunks: Array<DiffOp | 'ellipsis'> }) {
   const truncated = hunks.length > MAX_RENDERED_HUNK_ROWS
   const rows = truncated ? hunks.slice(0, MAX_RENDERED_HUNK_ROWS) : hunks
   return (
-    <div className="max-h-[min(55vh,520px)] overflow-auto rounded-[6px] border border-border/30 bg-[oklch(0.10_0.004_285)] text-[11px] leading-[1.6] overscroll-contain">
+    <ScrollArea
+      className="max-h-[min(55vh,520px)] rounded-[6px] border border-border/30 bg-[oklch(0.10_0.004_285)] text-[11px] leading-[1.6]"
+      viewportClassName="overscroll-contain"
+      maskHeight={16}
+    >
       <table className="min-w-full border-collapse font-mono">
         <tbody>
           {rows.map((item, idx) => {
@@ -235,7 +239,7 @@ function HunksTable({ hunks }: { hunks: Array<DiffOp | 'ellipsis'> }) {
           ) : null}
         </tbody>
       </table>
-    </div>
+    </ScrollArea>
   )
 }
 
