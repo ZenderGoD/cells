@@ -3,6 +3,8 @@ import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import {
   ArchiveRestore,
   ArrowUp,
+  ArrowUpRight,
+  Ban,
   Check,
   ChevronRight,
   Circle,
@@ -20,6 +22,7 @@ import {
   MessageSquare,
   Paperclip,
   Pencil,
+  RotateCcw,
   ShieldCheck,
   Square,
   X,
@@ -841,7 +844,35 @@ function ErrorBubble({ message }: { message: AgentSessionMessage }) {
   )
 }
 
-function SessionErrorBanner({ error, agent }: { error: string; agent: AgentWindowNode['agent'] }) {
+type UsageLimitInfo = {
+  agentLabel: string
+  resetLabel: string | null
+  url: string | null
+}
+
+// Pulls "You've hit your usage limit. Visit <url> to purchase more credits or
+// try again at <date>." apart so the banner can show the reset time as a pill
+// and the settings URL as a button instead of one truncated blob of text.
+function parseUsageLimit(error: string, agent: AgentWindowNode['agent']): UsageLimitInfo | null {
+  if (!/usage limit/i.test(error)) return null
+  const urlMatch = error.match(/https?:\/\/\S+?(?=[\s.,)]|$)/)
+  const resetMatch = error.match(/try again at\s+([^.]+?)(?:\.\s*$|$)/i)
+  return {
+    agentLabel: getAgentDisplayName(agent),
+    resetLabel: resetMatch ? resetMatch[1].trim() : null,
+    url: urlMatch ? urlMatch[0] : null,
+  }
+}
+
+function SessionErrorBanner({
+  error,
+  agent,
+  onRetry,
+}: {
+  error: string
+  agent: AgentWindowNode['agent']
+  onRetry: (() => void) | null
+}) {
   const reconnect = getReconnectStatus(error)
   if (reconnect) {
     const attemptLabel =
@@ -863,10 +894,58 @@ function SessionErrorBanner({ error, agent }: { error: string; agent: AgentWindo
     )
   }
 
+  const usageLimit = parseUsageLimit(error, agent)
+  if (usageLimit) {
+    return (
+      <div className="mb-2 flex items-center gap-2 rounded-[10px] bg-background/60 px-2.5 py-1.5 text-[12px] text-foreground/85 shadow-minimal backdrop-blur-md">
+        <Ban className="size-3.5 shrink-0 text-rose-300/85" />
+        <span className="min-w-0 flex-1 truncate">
+          <span className="text-foreground/90">{usageLimit.agentLabel} usage limit reached</span>
+          {usageLimit.resetLabel ? (
+            <span className="text-muted-foreground/75"> · resets {usageLimit.resetLabel}</span>
+          ) : null}
+        </span>
+        {usageLimit.url ? (
+          <button
+            type="button"
+            onClick={() => void window.cells.app.openExternal(usageLimit.url as string)}
+            className="inline-flex shrink-0 items-center gap-1 rounded-[6px] bg-foreground/8 px-2 py-0.5 text-[11px] font-medium text-foreground/85 transition-colors hover:bg-foreground/12"
+            title={usageLimit.url}
+          >
+            Settings
+            <ArrowUpRight className="size-3" />
+          </button>
+        ) : null}
+        {onRetry ? (
+          <button
+            type="button"
+            onClick={onRetry}
+            className="inline-flex shrink-0 items-center gap-1 rounded-[6px] bg-foreground/8 px-2 py-0.5 text-[11px] font-medium text-foreground/85 transition-colors hover:bg-foreground/12"
+            title="Resend last message"
+          >
+            <RotateCcw className="size-3" />
+            Retry
+          </button>
+        ) : null}
+      </div>
+    )
+  }
+
   return (
     <div className="mb-2 flex items-center gap-2 rounded-[10px] border border-red-500/20 bg-red-500/7 px-2.5 py-1.5 text-[12px] text-red-300 shadow-minimal backdrop-blur-md">
       <X className="size-3.5 shrink-0 text-red-300/80" />
       <span className="min-w-0 flex-1 truncate">{error}</span>
+      {onRetry ? (
+        <button
+          type="button"
+          onClick={onRetry}
+          className="inline-flex shrink-0 items-center gap-1 rounded-[6px] bg-red-500/15 px-2 py-0.5 text-[11px] font-medium text-red-200 transition-colors hover:bg-red-500/25"
+          title="Resend last message"
+        >
+          <RotateCcw className="size-3" />
+          Retry
+        </button>
+      ) : null}
     </div>
   )
 }
@@ -905,6 +984,14 @@ function getQueuedStoredText(text: string, attachments: string[]) {
 
 function formatModifiedEnter(modifierLabel: string) {
   return modifierLabel.length === 1 ? `${modifierLabel}↩` : `${modifierLabel}+↩`
+}
+
+function isBranchComposerEnter(input: { altKey: boolean; shiftKey: boolean }, hasPrimary: boolean) {
+  return hasPrimary && input.altKey && !input.shiftKey
+}
+
+function isViewportFitEnter(input: { altKey: boolean; shiftKey: boolean }, hasPrimary: boolean) {
+  return hasPrimary && input.shiftKey && !input.altKey
 }
 
 function getQueueModeMeta(): Record<
@@ -2630,6 +2717,18 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     () => visibleMessages.filter((message) => message.role === 'user').length,
     [visibleMessages],
   )
+  const lastUserMessage = useMemo(() => {
+    for (let i = visibleMessages.length - 1; i >= 0; i--) {
+      const message = visibleMessages[i]
+      if (
+        message.role === 'user' &&
+        (message.text.trim() || (message.attachments?.length ?? 0) > 0)
+      ) {
+        return message
+      }
+    }
+    return null
+  }, [visibleMessages])
   const inlineMention = useInlineMention({
     inputRef: textareaRef,
     cwd: visibleSnapshot?.cwd ?? agentWindow.cwd ?? null,
@@ -2750,7 +2849,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       }
       const hasPrimary = hasPrimaryModifier(event)
       setComposerShortcutMode(
-        hasPrimary && event.shiftKey
+        isBranchComposerEnter(event, hasPrimary)
           ? 'branch'
           : hasPrimary
             ? 'interrupt'
@@ -2893,12 +2992,14 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   }, [])
 
   const branchToAgent = useCallback(
-    (targetAgent: AgentWindowNode['agent']) => {
+    async (targetAgent: AgentWindowNode['agent']) => {
       const currentSnapshot = snapshotRef.current
       if (!currentSnapshot || currentSnapshot.windowId !== agentWindow.id) return
       const continuation = inputRef.current.trim()
       const continuationAttachments = [...attachmentsRef.current]
-      const initialPrompt = buildBranchImportPrompt({
+      if (!continuation && continuationAttachments.length === 0) return
+      const visibleValue = continuation || ATTACHMENTS_ONLY_TEXT
+      const providerInput = buildBranchImportPrompt({
         sourceWindow: agentWindow,
         snapshot: currentSnapshot,
         targetAgent,
@@ -2907,22 +3008,54 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       })
       const titleSource =
         currentSnapshot.title || agentWindow.title || getAgentDisplayName(targetAgent)
-      const targetWindow = useStore.getState().addAgentWindow(targetAgent, {
+      const targetModel = targetAgent === agentWindow.agent ? (agentWindow.model ?? null) : null
+      const targetContextLength =
+        targetAgent === 'claude' ? (agentWindow.contextLength ?? null) : null
+      const store = useStore.getState()
+      const targetWindow = store.addAgentWindow(targetAgent, {
         title: `${titleSource} (branch)`,
         cwd: currentSnapshot.cwd ?? agentWindow.cwd ?? null,
-        initialPrompt,
-        model: targetAgent === agentWindow.agent ? (agentWindow.model ?? null) : null,
+        initialPrompt: null,
+        model: targetModel,
         permissionMode: agentWindow.permissionMode ?? null,
         thinkingLevel: agentWindow.thinkingLevel ?? null,
-        contextLength: targetAgent === 'claude' ? (agentWindow.contextLength ?? null) : null,
+        contextLength: targetContextLength,
       })
-      if (continuation || continuationAttachments.length > 0) {
+      try {
+        await window.cells.agentSession.branchFrom(
+          agentWindow.id,
+          {
+            windowId: targetWindow.id,
+            agent: targetWindow.agent,
+            title: targetWindow.title,
+            cwd: targetWindow.cwd ?? null,
+            initialPrompt: null,
+            claudeSessionId: null,
+            codexThreadId: null,
+            model: targetModel,
+            permissionMode: agentWindow.permissionMode ?? null,
+            thinkingLevel: agentWindow.thinkingLevel ?? null,
+            contextLength: targetContextLength,
+          },
+          visibleValue,
+          providerInput,
+          continuationAttachments,
+          {
+            model: targetModel,
+            thinkingLevel: agentWindow.thinkingLevel ?? null,
+            permissionMode: agentWindow.permissionMode ?? null,
+          },
+        )
         writeComposer('', [])
+        showToast(`Branched into ${getAgentDisplayName(targetAgent)}`, 'info')
+        window.setTimeout(() => {
+          store.snapToAgentWindow(targetWindow.id)
+        }, 0)
+      } catch (err) {
+        console.error('[agent-chat] branch target failed', err)
+        store.removeAgentWindow(targetWindow.id)
+        showToast('Failed to branch session', 'error')
       }
-      showToast(`Branched into ${getAgentDisplayName(targetAgent)}`, 'info')
-      window.setTimeout(() => {
-        useStore.getState().snapToAgentWindow(targetWindow.id)
-      }, 0)
     },
     [agentWindow, writeComposer],
   )
@@ -3043,6 +3176,9 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     if (!rawValue && pinned.length === 0) return
 
     const value = rawValue || ATTACHMENTS_ONLY_TEXT
+    const nextDraft = hasSelection
+      ? `${draft.slice(0, selectionStart)}${draft.slice(selectionEnd)}`.trim()
+      : ''
     const store = useStore.getState()
     if (currentSnapshot && currentSnapshot.windowId === agentWindow.id) {
       const titleSource =
@@ -3086,6 +3222,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
             permissionMode: agentWindow.permissionMode ?? null,
           },
         )
+        writeComposer(nextDraft, [])
         showToast('Branched current session', 'info')
         window.setTimeout(() => {
           store.snapToAgentWindow(nextWindow.id)
@@ -3101,29 +3238,33 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     const nextWindow = store.addAgentWindow(agentWindow.agent, {
       title: getDraftSessionTitle(agentWindow.agent, rawValue),
       cwd: visibleSnapshot?.cwd ?? agentWindow.cwd ?? store.getActiveProjectPath() ?? null,
+      initialPrompt: pinned.length === 0 ? value : null,
       model: agentWindow.model ?? null,
       permissionMode: agentWindow.permissionMode ?? null,
       thinkingLevel: agentWindow.thinkingLevel ?? null,
       contextLength: agentWindow.contextLength ?? null,
     })
 
-    store.syncAgentWindow(nextWindow.id, {
-      queuedMessages: [
-        {
-          id: createQueuedMessageId(),
-          text: value,
-          attachments: pinned,
-          mode: 'after-turn',
-          model: agentWindow.model ?? null,
-          thinkingLevel: agentWindow.thinkingLevel ?? null,
-          permissionMode: agentWindow.permissionMode ?? null,
-        },
-      ],
-    })
+    if (pinned.length > 0) {
+      store.syncAgentWindow(nextWindow.id, {
+        queuedMessages: [
+          {
+            id: createQueuedMessageId(),
+            text: value,
+            attachments: pinned,
+            mode: 'after-turn',
+            model: agentWindow.model ?? null,
+            thinkingLevel: agentWindow.thinkingLevel ?? null,
+            permissionMode: agentWindow.permissionMode ?? null,
+          },
+        ],
+      })
+    }
+    writeComposer(nextDraft, [])
     window.setTimeout(() => {
       store.snapToAgentWindow(nextWindow.id)
     }, 0)
-  }, [agentWindow, visibleSnapshot?.cwd])
+  }, [agentWindow, visibleSnapshot?.cwd, writeComposer])
 
   const unqueueMessage = useCallback(
     (index: number) => {
@@ -3354,8 +3495,9 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         commitEditQueued()
         return
       }
-      // Mod+Shift+Enter branches the current session and sends the selected composer text there.
-      if (hasPrimary && event.shiftKey) {
+      if (isViewportFitEnter(event, hasPrimary)) return
+      // Mod+Option+Enter branches the current session and sends the selected composer text there.
+      if (isBranchComposerEnter(event, hasPrimary)) {
         event.preventDefault()
         event.stopPropagation()
         void startNewSessionFromComposer()
@@ -3461,11 +3603,12 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       const hasPrimary = hasPrimaryModifier(event)
       if (event.shiftKey && !hasPrimary && !event.altKey) return
       if ((event as any).isComposing || event.keyCode === 229) return
+      if (isViewportFitEnter(event, hasPrimary)) return
       event.preventDefault()
       event.stopPropagation()
       if (editingIndex !== null) {
         commitEditQueued()
-      } else if (hasPrimary && event.shiftKey) {
+      } else if (isBranchComposerEnter(event, hasPrimary)) {
         void startNewSessionFromComposer()
       } else if (hasPrimary) {
         void submit('stop')
@@ -3914,7 +4057,24 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                 </div>
               ) : null}
               {visibleSnapshot?.error ? (
-                <SessionErrorBanner error={visibleSnapshot.error} agent={agentWindow.agent} />
+                <SessionErrorBanner
+                  error={visibleSnapshot.error}
+                  agent={agentWindow.agent}
+                  onRetry={
+                    lastUserMessage
+                      ? () =>
+                          void sendToAgent(
+                            lastUserMessage.text,
+                            lastUserMessage.attachments ?? [],
+                            {
+                              model: agentWindow.model ?? null,
+                              thinkingLevel: agentWindow.thinkingLevel ?? null,
+                              permissionMode: agentWindow.permissionMode ?? null,
+                            },
+                          )
+                      : null
+                  }
+                />
               ) : null}
               {visibleSnapshot?.pendingPlanApproval ? (
                 <PlanApprovalBanner
@@ -4481,7 +4641,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                             <button
                               key={target.agent}
                               type="button"
-                              onClick={() => branchToAgent(target.agent)}
+                              onClick={() => void branchToAgent(target.agent)}
                               className="flex h-7 items-center gap-1.5 rounded-md px-2 text-[11.5px] text-muted-foreground/90 transition-colors hover:bg-foreground/8 hover:text-foreground"
                               title={`Branch into ${target.label}`}
                             >
@@ -4518,7 +4678,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                               {getPrimaryModifierLabel()}
                             </Kbd>
                             <Kbd className="h-[18px] min-w-[18px] rounded-[4px] bg-emerald-400/14 px-1 text-[10px] text-emerald-100/90">
-                              ⇧
+                              {getAltModifierLabel()}
                             </Kbd>
                             <Kbd className="h-[18px] min-w-[18px] rounded-[4px] bg-emerald-400/14 px-1 text-[10px] text-emerald-100/90">
                               ↵

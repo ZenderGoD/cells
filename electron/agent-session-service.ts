@@ -5,6 +5,7 @@ import { userInfo } from 'node:os'
 import * as path from 'node:path'
 import { app, shell } from 'electron'
 import {
+  forkSession,
   query,
   unstable_v2_createSession,
   unstable_v2_resumeSession,
@@ -2747,11 +2748,59 @@ export class AgentSessionService extends EventEmitter {
       throw new Error(`Missing source agent session for ${sourceWindowId}`)
     }
 
+    let nativeProviderInput = false
+    let forkedClaudeSessionId: string | null = null
+    let forkedCodexThreadId: string | null = null
+    if (request.agent === sourceSnapshot.agent) {
+      if (request.agent === 'claude' && sourceSnapshot.claudeSessionId) {
+        try {
+          const forked = await forkSession(sourceSnapshot.claudeSessionId, {
+            dir: sourceSnapshot.cwd ?? request.cwd ?? undefined,
+            title: request.title ?? undefined,
+          })
+          forkedClaudeSessionId = forked.sessionId
+          nativeProviderInput = true
+        } catch (err) {
+          log('branch.claudeFork.error', {
+            sourceWindowId,
+            sessionId: sourceSnapshot.claudeSessionId,
+            error: err instanceof Error ? err.message : String(err),
+          })
+        }
+      } else if (request.agent === 'codex' && sourceSnapshot.codexThreadId) {
+        try {
+          const forked = await withCodexAppServer(async (client) =>
+            client.request('thread/fork', { threadId: sourceSnapshot.codexThreadId }),
+          )
+          const payload = asRecord(forked)
+          const thread = asRecord(payload?.thread)
+          forkedCodexThreadId =
+            asNonEmptyString(thread?.id) ??
+            asNonEmptyString(payload?.threadId) ??
+            asNonEmptyString(payload?.id)
+          if (forkedCodexThreadId) {
+            nativeProviderInput = true
+          } else {
+            log('branch.codexFork.missingThreadId', {
+              sourceWindowId,
+              threadId: sourceSnapshot.codexThreadId,
+            })
+          }
+        } catch (err) {
+          log('branch.codexFork.error', {
+            sourceWindowId,
+            threadId: sourceSnapshot.codexThreadId,
+            error: err instanceof Error ? err.message : String(err),
+          })
+        }
+      }
+    }
+
     request = {
       ...request,
       initialPrompt: null,
-      claudeSessionId: null,
-      codexThreadId: null,
+      claudeSessionId: forkedClaudeSessionId,
+      codexThreadId: forkedCodexThreadId,
       permissionMode: normalizePermissionMode(request.permissionMode),
       model: await resolveSessionModelId(request.agent, request.model),
     }
@@ -2766,8 +2815,8 @@ export class AgentSessionService extends EventEmitter {
       restoredFromPersist: false,
       status: 'idle',
       error: null,
-      claudeSessionId: null,
-      codexThreadId: null,
+      claudeSessionId: request.claudeSessionId ?? null,
+      codexThreadId: request.codexThreadId ?? null,
       updatedAt: timestamp,
       pendingApproval: null,
       pendingPlanApproval: null,
@@ -2782,7 +2831,13 @@ export class AgentSessionService extends EventEmitter {
     this.emitUpdate(snapshot)
 
     await this.ensure(request)
-    await this.sendInternal(request.windowId, visibleInput, providerInput, attachments, overrides)
+    await this.sendInternal(
+      request.windowId,
+      visibleInput,
+      nativeProviderInput ? visibleInput : providerInput,
+      attachments,
+      overrides,
+    )
   }
 
   private async sendInternal(
@@ -2955,13 +3010,6 @@ export class AgentSessionService extends EventEmitter {
       runtime.rejectTurn?.(err instanceof Error ? err : new Error(String(err)))
       runtime.snapshot.status = 'error'
       runtime.snapshot.error = err instanceof Error ? err.message : String(err)
-      appendMessage(runtime.snapshot, {
-        id: `${runtime.snapshot.windowId}-codex-error-${now()}`,
-        role: 'error',
-        title: 'Codex',
-        text: runtime.snapshot.error,
-        status: 'failed',
-      })
       this.emitUpdate(runtime.snapshot)
       throw err
     }
@@ -3619,13 +3667,6 @@ export class AgentSessionService extends EventEmitter {
     } else {
       runtime.snapshot.status = 'error'
       runtime.snapshot.error = error.message
-      appendMessage(runtime.snapshot, {
-        id: `${runtime.snapshot.windowId}-codex-exit-${now()}`,
-        role: 'error',
-        title: 'Codex',
-        text: error.message,
-        status: 'failed',
-      })
     }
     this.emitUpdate(runtime.snapshot)
   }
@@ -3833,13 +3874,6 @@ export class AgentSessionService extends EventEmitter {
         }
       }
       if (runtime.snapshot.error) {
-        appendMessage(runtime.snapshot, {
-          id: `${runtime.snapshot.windowId}-codex-turn-error-${now()}`,
-          role: 'error',
-          title: 'Codex',
-          text: runtime.snapshot.error,
-          status: 'failed',
-        })
         runtime.rejectTurn?.(new Error(runtime.snapshot.error))
       } else {
         runtime.resolveTurn?.()
@@ -3858,13 +3892,6 @@ export class AgentSessionService extends EventEmitter {
       runtime.snapshot.error = message
       runtime.currentTurnUnifiedDiff = null
       runtime.activeTurnId = null
-      appendMessage(runtime.snapshot, {
-        id: `${runtime.snapshot.windowId}-codex-error-${now()}`,
-        role: 'error',
-        title: 'Codex',
-        text: message,
-        status: 'failed',
-      })
       runtime.rejectTurn?.(new Error(message))
       return
     }
