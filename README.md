@@ -24,9 +24,11 @@ Cells includes dedicated agent windows with a rich chat UI for streaming turns, 
 Agent and terminal windows can also run inside Git worktrees. The worktree manager is available from the focused window toolbar, terminal chrome, agent window menu, and command palette. It can create worktrees, show dirty/ahead/behind state, open terminals or agents in any worktree, move focused terminals, branch agent sessions into another worktree, reveal/copy paths, and safely remove worktrees after attached windows and uncommitted changes are handled.
 
 ![Dedicated agent window with streaming turns, tool groups, and inline progress states](docs/screenshots/agent-session.png)
+
 *Dedicated agent window with streaming turns, tool groups, and inline progress states*
 
-![Agent provider switcher for Claude and Codex](docs/screenshots/agent-provider-switcher.png)
+<img src="docs/screenshots/agent-provider-switcher.png" alt="Agent provider switcher for Claude and Codex" width="420">
+
 *Agent provider switcher for Claude and Codex*
 
 ### Browser panes
