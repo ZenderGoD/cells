@@ -1981,7 +1981,9 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     sanitizeComposerAttachments(agentWindow.composerAttachments ?? []),
   )
   const [composerPreviewPath, setComposerPreviewPath] = useState<string | null>(null)
-  const [branchShortcutArmed, setBranchShortcutArmed] = useState(false)
+  const [composerShortcutMode, setComposerShortcutMode] = useState<
+    'branch' | 'interrupt' | 'after-tool' | null
+  >(null)
   const activeProjectPath = useStore(
     (state) => state.projects.find((project) => project.id === state.activeProjectId)?.path ?? null,
   )
@@ -2712,8 +2714,17 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const canSubmit = hasComposerPayload && !isRunning
   const isEditingQueuedMessage = editingIndex !== null
   const canSaveQueuedEdit = isEditingQueuedMessage && hasComposerPayload
-  const branchShortcutActive =
-    branchShortcutArmed && hasComposerText && !isEditingQueuedMessage && !isRunning
+  const shortcutStatusMode =
+    !isEditingQueuedMessage && hasComposerPayload
+      ? composerShortcutMode === 'branch' && hasComposerText && !isRunning
+        ? 'branch'
+        : composerShortcutMode === 'interrupt'
+          ? 'interrupt'
+          : composerShortcutMode === 'after-tool'
+            ? 'after-tool'
+            : null
+      : null
+  const branchShortcutActive = shortcutStatusMode === 'branch'
   const composerPermissionMode = isEditingQueuedMessage
     ? queuedEditSettings?.permissionMode
     : agentWindow.permissionMode
@@ -2732,22 +2743,33 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   )
 
   useEffect(() => {
-    const updateBranchShortcut = (event: KeyboardEvent) => {
-      setBranchShortcutArmed(
-        focusedAgentWindowId === agentWindow.id && hasPrimaryModifier(event) && event.shiftKey,
+    const updateComposerShortcut = (event: KeyboardEvent) => {
+      if (focusedAgentWindowId !== agentWindow.id) {
+        setComposerShortcutMode(null)
+        return
+      }
+      const hasPrimary = hasPrimaryModifier(event)
+      setComposerShortcutMode(
+        hasPrimary && event.shiftKey
+          ? 'branch'
+          : hasPrimary
+            ? 'interrupt'
+            : event.altKey
+              ? 'after-tool'
+              : null,
       )
     }
-    const clearBranchShortcut = () => setBranchShortcutArmed(false)
+    const clearComposerShortcut = () => setComposerShortcutMode(null)
 
-    window.addEventListener('keydown', updateBranchShortcut, true)
-    window.addEventListener('keyup', updateBranchShortcut, true)
-    window.addEventListener('blur', clearBranchShortcut)
-    document.addEventListener('visibilitychange', clearBranchShortcut)
+    window.addEventListener('keydown', updateComposerShortcut, true)
+    window.addEventListener('keyup', updateComposerShortcut, true)
+    window.addEventListener('blur', clearComposerShortcut)
+    document.addEventListener('visibilitychange', clearComposerShortcut)
     return () => {
-      window.removeEventListener('keydown', updateBranchShortcut, true)
-      window.removeEventListener('keyup', updateBranchShortcut, true)
-      window.removeEventListener('blur', clearBranchShortcut)
-      document.removeEventListener('visibilitychange', clearBranchShortcut)
+      window.removeEventListener('keydown', updateComposerShortcut, true)
+      window.removeEventListener('keyup', updateComposerShortcut, true)
+      window.removeEventListener('blur', clearComposerShortcut)
+      document.removeEventListener('visibilitychange', clearComposerShortcut)
     }
   }, [agentWindow.id, focusedAgentWindowId])
 
