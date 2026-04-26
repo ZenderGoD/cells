@@ -532,9 +532,14 @@ function MainApp() {
         // Why letters only and not Cmd+arrows: Cmd+arrows have OS textarea
         // semantics (jump to line start/end, doc start/end). If we bypassed
         // for arrows too, typing in the composer would lose those. Cmd+hjkl
-        // and overview are unambiguous — no textarea binds them.
+        // and overview are unambiguous — no textarea binds them. Cmd+Shift+Enter
+        // is the explicit "fit focused window to viewport" shortcut, so it also
+        // needs to work from the agent composer.
         const isHjklSnap = shortcutCommand.startsWith('snap-') && /^[hjkl]$/i.test(event.key)
-        const allowFromEditableTarget = isHjklSnap || shortcutCommand === 'zoom-to-fit-all'
+        const allowFromEditableTarget =
+          isHjklSnap ||
+          shortcutCommand === 'zoom-to-fit-all' ||
+          shortcutCommand === 'resize-focused-to-fit-viewport'
         if (
           isEditableTarget(event.target) &&
           shortcutScope === 'canvas' &&
