@@ -153,6 +153,7 @@
     "@openai/codex-sdk": "^0.121.0",
     "@opencode-ai/sdk": "^1.4.0",
     "@radix-ui/react-scroll-area": "^1.2.10",
+    "@radix-ui/react-tooltip": "^1.2.8",
     "@tanstack/react-hotkeys": "^0.6.0",
     "adm-zip": "^0.5.16",
     "class-variance-authority": "^0.7.1",

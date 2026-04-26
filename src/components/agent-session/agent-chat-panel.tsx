@@ -11,12 +11,12 @@ import {
   FastForward,
   FileText,
   GitBranch,
+  GitBranchPlus,
   GripVertical,
   HelpCircle,
   History,
   ListTodo,
   Loader2,
-  MessageSquarePlus,
   MessageSquare,
   Paperclip,
   Pencil,
@@ -80,6 +80,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Kbd } from '@/components/ui/kbd'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { showToast } from '@/components/toast'
 import { WorktreeManager } from '@/components/worktree-manager'
 import { LegendList, type LegendListRef } from '@legendapp/list/react'
@@ -1980,6 +1981,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     sanitizeComposerAttachments(agentWindow.composerAttachments ?? []),
   )
   const [composerPreviewPath, setComposerPreviewPath] = useState<string | null>(null)
+  const [branchShortcutArmed, setBranchShortcutArmed] = useState(false)
   const activeProjectPath = useStore(
     (state) => state.projects.find((project) => project.id === state.activeProjectId)?.path ?? null,
   )
@@ -2710,6 +2712,8 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const canSubmit = hasComposerPayload && !isRunning
   const isEditingQueuedMessage = editingIndex !== null
   const canSaveQueuedEdit = isEditingQueuedMessage && hasComposerPayload
+  const branchShortcutActive =
+    branchShortcutArmed && hasComposerText && !isEditingQueuedMessage && !isRunning
   const composerPermissionMode = isEditingQueuedMessage
     ? queuedEditSettings?.permissionMode
     : agentWindow.permissionMode
@@ -2726,6 +2730,26 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       })),
     [agentWindow.agent],
   )
+
+  useEffect(() => {
+    const updateBranchShortcut = (event: KeyboardEvent) => {
+      setBranchShortcutArmed(
+        focusedAgentWindowId === agentWindow.id && hasPrimaryModifier(event) && event.shiftKey,
+      )
+    }
+    const clearBranchShortcut = () => setBranchShortcutArmed(false)
+
+    window.addEventListener('keydown', updateBranchShortcut, true)
+    window.addEventListener('keyup', updateBranchShortcut, true)
+    window.addEventListener('blur', clearBranchShortcut)
+    document.addEventListener('visibilitychange', clearBranchShortcut)
+    return () => {
+      window.removeEventListener('keydown', updateBranchShortcut, true)
+      window.removeEventListener('keyup', updateBranchShortcut, true)
+      window.removeEventListener('blur', clearBranchShortcut)
+      document.removeEventListener('visibilitychange', clearBranchShortcut)
+    }
+  }, [agentWindow.id, focusedAgentWindowId])
 
   const ensureSession = useCallback(async () => {
     await window.cells.agentSession.ensure({
@@ -2986,6 +3010,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   )
 
   const startNewSessionFromComposer = useCallback(() => {
+    const currentSnapshot = snapshotRef.current
     const draft = inputRef.current
     const selectionStart = textareaRef.current?.selectionStart ?? 0
     const selectionEnd = textareaRef.current?.selectionEnd ?? 0
@@ -2997,6 +3022,31 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
 
     const value = rawValue || ATTACHMENTS_ONLY_TEXT
     const store = useStore.getState()
+    if (currentSnapshot && currentSnapshot.windowId === agentWindow.id) {
+      const titleSource =
+        currentSnapshot.title || agentWindow.title || getAgentDisplayName(agentWindow.agent)
+      const nextWindow = store.addAgentWindow(agentWindow.agent, {
+        title: `${titleSource} (branch)`,
+        cwd: currentSnapshot.cwd ?? agentWindow.cwd ?? store.getActiveProjectPath() ?? null,
+        initialPrompt: buildBranchImportPrompt({
+          sourceWindow: agentWindow,
+          snapshot: currentSnapshot,
+          targetAgent: agentWindow.agent,
+          continuation: rawValue,
+          continuationAttachments: pinned,
+        }),
+        model: agentWindow.model ?? null,
+        permissionMode: agentWindow.permissionMode ?? null,
+        thinkingLevel: agentWindow.thinkingLevel ?? null,
+        contextLength: agentWindow.contextLength ?? null,
+      })
+      showToast('Branched current session', 'info')
+      window.setTimeout(() => {
+        store.snapToAgentWindow(nextWindow.id)
+      }, 0)
+      return
+    }
+
     const nextWindow = store.addAgentWindow(agentWindow.agent, {
       title: getDraftSessionTitle(agentWindow.agent, rawValue),
       cwd: visibleSnapshot?.cwd ?? agentWindow.cwd ?? store.getActiveProjectPath() ?? null,
@@ -3019,15 +3069,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         },
       ],
     })
-  }, [
-    agentWindow.agent,
-    agentWindow.contextLength,
-    agentWindow.cwd,
-    agentWindow.model,
-    agentWindow.permissionMode,
-    agentWindow.thinkingLevel,
-    visibleSnapshot?.cwd,
-  ])
+    window.setTimeout(() => {
+      store.snapToAgentWindow(nextWindow.id)
+    }, 0)
+  }, [agentWindow, visibleSnapshot?.cwd])
 
   const unqueueMessage = useCallback(
     (index: number) => {
@@ -3258,7 +3303,14 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         commitEditQueued()
         return
       }
-      // Mod+Enter and Mod+Shift+Enter: interrupt the running turn and send this message next.
+      // Mod+Shift+Enter branches the current session and sends the selected composer text there.
+      if (hasPrimary && event.shiftKey) {
+        event.preventDefault()
+        event.stopPropagation()
+        startNewSessionFromComposer()
+        return
+      }
+      // Mod+Enter: interrupt the running turn and send this message next.
       if (hasPrimary) {
         event.preventDefault()
         event.stopPropagation()
@@ -3277,7 +3329,14 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       event.stopPropagation()
       void submit('after-turn')
     },
-    [applyInlineMentionSelection, commitEditQueued, editingIndex, inlineMention, submit],
+    [
+      applyInlineMentionSelection,
+      commitEditQueued,
+      editingIndex,
+      inlineMention,
+      startNewSessionFromComposer,
+      submit,
+    ],
   )
 
   const absorbDroppedImages = useCallback(
@@ -3355,6 +3414,8 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       event.stopPropagation()
       if (editingIndex !== null) {
         commitEditQueued()
+      } else if (hasPrimary && event.shiftKey) {
+        startNewSessionFromComposer()
       } else if (hasPrimary) {
         void submit('stop')
       } else if (event.altKey) {
@@ -3373,6 +3434,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     handleStop,
     inlineMention,
     isRunning,
+    startNewSessionFromComposer,
     stopConfirmArmed,
     submit,
   ])
@@ -4383,14 +4445,45 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                     </Popover>
                   ) : null}
                   <div className="flex-1" />
-                  {!isRunning && !isEditingQueuedMessage ? (
-                    <span className="hidden items-center gap-1 text-[10.5px] text-muted-foreground/60 sm:inline-flex">
-                      <Kbd className="h-[18px] min-w-[18px] rounded-[4px] bg-foreground/6 px-1 text-[10px] text-muted-foreground/80">
-                        ↵
-                      </Kbd>
-                      <span>send</span>
-                    </span>
-                  ) : null}
+                  <AnimatePresence initial={false} mode="popLayout">
+                    {!isRunning && !isEditingQueuedMessage ? (
+                      branchShortcutActive ? (
+                        <motion.span
+                          key="branch-shortcut-hint"
+                          initial={{ opacity: 0, x: 4 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          exit={{ opacity: 0, x: 4 }}
+                          transition={{ duration: 0.14, ease: EASE_OUT }}
+                          className="hidden items-center gap-1 text-[10.5px] text-emerald-200/85 sm:inline-flex"
+                        >
+                          <Kbd className="h-[18px] min-w-[18px] rounded-[4px] bg-emerald-400/14 px-1 text-[10px] text-emerald-100/90">
+                            {getPrimaryModifierLabel()}
+                          </Kbd>
+                          <Kbd className="h-[18px] min-w-[18px] rounded-[4px] bg-emerald-400/14 px-1 text-[10px] text-emerald-100/90">
+                            ⇧
+                          </Kbd>
+                          <Kbd className="h-[18px] min-w-[18px] rounded-[4px] bg-emerald-400/14 px-1 text-[10px] text-emerald-100/90">
+                            ↵
+                          </Kbd>
+                          <span>branch with message</span>
+                        </motion.span>
+                      ) : (
+                        <motion.span
+                          key="send-shortcut-hint"
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          exit={{ opacity: 0 }}
+                          transition={{ duration: 0.1, ease: EASE_OUT }}
+                          className="hidden items-center gap-1 text-[10.5px] text-muted-foreground/60 sm:inline-flex"
+                        >
+                          <Kbd className="h-[18px] min-w-[18px] rounded-[4px] bg-foreground/6 px-1 text-[10px] text-muted-foreground/80">
+                            ↵
+                          </Kbd>
+                          <span>send</span>
+                        </motion.span>
+                      )
+                    ) : null}
+                  </AnimatePresence>
                   <AnimatePresence initial={false}>
                     {isRunning && stopConfirmArmed ? (
                       <motion.span
@@ -4409,16 +4502,29 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                     ) : null}
                   </AnimatePresence>
                   {!isEditingQueuedMessage && hasComposerText ? (
-                    <button
-                      type="button"
-                      onMouseDown={(event) => event.preventDefault()}
-                      onClick={startNewSessionFromComposer}
-                      aria-label="Start new session from composer"
-                      title="Start new session from selection"
-                      className="inline-flex size-7 shrink-0 items-center justify-center rounded-full bg-foreground/5 text-muted-foreground/70 transition-colors hover:bg-foreground/10 hover:text-foreground"
-                    >
-                      <MessageSquarePlus className="size-3.5" />
-                    </button>
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button
+                            type="button"
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={startNewSessionFromComposer}
+                            aria-label="Branch current session from selection"
+                            className={cn(
+                              'inline-flex size-7 shrink-0 items-center justify-center rounded-full transition-colors',
+                              branchShortcutActive
+                                ? 'bg-emerald-400/18 text-emerald-100 shadow-[0_0_0_1px_rgba(110,231,183,0.28),0_0_18px_rgba(16,185,129,0.18)]'
+                                : 'bg-foreground/5 text-muted-foreground/70 hover:bg-foreground/10 hover:text-foreground',
+                            )}
+                          >
+                            <GitBranchPlus className="size-3.5" />
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent side="top">
+                          Branch current session from selection
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
                   ) : null}
                   {isEditingQueuedMessage ? (
                     <button
