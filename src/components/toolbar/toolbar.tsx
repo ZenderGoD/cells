@@ -393,6 +393,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
   const reorderProjects = useStore((s) => s.reorderProjects)
   const snapEnabled = useStore((s) => s.snapEnabled)
   const snapPaused = useStore((s) => s.snapPaused)
+  const snapMode = useStore((s) => s.snapMode)
   const toggleSnap = useStore((s) => s.toggleSnap)
   const selectionMode = useStore((s) => s.selectionMode)
   const selectionCount = useStore((s) => s.selectionCount)
@@ -1347,9 +1348,8 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
               </button>
             )}
 
-            {/* Snap toggle — selection mode keeps its pill (the count matters and
-              the state is transient); normal snap states drop the pill chrome
-              to match the other icon-only controls in this cluster. */}
+            {/* Snap toggle — selection mode keeps its count visible; Peek mode
+              shows a tiny label because the framing difference is otherwise hidden. */}
             <button
               onClick={() => {
                 hapticBuzz()
@@ -1376,7 +1376,9 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
                     ? 'Snap off — windows move freely'
                     : snapPaused
                       ? 'Snap paused'
-                      : 'Snap on'
+                      : snapMode === 'peek'
+                        ? 'Snap on — Peek framing'
+                        : 'Snap on — Fill framing'
               }
             >
               <Magnet className="w-3 h-3" />
@@ -1388,6 +1390,8 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
                 <span className="text-[10px] lowercase text-muted-foreground/55">
                   {snapPaused ? 'paused' : 'free'}
                 </span>
+              ) : snapMode === 'peek' ? (
+                <span className="text-[10px] lowercase text-muted-foreground/55">peek</span>
               ) : null}
             </button>
 

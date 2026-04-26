@@ -2,6 +2,8 @@ import type {
   AgentWindowNode,
   AgentWindowStatus,
   BrowserNode,
+  CanvasSnapMode,
+  CanvasTransform,
   TerminalNode,
   TerminalRuntimeStatus,
 } from '../types'
@@ -33,6 +35,17 @@ export interface CanvasRect {
 }
 
 export const STATUS_BAR_HEIGHT = 40
+export const DEFAULT_CANVAS_SNAP_MODE: CanvasSnapMode = 'fill'
+
+const SNAP_PEEK_PADDING = 96
+
+export function normalizeCanvasSnapMode(value: unknown): CanvasSnapMode {
+  return value === 'peek' ? 'peek' : DEFAULT_CANVAS_SNAP_MODE
+}
+
+export function getCanvasSnapPadding(mode: CanvasSnapMode, basePadding: number) {
+  return mode === 'peek' ? Math.max(basePadding, SNAP_PEEK_PADDING) : basePadding
+}
 
 export function getCanvasWindows(
   terminals: TerminalNode[],
@@ -111,6 +124,44 @@ export function getViewportCenter(transform: { x: number; y: number; scale: numb
     x: viewport.x + viewport.width / 2,
     y: viewport.y + viewport.height / 2,
   }
+}
+
+export function getCenteredWindowTransform(
+  window: Pick<CanvasRect, 'x' | 'y' | 'width' | 'height'>,
+  viewWidth: number,
+  viewHeight: number,
+  scale: number,
+): CanvasTransform {
+  return {
+    x: viewWidth / 2 - (window.x + window.width / 2) * scale,
+    y: viewHeight / 2 - (window.y + window.height / 2) * scale,
+    scale,
+  }
+}
+
+export function getWindowSnapTransform(
+  window: Pick<CanvasRect, 'x' | 'y' | 'width' | 'height'>,
+  viewWidth: number,
+  viewHeight: number,
+  options?: {
+    basePadding?: number
+    mode?: CanvasSnapMode
+    scale?: number
+  },
+): CanvasTransform {
+  const padding = getCanvasSnapPadding(
+    options?.mode ?? DEFAULT_CANVAS_SNAP_MODE,
+    options?.basePadding ?? 0,
+  )
+  const scale =
+    options?.scale ??
+    Math.min(
+      viewWidth / (window.width + padding * 2),
+      viewHeight / (window.height + padding * 2),
+      1,
+    )
+
+  return getCenteredWindowTransform(window, viewWidth, viewHeight, scale)
 }
 
 export function getCanvasBounds(

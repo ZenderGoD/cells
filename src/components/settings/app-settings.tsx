@@ -47,7 +47,7 @@ import {
   terminalThemes,
 } from '@/lib/terminal-themes'
 import { cn } from '@/lib/utils'
-import type { TitleBarPosition } from '@/types'
+import type { CanvasSnapMode, TitleBarPosition } from '@/types'
 
 import { SETTINGS_SHEET_CLASSNAMES } from './settings-layout'
 import { Dialog, DialogOverlay, DialogPortal } from '../ui/dialog'
@@ -119,6 +119,11 @@ const SWITCH_MODE_OPTIONS = [
   },
 ]
 
+const SNAP_MODE_OPTIONS: Array<{ value: CanvasSnapMode; label: string; hint: string }> = [
+  { value: 'fill', label: 'Fill', hint: 'Maximize' },
+  { value: 'peek', label: 'Peek', hint: 'Show neighbors' },
+]
+
 const CLOSE_UNDO_TIMEOUT_OPTIONS: SettingsSelectOption[] = [
   { value: '0', label: 'Immediate', hint: 'Delete on close' },
   { value: '5000', label: '5 seconds', hint: 'Short undo window' },
@@ -156,6 +161,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const titleBarPosition = useStore((s) => s.titleBarPosition)
   const dimWhenUnfocused = useStore((s) => s.dimWhenUnfocused)
   const snapOnFocus = useStore((s) => s.snapOnFocus)
+  const snapMode = useStore((s) => s.snapMode)
   const tabSwitchMode = useStore((s) => s.tabSwitchMode)
   const projectSwitchMode = useStore((s) => s.projectSwitchMode)
   const reducedMotion = useStore((s) => s.reducedMotion)
@@ -177,6 +183,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const setTitleBarPosition = useStore((s) => s.setTitleBarPosition)
   const setDimWhenUnfocused = useStore((s) => s.setDimWhenUnfocused)
   const setSnapOnFocus = useStore((s) => s.setSnapOnFocus)
+  const setSnapMode = useStore((s) => s.setSnapMode)
   const setTabSwitchMode = useStore((s) => s.setTabSwitchMode)
   const setProjectSwitchMode = useStore((s) => s.setProjectSwitchMode)
   const setReducedMotion = useStore((s) => s.setReducedMotion)
@@ -577,6 +584,29 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                         />
                       </div>
                     </button>
+                  </SettingsGroup>
+
+                  <SettingsGroup title="Snap Framing">
+                    <div className="space-y-0.5">
+                      {SNAP_MODE_OPTIONS.map((mode) => (
+                        <button
+                          key={mode.value}
+                          onClick={() => setSnapMode(mode.value)}
+                          className={cn(
+                            'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
+                            snapMode === mode.value
+                              ? 'bg-accent text-accent-foreground'
+                              : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
+                          )}
+                        >
+                          <span className="flex-1">{mode.label}</span>
+                          <span className="text-[10px] text-muted-foreground/40">{mode.hint}</span>
+                          {snapMode === mode.value && (
+                            <Check className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
+                          )}
+                        </button>
+                      ))}
+                    </div>
                   </SettingsGroup>
 
                   <SettingsGroup title="Switcher Order">

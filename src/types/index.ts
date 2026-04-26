@@ -6,6 +6,7 @@ export interface CanvasTransform {
   scale: number
 }
 
+export type CanvasSnapMode = 'fill' | 'peek'
 export type TitleBarPosition = 'top' | 'bottom'
 export type AgentName = 'claude' | 'codex' | 'opencode' | 'pi'
 export type AgentStatus = 'active' | 'unread' | 'done' | null
@@ -610,6 +611,7 @@ export interface ProjectsState {
   titleBarPosition?: TitleBarPosition
   titleBarHidden?: boolean
   snapOnFocus?: boolean
+  snapMode?: CanvasSnapMode
   tabSwitchMode?: 'recent' | 'chronological'
   projectSwitchMode?: 'recent' | 'chronological'
   reducedMotion?: boolean

@@ -6,6 +6,7 @@ import type {
   AgentWindowNode,
   AgentName,
   BrowserNode,
+  CanvasSnapMode,
   CanvasTransform,
   GitWorktreeCreateOptions,
   GitWorktree,
@@ -39,12 +40,15 @@ import {
 } from './agent-window-colors'
 import {
   STATUS_BAR_HEIGHT,
+  DEFAULT_CANVAS_SNAP_MODE,
   getCanvasWindows,
   getClosestWindow,
   getDirectionalWindow,
   getOverviewTransform,
+  getWindowSnapTransform,
   getWindowCenter,
   getViewportCenter,
+  normalizeCanvasSnapMode,
 } from './canvas-navigation'
 import {
   destroyCachedTerminal,
@@ -121,6 +125,7 @@ interface StoreState {
   snapPaused: boolean
   snapFast: boolean // hint for canvas to use fast spring
   snapOnFocus: boolean
+  snapMode: CanvasSnapMode
   selectionMode: boolean
   selectionCount: number
   selectedNodeIds: string[]
@@ -266,19 +271,20 @@ interface StoreState {
   focusAgentWindow(id: string | null): void
   bringAgentWindowToFront(id: string): void
   panToAgentWindow(id: string): void
-  snapToAgentWindow(id: string, options?: { keepScale?: boolean }): void
+  snapToAgentWindow(id: string, options?: { keepScale?: boolean; mode?: CanvasSnapMode }): void
   syncAgentWindow(id: string, patch: Partial<AgentWindowNode>): void
-  snapToTerminal(id: string, options?: { keepScale?: boolean }): void
+  snapToTerminal(id: string, options?: { keepScale?: boolean; mode?: CanvasSnapMode }): void
   zoomToFit(id: string): void
   zoomFocusedWindow(direction: 'in' | 'out'): void
   snapToNearest(
     direction: 'left' | 'right' | 'up' | 'down',
-    options?: { keepScale?: boolean },
+    options?: { keepScale?: boolean; mode?: CanvasSnapMode },
   ): void
   snapToClosest(): void
   toggleSnap(): void
   setSnapPaused(paused: boolean): void
   setSnapOnFocus(enabled: boolean): void
+  setSnapMode(mode: CanvasSnapMode): void
   setSelectionMode(enabled: boolean): void
   setSelectionCount(count: number): void
   setSelectedNodeIds(ids: string[]): void
@@ -367,7 +373,7 @@ interface StoreState {
   addBrowser(): BrowserNode
   addBrowserWithUrl(url: string, projectId?: string | null): BrowserNode
   removeBrowser(id: string): void
-  snapToBrowser(id: string, options?: { keepScale?: boolean }): void
+  snapToBrowser(id: string, options?: { keepScale?: boolean; mode?: CanvasSnapMode }): void
   moveBrowser(id: string, x: number, y: number): void
   resizeBrowser(id: string, width: number, height: number): void
   updateBrowserUrl(id: string, url: string): void
@@ -937,6 +943,7 @@ export const useStore = create<StoreState>((set, get) => ({
   snapPaused: false,
   snapFast: false,
   snapOnFocus: true,
+  snapMode: DEFAULT_CANVAS_SNAP_MODE,
   selectionMode: false,
   selectionCount: 0,
   selectedNodeIds: [],
@@ -1358,6 +1365,7 @@ export const useStore = create<StoreState>((set, get) => ({
         titleBarPosition: ps.titleBarPosition ?? DEFAULT_TITLE_BAR_POSITION,
         titleBarHidden: ps.titleBarHidden ?? false,
         snapOnFocus: ps.snapOnFocus ?? true,
+        snapMode: normalizeCanvasSnapMode(ps.snapMode),
         tabSwitchMode: ps.tabSwitchMode || 'chronological',
         projectSwitchMode: ps.projectSwitchMode || 'recent',
         reducedMotion: ps.reducedMotion ?? false,
@@ -1577,6 +1585,7 @@ export const useStore = create<StoreState>((set, get) => ({
           titleBarPosition: freshState.titleBarPosition,
           titleBarHidden: freshState.titleBarHidden,
           snapOnFocus: freshState.snapOnFocus,
+          snapMode: freshState.snapMode,
           tabSwitchMode: freshState.tabSwitchMode,
           projectSwitchMode: freshState.projectSwitchMode,
           reducedMotion: freshState.reducedMotion,
@@ -1630,6 +1639,7 @@ export const useStore = create<StoreState>((set, get) => ({
           titleBarPosition: state.titleBarPosition,
           titleBarHidden: state.titleBarHidden,
           snapOnFocus: state.snapOnFocus,
+          snapMode: state.snapMode,
           tabSwitchMode: state.tabSwitchMode,
           projectSwitchMode: state.projectSwitchMode,
           reducedMotion: state.reducedMotion,
@@ -2646,13 +2656,11 @@ export const useStore = create<StoreState>((set, get) => ({
       : state.focusCounts
     const viewW = window.innerWidth
     const viewH = window.innerHeight - (get().titleBarHidden ? 0 : STATUS_BAR_HEIGHT)
-    const scale = options?.keepScale
-      ? state.canvas.scale
-      : Math.min(
-          viewW / (terminal.width + TERMINAL_PAD * 2),
-          viewH / (terminal.height + TERMINAL_PAD * 2),
-          1,
-        )
+    const canvas = getWindowSnapTransform(terminal, viewW, viewH, {
+      basePadding: TERMINAL_PAD,
+      mode: options?.mode ?? state.snapMode,
+      scale: options?.keepScale ? state.canvas.scale : undefined,
+    })
 
     set({
       terminals: shouldBringToFront
@@ -2667,11 +2675,7 @@ export const useStore = create<StoreState>((set, get) => ({
       focusHistory,
       focusCounts,
       topZIndex: nextTopZIndex,
-      canvas: {
-        x: viewW / 2 - (terminal.x + terminal.width / 2) * scale,
-        y: viewH / 2 - (terminal.y + terminal.height / 2) * scale,
-        scale,
-      },
+      canvas,
     })
     debouncedPersist(() => get().persist())
   },
@@ -2685,11 +2689,10 @@ export const useStore = create<StoreState>((set, get) => ({
     if (!node) return
     const viewW = window.innerWidth
     const viewH = window.innerHeight - (get().titleBarHidden ? 0 : STATUS_BAR_HEIGHT)
-    const scale = Math.min(
-      viewW / (node.width + TERMINAL_PAD * 2),
-      viewH / (node.height + TERMINAL_PAD * 2),
-      1,
-    )
+    const canvas = getWindowSnapTransform(node, viewW, viewH, {
+      basePadding: TERMINAL_PAD,
+      mode: 'fill',
+    })
     if (terminals.some((terminal) => terminal.id === id)) {
       if (id !== get().focusedTerminalId) get().bringToFront(id)
       set({
@@ -2719,9 +2722,9 @@ export const useStore = create<StoreState>((set, get) => ({
       })
     }
     get().setCanvasTransform({
-      x: TERMINAL_PAD - node.x * scale,
-      y: TERMINAL_PAD - node.y * scale,
-      scale,
+      x: canvas.x,
+      y: canvas.y,
+      scale: canvas.scale,
     })
   },
 
@@ -2771,15 +2774,15 @@ export const useStore = create<StoreState>((set, get) => ({
       nextY = Math.max(minY, Math.min(maxY, nextY))
     }
 
-    const fitScale = Math.min(
-      viewW / (node.width + TERMINAL_PAD * 2),
-      viewH / (node.height + TERMINAL_PAD * 2),
-      1,
-    )
+    const fitTransform = getWindowSnapTransform(node, viewW, viewH, {
+      basePadding: TERMINAL_PAD,
+      mode: 'fill',
+    })
+    const fitScale = fitTransform.scale
     const shouldFitViewport = direction === 'out' && scale >= fitScale
     const finalScale = shouldFitViewport ? fitScale : scale
-    const finalX = shouldFitViewport ? TERMINAL_PAD - node.x * fitScale : nextX
-    const finalY = shouldFitViewport ? TERMINAL_PAD - node.y * fitScale : nextY
+    const finalX = shouldFitViewport ? fitTransform.x : nextX
+    const finalY = shouldFitViewport ? fitTransform.y : nextY
 
     if (state.terminals.some((terminal) => terminal.id === id)) {
       if (id !== state.focusedTerminalId) get().bringToFront(id)
@@ -2879,6 +2882,11 @@ export const useStore = create<StoreState>((set, get) => ({
     get().persist()
   },
 
+  setSnapMode(mode) {
+    set({ snapMode: normalizeCanvasSnapMode(mode) })
+    get().persist()
+  },
+
   setSelectionMode(enabled) {
     const wasEnabled = get().selectionMode
     set({
@@ -2958,9 +2966,9 @@ export const useStore = create<StoreState>((set, get) => ({
     void window.cells.app.resizeToFit(width, height)
     // Re-fit the canvas after the window resizes
     requestAnimationFrame(() => {
-      if (focusedTerminalId) get().snapToTerminal(focusedTerminalId)
-      else if (focusedBrowserId) get().snapToBrowser(focusedBrowserId)
-      else if (focusedAgentWindowId) get().snapToAgentWindow(focusedAgentWindowId)
+      if (focusedTerminalId) get().snapToTerminal(focusedTerminalId, { mode: 'fill' })
+      else if (focusedBrowserId) get().snapToBrowser(focusedBrowserId, { mode: 'fill' })
+      else if (focusedAgentWindowId) get().snapToAgentWindow(focusedAgentWindowId, { mode: 'fill' })
     })
   },
 
@@ -2980,17 +2988,17 @@ export const useStore = create<StoreState>((set, get) => ({
       const t = terminals.find((t) => t.id === focusedTerminalId)
       if (!t) return
       get().resizeTerminal(focusedTerminalId, viewW, viewH)
-      get().snapToTerminal(focusedTerminalId)
+      get().snapToTerminal(focusedTerminalId, { mode: 'fill' })
     } else if (focusedBrowserId) {
       const b = browsers.find((b) => b.id === focusedBrowserId)
       if (!b) return
       get().resizeBrowser(focusedBrowserId, viewW, viewH)
-      get().snapToBrowser(focusedBrowserId)
+      get().snapToBrowser(focusedBrowserId, { mode: 'fill' })
     } else if (focusedAgentWindowId) {
       const agentWindow = agentWindows.find((entry) => entry.id === focusedAgentWindowId)
       if (!agentWindow) return
       get().resizeAgentWindow(focusedAgentWindowId, viewW, viewH)
-      get().snapToAgentWindow(focusedAgentWindowId)
+      get().snapToAgentWindow(focusedAgentWindowId, { mode: 'fill' })
     }
   },
 
@@ -4109,13 +4117,11 @@ export const useStore = create<StoreState>((set, get) => ({
       : state.focusCounts
     const viewW = window.innerWidth
     const viewH = window.innerHeight - (get().titleBarHidden ? 0 : STATUS_BAR_HEIGHT)
-    const scale = options?.keepScale
-      ? state.canvas.scale
-      : Math.min(
-          viewW / (agentWindow.width + TERMINAL_PAD * 2),
-          viewH / (agentWindow.height + TERMINAL_PAD * 2),
-          1,
-        )
+    const canvas = getWindowSnapTransform(agentWindow, viewW, viewH, {
+      basePadding: TERMINAL_PAD,
+      mode: options?.mode ?? state.snapMode,
+      scale: options?.keepScale ? state.canvas.scale : undefined,
+    })
 
     set({
       agentWindows: shouldBringToFront
@@ -4131,11 +4137,7 @@ export const useStore = create<StoreState>((set, get) => ({
       focusHistory,
       focusCounts,
       topZIndex: nextTopZIndex,
-      canvas: {
-        x: viewW / 2 - (agentWindow.x + agentWindow.width / 2) * scale,
-        y: viewH / 2 - (agentWindow.y + agentWindow.height / 2) * scale,
-        scale,
-      },
+      canvas,
     })
     debouncedPersist(() => get().persist())
   },
@@ -4213,20 +4215,10 @@ export const useStore = create<StoreState>((set, get) => ({
         focusedAgentWindowId: null,
         canvas: { ...get().canvas, scale: 1 },
       })
-      const s = get().canvas.scale
-      get().setCanvasTransform({
-        x: TERMINAL_PAD - browser.x * s,
-        y: TERMINAL_PAD - browser.y * s,
-        scale: s,
-      })
+      get().snapToBrowser(id)
     } else {
       set({ canvas: { ...get().canvas, scale: 1 } })
-      const s = get().canvas.scale
-      get().setCanvasTransform({
-        x: TERMINAL_PAD - browser.x * s,
-        y: TERMINAL_PAD - browser.y * s,
-        scale: s,
-      })
+      get().snapToBrowser(id)
     }
     get().persist()
     return browser
@@ -4396,7 +4388,7 @@ export const useStore = create<StoreState>((set, get) => ({
     }
   },
 
-  snapToBrowser(id: string, options?: { keepScale?: boolean }) {
+  snapToBrowser(id: string, options?: { keepScale?: boolean; mode?: CanvasSnapMode }) {
     const state = get()
     const browser = state.browsers.find((b) => b.id === id)
     if (!browser) return
@@ -4404,15 +4396,16 @@ export const useStore = create<StoreState>((set, get) => ({
     const shouldBringToFront = id !== state.focusedBrowserId
     const nextTopZIndex = shouldBringToFront ? state.topZIndex + 1 : state.topZIndex
     const focusHistory = pushFocusHistory(state.focusHistory, id)
+    const focusCounts = shouldBringToFront
+      ? { ...state.focusCounts, [id]: (state.focusCounts[id] ?? 0) + 1 }
+      : state.focusCounts
     const viewW = window.innerWidth
     const viewH = window.innerHeight - (get().titleBarHidden ? 0 : STATUS_BAR_HEIGHT)
-    const scale = options?.keepScale
-      ? state.canvas.scale
-      : Math.min(
-          viewW / (browser.width + TERMINAL_PAD * 2),
-          viewH / (browser.height + TERMINAL_PAD * 2),
-          1,
-        )
+    const canvas = getWindowSnapTransform(browser, viewW, viewH, {
+      basePadding: TERMINAL_PAD,
+      mode: options?.mode ?? state.snapMode,
+      scale: options?.keepScale ? state.canvas.scale : undefined,
+    })
 
     set({
       browsers: shouldBringToFront
@@ -4424,12 +4417,9 @@ export const useStore = create<StoreState>((set, get) => ({
       snapPaused: false,
       snapFast: true,
       focusHistory,
+      focusCounts,
       topZIndex: nextTopZIndex,
-      canvas: {
-        x: viewW / 2 - (browser.x + browser.width / 2) * scale,
-        y: viewH / 2 - (browser.y + browser.height / 2) * scale,
-        scale,
-      },
+      canvas,
     })
     debouncedPersist(() => get().persist())
   },

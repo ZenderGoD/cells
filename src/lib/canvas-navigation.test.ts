@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-const { getOverviewTransform } = await import(
+const { getOverviewTransform, getWindowSnapTransform } = await import(
   new URL('./canvas-navigation.ts', import.meta.url).href
 )
 
@@ -24,4 +24,31 @@ test('getOverviewTransform zooms out to fit all windows into the viewport', () =
 
 test('getOverviewTransform returns null when there is nothing to frame', () => {
   assert.equal(getOverviewTransform([], 1000, 800), null)
+})
+
+test('getWindowSnapTransform centers a fitted window', () => {
+  const transform = getWindowSnapTransform({ x: 100, y: 50, width: 500, height: 300 }, 1000, 800, {
+    basePadding: 8,
+    mode: 'fill',
+  })
+
+  assert.equal(transform.scale, 1)
+  assert.equal(transform.x, 150)
+  assert.equal(transform.y, 200)
+})
+
+test('getWindowSnapTransform peek mode leaves extra surrounding canvas visible', () => {
+  const fill = getWindowSnapTransform({ x: 0, y: 0, width: 984, height: 784 }, 1000, 800, {
+    basePadding: 8,
+    mode: 'fill',
+  })
+  const peek = getWindowSnapTransform({ x: 0, y: 0, width: 984, height: 784 }, 1000, 800, {
+    basePadding: 8,
+    mode: 'peek',
+  })
+
+  assert.equal(fill.scale, 1)
+  assert.ok(peek.scale < fill.scale)
+  assert.equal(peek.x.toFixed(3), '96.721')
+  assert.equal(peek.y.toFixed(3), '78.689')
 })
