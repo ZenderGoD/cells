@@ -2726,13 +2726,84 @@ export class AgentSessionService extends EventEmitter {
       permissionMode?: AgentSessionRequest['permissionMode']
     },
   ): Promise<void> {
+    return this.sendInternal(windowId, input, input, attachments, overrides)
+  }
+
+  async branchFrom(
+    sourceWindowId: string,
+    request: AgentSessionRequest,
+    visibleInput: string,
+    providerInput: string,
+    attachments?: string[],
+    overrides?: {
+      model?: AgentSessionRequest['model']
+      thinkingLevel?: AgentSessionRequest['thinkingLevel']
+      permissionMode?: AgentSessionRequest['permissionMode']
+    },
+  ): Promise<void> {
+    const sourceSnapshot =
+      this.runtimes.get(sourceWindowId)?.snapshot ?? loadPersistedSnapshot(sourceWindowId)
+    if (!sourceSnapshot) {
+      throw new Error(`Missing source agent session for ${sourceWindowId}`)
+    }
+
+    request = {
+      ...request,
+      initialPrompt: null,
+      claudeSessionId: null,
+      codexThreadId: null,
+      permissionMode: normalizePermissionMode(request.permissionMode),
+      model: await resolveSessionModelId(request.agent, request.model),
+    }
+
+    const timestamp = now()
+    const snapshot: AgentSessionSnapshot = {
+      ...cloneSnapshot(sourceSnapshot),
+      windowId: request.windowId,
+      agent: request.agent,
+      title: request.title?.trim() || sourceSnapshot.title,
+      cwd: request.cwd ?? sourceSnapshot.cwd ?? null,
+      restoredFromPersist: false,
+      status: 'idle',
+      error: null,
+      claudeSessionId: null,
+      codexThreadId: null,
+      updatedAt: timestamp,
+      pendingApproval: null,
+      pendingPlanApproval: null,
+      pendingQuestion: null,
+      codexPlan: null,
+    }
+    snapshot.messages = snapshot.messages.map((message) => ({
+      ...message,
+      status: message.status === 'in_progress' ? 'failed' : message.status,
+    }))
+    await persistSnapshotNow(snapshot)
+    this.emitUpdate(snapshot)
+
+    await this.ensure(request)
+    await this.sendInternal(request.windowId, visibleInput, providerInput, attachments, overrides)
+  }
+
+  private async sendInternal(
+    windowId: string,
+    visibleInput: string,
+    providerInput: string,
+    attachments?: string[],
+    overrides?: {
+      model?: AgentSessionRequest['model']
+      thinkingLevel?: AgentSessionRequest['thinkingLevel']
+      permissionMode?: AgentSessionRequest['permissionMode']
+    },
+  ): Promise<void> {
     let runtime = this.runtimes.get(windowId)
     log('send.begin', {
       windowId,
       hasRuntime: !!runtime,
       closed: runtime?.closed ?? null,
       kind: runtime?.kind ?? null,
-      inputLength: input.length,
+      inputLength: visibleInput.length,
+      providerInputLength: providerInput.length,
       attachmentCount: attachments?.length ?? 0,
       overrides: overrides ?? null,
     })
@@ -2790,7 +2861,7 @@ export class AgentSessionService extends EventEmitter {
       runtime = await this.reopenRuntime(runtime)
     }
 
-    const rewrittenInput = rewriteAgentComposerMentions(input, (kind, value) =>
+    const rewrittenInput = rewriteAgentComposerMentions(providerInput, (kind, value) =>
       resolveAgentComposerPath(runtime.snapshot.cwd ?? runtime.request.cwd ?? null, kind, value),
     )
     const normalizedAttachments = Array.from(
@@ -2805,8 +2876,8 @@ export class AgentSessionService extends EventEmitter {
     const nonImageLine = nonImageAttachments.length
       ? nonImageAttachments.map((p) => `[${p}]`).join(' ') + '\n\n'
       : ''
-    const userText = rewrittenInput.text
-    const agentText = `${nonImageLine}${userText}`.trim() || userText
+    const userText = visibleInput.trim()
+    const providerText = `${nonImageLine}${rewrittenInput.text}`.trim() || rewrittenInput.text
 
     // Real user turn — reset the auto-continue watchdog so a fresh prompt
     // gets its own three-try budget if it also bottoms out on max_turns.
@@ -2840,11 +2911,11 @@ export class AgentSessionService extends EventEmitter {
             parent_tool_use_id: null,
             message: {
               role: 'user',
-              content: [...blocks, { type: 'text', text: agentText }],
+              content: [...blocks, { type: 'text', text: providerText }],
             },
           })
         } else {
-          await runtime.session.send(agentText)
+          await runtime.session.send(providerText)
         }
         log('send.claude.dispatched', { windowId })
       } catch (err) {
@@ -2872,7 +2943,7 @@ export class AgentSessionService extends EventEmitter {
     })
     try {
       const started: { turn?: { id?: string } } = await runtime.client.request('turn/start', {
-        ...buildCodexTurnStartParams(runtime, agentText, imageAttachments),
+        ...buildCodexTurnStartParams(runtime, providerText, imageAttachments),
       })
       runtime.activeTurnId = asNonEmptyString(started.turn?.id) ?? runtime.activeTurnId
       log('send.codex.dispatched', {

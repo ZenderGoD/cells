@@ -784,6 +784,18 @@ export interface CellsAPI {
         permissionMode?: AgentPermissionMode | null
       },
     ): Promise<void>
+    branchFrom(
+      sourceWindowId: string,
+      request: AgentSessionRequest,
+      visibleInput: string,
+      providerInput: string,
+      attachments?: string[],
+      overrides?: {
+        model?: string | null
+        thinkingLevel?: AgentThinkingLevel | null
+        permissionMode?: AgentPermissionMode | null
+      },
+    ): Promise<void>
     close(windowId: string): Promise<void>
     dispose(windowId: string): Promise<void>
     /** Report how many messages are queued for this window so main can suppress

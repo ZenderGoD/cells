@@ -418,6 +418,27 @@ const api: CellsAPI = {
         permissionMode?: AgentPermissionMode | null
       },
     ) => ipcRenderer.invoke('agent-session:send', windowId, input, attachments, overrides),
+    branchFrom: (
+      sourceWindowId: string,
+      request: AgentSessionRequest,
+      visibleInput: string,
+      providerInput: string,
+      attachments?: string[],
+      overrides?: {
+        model?: string | null
+        thinkingLevel?: AgentThinkingLevel | null
+        permissionMode?: AgentPermissionMode | null
+      },
+    ) =>
+      ipcRenderer.invoke(
+        'agent-session:branch-from',
+        sourceWindowId,
+        request,
+        visibleInput,
+        providerInput,
+        attachments,
+        overrides,
+      ) as Promise<void>,
     close: (windowId: string) => ipcRenderer.invoke('agent-session:close', windowId),
     dispose: (windowId: string) => ipcRenderer.invoke('agent-session:dispose', windowId),
     reportQueueCount: (windowId: string, count: number) => {

@@ -696,7 +696,7 @@ const UserBubble = memo(function UserBubble({ message }: { message: AgentSession
   const reduceMotion = useReducedMotion()
   const animateEntry = !reduceMotion && !isLargeText
   const [previewPath, setPreviewPath] = useState<string | null>(null)
-  const [renderLargeMarkdown, setRenderLargeMarkdown] = useState(true)
+  const [renderLargeMarkdown, setRenderLargeMarkdown] = useState(false)
   const [showFullLargeText, setShowFullLargeText] = useState(false)
   const [setUserScrollElement, userFade] = useVerticalScrollFades(
     `${text.length}:${renderLargeMarkdown}:${showFullLargeText}`,
@@ -714,7 +714,7 @@ const UserBubble = memo(function UserBubble({ message }: { message: AgentSession
         initial={animateEntry ? { opacity: 0, filter: 'blur(8px)', y: 4 } : false}
         animate={animateEntry ? { opacity: 1, filter: 'blur(0px)', y: 0 } : undefined}
         transition={{ duration: 0.28, ease: EASE_OUT }}
-        className="group flex max-w-[78%] flex-col items-end gap-1.5 select-text"
+        className="group flex max-w-[78%] min-w-0 flex-col items-end gap-1.5 select-text"
       >
         <UserAttachmentPreviewDialog path={previewPath} onClose={() => setPreviewPath(null)} />
         {images.length > 0 ? (
@@ -725,10 +725,10 @@ const UserBubble = memo(function UserBubble({ message }: { message: AgentSession
           </div>
         ) : null}
         {hasText ? (
-          <div className="rounded-[12px] bg-foreground/5 shadow-minimal">
+          <div className="max-w-full overflow-hidden rounded-[12px] bg-foreground/5 shadow-minimal">
             <div
               ref={setUserScrollElement}
-              className="scrollbar-hover overflow-y-auto overscroll-contain break-words px-3.5 py-2 text-[13px] leading-[1.45] text-foreground"
+              className="scrollbar-hover max-w-full overflow-x-hidden overflow-y-auto overscroll-contain break-words px-3.5 py-2 text-[13px] leading-[1.45] text-foreground [overflow-wrap:anywhere]"
               style={{
                 maxHeight: USER_BUBBLE_MAX_HEIGHT,
                 maskImage: userMask,
@@ -738,7 +738,7 @@ const UserBubble = memo(function UserBubble({ message }: { message: AgentSession
               }}
             >
               {renderAsPlainText ? (
-                <pre className="m-0 whitespace-pre-wrap break-words font-sans leading-[1.45]">
+                <pre className="m-0 max-w-full whitespace-pre-wrap break-words font-sans leading-[1.45] [overflow-wrap:anywhere]">
                   {visiblePlainText}
                 </pre>
               ) : (
@@ -3009,7 +3009,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     ],
   )
 
-  const startNewSessionFromComposer = useCallback(() => {
+  const startNewSessionFromComposer = useCallback(async () => {
     const currentSnapshot = snapshotRef.current
     const draft = inputRef.current
     const selectionStart = textareaRef.current?.selectionStart ?? 0
@@ -3028,22 +3028,51 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       const nextWindow = store.addAgentWindow(agentWindow.agent, {
         title: `${titleSource} (branch)`,
         cwd: currentSnapshot.cwd ?? agentWindow.cwd ?? store.getActiveProjectPath() ?? null,
-        initialPrompt: buildBranchImportPrompt({
-          sourceWindow: agentWindow,
-          snapshot: currentSnapshot,
-          targetAgent: agentWindow.agent,
-          continuation: rawValue,
-          continuationAttachments: pinned,
-        }),
         model: agentWindow.model ?? null,
         permissionMode: agentWindow.permissionMode ?? null,
         thinkingLevel: agentWindow.thinkingLevel ?? null,
         contextLength: agentWindow.contextLength ?? null,
       })
-      showToast('Branched current session', 'info')
-      window.setTimeout(() => {
-        store.snapToAgentWindow(nextWindow.id)
-      }, 0)
+      try {
+        await window.cells.agentSession.branchFrom(
+          agentWindow.id,
+          {
+            windowId: nextWindow.id,
+            agent: nextWindow.agent,
+            title: nextWindow.title,
+            cwd: nextWindow.cwd ?? null,
+            initialPrompt: null,
+            claudeSessionId: null,
+            codexThreadId: null,
+            model: nextWindow.model ?? null,
+            permissionMode: nextWindow.permissionMode ?? null,
+            thinkingLevel: nextWindow.thinkingLevel ?? null,
+            contextLength: nextWindow.contextLength ?? null,
+          },
+          value,
+          buildBranchImportPrompt({
+            sourceWindow: agentWindow,
+            snapshot: currentSnapshot,
+            targetAgent: agentWindow.agent,
+            continuation: rawValue,
+            continuationAttachments: pinned,
+          }),
+          pinned,
+          {
+            model: agentWindow.model ?? null,
+            thinkingLevel: agentWindow.thinkingLevel ?? null,
+            permissionMode: agentWindow.permissionMode ?? null,
+          },
+        )
+        showToast('Branched current session', 'info')
+        window.setTimeout(() => {
+          store.snapToAgentWindow(nextWindow.id)
+        }, 0)
+      } catch (err) {
+        console.error('[agent-chat] branch failed', err)
+        store.removeAgentWindow(nextWindow.id)
+        showToast('Failed to branch session', 'error')
+      }
       return
     }
 
@@ -3307,7 +3336,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       if (hasPrimary && event.shiftKey) {
         event.preventDefault()
         event.stopPropagation()
-        startNewSessionFromComposer()
+        void startNewSessionFromComposer()
         return
       }
       // Mod+Enter: interrupt the running turn and send this message next.
@@ -3415,7 +3444,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       if (editingIndex !== null) {
         commitEditQueued()
       } else if (hasPrimary && event.shiftKey) {
-        startNewSessionFromComposer()
+        void startNewSessionFromComposer()
       } else if (hasPrimary) {
         void submit('stop')
       } else if (event.altKey) {
@@ -4508,7 +4537,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                           <button
                             type="button"
                             onMouseDown={(event) => event.preventDefault()}
-                            onClick={startNewSessionFromComposer}
+                            onClick={() => void startNewSessionFromComposer()}
                             aria-label="Branch current session from selection"
                             className={cn(
                               'inline-flex size-7 shrink-0 items-center justify-center rounded-full transition-colors',

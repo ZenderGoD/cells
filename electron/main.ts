@@ -2149,6 +2149,28 @@ ipcMain.handle(
   },
 )
 
+ipcMain.handle(
+  'agent-session:branch-from',
+  (
+    _event,
+    sourceWindowId: string,
+    request,
+    visibleInput: string,
+    providerInput: string,
+    attachments?: string[],
+    overrides?: Parameters<typeof agentSessionService.send>[3],
+  ) => {
+    return agentSessionService.branchFrom(
+      sourceWindowId,
+      request,
+      visibleInput,
+      providerInput,
+      attachments,
+      overrides,
+    )
+  },
+)
+
 ipcMain.handle('agent-session:close', (_event, windowId: string) => {
   // Stop the current turn but keep the runtime + messages around so the
   // renderer can resume on the next send.
