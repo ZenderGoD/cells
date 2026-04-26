@@ -9,17 +9,25 @@ Cells is a desktop workspace for arranging terminals and browser panes on an inf
 - Infinite canvas for terminals and browser nodes
 - Multiple saved projects with per-project layout state
 - Command palette for fast workspace actions
-- Dedicated agent windows with rich chat UI, tool call grouping, diffs, and session branching
+- Keyboard-first navigation for terminals, overview mode, and project switching
+- Dedicated agent windows with rich chat UI, provider switching, tool call grouping, diffs, and session branching
 - GitHub release packaging for desktop builds
+
+### Keyboard-first workflow
+
+Cells focuses on one terminal at a time while keeping the rest of the workspace easy to reach from the keyboard. Open the command palette to create terminals, run commands, search, and launch agents; switch into overview mode to see every terminal at once; move directionally between terminals with vim-style navigation; cycle through terminals with the switcher overlay; and jump between open projects without managing windows by hand.
 
 ### Agent support
 
-Cells includes dedicated agent windows with a rich chat UI for streaming turns, tool call grouping, inline diffs, and a built-in diffs panel. Agent sessions can branch into another worktree so parallel ideas can continue in separate windows without losing context.
+Cells includes dedicated agent windows with a rich chat UI for streaming turns, switching between Claude and Codex, tool call grouping, inline diffs, and a built-in diffs panel. Agent sessions can branch into another worktree so parallel ideas can continue in separate windows without losing context.
 
 Agent and terminal windows can also run inside Git worktrees. The worktree manager is available from the focused window toolbar, terminal chrome, agent window menu, and command palette. It can create worktrees, show dirty/ahead/behind state, open terminals or agents in any worktree, move focused terminals, branch agent sessions into another worktree, reveal/copy paths, and safely remove worktrees after attached windows and uncommitted changes are handled.
 
 ![Dedicated agent window with streaming turns, tool groups, and inline progress states](docs/screenshots/agent-session.png)
 *Dedicated agent window with streaming turns, tool groups, and inline progress states*
+
+![Agent provider switcher for Claude and Codex](docs/screenshots/agent-provider-switcher.png)
+*Agent provider switcher for Claude and Codex*
 
 ### Browser panes
 
@@ -29,9 +37,9 @@ Embed browser panes alongside terminals, with browsing data scoped to each proje
 
 ### Minimap
 
-Each project includes a minimap showing all its nodes at a glance.
+Each project includes a minimap showing its nodes at a glance, plus activity indicators for work happening in other projects.
 
-![Minimap showing node icons within a project](docs/screenshots/minimap.svg)
+![Minimap showing node icons and other-project activity indicators](docs/screenshots/minimap.png)
 
 ### Ctrl+Tab navigation
 
