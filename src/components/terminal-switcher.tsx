@@ -112,10 +112,11 @@ export function TerminalSwitcher() {
   ).slice(0, 12)
   const selectedItemId = items[selectedIndex]?.id ?? currentId ?? null
   const desiredOverviewWidth = Math.min(980, Math.max(560, items.length * 118))
+  const fallbackOverviewWidth = Math.max(240, Math.min(window.innerWidth * 0.98, 700) - 32)
   const overviewWidth =
     overviewAvailableWidth > 0
       ? Math.min(desiredOverviewWidth, overviewAvailableWidth)
-      : Math.min(desiredOverviewWidth, Math.max(240, window.innerWidth * 0.98 - 32))
+      : Math.min(desiredOverviewWidth, fallbackOverviewWidth)
 
   useLayoutEffect(() => {
     const node = overviewContainerRef.current
@@ -129,7 +130,7 @@ export function TerminalSwitcher() {
     const resizeObserver = new ResizeObserver(updateWidth)
     resizeObserver.observe(node)
     return () => resizeObserver.disconnect()
-  }, [])
+  }, [open])
 
   const cycle = useCallback(
     (direction: 1 | -1) => {
