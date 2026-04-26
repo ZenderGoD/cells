@@ -1000,7 +1000,10 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
                   />
                 ) : (
                   <span
-                    className="min-w-0 flex-1 truncate text-[11px] font-medium text-muted-foreground cursor-text"
+                    className={cn(
+                      'min-w-0 truncate text-[11px] font-medium text-muted-foreground cursor-text',
+                      embedded ? 'flex-1' : 'max-w-[36rem] flex-[0_1_auto]',
+                    )}
                     onDoubleClick={(event) => {
                       event.preventDefault()
                       event.stopPropagation()
@@ -1016,7 +1019,10 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
                     {ftTitle}
                   </span>
                 )}
-                <WorktreeManager terminalId={focusedTerminalId} />
+                <WorktreeManager
+                  terminalId={focusedTerminalId}
+                  triggerVariant={embedded ? 'default' : 'toolbar'}
+                />
                 {ftStatus.detail ? (
                   <span
                     className={cn(
@@ -1128,7 +1134,10 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
                   />
                 ) : (
                   <span
-                    className="min-w-0 flex-1 truncate text-[11px] font-medium text-muted-foreground cursor-text"
+                    className={cn(
+                      'min-w-0 truncate text-[11px] font-medium text-muted-foreground cursor-text',
+                      embedded ? 'flex-1' : 'max-w-[36rem] flex-[0_1_auto]',
+                    )}
                     onDoubleClick={(event) => {
                       event.preventDefault()
                       event.stopPropagation()
@@ -1144,7 +1153,10 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
                     {awTitle}
                   </span>
                 )}
-                <WorktreeManager agentWindowId={focusedAgentWindowId} />
+                <WorktreeManager
+                  agentWindowId={focusedAgentWindowId}
+                  triggerVariant={embedded ? 'default' : 'toolbar'}
+                />
                 <AgentWindowColorPicker
                   agentWindowId={focusedAgentWindowId}
                   currentColor={aw.color}

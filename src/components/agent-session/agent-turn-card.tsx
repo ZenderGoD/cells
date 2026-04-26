@@ -49,8 +49,7 @@ const EXPAND_TRANSITION = {
 // that affordance's inner padding so the glyphs, not the container edge, align.
 const RESPONSE_TEXT_INSET_CLASS = 'pl-4'
 const TOOL_GROUP_COUNT_TEXT_INSET_CLASS = 'pl-2.5'
-const TOOL_GROUP_COUNT_BADGE_CLASS = 'h-7 w-7'
-const TOOL_GROUP_ACTIVITY_RAIL_CLASS = 'ml-6'
+const TOOL_GROUP_ACTIVITY_RAIL_CLASS = 'ml-[18px]'
 
 interface AgentTurnCardProps {
   activities: AgentSessionMessage[]
@@ -60,6 +59,7 @@ interface AgentTurnCardProps {
   // present it replaces the generic "Working…" preview so the user reads
   // the intent behind the upcoming activity instead of a filler label.
   leadText?: string
+  leadResponses?: AgentSessionMessage[]
   cwd?: string | null
   agent: AgentWindowNode['agent']
   isStreaming: boolean
@@ -544,34 +544,46 @@ function usePreviewText(
   }, [activities, isStreaming, agent])
 }
 
-function LeadTextBlock({ text, className }: { text: string; className?: string }) {
-  return (
-    <div
-      className={cn(
-        'agent-response select-text pt-1 pr-2.5 text-sm leading-relaxed text-foreground/85 [&_p:last-child]:mb-0',
-        '[&_.agent-markdown>:first-child]:mt-0',
-        RESPONSE_TEXT_INSET_CLASS,
-        className,
-      )}
-    >
-      <AgentMarkdown>{text}</AgentMarkdown>
-    </div>
-  )
-}
-
 // Mirrors Craft's ResponseCard — ../craft-agents-oss/packages/ui/src/components/chat/TurnCard.tsx
 // lines 2414-2616. Wrapper is `bg-card` (Cells's --card matches Craft's
 // --background brightness at oklch(0.21)); inner content is pl-[22px] pr-4 py-3
 // with a 16px top/bottom fade mask in dark mode; footer has a Copy button on
 // the left, border-top, and a muted background. Streaming state swaps the
 // footer's copy area for a "Streaming…" spinner.
-function ResponseCard({ responses }: { responses: AgentSessionMessage[] }) {
-  const visible = responses.filter((r) => r.text.trim().length > 0)
+function ResponseSurface({
+  responses,
+  text,
+  variant,
+  className,
+}: {
+  responses?: AgentSessionMessage[]
+  text?: string
+  variant: 'boxed' | 'lead'
+  className?: string
+}) {
+  const visible = useMemo(() => {
+    const responseItems = responses?.filter((r) => r.text.trim().length > 0)
+    if (responseItems?.length) return responseItems
+    const trimmed = text?.trim()
+    return trimmed
+      ? [
+          {
+            id: `lead-${trimmed}`,
+            role: 'assistant' as const,
+            text: trimmed,
+            status: 'completed' as const,
+          } satisfies AgentSessionMessage,
+        ]
+      : []
+  }, [responses, text])
+  const isBoxed = variant === 'boxed'
+  const reduceMotion = useReducedMotion()
   const [copied, setCopied] = useState(false)
   // Craft's "Markdown" button toggles a raw-source view of the message (so
   // you can read/copy the underlying .md). Same behaviour here.
   const [viewMode, setViewMode] = useState<'rendered' | 'source'>('rendered')
-  const isStreaming = visible.length > 0 && visible[visible.length - 1].status === 'in_progress'
+  const isStreaming =
+    isBoxed && visible.length > 0 && visible[visible.length - 1].status === 'in_progress'
   const combinedText = useMemo(() => visible.map((r) => r.text).join('\n\n'), [visible])
   const [setResponseScrollElement, responseFade] = useVerticalScrollFades(
     `${viewMode}:${combinedText}`,
@@ -592,25 +604,44 @@ function ResponseCard({ responses }: { responses: AgentSessionMessage[] }) {
   // the response reads as "elevated" over the window surface, matching
   // Craft's visual. See --elevated-surface in globals.css.
   return (
-    <div
-      className="group relative overflow-hidden rounded-[12px] shadow-minimal"
-      style={{ backgroundColor: 'var(--elevated-surface)', overflowAnchor: 'none' }}
+    <motion.div
+      layout={reduceMotion ? false : 'position'}
+      className={cn(
+        'group relative overflow-hidden rounded-[12px]',
+        !isBoxed && 'agent-response',
+        className,
+      )}
+      style={{ overflowAnchor: 'none' }}
+      transition={{ duration: 0.2, ease: EASE_OUT }}
     >
+      <motion.div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 rounded-[12px] shadow-minimal"
+        initial={false}
+        animate={{ opacity: isBoxed ? 1 : 0 }}
+        transition={{ duration: 0.18, ease: EASE_OUT }}
+        style={{ backgroundColor: 'var(--elevated-surface)' }}
+      />
       <div
         ref={setResponseScrollElement}
         data-search-root="response"
-        className="scrollbar-hover select-text overflow-y-auto px-4 pt-1 text-sm text-foreground/90"
+        className={cn(
+          'relative select-text px-4 pt-1 text-sm',
+          isBoxed
+            ? 'scrollbar-hover overflow-y-auto text-foreground/90'
+            : 'overflow-visible pr-2.5 leading-relaxed text-foreground/85 [&_.agent-markdown>:first-child]:mt-0 [&_p:last-child]:mb-0',
+        )}
         style={{
-          maxHeight: RESPONSE_MAX_HEIGHT,
+          maxHeight: isBoxed ? RESPONSE_MAX_HEIGHT : undefined,
           overflowAnchor: 'none',
-          scrollbarGutter: 'stable',
-          maskImage: responseMask,
-          WebkitMaskImage: responseMask,
+          scrollbarGutter: isBoxed ? 'stable' : undefined,
+          maskImage: isBoxed ? responseMask : undefined,
+          WebkitMaskImage: isBoxed ? responseMask : undefined,
         }}
       >
         {visible.map((response, idx) => (
           <div key={response.id} className={cn(idx > 0 && 'mt-3 border-t border-border/30 pt-3')}>
-            {viewMode === 'source' ? (
+            {isBoxed && viewMode === 'source' ? (
               <pre className="whitespace-pre-wrap break-words font-sans py-2">{response.text}</pre>
             ) : (
               <AgentMarkdown
@@ -623,53 +654,70 @@ function ResponseCard({ responses }: { responses: AgentSessionMessage[] }) {
           </div>
         ))}
       </div>
-      <div className="flex items-center gap-3 pl-4 pr-2.5 py-2 text-[13px]">
-        {isStreaming ? (
-          <div className="flex items-center gap-1.5 text-muted-foreground">
-            <Spinner className="text-[10px]" />
-            <span>Streaming…</span>
-          </div>
-        ) : (
-          <>
-            <button
-              type="button"
-              onClick={handleCopy}
-              className={cn(
-                'flex select-none items-center gap-1.5 transition-colors focus:outline-none focus-visible:underline',
-                copied ? 'text-success' : 'text-foreground/40 hover:text-foreground/80',
-              )}
-            >
-              {copied ? (
-                <>
-                  <Check className="size-3" />
-                  <span>Copied</span>
-                </>
+      <AnimatePresence initial={false}>
+        {isBoxed ? (
+          <motion.div
+            key="response-footer"
+            initial={false}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+            transition={EXPAND_TRANSITION}
+            style={{ overflow: 'hidden' }}
+          >
+            <div className="relative flex items-center gap-3 pl-4 pr-2.5 py-2 text-[13px]">
+              {isStreaming ? (
+                <div className="flex items-center gap-1.5 text-muted-foreground">
+                  <Spinner className="text-[10px]" />
+                  <span>Streaming…</span>
+                </div>
               ) : (
                 <>
-                  <Copy className="size-3" />
-                  <span>Copy</span>
+                  <button
+                    type="button"
+                    onClick={handleCopy}
+                    className={cn(
+                      'flex select-none items-center gap-1.5 transition-colors focus:outline-none focus-visible:underline',
+                      copied ? 'text-success' : 'text-foreground/40 hover:text-foreground/80',
+                    )}
+                  >
+                    {copied ? (
+                      <>
+                        <Check className="size-3" />
+                        <span>Copied</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="size-3" />
+                        <span>Copy</span>
+                      </>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setViewMode((v) => (v === 'source' ? 'rendered' : 'source'))}
+                    className={cn(
+                      'flex select-none items-center gap-1.5 transition-colors focus:outline-none focus-visible:underline',
+                      viewMode === 'source'
+                        ? 'text-foreground/80'
+                        : 'text-foreground/40 hover:text-foreground/80',
+                    )}
+                    title={viewMode === 'source' ? 'Show rendered' : 'Show raw markdown'}
+                  >
+                    <FileText className="size-3" />
+                    <span>Markdown</span>
+                  </button>
                 </>
               )}
-            </button>
-            <button
-              type="button"
-              onClick={() => setViewMode((v) => (v === 'source' ? 'rendered' : 'source'))}
-              className={cn(
-                'flex select-none items-center gap-1.5 transition-colors focus:outline-none focus-visible:underline',
-                viewMode === 'source'
-                  ? 'text-foreground/80'
-                  : 'text-foreground/40 hover:text-foreground/80',
-              )}
-              title={viewMode === 'source' ? 'Show rendered' : 'Show raw markdown'}
-            >
-              <FileText className="size-3" />
-              <span>Markdown</span>
-            </button>
-          </>
-        )}
-      </div>
-    </div>
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+    </motion.div>
   )
+}
+
+function ResponseCard({ responses }: { responses: AgentSessionMessage[] }) {
+  return <ResponseSurface responses={responses} variant="boxed" />
 }
 
 function ChangedFilesSection({
@@ -760,12 +808,16 @@ export function AgentTurnCard({
   responses,
   changedFilesActivities,
   leadText,
+  leadResponses,
   cwd,
   agent,
   isStreaming,
 }: AgentTurnCardProps) {
   const hasActivities = activities.length > 0
   const hasResponse = responses.some((r) => r.text.trim().length > 0)
+  const hasLeadResponse = Boolean(leadResponses?.some((r) => r.text.trim().length > 0))
+  const hasLeadText = Boolean(leadText?.trim()) || hasLeadResponse
+  const showStandaloneResponse = !hasActivities && hasResponse
   const [collapsed, setCollapsed] = useState(true)
   const showActivities = !collapsed
   const computedPreview = usePreviewText(activities, isStreaming, agent)
@@ -779,11 +831,18 @@ export function AgentTurnCard({
   return (
     <div className="flex w-full justify-start">
       <motion.div layout={isStreaming ? false : 'position'} className="w-full space-y-1">
+        {hasLeadText || showStandaloneResponse ? (
+          <ResponseSurface
+            responses={hasLeadText ? leadResponses : responses}
+            text={hasLeadText ? leadText : undefined}
+            variant={showStandaloneResponse && !hasLeadText ? 'boxed' : 'lead'}
+            className={hasActivities ? 'pb-1' : undefined}
+          />
+        ) : null}
         {hasActivities ? (
           // Tool activity always stays grouped behind a single collapse handle.
           // This keeps the transcript rhythm consistent even for one-off calls.
           <div className="select-none">
-            {leadText ? <LeadTextBlock text={leadText} className="pb-1" /> : null}
             <button
               type="button"
               onClick={() => setCollapsed((v) => !v)}
@@ -794,8 +853,7 @@ export function AgentTurnCard({
             >
               <span
                 className={cn(
-                  'inline-flex shrink-0 items-center justify-center rounded-[4px] bg-background text-[10px] font-medium tabular-nums shadow-minimal',
-                  TOOL_GROUP_COUNT_BADGE_CLASS,
+                  'inline-flex shrink-0 items-center justify-center rounded-[4px] bg-background px-1.5 py-0.5 text-[10px] font-medium tabular-nums shadow-minimal',
                 )}
               >
                 {activities.length}
@@ -866,9 +924,7 @@ export function AgentTurnCard({
               ) : null}
             </AnimatePresence>
           </div>
-        ) : leadText ? (
-          <LeadTextBlock text={leadText} />
-        ) : isStreaming && !hasResponse ? (
+        ) : isStreaming && !hasResponse && !hasLeadText ? (
           <LoadingIndicator
             label={agent === 'claude' ? 'Claude is thinking…' : 'Codex is thinking…'}
             showElapsed
@@ -879,19 +935,16 @@ export function AgentTurnCard({
           />
         ) : null}
 
-        <AnimatePresence initial={false} mode="popLayout">
-          {hasResponse ? (
-            <motion.div
-              key="response"
-              initial={reduceMotion ? false : { opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.2, ease: EASE_OUT }}
-            >
-              <ResponseCard responses={responses} />
-            </motion.div>
-          ) : null}
-        </AnimatePresence>
+        {hasActivities && hasResponse ? (
+          <motion.div
+            key="response"
+            initial={reduceMotion ? false : { opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.2, ease: EASE_OUT }}
+          >
+            <ResponseCard responses={responses} />
+          </motion.div>
+        ) : null}
         {!isStreaming && changedFilesActivities ? (
           <ChangedFilesSection activities={changedFilesActivities} cwd={cwd} />
         ) : null}

@@ -1930,7 +1930,7 @@ function enrichWorktree(raw: GitWorktree, repoRoot: string): GitWorktree {
 
 function listEnrichedWorktrees(cwd: string): GitWorktree[] {
   const repoRoot = gitExec(['rev-parse', '--show-toplevel'], cwd)
-  const output = gitExec(['worktree', 'list', '--porcelain', '-v'], cwd)
+  const output = gitExec(['worktree', 'list', '--porcelain'], cwd)
   return parseWorktreeList(output).map((worktree) => enrichWorktree(worktree, repoRoot))
 }
 

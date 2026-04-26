@@ -152,6 +152,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const showTerminalHeaderOverlay = useStore((s) => s.showTerminalHeaderOverlay)
   const windowOpacity = useStore((s) => s.windowOpacity)
   const useTransparentWindow = useStore((s) => s.useTransparentWindow)
+  const agentWindowColorOpacity = useStore((s) => s.agentWindowColorOpacity)
   const titleBarPosition = useStore((s) => s.titleBarPosition)
   const dimWhenUnfocused = useStore((s) => s.dimWhenUnfocused)
   const snapOnFocus = useStore((s) => s.snapOnFocus)
@@ -172,6 +173,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const setShowTerminalHeaderOverlay = useStore((s) => s.setShowTerminalHeaderOverlay)
   const setWindowOpacity = useStore((s) => s.setWindowOpacity)
   const setUseTransparentWindow = useStore((s) => s.setUseTransparentWindow)
+  const setAgentWindowColorOpacity = useStore((s) => s.setAgentWindowColorOpacity)
   const setTitleBarPosition = useStore((s) => s.setTitleBarPosition)
   const setDimWhenUnfocused = useStore((s) => s.setDimWhenUnfocused)
   const setSnapOnFocus = useStore((s) => s.setSnapOnFocus)
@@ -441,6 +443,23 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                       />
                       <span className="text-[10px] tabular-nums text-muted-foreground/50 w-6 text-right">
                         {windowOpacity}
+                      </span>
+                    </div>
+                  </SettingsGroup>
+
+                  <SettingsGroup title="Agent Color Opacity">
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="range"
+                        min={20}
+                        max={100}
+                        step={1}
+                        value={agentWindowColorOpacity}
+                        onChange={(event) => setAgentWindowColorOpacity(Number(event.target.value))}
+                        className="cells-slider flex-1"
+                      />
+                      <span className="w-8 text-right text-[10px] tabular-nums text-muted-foreground/50">
+                        {agentWindowColorOpacity}%
                       </span>
                     </div>
                   </SettingsGroup>

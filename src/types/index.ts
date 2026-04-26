@@ -606,6 +606,7 @@ export interface ProjectsState {
   showTerminalHeaderOverlay?: boolean
   windowOpacity?: number
   useTransparentWindow?: boolean
+  agentWindowColorOpacity?: number
   titleBarPosition?: TitleBarPosition
   titleBarHidden?: boolean
   snapOnFocus?: boolean

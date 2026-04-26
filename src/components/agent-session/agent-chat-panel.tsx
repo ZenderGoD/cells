@@ -392,6 +392,10 @@ function useFileThumbnail(path: string, enabled = true, maxHeight = 96) {
   return enabled ? url : null
 }
 
+function isDirectImageUrl(path: string | null | undefined) {
+  return Boolean(path && /^(?:https?:|data:|blob:|file:)/i.test(path))
+}
+
 async function copyAttachmentToClipboard(path: string) {
   try {
     const result = await window.cells.app.copyAttachmentToClipboard(path)
@@ -558,7 +562,9 @@ function UserAttachmentPreviewDialog({
 }) {
   const name = path?.split('/').pop() || path || ''
   const isImage = Boolean(path && isImagePath(path))
-  const url = useFileThumbnail(path ?? '', isImage, 1400)
+  const directUrl = isDirectImageUrl(path) ? path : null
+  const thumbnailUrl = useFileThumbnail(path ?? '', Boolean(path && !directUrl && isImage), 1400)
+  const url = directUrl ?? thumbnailUrl
 
   return (
     <Dialog
@@ -735,7 +741,7 @@ const UserBubble = memo(function UserBubble({ message }: { message: AgentSession
                   {visiblePlainText}
                 </pre>
               ) : (
-                <AgentMarkdown inline breaks>
+                <AgentMarkdown inline breaks onImageClick={setPreviewPath}>
                   {text}
                 </AgentMarkdown>
               )}
@@ -942,6 +948,7 @@ type ChatGroup =
       // own ResponseCard into the next turn's header line — it reads as the
       // intent behind the upcoming activity instead of a separate bubble.
       leadText?: string
+      leadResponses?: AgentSessionMessage[]
     }
   | { kind: 'error'; key: string; message: AgentSessionMessage }
   | { kind: 'auth'; key: string; message: AgentSessionMessage }
@@ -1007,6 +1014,7 @@ function isChatGroupUnchanged(previous: ChatGroup, next: ChatGroup): boolean {
           nextTurn.changedFilesActivities ?? [],
         ) &&
         previous.leadText === nextTurn.leadText &&
+        areMessageRefsEqual(previous.leadResponses ?? [], nextTurn.leadResponses ?? []) &&
         areMessageRefsEqual(previous.activities, nextTurn.activities) &&
         areMessageRefsEqual(previous.responses, nextTurn.responses)
       )
@@ -1180,7 +1188,12 @@ function demoteInterimResponses(groups: ChatGroup[]): ChatGroup[] {
           .trim()
         working[i + 1] = {
           ...next,
+          // If the previous turn was only this assistant text, keep its row
+          // identity while it becomes the next turn's lead text. Otherwise the
+          // same response remounts and replays the row entrance animation.
+          key: g.activities.length > 0 ? next.key : g.key,
           leadText: leadText || next.leadText,
+          leadResponses: g.responses,
         }
         if (g.activities.length > 0) {
           result.push({
@@ -1189,6 +1202,7 @@ function demoteInterimResponses(groups: ChatGroup[]): ChatGroup[] {
             activities: g.activities,
             responses: [],
             leadText: g.leadText,
+            leadResponses: g.leadResponses,
           })
         }
         continue
@@ -1900,6 +1914,7 @@ function GroupRenderer({
           responses={group.responses}
           changedFilesActivities={group.changedFilesActivities}
           leadText={group.leadText}
+          leadResponses={group.leadResponses}
           cwd={cwd}
           agent={agent}
           isStreaming={isStreamingLastTurn}

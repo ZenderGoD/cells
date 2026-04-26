@@ -401,6 +401,23 @@ textarea[data-ghostty] {
   -webkit-app-region: no-drag;
 }
 
+.worktree-manager-popover,
+.worktree-manager-popover * {
+  -webkit-app-region: no-drag;
+}
+
+.worktree-manager-popover input,
+.worktree-manager-popover select,
+.worktree-manager-popover button,
+.worktree-manager-popover label {
+  pointer-events: auto;
+}
+
+.worktree-manager-popover input {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 .scrollbar-none {
   -ms-overflow-style: none;
   scrollbar-width: none;
@@ -409,21 +426,34 @@ textarea[data-ghostty] {
   display: none;
 }
 
-/* Hide scrollbar until parent .group is hovered — mirrors Craft's .scrollbar-hover */
+/* Thin by default, fuller on hover, without changing the reserved gutter. */
+.scrollbar-hover {
+  scrollbar-color: var(--border) transparent;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+}
+
 .scrollbar-hover::-webkit-scrollbar {
-  width: 4px;
+  width: 8px;
+  height: 8px;
 }
 .scrollbar-hover::-webkit-scrollbar-track {
   background: transparent;
 }
 .scrollbar-hover::-webkit-scrollbar-thumb {
-  background: transparent;
-  border-radius: 4px;
-}
-.group:hover .scrollbar-hover::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
   background: var(--border);
+  background-clip: padding-box;
 }
+.scrollbar-hover:hover::-webkit-scrollbar-thumb,
+.group:hover .scrollbar-hover::-webkit-scrollbar-thumb {
+  border-width: 1px;
+  background: var(--scrollbar-thumb-hover);
+}
+.scrollbar-hover::-webkit-scrollbar-thumb:hover,
 .group:hover .scrollbar-hover::-webkit-scrollbar-thumb:hover {
+  border-width: 1px;
   background: var(--muted-foreground);
 }
 
@@ -520,17 +550,37 @@ textarea[data-ghostty] {
   animation: spinner-grid 1.3s infinite ease-in-out;
   transform: scale3d(0.5, 0.5, 1);
 }
-.spinner-cube:nth-child(1) { animation-delay: 0.2s; }
-.spinner-cube:nth-child(2) { animation-delay: 0.3s; }
-.spinner-cube:nth-child(3) { animation-delay: 0.4s; }
-.spinner-cube:nth-child(4) { animation-delay: 0.1s; }
-.spinner-cube:nth-child(5) { animation-delay: 0.2s; }
-.spinner-cube:nth-child(6) { animation-delay: 0.3s; }
-.spinner-cube:nth-child(7) { animation-delay: 0s; }
-.spinner-cube:nth-child(8) { animation-delay: 0.1s; }
-.spinner-cube:nth-child(9) { animation-delay: 0.2s; }
+.spinner-cube:nth-child(1) {
+  animation-delay: 0.2s;
+}
+.spinner-cube:nth-child(2) {
+  animation-delay: 0.3s;
+}
+.spinner-cube:nth-child(3) {
+  animation-delay: 0.4s;
+}
+.spinner-cube:nth-child(4) {
+  animation-delay: 0.1s;
+}
+.spinner-cube:nth-child(5) {
+  animation-delay: 0.2s;
+}
+.spinner-cube:nth-child(6) {
+  animation-delay: 0.3s;
+}
+.spinner-cube:nth-child(7) {
+  animation-delay: 0s;
+}
+.spinner-cube:nth-child(8) {
+  animation-delay: 0.1s;
+}
+.spinner-cube:nth-child(9) {
+  animation-delay: 0.2s;
+}
 @keyframes spinner-grid {
-  0%, 70%, 100% {
+  0%,
+  70%,
+  100% {
     transform: scale3d(0.5, 0.5, 1);
   }
   35% {
@@ -581,6 +631,127 @@ textarea[data-ghostty] {
   animation: border-trace 2.5s linear infinite;
 }
 
+.agent-window-color-frame {
+  border-color: color-mix(
+    in oklch,
+    var(--agent-window-accent) var(--agent-window-accent-opacity),
+    transparent
+  );
+}
+
+.agent-window-color-frame-focused {
+  box-shadow:
+    0 0 0 1px color-mix(in oklch, var(--agent-window-accent) 52%, transparent),
+    0 18px 56px rgb(0 0 0 / 0.4),
+    0 0 24px color-mix(in oklch, var(--agent-window-accent) 12%, transparent),
+    inset 0 1px 0 rgb(255 255 255 / 0.1),
+    inset 0 0 0 1px color-mix(in oklch, var(--agent-window-accent) 28%, transparent);
+}
+
+.agent-window-color-frame-unfocused {
+  box-shadow:
+    0 0 0 1px color-mix(in oklch, var(--agent-window-accent) 30%, transparent),
+    0 12px 34px rgb(0 0 0 / 0.32),
+    inset 0 1px 0 rgb(255 255 255 / 0.07),
+    inset 0 0 0 1px color-mix(in oklch, var(--agent-window-accent) 18%, transparent);
+}
+
+.agent-window-status-edge {
+  pointer-events: none;
+  position: absolute;
+  inset-inline: 10px;
+  bottom: 0;
+  z-index: 19;
+  height: 3px;
+  border-radius: 999px 999px 0 0;
+  background: linear-gradient(
+    to right,
+    transparent,
+    color-mix(in oklch, var(--agent-window-status-accent) 72%, transparent) 16%,
+    color-mix(in oklch, var(--agent-window-status-accent) 82%, transparent) 50%,
+    color-mix(in oklch, var(--agent-window-status-accent) 72%, transparent) 84%,
+    transparent
+  );
+  box-shadow:
+    0 -1px 4px color-mix(in oklch, var(--agent-window-status-accent) 24%, transparent),
+    inset 0 1px 0 rgb(255 255 255 / 0.1);
+  opacity: 0;
+  transform: translateY(3px);
+  transition:
+    opacity 160ms ease-out,
+    transform 160ms ease-out;
+}
+
+.agent-window-status-edge-done {
+  inset-inline: 8px;
+  height: 4px;
+  box-shadow:
+    0 -1px 6px color-mix(in oklch, var(--agent-window-status-accent) 34%, transparent),
+    inset 0 1px 0 rgb(255 255 255 / 0.12);
+}
+
+.agent-window-status-edge-visible {
+  opacity: 0.78;
+  transform: translateY(0);
+}
+
+@keyframes agent-window-status-edge {
+  0%,
+  100% {
+    opacity: 0.68;
+  }
+  50% {
+    opacity: 0.88;
+  }
+}
+
+@keyframes agent-window-status-done {
+  0% {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  8% {
+    opacity: 0.95;
+    transform: translateY(0);
+  }
+  24% {
+    opacity: 0.34;
+    transform: translateY(0);
+  }
+  42% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  64% {
+    opacity: 0.82;
+    transform: translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}
+
+@keyframes agent-window-status-done-reduced {
+  0%,
+  55% {
+    opacity: 0.82;
+    transform: translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}
+
+.animate-agent-window-status-edge {
+  animation: agent-window-status-edge 1.6s ease-in-out infinite;
+}
+
+.animate-agent-window-status-done {
+  animation: agent-window-status-done 1.35s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
 @layer base {
   * {
     @apply border-border;
@@ -604,7 +775,13 @@ textarea[data-ghostty] {
   .animate-pulse,
   .animate-shimmer::after,
   .animate-border-trace rect,
+  .animate-agent-window-status-edge,
+  .animate-agent-window-status-done,
   .spinner-cube {
     animation: none;
+  }
+
+  .animate-agent-window-status-done {
+    animation: agent-window-status-done-reduced 900ms ease-out both;
   }
 }

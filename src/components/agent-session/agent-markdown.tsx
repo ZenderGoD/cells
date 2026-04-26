@@ -22,6 +22,8 @@ interface AgentMarkdownProps {
   breaks?: boolean
   /** Reveal the trailing text while a response streams. */
   streamingReveal?: boolean
+  /** Route image clicks into a caller-owned preview surface. */
+  onImageClick?: (src: string) => void
 }
 
 const STREAMING_REVEAL_WORDS = 9
@@ -119,7 +121,12 @@ function maybeRevealTail(children: React.ReactNode, enabled: boolean) {
   return enabled ? revealTrailingText(children) : children
 }
 
-function createComponents(streamingReveal: boolean, reduceMotion: boolean, source: string) {
+function createComponents(
+  streamingReveal: boolean,
+  reduceMotion: boolean,
+  source: string,
+  onImageClick?: (src: string) => void,
+) {
   const canReveal = streamingReveal && !reduceMotion
   return {
     a: ({ href, children, ...props }: any) => (
@@ -142,6 +149,27 @@ function createComponents(streamingReveal: boolean, reduceMotion: boolean, sourc
         {children}
       </a>
     ),
+    img: ({ src, alt, ...props }: any) => {
+      const image = (
+        <img
+          {...props}
+          src={src}
+          alt={alt ?? ''}
+          className="my-1 max-h-72 max-w-full rounded-[8px] border border-border/35 object-contain"
+        />
+      )
+      if (!src || !onImageClick) return image
+      return (
+        <button
+          type="button"
+          onClick={() => onImageClick(String(src))}
+          className="block rounded-[8px] text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-foreground/30"
+          title={alt || String(src)}
+        >
+          {image}
+        </button>
+      )
+    },
     // Inline code: subtle background, slightly smaller, monospace. Block code
     // gets wrapped by `pre` below. Craft's InlineCode uses the same rounded
     // muted-bg pattern.
@@ -270,6 +298,7 @@ export const AgentMarkdown = memo(function AgentMarkdown({
   inline,
   breaks,
   streamingReveal,
+  onImageClick,
 }: AgentMarkdownProps) {
   // No font-size / color override here — the response card wrapper sets
   // `text-sm` and the default foreground color, matching Craft's ResponseCard.
@@ -277,8 +306,8 @@ export const AgentMarkdown = memo(function AgentMarkdown({
   const reduceMotion = useReducedMotion()
   const plugins = breaks ? [remarkGfm, remarkBreaks] : [remarkGfm]
   const components = useMemo(
-    () => createComponents(!!streamingReveal, !!reduceMotion, children),
-    [children, reduceMotion, streamingReveal],
+    () => createComponents(!!streamingReveal, !!reduceMotion, children, onImageClick),
+    [children, onImageClick, reduceMotion, streamingReveal],
   )
   return (
     <div className={cn('agent-markdown', inline && '[&_p]:m-0 [&_p]:inline', className)}>

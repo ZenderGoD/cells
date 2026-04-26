@@ -34,6 +34,10 @@ import {
 } from './app-themes'
 import { DEFAULT_WINDOW_APPEARANCE, normalizeWindowAppearance } from './window-appearance'
 import {
+  DEFAULT_AGENT_WINDOW_COLOR_OPACITY,
+  normalizeAgentWindowColorOpacity,
+} from './agent-window-colors'
+import {
   STATUS_BAR_HEIGHT,
   getCanvasWindows,
   getClosestWindow,
@@ -94,6 +98,7 @@ interface StoreState {
   showTerminalHeaderOverlay: boolean
   windowOpacity: number
   useTransparentWindow: boolean
+  agentWindowColorOpacity: number
   titleBarPosition: TitleBarPosition
   titleBarHidden: boolean
   dimWhenUnfocused: boolean
@@ -192,6 +197,7 @@ interface StoreState {
   restartTerminalSession(id: string): void
   setWindowOpacity(opacity: number): void
   setUseTransparentWindow(enabled: boolean): void
+  setAgentWindowColorOpacity(opacity: number): void
   setTitleBarPosition(position: TitleBarPosition): void
   setTitleBarHidden(hidden: boolean): void
   toggleTitleBarHidden(): void
@@ -778,6 +784,32 @@ function getTopZIndex(
   return Math.max(termMax, browMax, agentMax)
 }
 
+function getValidFocusedWindowIds(
+  terminals: TerminalNode[],
+  browsers: BrowserNode[] = [],
+  agentWindows: AgentWindowNode[] = [],
+  focusedTerminalId?: string | null,
+  focusedBrowserId?: string | null,
+  focusedAgentWindowId?: string | null,
+) {
+  const hasTerminal = focusedTerminalId
+    ? terminals.some((terminal) => terminal.id === focusedTerminalId)
+    : false
+  const hasBrowser = focusedBrowserId
+    ? browsers.some((browser) => browser.id === focusedBrowserId)
+    : false
+  const hasAgentWindow = focusedAgentWindowId
+    ? agentWindows.some((agentWindow) => agentWindow.id === focusedAgentWindowId)
+    : false
+
+  return {
+    focusedTerminalId: hasTerminal ? focusedTerminalId! : null,
+    focusedBrowserId: !hasTerminal && hasBrowser ? focusedBrowserId! : null,
+    focusedAgentWindowId:
+      !hasTerminal && !hasBrowser && hasAgentWindow ? focusedAgentWindowId! : null,
+  }
+}
+
 function upsertPendingClosedWindow(
   pending: PendingClosedWindow[],
   entry: PendingClosedWindow,
@@ -806,6 +838,14 @@ function clearPersistStatusTimer() {
 /** Snapshot the current working state back into the projects array */
 function snapshotActiveProject(state: StoreState): Project[] {
   if (!state.activeProjectId) return state.projects
+  const focused = getValidFocusedWindowIds(
+    state.terminals,
+    state.browsers,
+    state.agentWindows,
+    state.focusedTerminalId,
+    state.focusedBrowserId,
+    state.focusedAgentWindowId,
+  )
   return state.projects.map((p) =>
     p.id === state.activeProjectId
       ? {
@@ -814,9 +854,9 @@ function snapshotActiveProject(state: StoreState): Project[] {
           browsers: state.browsers,
           agentWindows: state.agentWindows,
           canvas: state.canvas,
-          focusedTerminalId: state.focusedTerminalId,
-          focusedBrowserId: state.focusedBrowserId,
-          focusedAgentWindowId: state.focusedAgentWindowId,
+          focusedTerminalId: focused.focusedTerminalId,
+          focusedBrowserId: focused.focusedBrowserId,
+          focusedAgentWindowId: focused.focusedAgentWindowId,
           focusCounts: state.focusCounts,
           commandActionCounts: state.commandActionCounts,
           autoArrangeOnCreate: state.autoArrangeOnCreate,
@@ -842,15 +882,23 @@ function projectToWorkingState(project: Project, preserveRuntime = false) {
     composerDraft: agentWindow.composerDraft ?? null,
     composerAttachments: agentWindow.composerAttachments ?? [],
   }))
+  const focused = getValidFocusedWindowIds(
+    terminals,
+    browsers,
+    agentWindows,
+    project.focusedTerminalId,
+    project.focusedBrowserId,
+    project.focusedAgentWindowId,
+  )
   return {
     terminals,
     browsers,
     agentWindows,
     canvas: project.canvas ?? DEFAULT_CANVAS,
     topZIndex: getTopZIndex(terminals, browsers, agentWindows),
-    focusedTerminalId: (project.focusedTerminalId ?? null) as string | null,
-    focusedBrowserId: (project.focusedBrowserId ?? null) as string | null,
-    focusedAgentWindowId: (project.focusedAgentWindowId ?? null) as string | null,
+    focusedTerminalId: focused.focusedTerminalId,
+    focusedBrowserId: focused.focusedBrowserId,
+    focusedAgentWindowId: focused.focusedAgentWindowId,
     focusHistory: [] as string[],
     focusCounts: (project.focusCounts ?? {}) as Record<string, number>,
     commandActionCounts: (project.commandActionCounts ?? {}) as Record<string, number>,
@@ -942,6 +990,7 @@ export const useStore = create<StoreState>((set, get) => ({
   showTerminalHeaderOverlay: true,
   windowOpacity: DEFAULT_WINDOW_APPEARANCE.windowOpacity,
   useTransparentWindow: DEFAULT_WINDOW_APPEARANCE.useTransparentWindow,
+  agentWindowColorOpacity: DEFAULT_AGENT_WINDOW_COLOR_OPACITY,
   titleBarPosition: DEFAULT_TITLE_BAR_POSITION,
   titleBarHidden: false,
   dimWhenUnfocused: true,
@@ -1065,6 +1114,10 @@ export const useStore = create<StoreState>((set, get) => ({
   setUseTransparentWindow(enabled) {
     set({ useTransparentWindow: enabled })
     showToast('Window transparency changes apply after restarting Cells', 'info')
+    get().persist()
+  },
+  setAgentWindowColorOpacity(opacity) {
+    set({ agentWindowColorOpacity: normalizeAgentWindowColorOpacity(opacity) })
     get().persist()
   },
   setTitleBarPosition(position) {
@@ -1301,6 +1354,7 @@ export const useStore = create<StoreState>((set, get) => ({
           windowOpacity: ps.windowOpacity,
           useTransparentWindow: ps.useTransparentWindow,
         }),
+        agentWindowColorOpacity: normalizeAgentWindowColorOpacity(ps.agentWindowColorOpacity),
         titleBarPosition: ps.titleBarPosition ?? DEFAULT_TITLE_BAR_POSITION,
         titleBarHidden: ps.titleBarHidden ?? false,
         snapOnFocus: ps.snapOnFocus ?? true,
@@ -1427,6 +1481,9 @@ export const useStore = create<StoreState>((set, get) => ({
           windowOpacity: (saved as any).windowOpacity,
           useTransparentWindow: (saved as any).useTransparentWindow,
         }),
+        agentWindowColorOpacity: normalizeAgentWindowColorOpacity(
+          (saved as any).agentWindowColorOpacity,
+        ),
         titleBarPosition: (saved as any).titleBarPosition ?? DEFAULT_TITLE_BAR_POSITION,
         titleBarHidden: (saved as any).titleBarHidden ?? false,
         agentNotificationSettings: DEFAULT_AGENT_NOTIFICATION_SETTINGS,
@@ -1516,6 +1573,7 @@ export const useStore = create<StoreState>((set, get) => ({
           showTerminalHeaderOverlay: freshState.showTerminalHeaderOverlay,
           windowOpacity: freshState.windowOpacity,
           useTransparentWindow: freshState.useTransparentWindow,
+          agentWindowColorOpacity: freshState.agentWindowColorOpacity,
           titleBarPosition: freshState.titleBarPosition,
           titleBarHidden: freshState.titleBarHidden,
           snapOnFocus: freshState.snapOnFocus,
@@ -1568,6 +1626,7 @@ export const useStore = create<StoreState>((set, get) => ({
           showTerminalHeaderOverlay: state.showTerminalHeaderOverlay,
           windowOpacity: state.windowOpacity,
           useTransparentWindow: state.useTransparentWindow,
+          agentWindowColorOpacity: state.agentWindowColorOpacity,
           titleBarPosition: state.titleBarPosition,
           titleBarHidden: state.titleBarHidden,
           snapOnFocus: state.snapOnFocus,
@@ -1676,13 +1735,26 @@ export const useStore = create<StoreState>((set, get) => ({
     // nothing. Recenter onto the focused window (or nearest window) so
     // the project always opens on actual content.
     const after = get()
-    if (after.focusedTerminalId) {
-      after.snapToTerminal(after.focusedTerminalId)
-    } else if (after.focusedBrowserId) {
-      after.snapToBrowser(after.focusedBrowserId)
-    } else if (after.focusedAgentWindowId) {
-      after.snapToAgentWindow(after.focusedAgentWindowId)
+    const focused = getValidFocusedWindowIds(
+      after.terminals,
+      after.browsers,
+      after.agentWindows,
+      after.focusedTerminalId,
+      after.focusedBrowserId,
+      after.focusedAgentWindowId,
+    )
+    if (focused.focusedTerminalId) {
+      after.snapToTerminal(focused.focusedTerminalId)
+    } else if (focused.focusedBrowserId) {
+      after.snapToBrowser(focused.focusedBrowserId)
+    } else if (focused.focusedAgentWindowId) {
+      after.snapToAgentWindow(focused.focusedAgentWindowId)
     } else if (after.terminals.length + after.browsers.length + after.agentWindows.length > 0) {
+      set({
+        focusedTerminalId: null,
+        focusedBrowserId: null,
+        focusedAgentWindowId: null,
+      })
       after.snapToClosest()
     }
 

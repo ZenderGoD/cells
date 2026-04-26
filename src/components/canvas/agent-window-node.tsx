@@ -4,6 +4,7 @@ import {
   useEffect,
   useRef,
   useState,
+  type CSSProperties,
   type KeyboardEvent,
   type MouseEvent,
 } from 'react'
@@ -26,13 +27,36 @@ import { cn } from '@/lib/utils'
 import { AgentChatPanel } from '@/components/agent-session/agent-chat-panel'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { getAgentWindowColor } from '@/lib/agent-window-colors'
+import { getAgentWindowStatusPresentation } from '@/lib/status-indicator'
 import { WorktreeManager } from '@/components/worktree-manager'
+import type { AgentWindowStatus } from '@/types'
 
 type Edge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
 
 const MIN_W = 460
 const MIN_H = 360
 const HANDLE = 6
+
+function getAgentWindowStatusAccent(
+  status: AgentWindowStatus | null | undefined,
+  hasUnviewedCompletion: boolean | undefined,
+) {
+  if (status === 'idle' && hasUnviewedCompletion) return 'oklch(76.5% 0.177 163.223)'
+  switch (status) {
+    case 'awaiting-approval':
+      return 'oklch(82.8% 0.189 84.429)'
+    case 'awaiting-input':
+      return 'oklch(67.3% 0.182 276.935)'
+    case 'running':
+      return 'oklch(74.6% 0.16 232.66)'
+    case 'plan-ready':
+      return 'oklch(70.2% 0.183 293.541)'
+    case 'error':
+      return 'oklch(71.2% 0.194 13.428)'
+    default:
+      return 'oklch(70.5% 0.015 286.067)'
+  }
+}
 
 interface AgentWindowNodeProps {
   agentWindow: AgentWindowNodeType
@@ -247,16 +271,29 @@ export const AgentWindowNode = memo(function AgentWindowNode({
 
   const colorSpec = getAgentWindowColor(agentWindow.color)
   const hasColor = colorSpec.id !== 'none'
+  const agentWindowColorOpacity = useStore((state) => state.agentWindowColorOpacity)
+  const statusPresentation = getAgentWindowStatusPresentation(agentWindow.status, {
+    hasUnviewedCompletion: agentWindow.hasUnviewedCompletion,
+  })
+  const statusAccent = getAgentWindowStatusAccent(
+    agentWindow.status,
+    agentWindow.hasUnviewedCompletion,
+  )
+  const showUnreadDoneEdge =
+    hasColor && agentWindow.status === 'idle' && Boolean(agentWindow.hasUnviewedCompletion)
+  const showStatusEdge = hasColor && (agentWindow.status !== 'idle' || showUnreadDoneEdge)
+  const animateStatusEdge = showStatusEdge && statusPresentation.dotClass.includes('animate-pulse')
 
   return (
     <div
       data-focused={isFocused ? 'true' : 'false'}
       className={cn(
         'agent-window-node group absolute overflow-hidden rounded-lg border bg-background/75 backdrop-blur-xl transition-[box-shadow,border-color,transform] duration-150',
+        hasColor && 'border-[3px]',
         hasColor
           ? isFocused
-            ? cn(colorSpec.focusedBorderClass, 'shadow-elevated')
-            : cn(colorSpec.unfocusedBorderClass, 'shadow-middle')
+            ? 'agent-window-color-frame agent-window-color-frame-focused'
+            : 'agent-window-color-frame agent-window-color-frame-unfocused'
           : isFocused
             ? 'border-foreground/15 shadow-elevated'
             : 'border-border/50 shadow-middle',
@@ -269,6 +306,13 @@ export const AgentWindowNode = memo(function AgentWindowNode({
         width: agentWindow.width,
         height: agentWindow.height,
         zIndex: z,
+        ...(hasColor
+          ? ({
+              '--agent-window-accent': colorSpec.frameColor,
+              '--agent-window-accent-opacity': `${agentWindowColorOpacity}%`,
+              '--agent-window-status-accent': statusAccent,
+            } as CSSProperties)
+          : null),
       }}
       onMouseDown={handleNodeMouseDown}
     >
@@ -276,8 +320,11 @@ export const AgentWindowNode = memo(function AgentWindowNode({
         <div
           aria-hidden
           className={cn(
-            'pointer-events-none absolute inset-x-0 top-0 z-20 h-[2px]',
-            colorSpec.accentBarClass,
+            'agent-window-status-edge',
+            showStatusEdge && !showUnreadDoneEdge && 'agent-window-status-edge-visible',
+            animateStatusEdge && 'animate-agent-window-status-edge',
+            showUnreadDoneEdge && 'agent-window-status-edge-done',
+            showUnreadDoneEdge && 'animate-agent-window-status-done',
           )}
         />
       ) : null}

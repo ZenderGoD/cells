@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import type { CSSProperties } from 'react'
 import {
   Check,
   Copy,
@@ -8,6 +9,7 @@ import {
   MoreHorizontal,
   Plus,
   RefreshCw,
+  Search,
   TerminalSquare,
   Trash2,
 } from 'lucide-react'
@@ -23,6 +25,16 @@ import {
 import { hapticNudge, hapticSuccess } from '@/lib/haptics'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import {
+  Combobox,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxInput,
+  ComboboxItem,
+  ComboboxList,
+} from '@/components/ui/combobox'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -37,8 +49,76 @@ interface WorktreeManagerProps {
   agentWindowId?: string | null
   className?: string
   compact?: boolean
+  triggerVariant?: 'default' | 'toolbar'
   side?: 'top' | 'bottom' | 'left' | 'right'
   align?: 'start' | 'center' | 'end'
+}
+
+interface WorktreeBranchOption {
+  value: string
+  label: string
+  hint?: string
+}
+
+function WorktreeBranchCombobox({
+  value,
+  options,
+  onValueChange,
+  placeholder = 'HEAD',
+  className,
+}: {
+  value: string
+  options: WorktreeBranchOption[]
+  onValueChange(value: string): void
+  placeholder?: string
+  className?: string
+}) {
+  const selected =
+    options.find((option) => option.value === value) ??
+    (value ? { value, label: value, hint: 'Saved branch' } : options[0]) ??
+    null
+  const visibleOptions =
+    selected && !options.some((option) => option.value === selected.value)
+      ? [selected, ...options]
+      : options
+
+  return (
+    <Combobox<WorktreeBranchOption>
+      value={selected}
+      onValueChange={(next) => onValueChange(next?.value ?? '')}
+      itemToStringLabel={(item) => item.label}
+      itemToStringValue={(item) => item.value}
+      isItemEqualToValue={(item, selectedItem) => item.value === selectedItem.value}
+    >
+      <ComboboxInput
+        placeholder={placeholder}
+        className={cn(
+          'w-full border-border/35 bg-background/45 dark:bg-background/45',
+          '[&_[data-slot=input-group-control]]:h-8 [&_[data-slot=input-group-control]]:px-2 [&_[data-slot=input-group-control]]:text-[11px] [&_[data-slot=input-group-control]]:text-foreground',
+          className,
+        )}
+      />
+      <ComboboxContent className="worktree-manager-popover">
+        <ComboboxEmpty className="py-2 text-[11px]">No branches</ComboboxEmpty>
+        <ComboboxList>
+          {visibleOptions.map((option) => (
+            <ComboboxItem
+              key={option.value}
+              value={option}
+              className="items-start gap-2 px-2 py-1.5 text-[11px]"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-foreground">{option.label}</div>
+                {option.hint ? (
+                  <div className="truncate text-[10px] text-muted-foreground/45">{option.hint}</div>
+                ) : null}
+              </div>
+            </ComboboxItem>
+          ))}
+        </ComboboxList>
+      </ComboboxContent>
+    </Combobox>
+  )
 }
 
 function AttachedWindows({ worktreePath }: { worktreePath: string }) {
@@ -127,11 +207,111 @@ function buildSessionImportPrompt(snapshot: AgentSessionSnapshot, sourceTitle: s
     .join('\n\n')
 }
 
+function WorktreeActionMenu({
+  worktree,
+  canRemove,
+  onOpenTerminal,
+  onOpenCodex,
+  onOpenClaude,
+  onCopyPath,
+  onReveal,
+  onRemove,
+}: {
+  worktree: GitWorktree
+  canRemove: boolean
+  onOpenTerminal(): void
+  onOpenCodex(): void
+  onOpenClaude(): void
+  onCopyPath(): void
+  onReveal(): void
+  onRemove(): void
+}) {
+  const [open, setOpen] = useState(false)
+  const run = (action: () => void) => {
+    action()
+    setOpen(false)
+  }
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-muted/60 hover:text-foreground data-[popup-open]:bg-muted/60 data-[popup-open]:text-foreground"
+        title={`Actions for ${getWorktreeName(worktree)}`}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <MoreHorizontal className="size-3.5" />
+      </PopoverTrigger>
+      <PopoverContent
+        align="end"
+        side="left"
+        sideOffset={8}
+        className="worktree-manager-popover no-drag w-56 gap-0 overflow-hidden p-1"
+        style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}
+        onPointerDown={(event) => event.stopPropagation()}
+        onMouseDown={(event) => event.stopPropagation()}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <Button
+          variant="ghost"
+          className="h-8 w-full justify-start gap-2 px-2 text-left text-[12px] text-foreground/85"
+          onClick={() => run(onOpenTerminal)}
+        >
+          <TerminalSquare className="size-4" />
+          Open terminal
+        </Button>
+        <Button
+          variant="ghost"
+          className="h-8 w-full justify-start gap-2 px-2 text-left text-[12px] text-foreground/85"
+          onClick={() => run(onOpenCodex)}
+        >
+          <AgentIcon agent="codex" className="size-4" size={16} />
+          Open Codex
+        </Button>
+        <Button
+          variant="ghost"
+          className="h-8 w-full justify-start gap-2 px-2 text-left text-[12px] text-foreground/85"
+          onClick={() => run(onOpenClaude)}
+        >
+          <AgentIcon agent="claude" className="size-4" size={16} />
+          Open Claude
+        </Button>
+        <Button
+          variant="ghost"
+          className="h-8 w-full justify-start gap-2 px-2 text-left text-[12px] text-foreground/85"
+          onClick={() => run(onCopyPath)}
+        >
+          <Copy className="size-4" />
+          Copy path
+        </Button>
+        <Button
+          variant="ghost"
+          className="h-8 w-full justify-start gap-2 px-2 text-left text-[12px] text-foreground/85"
+          onClick={() => run(onReveal)}
+        >
+          <FolderOpen className="size-4" />
+          Reveal in Finder
+        </Button>
+        {canRemove ? (
+          <Button
+            variant="ghost"
+            className="h-8 w-full justify-start gap-2 px-2 text-left text-[12px] text-red-300 hover:bg-red-500/10 hover:text-red-200"
+            onClick={() => run(onRemove)}
+          >
+            <Trash2 className="size-4" />
+            Remove worktree
+          </Button>
+        ) : null}
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 export function WorktreeManager({
   terminalId,
   agentWindowId,
   className,
   compact = false,
+  triggerVariant = 'default',
   side = 'top',
   align = 'end',
 }: WorktreeManagerProps) {
@@ -156,6 +336,7 @@ export function WorktreeManager({
 
   const [open, setOpen] = useState(false)
   const [branchName, setBranchName] = useState('')
+  const [search, setSearch] = useState('')
   const [checkoutExistingBranch, setCheckoutExistingBranch] = useState(false)
   const [baseRef, setBaseRef] = useState('')
   const [creating, setCreating] = useState(false)
@@ -173,6 +354,39 @@ export function WorktreeManager({
   const currentLabel = formatWorktreeLocation(currentWorktree, currentCwd) ?? 'Worktrees'
   const nonBare = worktrees.filter((worktree) => !worktree.isBare)
   const mainWorktree = nonBare.find((worktree) => worktree.isMain) ?? nonBare[0] ?? null
+  const branchOptions = useMemo<WorktreeBranchOption[]>(() => {
+    const seen = new Set<string>()
+    const options: WorktreeBranchOption[] = [{ value: '', label: 'HEAD', hint: 'Current commit' }]
+    for (const worktree of nonBare) {
+      if (!worktree.branch || seen.has(worktree.branch)) continue
+      seen.add(worktree.branch)
+      options.push({
+        value: worktree.branch,
+        label: worktree.branch,
+        hint: worktree.isMain ? 'Main worktree' : shortenFsPath(worktree.path),
+      })
+    }
+    return options
+  }, [nonBare])
+  const searchQuery = search.trim().toLowerCase()
+  const filteredWorktrees = nonBare.filter((worktree) => {
+    if (!searchQuery) return true
+    return [
+      getWorktreeName(worktree),
+      worktree.branch,
+      worktree.path,
+      worktree.upstream,
+      worktree.isMain ? 'main' : null,
+      worktree.isDetached ? 'detached' : null,
+      worktree.isMissing ? 'missing' : null,
+      worktree.isDirty ? 'dirty' : null,
+      worktree.prunable ? 'prunable' : null,
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+      .includes(searchQuery)
+  })
 
   useEffect(() => {
     if (open) void refreshWorktrees({ includeStatus: true })
@@ -185,6 +399,7 @@ export function WorktreeManager({
       if (next) hapticNudge()
       if (!next) {
         setBranchName('')
+        setSearch('')
         setCheckoutExistingBranch(false)
         setBaseRef('')
       }
@@ -224,11 +439,23 @@ export function WorktreeManager({
     }
   }
 
+  const openTerminal = (worktree: GitWorktree) => {
+    openTerminalInWorktree(worktree.path)
+    handleOpenChange(false)
+  }
+
   const openAgent = (agent: Extract<AgentName, 'claude' | 'codex'>, worktree: GitWorktree) => {
     openAgentInWorktree(agent, worktree.path, {
       title: agent === 'claude' ? 'Claude Code' : 'Codex',
     })
     handleOpenChange(false)
+  }
+
+  const setCleanup = (worktree: GitWorktree) => {
+    setCleanupTarget(worktree)
+    setForceCleanup(false)
+    setMoveAttachedToMain(Boolean(mainWorktree))
+    setCloseAttached(false)
   }
 
   const moveFocusedAgent = async (worktree: GitWorktree) => {
@@ -271,10 +498,32 @@ export function WorktreeManager({
     handleOpenChange(false)
   }
 
+  const runPrimaryAction = async (worktree: GitWorktree) => {
+    if (terminalId) {
+      await moveTerminalToWorktree(terminalId, worktree.path, {
+        relaunchProcess: true,
+      })
+      hapticSuccess()
+      handleOpenChange(false)
+      return
+    }
+    if (agentWindowId) {
+      await moveFocusedAgent(worktree)
+      return
+    }
+    openTerminal(worktree)
+  }
+
   const pickDir = async () => {
     const dir = await window.cells.app.pickFolder()
     if (dir) setWorktreesDir(dir)
   }
+
+  const primaryActionLabel = terminalId
+    ? 'Move terminal'
+    : agentWindowId
+      ? 'Move or branch agent'
+      : 'Open terminal'
 
   if (!isGitRepo) return null
 
@@ -285,7 +534,9 @@ export function WorktreeManager({
           className={cn(
             compact
               ? 'inline-flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/45 transition-colors hover:bg-muted/40 hover:text-foreground'
-              : 'inline-flex h-6 max-w-56 shrink items-center gap-1.5 rounded-md bg-foreground/5 px-2 text-[10.5px] font-medium text-muted-foreground/75 transition-colors hover:bg-foreground/10 hover:text-foreground',
+              : triggerVariant === 'toolbar'
+                ? 'inline-flex h-6 max-w-40 shrink-0 items-center gap-1 rounded-md bg-foreground/5 px-1.5 text-[10.5px] font-medium text-muted-foreground/75 transition-colors hover:bg-foreground/10 hover:text-foreground'
+                : 'inline-flex h-6 max-w-56 shrink items-center gap-1.5 rounded-md bg-foreground/5 px-2 text-[10.5px] font-medium text-muted-foreground/75 transition-colors hover:bg-foreground/10 hover:text-foreground',
             currentWorktree?.isDirty && 'text-amber-300/90',
             className,
           )}
@@ -294,7 +545,16 @@ export function WorktreeManager({
           <GitBranch className={compact ? 'size-3' : 'size-3 shrink-0'} />
           {!compact ? <span className="truncate">{currentLabel}</span> : null}
         </PopoverTrigger>
-        <PopoverContent side={side} align={align} sideOffset={6} className="w-[520px] gap-0 p-0">
+        <PopoverContent
+          side={side}
+          align={align}
+          sideOffset={6}
+          className="worktree-manager-popover no-drag w-[600px] gap-0 p-0"
+          style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}
+          onPointerDown={(event) => event.stopPropagation()}
+          onMouseDown={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
+        >
           <div className="flex items-center justify-between border-b border-border/35 px-3 py-2">
             <div className="min-w-0">
               <div className="text-[12px] font-semibold text-foreground">Worktrees</div>
@@ -302,9 +562,12 @@ export function WorktreeManager({
                 {activeProjectPath ? shortenFsPath(activeProjectPath) : 'No project path'}
               </div>
             </div>
-            <button
-              className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground/55 transition-colors hover:bg-muted/50 hover:text-foreground"
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              className="text-muted-foreground/55 hover:bg-muted/50 hover:text-foreground"
               title="Refresh worktrees"
+              aria-label="Refresh worktrees"
               onClick={() => void refreshWorktrees({ includeStatus: true })}
             >
               {worktreesLoading ? (
@@ -312,68 +575,35 @@ export function WorktreeManager({
               ) : (
                 <RefreshCw className="size-3.5" />
               )}
-            </button>
+            </Button>
           </div>
 
           <div className="border-b border-border/35 p-2">
-            <div className="flex items-center gap-1.5">
-              <input
-                value={branchName}
-                onChange={(event) => setBranchName(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    event.preventDefault()
-                    void create()
-                  }
-                }}
-                placeholder="new branch name"
-                className="h-8 min-w-0 flex-1 rounded-md border border-border/35 bg-background/45 px-2 text-[12px] text-foreground outline-none placeholder:text-muted-foreground/40 focus:ring-1 focus:ring-primary/35"
+            <div className="flex h-8 items-center gap-2 rounded-lg border border-border/35 bg-background/45 px-2 focus-within:ring-1 focus-within:ring-primary/35">
+              <Search className="size-4 shrink-0 text-muted-foreground/50" />
+              <Input
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Search worktrees by branch, path, or status"
+                className="h-7 min-w-0 flex-1 border-0 bg-transparent px-0 text-[12px] text-foreground shadow-none focus-visible:border-0 focus-visible:ring-0 dark:bg-transparent"
               />
-              <select
-                value={baseRef}
-                onChange={(event) => setBaseRef(event.target.value)}
-                className="h-8 max-w-36 rounded-md border border-border/35 bg-background/45 px-2 text-[11px] text-muted-foreground outline-none"
-                title="Base branch"
-              >
-                <option value="">HEAD</option>
-                {nonBare
-                  .filter((worktree) => worktree.branch)
-                  .map((worktree) => (
-                    <option key={worktree.path} value={worktree.branch ?? ''}>
-                      {worktree.branch}
-                    </option>
-                  ))}
-              </select>
-              <button
-                disabled={!branchName.trim() || creating}
-                onClick={() => void create()}
-                className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-primary px-2.5 text-[11px] font-medium text-primary-foreground transition-opacity disabled:opacity-45"
-              >
-                {creating ? (
-                  <Loader2 className="size-3 animate-spin" />
-                ) : (
-                  <Plus className="size-3" />
-                )}
-                Create
-              </button>
             </div>
-            <label className="mt-1.5 inline-flex items-center gap-1.5 text-[10.5px] text-muted-foreground/70">
-              <input
-                type="checkbox"
-                checked={checkoutExistingBranch}
-                onChange={(event) => setCheckoutExistingBranch(event.target.checked)}
-              />
-              Check out an existing branch instead of creating one
-            </label>
           </div>
 
-          <div className="max-h-72 overflow-y-auto p-1.5">
+          <div className="max-h-80 overflow-y-auto p-1.5">
+            <div className="px-2 py-1.5 text-[11px] font-medium text-muted-foreground">
+              {primaryActionLabel}
+            </div>
             {nonBare.length === 0 ? (
               <div className="px-2 py-6 text-center text-[12px] text-muted-foreground/65">
                 No worktrees found.
               </div>
+            ) : filteredWorktrees.length === 0 ? (
+              <div className="px-2 py-6 text-center text-[12px] text-muted-foreground/65">
+                No worktrees match.
+              </div>
             ) : (
-              nonBare.map((worktree) => {
+              filteredWorktrees.map((worktree) => {
                 const selected = currentWorktree?.path === worktree.path
                 return (
                   <div
@@ -383,100 +613,96 @@ export function WorktreeManager({
                       selected && 'bg-foreground/6',
                     )}
                   >
-                    <GitBranch className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/65" />
-                    <div className="min-w-0 flex-1 space-y-1">
-                      <div className="flex min-w-0 items-center gap-2">
-                        <span className="truncate text-[12.5px] font-medium text-foreground/90">
-                          {getWorktreeName(worktree)}
-                        </span>
-                        {selected ? <Check className="size-3 shrink-0 text-primary/70" /> : null}
-                        <AttachedWindows worktreePath={worktree.path} />
+                    <Button
+                      variant="ghost"
+                      className="h-auto min-w-0 flex-1 justify-start gap-2 px-0 py-0 text-left hover:bg-transparent"
+                      onClick={() => void runPrimaryAction(worktree)}
+                    >
+                      <GitBranch className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/65" />
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <span className="truncate text-[12.5px] font-medium text-foreground/90">
+                            {getWorktreeName(worktree)}
+                          </span>
+                          {selected ? <Check className="size-3 shrink-0 text-primary/70" /> : null}
+                          <AttachedWindows worktreePath={worktree.path} />
+                        </div>
+                        <div className="truncate font-mono text-[10.5px] text-muted-foreground/55">
+                          {shortenFsPath(worktree.path)}
+                        </div>
+                        <WorktreeBadges worktree={worktree} />
                       </div>
-                      <div className="truncate font-mono text-[10.5px] text-muted-foreground/55">
-                        {shortenFsPath(worktree.path)}
-                      </div>
-                      <WorktreeBadges worktree={worktree} />
-                    </div>
-                    <div className="flex shrink-0 items-center gap-0.5 opacity-80 transition-opacity group-hover:opacity-100">
-                      {terminalId ? (
-                        <button
-                          className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground/60 hover:bg-muted/60 hover:text-foreground"
-                          title="Move focused terminal here"
-                          onClick={() => {
-                            void moveTerminalToWorktree(terminalId, worktree.path, {
-                              relaunchProcess: true,
-                            }).then(() => handleOpenChange(false))
-                          }}
-                        >
-                          <MoreHorizontal className="size-3.5" />
-                        </button>
-                      ) : null}
-                      {agentWindowId ? (
-                        <button
-                          className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground/60 hover:bg-muted/60 hover:text-foreground"
-                          title="Move or branch focused agent here"
-                          onClick={() => void moveFocusedAgent(worktree)}
-                        >
-                          <MoreHorizontal className="size-3.5" />
-                        </button>
-                      ) : null}
-                      <button
-                        className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground/60 hover:bg-muted/60 hover:text-foreground"
-                        title="Open terminal here"
-                        onClick={() => {
-                          openTerminalInWorktree(worktree.path)
-                          handleOpenChange(false)
-                        }}
-                      >
-                        <TerminalSquare className="size-3.5" />
-                      </button>
-                      <button
-                        className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground/60 hover:bg-muted/60 hover:text-foreground"
-                        title="Open Codex here"
-                        onClick={() => openAgent('codex', worktree)}
-                      >
-                        <AgentIcon agent="codex" className="size-3.5" size={14} />
-                      </button>
-                      <button
-                        className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground/60 hover:bg-muted/60 hover:text-foreground"
-                        title="Open Claude here"
-                        onClick={() => openAgent('claude', worktree)}
-                      >
-                        <AgentIcon agent="claude" className="size-3.5" size={14} />
-                      </button>
-                      <button
-                        className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground/60 hover:bg-muted/60 hover:text-foreground"
-                        title="Copy path"
-                        onClick={() => void navigator.clipboard.writeText(worktree.path)}
-                      >
-                        <Copy className="size-3.5" />
-                      </button>
-                      <button
-                        className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground/60 hover:bg-muted/60 hover:text-foreground"
-                        title="Reveal in Finder"
-                        onClick={() => void window.cells.app.revealPath(worktree.path)}
-                      >
-                        <FolderOpen className="size-3.5" />
-                      </button>
-                      {!worktree.isMain ? (
-                        <button
-                          className="inline-flex size-6 items-center justify-center rounded-md text-red-300/75 hover:bg-red-500/10 hover:text-red-200"
-                          title="Remove worktree"
-                          onClick={() => {
-                            setCleanupTarget(worktree)
-                            setForceCleanup(false)
-                            setMoveAttachedToMain(Boolean(mainWorktree))
-                            setCloseAttached(false)
-                          }}
-                        >
-                          <Trash2 className="size-3.5" />
-                        </button>
-                      ) : null}
-                    </div>
+                    </Button>
+                    <span className="mt-0.5 hidden shrink-0 text-[10.5px] text-muted-foreground/55 group-hover:inline">
+                      {primaryActionLabel}
+                    </span>
+                    <WorktreeActionMenu
+                      worktree={worktree}
+                      canRemove={!worktree.isMain}
+                      onOpenTerminal={() => openTerminal(worktree)}
+                      onOpenCodex={() => openAgent('codex', worktree)}
+                      onOpenClaude={() => openAgent('claude', worktree)}
+                      onCopyPath={() => void navigator.clipboard.writeText(worktree.path)}
+                      onReveal={() => void window.cells.app.revealPath(worktree.path)}
+                      onRemove={() => setCleanup(worktree)}
+                    />
                   </div>
                 )
               })
             )}
+          </div>
+
+          <div className="border-t border-border/35 p-2">
+            <div className="flex items-center gap-1.5">
+              <Input
+                value={branchName}
+                onChange={(event) => setBranchName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    void create()
+                  }
+                }}
+                placeholder="new branch name"
+                className="h-8 min-w-0 flex-1 rounded-md border-border/35 bg-background/45 px-2 text-[12px] placeholder:text-muted-foreground/40 dark:bg-background/45"
+              />
+              <WorktreeBranchCombobox
+                value={baseRef}
+                options={branchOptions}
+                onValueChange={setBaseRef}
+                className="max-w-36"
+              />
+              <Button
+                disabled={!branchName.trim() || creating}
+                onClick={() => void create()}
+                className="h-8 shrink-0 gap-1.5 px-2.5 text-[11px]"
+              >
+                {creating ? (
+                  <Loader2 className="size-3 animate-spin" />
+                ) : (
+                  <Plus className="size-3" />
+                )}
+                Create
+              </Button>
+            </div>
+            <Button
+              variant="ghost"
+              size="xs"
+              role="checkbox"
+              aria-checked={checkoutExistingBranch}
+              className="mt-1.5 h-6 gap-1.5 px-0 text-[10.5px] font-normal text-muted-foreground/70 hover:bg-transparent hover:text-foreground"
+              onClick={() => setCheckoutExistingBranch((checked) => !checked)}
+            >
+              <span
+                className={cn(
+                  'flex size-3.5 items-center justify-center rounded-[3px] border border-muted-foreground/45',
+                  checkoutExistingBranch && 'border-primary bg-primary text-primary-foreground',
+                )}
+              >
+                {checkoutExistingBranch ? <Check className="size-2.5" /> : null}
+              </span>
+              Check out an existing branch instead of creating one
+            </Button>
           </div>
 
           <div className="space-y-2 border-t border-border/35 p-2">
@@ -489,31 +715,25 @@ export function WorktreeManager({
                   {getWorktreesDir() || 'Default next to repo'}
                 </div>
               </div>
-              <button
-                className="h-7 rounded-md bg-foreground/5 px-2 text-[11px] text-muted-foreground/85 transition-colors hover:bg-foreground/10 hover:text-foreground"
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 bg-foreground/5 px-2 text-[11px] text-muted-foreground/85 hover:bg-foreground/10 hover:text-foreground"
                 onClick={() => void pickDir()}
               >
                 Browse
-              </button>
+              </Button>
             </div>
             <div className="flex items-center gap-2">
               <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/55">
                 Default base
               </span>
-              <select
+              <WorktreeBranchCombobox
                 value={getWorktreeBaseBranch() || ''}
-                onChange={(event) => setWorktreeBaseBranch(event.target.value)}
-                className="h-7 min-w-0 flex-1 rounded-md border border-border/35 bg-background/45 px-2 text-[11px] text-muted-foreground outline-none"
-              >
-                <option value="">HEAD</option>
-                {nonBare
-                  .filter((worktree) => worktree.branch)
-                  .map((worktree) => (
-                    <option key={worktree.path} value={worktree.branch ?? ''}>
-                      {worktree.branch}
-                    </option>
-                  ))}
-              </select>
+                options={branchOptions}
+                onValueChange={setWorktreeBaseBranch}
+                className="min-w-0 flex-1 [&_[data-slot=input-group-control]]:h-7"
+              />
             </div>
           </div>
         </PopoverContent>
@@ -544,53 +764,82 @@ export function WorktreeManager({
               </div>
               {attachedToCleanup.total > 0 ? (
                 <div className="space-y-1.5">
-                  <label className="flex items-center gap-2 text-muted-foreground/85">
-                    <input
-                      type="radio"
-                      checked={moveAttachedToMain}
-                      disabled={!mainWorktree}
-                      onChange={() => {
+                  <Button
+                    variant="ghost"
+                    role="radio"
+                    aria-checked={moveAttachedToMain}
+                    disabled={!mainWorktree}
+                    className="h-7 w-full justify-start gap-2 px-1.5 text-[12px] font-normal text-muted-foreground/85"
+                    onClick={() => {
+                      if (mainWorktree) {
                         setMoveAttachedToMain(true)
                         setCloseAttached(false)
-                      }}
+                      }
+                    }}
+                  >
+                    <span
+                      className={cn(
+                        'size-3.5 rounded-full border border-muted-foreground/45',
+                        moveAttachedToMain &&
+                          'border-primary bg-primary shadow-[inset_0_0_0_3px_var(--background)]',
+                      )}
                     />
                     Move attached windows to main worktree
-                  </label>
-                  <label className="flex items-center gap-2 text-muted-foreground/85">
-                    <input
-                      type="radio"
-                      checked={closeAttached}
-                      onChange={() => {
-                        setMoveAttachedToMain(false)
-                        setCloseAttached(true)
-                      }}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    role="radio"
+                    aria-checked={closeAttached}
+                    className="h-7 w-full justify-start gap-2 px-1.5 text-[12px] font-normal text-muted-foreground/85"
+                    onClick={() => {
+                      setMoveAttachedToMain(false)
+                      setCloseAttached(true)
+                    }}
+                  >
+                    <span
+                      className={cn(
+                        'size-3.5 rounded-full border border-muted-foreground/45',
+                        closeAttached &&
+                          'border-primary bg-primary shadow-[inset_0_0_0_3px_var(--background)]',
+                      )}
                     />
                     Close attached windows
-                  </label>
+                  </Button>
                 </div>
               ) : null}
               {cleanupTarget.isDirty ? (
-                <label className="flex items-center gap-2 rounded-lg border border-amber-400/20 bg-amber-500/10 p-2 text-amber-200">
-                  <input
-                    type="checkbox"
-                    checked={forceCleanup}
-                    onChange={(event) => setForceCleanup(event.target.checked)}
-                  />
+                <Button
+                  variant="ghost"
+                  role="checkbox"
+                  aria-checked={forceCleanup}
+                  className="h-auto w-full justify-start gap-2 rounded-lg border border-amber-400/20 bg-amber-500/10 p-2 text-[12px] font-normal text-amber-200 hover:bg-amber-500/15 hover:text-amber-100"
+                  onClick={() => setForceCleanup((checked) => !checked)}
+                >
+                  <span
+                    className={cn(
+                      'flex size-3.5 items-center justify-center rounded-[3px] border border-amber-200/55',
+                      forceCleanup && 'bg-amber-200 text-background',
+                    )}
+                  >
+                    {forceCleanup ? <Check className="size-2.5" /> : null}
+                  </span>
                   Discard uncommitted changes and remove
-                </label>
+                </Button>
               ) : null}
             </div>
           ) : null}
           <DialogFooter>
-            <button
-              className="h-8 rounded-md px-3 text-[12px] text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+            <Button
+              variant="ghost"
+              className="h-8 px-3 text-[12px] text-muted-foreground hover:bg-muted/50 hover:text-foreground"
               onClick={() => setCleanupTarget(null)}
             >
               Cancel
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="destructive"
               disabled={!canRemoveCleanup || !cleanupTarget}
-              className="h-8 rounded-md bg-red-500/15 px-3 text-[12px] font-medium text-red-200 transition-opacity hover:bg-red-500/20 disabled:opacity-45"
+              className="h-8 px-3 text-[12px]"
               onClick={() => {
                 if (!cleanupTarget) return
                 void removeWorktreeSafely(cleanupTarget.path, {
@@ -604,7 +853,7 @@ export function WorktreeManager({
               }}
             >
               Remove
-            </button>
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
