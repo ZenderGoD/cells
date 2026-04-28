@@ -2097,6 +2097,16 @@ function UpdateSection() {
                 <RefreshCw className="h-2.5 w-2.5" />
                 Restart to update
               </button>
+            ) : status === 'agent-cli-updating' || status === 'agent-cli-updated' ? (
+              <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground/50">
+                <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                Updating CLIs...
+              </span>
+            ) : status === 'agent-cli-complete' || status === 'installing' ? (
+              <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground/50">
+                <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                Installing...
+              </span>
             ) : null}
           </div>
           {status === 'up-to-date' ? (

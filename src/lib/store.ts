@@ -41,6 +41,7 @@ import {
 import {
   STATUS_BAR_HEIGHT,
   DEFAULT_CANVAS_SNAP_MODE,
+  getCanvasViewportSize,
   getCanvasWindows,
   getClosestWindow,
   getDirectionalWindow,
@@ -2110,10 +2111,10 @@ export const useStore = create<StoreState>((set, get) => ({
     const newZ = get().topZIndex + 1
     const { terminals, browsers, agentWindows, focusHistory } = get()
 
-    // Size: fill the viewport minus padding and status bar
-    const width = window.innerWidth - TERMINAL_PAD * 2
-    const height =
-      window.innerHeight - (get().titleBarHidden ? 0 : STATUS_BAR_HEIGHT) - TERMINAL_PAD * 2
+    // Size: fill the actual canvas viewport minus padding.
+    const viewport = getCanvasViewportSize({ titleBarHidden: get().titleBarHidden })
+    const width = viewport.width - TERMINAL_PAD * 2
+    const height = viewport.height - TERMINAL_PAD * 2
 
     // Place to the right of the rightmost *any* window, or at origin.
     let x = TERMINAL_PAD
@@ -2621,8 +2622,9 @@ export const useStore = create<StoreState>((set, get) => ({
     const { terminals, canvas } = get()
     const terminal = terminals.find((t) => t.id === id)
     if (!terminal) return
-    const viewW = window.innerWidth
-    const viewH = window.innerHeight - (get().titleBarHidden ? 0 : STATUS_BAR_HEIGHT)
+    const { width: viewW, height: viewH } = getCanvasViewportSize({
+      titleBarHidden: get().titleBarHidden,
+    })
     get().setCanvasTransform({
       ...canvas,
       x: viewW / 2 - (terminal.x + terminal.width / 2) * canvas.scale,
@@ -2634,8 +2636,9 @@ export const useStore = create<StoreState>((set, get) => ({
     const { browsers, canvas } = get()
     const browser = browsers.find((entry) => entry.id === id)
     if (!browser) return
-    const viewW = window.innerWidth
-    const viewH = window.innerHeight - (get().titleBarHidden ? 0 : STATUS_BAR_HEIGHT)
+    const { width: viewW, height: viewH } = getCanvasViewportSize({
+      titleBarHidden: get().titleBarHidden,
+    })
     get().setCanvasTransform({
       ...canvas,
       x: viewW / 2 - (browser.x + browser.width / 2) * canvas.scale,
@@ -2654,8 +2657,9 @@ export const useStore = create<StoreState>((set, get) => ({
     const focusCounts = shouldBringToFront
       ? { ...state.focusCounts, [id]: (state.focusCounts[id] ?? 0) + 1 }
       : state.focusCounts
-    const viewW = window.innerWidth
-    const viewH = window.innerHeight - (get().titleBarHidden ? 0 : STATUS_BAR_HEIGHT)
+    const { width: viewW, height: viewH } = getCanvasViewportSize({
+      titleBarHidden: state.titleBarHidden,
+    })
     const canvas = getWindowSnapTransform(terminal, viewW, viewH, {
       basePadding: TERMINAL_PAD,
       mode: options?.mode ?? state.snapMode,
@@ -2687,8 +2691,9 @@ export const useStore = create<StoreState>((set, get) => ({
       browsers.find((browser) => browser.id === id) ??
       agentWindows.find((agentWindow) => agentWindow.id === id)
     if (!node) return
-    const viewW = window.innerWidth
-    const viewH = window.innerHeight - (get().titleBarHidden ? 0 : STATUS_BAR_HEIGHT)
+    const { width: viewW, height: viewH } = getCanvasViewportSize({
+      titleBarHidden: get().titleBarHidden,
+    })
     const canvas = getWindowSnapTransform(node, viewW, viewH, {
       basePadding: TERMINAL_PAD,
       mode: 'fill',
@@ -2745,8 +2750,9 @@ export const useStore = create<StoreState>((set, get) => ({
       state.agentWindows.find((agentWindow) => agentWindow.id === id)
     if (!node) return
 
-    const viewW = window.innerWidth
-    const viewH = window.innerHeight - (get().titleBarHidden ? 0 : STATUS_BAR_HEIGHT)
+    const { width: viewW, height: viewH } = getCanvasViewportSize({
+      titleBarHidden: state.titleBarHidden,
+    })
     const scale = Math.max(
       CANVAS_MIN_ZOOM,
       Math.min(
@@ -2981,9 +2987,9 @@ export const useStore = create<StoreState>((set, get) => ({
       focusedBrowserId,
       focusedAgentWindowId,
     } = get()
-    const viewW = window.innerWidth - TERMINAL_PAD * 2
-    const viewH =
-      window.innerHeight - (get().titleBarHidden ? 0 : STATUS_BAR_HEIGHT) - TERMINAL_PAD * 2
+    const viewport = getCanvasViewportSize({ titleBarHidden: get().titleBarHidden })
+    const viewW = viewport.width - TERMINAL_PAD * 2
+    const viewH = viewport.height - TERMINAL_PAD * 2
     if (focusedTerminalId) {
       const t = terminals.find((t) => t.id === focusedTerminalId)
       if (!t) return
@@ -3014,11 +3020,8 @@ export const useStore = create<StoreState>((set, get) => ({
         height: entry.height,
       })),
     ]
-    const nextTransform = getOverviewTransform(
-      allNodes,
-      window.innerWidth,
-      window.innerHeight - (get().titleBarHidden ? 0 : STATUS_BAR_HEIGHT),
-    )
+    const viewport = getCanvasViewportSize({ titleBarHidden: get().titleBarHidden })
+    const nextTransform = getOverviewTransform(allNodes, viewport.width, viewport.height)
     if (!nextTransform) return
 
     set({
@@ -3903,9 +3906,9 @@ export const useStore = create<StoreState>((set, get) => ({
     const { terminals, browsers, agentWindows, focusHistory } = get()
     const savedDefaults =
       get().lastAgentSessionDefaults[agent] ?? DEFAULT_AGENT_SESSION_DEFAULTS[agent]
-    const width = window.innerWidth - TERMINAL_PAD * 2
-    const height =
-      window.innerHeight - (get().titleBarHidden ? 0 : STATUS_BAR_HEIGHT) - TERMINAL_PAD * 2
+    const viewport = getCanvasViewportSize({ titleBarHidden: get().titleBarHidden })
+    const width = viewport.width - TERMINAL_PAD * 2
+    const height = viewport.height - TERMINAL_PAD * 2
 
     let x = TERMINAL_PAD
     const y = TERMINAL_PAD
@@ -4095,8 +4098,9 @@ export const useStore = create<StoreState>((set, get) => ({
     const { agentWindows, canvas } = get()
     const agentWindow = agentWindows.find((entry) => entry.id === id)
     if (!agentWindow) return
-    const viewW = window.innerWidth
-    const viewH = window.innerHeight - (get().titleBarHidden ? 0 : STATUS_BAR_HEIGHT)
+    const { width: viewW, height: viewH } = getCanvasViewportSize({
+      titleBarHidden: get().titleBarHidden,
+    })
     get().setCanvasTransform({
       ...canvas,
       x: viewW / 2 - (agentWindow.x + agentWindow.width / 2) * canvas.scale,
@@ -4115,8 +4119,9 @@ export const useStore = create<StoreState>((set, get) => ({
     const focusCounts = shouldBringToFront
       ? { ...state.focusCounts, [id]: (state.focusCounts[id] ?? 0) + 1 }
       : state.focusCounts
-    const viewW = window.innerWidth
-    const viewH = window.innerHeight - (get().titleBarHidden ? 0 : STATUS_BAR_HEIGHT)
+    const { width: viewW, height: viewH } = getCanvasViewportSize({
+      titleBarHidden: state.titleBarHidden,
+    })
     const canvas = getWindowSnapTransform(agentWindow, viewW, viewH, {
       basePadding: TERMINAL_PAD,
       mode: options?.mode ?? state.snapMode,
@@ -4159,9 +4164,9 @@ export const useStore = create<StoreState>((set, get) => ({
     const newZ = get().topZIndex + 1
     const { terminals, browsers, agentWindows, focusHistory } = get()
 
-    const width = window.innerWidth - TERMINAL_PAD * 2
-    const height =
-      window.innerHeight - (get().titleBarHidden ? 0 : STATUS_BAR_HEIGHT) - TERMINAL_PAD * 2
+    const viewport = getCanvasViewportSize({ titleBarHidden: get().titleBarHidden })
+    const width = viewport.width - TERMINAL_PAD * 2
+    const height = viewport.height - TERMINAL_PAD * 2
 
     // Place to the right of all nodes
     let x = TERMINAL_PAD
@@ -4399,8 +4404,9 @@ export const useStore = create<StoreState>((set, get) => ({
     const focusCounts = shouldBringToFront
       ? { ...state.focusCounts, [id]: (state.focusCounts[id] ?? 0) + 1 }
       : state.focusCounts
-    const viewW = window.innerWidth
-    const viewH = window.innerHeight - (get().titleBarHidden ? 0 : STATUS_BAR_HEIGHT)
+    const { width: viewW, height: viewH } = getCanvasViewportSize({
+      titleBarHidden: state.titleBarHidden,
+    })
     const canvas = getWindowSnapTransform(browser, viewW, viewH, {
       basePadding: TERMINAL_PAD,
       mode: options?.mode ?? state.snapMode,

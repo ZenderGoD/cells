@@ -16,7 +16,7 @@ import { cn } from '@/lib/utils'
 // matching works once the UI has room to show it.
 
 interface UseInlineMentionOptions {
-  inputRef: RefObject<HTMLTextAreaElement | null>
+  inputRef: RefObject<HTMLElement | null>
   cwd?: string | null
 }
 

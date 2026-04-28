@@ -420,12 +420,14 @@ export function resolveThinkingLevelForModel(
 export function cycleAgentModel(
   agent: AgentWindowNode['agent'],
   currentId: string | null | undefined,
+  direction: 1 | -1 = 1,
 ): string | null {
   const models = getCachedModelsSync(agent).filter((m) => m.available !== false)
   if (models.length === 0) return null
   const resolved = resolveAgentModelId(agent, currentId, models, DEFAULT_MODEL[agent])
   const idx = models.findIndex((m) => m.id === resolved)
-  const next = models[(idx + 1) % models.length]
+  const safeIdx = idx < 0 ? 0 : idx
+  const next = models[(safeIdx + direction + models.length) % models.length]
   return next.id
 }
 
@@ -433,6 +435,7 @@ export function cycleThinkingLevel(
   agent: AgentWindowNode['agent'],
   modelId: string | null | undefined,
   currentLevel: AgentThinkingLevel | null | undefined,
+  direction: 1 | -1 = 1,
 ): AgentThinkingLevel | null {
   const models = getCachedModelsSync(agent)
   const model = findModel(models, agent, modelId)
@@ -441,7 +444,8 @@ export function cycleThinkingLevel(
   const effective: AgentThinkingLevel =
     currentLevel && efforts.includes(currentLevel) ? currentLevel : model.defaultEffort
   const idx = efforts.indexOf(effective)
-  return efforts[(idx + 1) % efforts.length]
+  const safeIdx = idx < 0 ? 0 : idx
+  return efforts[(safeIdx + direction + efforts.length) % efforts.length]
 }
 
 export function cyclePermissionMode(

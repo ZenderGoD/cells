@@ -4,7 +4,7 @@ import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
 import { inferAgentFromTitle } from '@/lib/agent-command'
 import {
-  STATUS_BAR_HEIGHT,
+  getCanvasViewportSize,
   getCanvasWindows,
   getViewportRect,
   orderByRecent,
@@ -100,11 +100,8 @@ export function TerminalSwitcher() {
 
   const currentId = focusedTerminalId || focusedBrowserId || focusedAgentWindowId
   const canvasWindows = getCanvasWindows(terminals, browsers, agentWindows)
-  const viewportRect = getViewportRect(
-    canvas,
-    window.innerWidth,
-    window.innerHeight - (titleBarHidden ? 0 : STATUS_BAR_HEIGHT),
-  )
+  const viewportSize = getCanvasViewportSize({ titleBarHidden })
+  const viewportRect = getViewportRect(canvas, viewportSize.width, viewportSize.height)
   const items = (
     tabSwitchMode === 'recent' && focusHistory.length > 0
       ? orderByRecent(chronologicalItems, currentId, focusHistory)

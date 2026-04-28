@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import {
   ArchiveRestore,
@@ -374,6 +374,202 @@ function sanitizeComposerAttachments(paths: string[] | null | undefined): string
   )
 }
 
+const IMAGE_ATTACHMENT_TOKEN_RE = /\[Image\s+\d+\]\s*/gi
+const IMAGE_ATTACHMENT_TOKEN_CAPTURE_RE = /\[Image\s+(\d+)\]/gi
+
+function imageAttachmentToken(index: number) {
+  return `[Image ${index + 1}]`
+}
+
+function stripImageAttachmentTokens(input: string) {
+  return input.replace(IMAGE_ATTACHMENT_TOKEN_RE, '')
+}
+
+function insertTextAtOffset(value: string, offset: number, insertion: string) {
+  const safeOffset = Math.max(0, Math.min(offset, value.length))
+  return `${value.slice(0, safeOffset)}${insertion}${value.slice(safeOffset)}`
+}
+
+function insertImageTokensAtOffset(
+  value: string,
+  offset: number,
+  currentAttachments: string[],
+  paths: string[],
+) {
+  const nextAttachments = sanitizeComposerAttachments([...currentAttachments, ...paths])
+  const tokens = paths
+    .filter(isImagePath)
+    .map((path) => nextAttachments.filter(isImagePath).indexOf(path))
+    .filter((index) => index >= 0)
+    .map(imageAttachmentToken)
+  if (tokens.length === 0) return value
+  return insertTextAtOffset(value, offset, `${tokens.join(' ')} `)
+}
+
+function removeImageTokenForPath(value: string, path: string, currentAttachments: string[]) {
+  const imageIndex = currentAttachments.filter(isImagePath).indexOf(path)
+  if (imageIndex < 0) return value
+  let removed = false
+  return value.replace(IMAGE_ATTACHMENT_TOKEN_CAPTURE_RE, (match, rawIndex: string) => {
+    const tokenIndex = Number.parseInt(rawIndex, 10) - 1
+    if (tokenIndex === imageIndex && !removed) {
+      removed = true
+      return ''
+    }
+    if (tokenIndex > imageIndex) return imageAttachmentToken(tokenIndex - 1)
+    return match
+  })
+}
+
+function createImageChipElement(index: number) {
+  const chip = document.createElement('span')
+  chip.contentEditable = 'false'
+  chip.dataset.imageChipIndex = String(index)
+  chip.className =
+    'inline-flex h-6 items-center gap-1 rounded-[6px] border border-border/35 bg-foreground/6 pl-2 pr-1 text-[12px] font-medium text-foreground/85 align-middle'
+  chip.textContent = `Image ${index + 1}`
+
+  const remove = document.createElement('button')
+  remove.type = 'button'
+  remove.dataset.removeImageChipIndex = String(index)
+  remove.setAttribute('aria-label', `Remove Image ${index + 1}`)
+  remove.className =
+    'ml-0.5 rounded p-0.5 text-muted-foreground/65 transition-colors hover:bg-foreground/10 hover:text-foreground'
+  remove.innerHTML =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>'
+  chip.appendChild(remove)
+  return chip
+}
+
+function renderComposerValueInto(root: HTMLElement, value: string, imageCount: number) {
+  root.textContent = ''
+  let cursor = 0
+  let match: RegExpExecArray | null
+  IMAGE_ATTACHMENT_TOKEN_CAPTURE_RE.lastIndex = 0
+  while ((match = IMAGE_ATTACHMENT_TOKEN_CAPTURE_RE.exec(value))) {
+    if (match.index > cursor) {
+      root.appendChild(document.createTextNode(value.slice(cursor, match.index)))
+    }
+    const index = Number.parseInt(match[1] ?? '', 10) - 1
+    if (index >= 0 && index < imageCount) {
+      root.appendChild(createImageChipElement(index))
+    }
+    cursor = match.index + match[0].length
+  }
+  if (cursor < value.length) {
+    root.appendChild(document.createTextNode(value.slice(cursor)))
+  }
+}
+
+function serializeComposerNode(node: Node): string {
+  if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? ''
+  if (!(node instanceof HTMLElement)) return ''
+  const rawIndex = node.dataset.imageChipIndex
+  if (rawIndex !== undefined) {
+    const index = Number.parseInt(rawIndex, 10)
+    return Number.isFinite(index) ? imageAttachmentToken(index) : ''
+  }
+  if (node.tagName === 'BR') return '\n'
+  let text = ''
+  node.childNodes.forEach((child) => {
+    text += serializeComposerNode(child)
+  })
+  if (node.tagName === 'DIV' || node.tagName === 'P') text += '\n'
+  return text
+}
+
+function serializeComposerElement(root: HTMLElement | null) {
+  if (!root) return ''
+  let text = ''
+  root.childNodes.forEach((child) => {
+    text += serializeComposerNode(child)
+  })
+  return text.replace(/\n$/, '')
+}
+
+function getSerializedLength(node: Node): number {
+  return serializeComposerNode(node).length
+}
+
+function getComposerSelectionOffset(root: HTMLElement | null) {
+  if (!root) return 0
+  const selection = window.getSelection()
+  if (!selection || selection.rangeCount === 0) return serializeComposerElement(root).length
+  const range = selection.getRangeAt(0)
+  if (!root.contains(range.startContainer)) return serializeComposerElement(root).length
+
+  let offset = 0
+  let found = false
+  const visit = (node: Node) => {
+    if (found) return
+    if (node === range.startContainer) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        offset += Math.min(range.startOffset, node.textContent?.length ?? 0)
+      } else {
+        const children = Array.from(node.childNodes).slice(0, range.startOffset)
+        offset += children.reduce((sum, child) => sum + getSerializedLength(child), 0)
+      }
+      found = true
+      return
+    }
+    if (
+      node.nodeType === Node.TEXT_NODE ||
+      (node instanceof HTMLElement && node.dataset.imageChipIndex !== undefined)
+    ) {
+      offset += getSerializedLength(node)
+      return
+    }
+    node.childNodes.forEach(visit)
+  }
+  root.childNodes.forEach(visit)
+  return offset
+}
+
+function setComposerSelectionOffset(root: HTMLElement | null, targetOffset: number) {
+  if (!root) return
+  const selection = window.getSelection()
+  if (!selection) return
+  let remaining = Math.max(0, targetOffset)
+  let targetNode: Node = root
+  let targetNodeOffset = root.childNodes.length
+  let found = false
+
+  const visit = (node: Node) => {
+    if (found) return
+    if (node.nodeType === Node.TEXT_NODE) {
+      const length = node.textContent?.length ?? 0
+      if (remaining <= length) {
+        targetNode = node
+        targetNodeOffset = remaining
+        found = true
+        return
+      }
+      remaining -= length
+      return
+    }
+    if (node instanceof HTMLElement && node.dataset.imageChipIndex !== undefined) {
+      const length = getSerializedLength(node)
+      if (remaining <= length) {
+        const parent = node.parentNode ?? root
+        targetNode = parent
+        targetNodeOffset = Array.from(parent.childNodes).indexOf(node) + 1
+        found = true
+        return
+      }
+      remaining -= length
+      return
+    }
+    node.childNodes.forEach(visit)
+  }
+
+  root.childNodes.forEach(visit)
+  const range = document.createRange()
+  range.setStart(targetNode, targetNodeOffset)
+  range.collapse(true)
+  selection.removeAllRanges()
+  selection.addRange(range)
+}
+
 function useFileThumbnail(path: string, enabled = true, maxHeight = 96) {
   const [url, setUrl] = useState<string | null>(null)
 
@@ -657,6 +853,87 @@ function ComposerImageAttachment({
       >
         <X className="size-3" />
       </button>
+    </div>
+  )
+}
+
+function ComposerRichEditor({
+  editorRef,
+  value,
+  imageAttachments,
+  placeholder,
+  onChange,
+  onKeyDown,
+  onPasteImages,
+  onRemoveImage,
+}: {
+  editorRef: RefObject<HTMLDivElement | null>
+  value: string
+  imageAttachments: string[]
+  placeholder: string
+  onChange: (value: string, cursorPosition: number) => void
+  onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => void
+  onPasteImages: (files: File[], insertOffset: number) => void
+  onRemoveImage: (path: string) => void
+}) {
+  const renderedValueRef = useRef<string | null>(null)
+  const imageCount = imageAttachments.length
+  const empty = stripImageAttachmentTokens(value).length === 0 && imageCount === 0
+
+  useEffect(() => {
+    const root = editorRef.current
+    if (!root) return
+    const current = serializeComposerElement(root)
+    if (current === value && renderedValueRef.current === value) return
+    renderComposerValueInto(root, value, imageCount)
+    renderedValueRef.current = value
+  }, [editorRef, imageCount, value])
+
+  const emitChange = useCallback(() => {
+    const root = editorRef.current
+    const next = serializeComposerElement(root)
+    renderedValueRef.current = next
+    onChange(next, getComposerSelectionOffset(root))
+  }, [editorRef, onChange])
+
+  return (
+    <div className="relative min-h-[72px] px-4 pt-3.5 pb-2">
+      {empty ? (
+        <div className="pointer-events-none absolute left-4 top-3.5 text-[14px] leading-6 text-muted-foreground/55">
+          {placeholder}
+        </div>
+      ) : null}
+      <div
+        ref={editorRef}
+        contentEditable
+        role="textbox"
+        aria-multiline="true"
+        spellCheck={false}
+        suppressContentEditableWarning
+        onInput={emitChange}
+        onKeyDown={onKeyDown}
+        onClick={(event) => {
+          const target = event.target as HTMLElement
+          const button = target.closest<HTMLButtonElement>('[data-remove-image-chip-index]')
+          if (!button) return
+          event.preventDefault()
+          event.stopPropagation()
+          const index = Number.parseInt(button.dataset.removeImageChipIndex ?? '', 10)
+          const path = imageAttachments[index]
+          if (path) onRemoveImage(path)
+        }}
+        onPaste={(event) => {
+          const items = Array.from(event.clipboardData?.items ?? [])
+          const imageFiles = items
+            .filter((item) => item.type.startsWith('image/'))
+            .map((item) => item.getAsFile())
+            .filter((file): file is File => Boolean(file))
+          if (imageFiles.length === 0) return
+          event.preventDefault()
+          onPasteImages(imageFiles, getComposerSelectionOffset(editorRef.current))
+        }}
+        className="min-h-[72px] whitespace-pre-wrap break-words text-[14px] leading-6 text-foreground outline-none [overflow-wrap:anywhere] [&_[data-image-chip-index]]:mx-0.5"
+      />
     </div>
   )
 }
@@ -2102,6 +2379,22 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       ),
     [agentWindow.id],
   )
+  const inputRef = useRef(input)
+  const attachmentsRef = useRef(attachments)
+  const snapshotRef = useRef(snapshot)
+  const windowIdRef = useRef(agentWindow.id)
+  useEffect(() => {
+    inputRef.current = input
+  }, [input])
+  useEffect(() => {
+    attachmentsRef.current = attachments
+  }, [attachments])
+  useEffect(() => {
+    snapshotRef.current = snapshot
+  }, [snapshot])
+  useEffect(() => {
+    windowIdRef.current = agentWindow.id
+  }, [agentWindow.id])
   useEffect(() => {
     const raw = agentWindow.queuedMessages ?? []
     const sanitized = sanitizeQueuedMessages(raw)
@@ -2113,9 +2406,19 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     const raw = agentWindow.composerAttachments ?? []
     const sanitized = sanitizeComposerAttachments(raw)
     if (!areStringArraysEqual(raw, sanitized)) {
-      useStore.getState().syncAgentWindow(agentWindow.id, { composerAttachments: sanitized })
+      useStore.getState().syncAgentWindow(agentWindow.id, {
+        composerAttachments: sanitized,
+      })
     }
-  }, [agentWindow.composerAttachments, agentWindow.id])
+    const nextDraft = agentWindow.composerDraft ?? ''
+    if (nextDraft !== inputRef.current) {
+      inputRef.current = nextDraft
+      const frame = window.requestAnimationFrame(() => {
+        setInput(nextDraft)
+      })
+      return () => window.cancelAnimationFrame(frame)
+    }
+  }, [agentWindow.composerAttachments, agentWindow.composerDraft, agentWindow.id])
   // Only gate resume when the session was actually reconstructed from the
   // persisted snapshot after Cells restarted. Project/window remounts within
   // the same app session should not show the "Continue" banner.
@@ -2285,7 +2588,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const scrollViewportRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<LegendListRef>(null)
   const recentSessionsViewportRef = useRef<HTMLDivElement>(null)
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const textareaRef = useRef<HTMLDivElement>(null)
   const sendScrollTargetRef = useRef<number | null>(null)
   const sendScrollFrameRef = useRef<number | null>(null)
   // Returns the DOM scroll container backing the active LegendList so we can
@@ -2377,9 +2680,9 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     })
     return () => cancelAnimationFrame(frame)
   }, [agentWindow.id, focusedAgentWindowId])
-  // Ctrl+M cycles models, Ctrl+T cycles thinking effort, Shift+Tab cycles
-  // permission mode. Scoped to textarea focus so we don't steal Shift+Tab
-  // from real focus traversal elsewhere in the app.
+  // Ctrl+M cycles models, Ctrl+T cycles thinking effort, and holding Shift
+  // reverses those cycles. Shift+Tab cycles permission mode. Scoped to textarea
+  // focus so we don't steal Shift+Tab from real focus traversal elsewhere.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (focusedAgentWindowId !== agentWindow.id) return
@@ -2387,16 +2690,17 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       if (event.defaultPrevented) return
       if (document.activeElement !== textareaRef.current) return
 
-      const isCtrlOnly = event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey
+      const isCtrlCycleShortcut = event.ctrlKey && !event.metaKey && !event.altKey
       const key = event.key.toLowerCase()
       const editingQueued = editingIndex !== null
 
-      if (isCtrlOnly && key === 'm') {
+      if (isCtrlCycleShortcut && key === 'm') {
         event.preventDefault()
         event.stopPropagation()
         const nextId = cycleAgentModel(
           agentWindow.agent,
           editingQueued ? queuedEditSettings?.model : agentWindow.model,
+          event.shiftKey ? -1 : 1,
         )
         if (nextId) {
           if (editingQueued) updateQueuedEditModel(nextId)
@@ -2405,13 +2709,14 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         return
       }
 
-      if (isCtrlOnly && key === 't') {
+      if (isCtrlCycleShortcut && key === 't') {
         event.preventDefault()
         event.stopPropagation()
         const nextLevel = cycleThinkingLevel(
           agentWindow.agent,
           editingQueued ? queuedEditSettings?.model : agentWindow.model,
           editingQueued ? queuedEditSettings?.thinkingLevel : agentWindow.thinkingLevel,
+          event.shiftKey ? -1 : 1,
         )
         if (nextLevel) {
           if (editingQueued) updateQueuedEditThinking(nextLevel)
@@ -2515,9 +2820,6 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     return () => window.cancelAnimationFrame(id)
   }, [composerOverlayHeight])
 
-  const inputRef = useRef(input)
-  const snapshotRef = useRef(snapshot)
-  const windowIdRef = useRef(agentWindow.id)
   const messageStateRef = useRef(createEmptyStableListState<AgentSessionMessage>())
   const groupStateRef = useRef(createEmptyStableListState<ChatGroup>())
   const pendingSnapshotRef = useRef<AgentSessionSnapshot | null>(null)
@@ -2526,15 +2828,6 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   // transition — that's what flips a window into "done but unviewed" when
   // the user isn't currently looking at it.
   const prevDerivedStatusRef = useRef<AgentWindowStatus | null>(null)
-  useEffect(() => {
-    inputRef.current = input
-  }, [input])
-  useEffect(() => {
-    snapshotRef.current = snapshot
-  }, [snapshot])
-  useEffect(() => {
-    windowIdRef.current = agentWindow.id
-  }, [agentWindow.id])
   useEffect(() => {
     messageStateRef.current = createEmptyStableListState<AgentSessionMessage>()
     groupStateRef.current = createEmptyStableListState<ChatGroup>()
@@ -2898,17 +3191,14 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     agentWindow.title,
   ])
 
-  const attachmentsRef = useRef(attachments)
   const queuedEditRestoreRef = useRef<{ input: string; attachments: string[] } | null>(null)
-  useEffect(() => {
-    attachmentsRef.current = attachments
-  }, [attachments])
 
   const writeComposer = useCallback(
     (value: string, nextAttachments: string[]) => {
       const sanitizedAttachments = sanitizeComposerAttachments(nextAttachments)
-      setInput(value)
-      inputRef.current = value
+      const sanitizedValue = value
+      setInput(sanitizedValue)
+      inputRef.current = sanitizedValue
       setAttachments(sanitizedAttachments)
       attachmentsRef.current = sanitizedAttachments
       const storedWindow = useStore
@@ -2916,11 +3206,14 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         .agentWindows.find((entry) => entry.id === agentWindow.id)
       const storedInput = storedWindow?.composerDraft ?? ''
       const storedAttachments = sanitizeComposerAttachments(storedWindow?.composerAttachments ?? [])
-      if (storedInput === value && areStringArraysEqual(storedAttachments, sanitizedAttachments)) {
+      if (
+        storedInput === sanitizedValue &&
+        areStringArraysEqual(storedAttachments, sanitizedAttachments)
+      ) {
         return
       }
       useStore.getState().syncAgentWindow(agentWindow.id, {
-        composerDraft: value || null,
+        composerDraft: sanitizedValue || null,
         composerAttachments: sanitizedAttachments,
       })
     },
@@ -2931,7 +3224,11 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     try {
       const picked = await window.cells.app.pickFiles()
       if (!picked || picked.length === 0) return
-      writeComposer(inputRef.current, [...attachmentsRef.current, ...picked])
+      const offset = getComposerSelectionOffset(textareaRef.current)
+      writeComposer(
+        insertImageTokensAtOffset(inputRef.current, offset, attachmentsRef.current, picked),
+        [...attachmentsRef.current, ...picked],
+      )
     } catch (err) {
       console.error('[agent-chat] pick files failed', err)
     }
@@ -2941,7 +3238,9 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     (path: string) => {
       setComposerPreviewPath((current) => (current === path ? null : current))
       writeComposer(
-        inputRef.current,
+        isImagePath(path)
+          ? removeImageTokenForPath(inputRef.current, path, attachmentsRef.current)
+          : inputRef.current,
         attachmentsRef.current.filter((candidate) => candidate !== path),
       )
     },
@@ -3066,7 +3365,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       writeComposer(selection.value, attachmentsRef.current)
       window.setTimeout(() => {
         textareaRef.current?.focus()
-        textareaRef.current?.setSelectionRange(selection.cursorPosition, selection.cursorPosition)
+        setComposerSelectionOffset(textareaRef.current, selection.cursorPosition)
       }, 0)
       return true
     },
@@ -3167,18 +3466,13 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const startNewSessionFromComposer = useCallback(async () => {
     const currentSnapshot = snapshotRef.current
     const draft = inputRef.current
-    const selectionStart = textareaRef.current?.selectionStart ?? 0
-    const selectionEnd = textareaRef.current?.selectionEnd ?? 0
-    const hasSelection = selectionEnd > selectionStart
-    const selectedValue = hasSelection ? draft.slice(selectionStart, selectionEnd).trim() : ''
-    const rawValue = selectedValue || draft.trim()
+    const hasSelection = false
+    const rawValue = draft.trim()
     const pinned = [...attachmentsRef.current]
     if (!rawValue && pinned.length === 0) return
 
     const value = rawValue || ATTACHMENTS_ONLY_TEXT
-    const nextDraft = hasSelection
-      ? `${draft.slice(0, selectionStart)}${draft.slice(selectionEnd)}`.trim()
-      : ''
+    const nextDraft = ''
     const store = useStore.getState()
     if (currentSnapshot && currentSnapshot.windowId === agentWindow.id) {
       const titleSource =
@@ -3476,7 +3770,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   ])
 
   const handleKeyDown = useCallback(
-    (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
       if (event.nativeEvent.isComposing || event.keyCode === 229) return
       if (inlineMention.open) {
         const mentionResult = inlineMention.handleKeyDown(event.nativeEvent)
@@ -3561,7 +3855,11 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         }
       }
       if (saved.length > 0) {
-        writeComposer(inputRef.current, [...attachmentsRef.current, ...saved])
+        const offset = getComposerSelectionOffset(textareaRef.current)
+        writeComposer(
+          insertImageTokensAtOffset(inputRef.current, offset, attachmentsRef.current, saved),
+          [...attachmentsRef.current, ...saved],
+        )
       }
     },
     [writeComposer],
@@ -4502,48 +4800,49 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                     ) : null}
                   </div>
                 ) : null}
-                <textarea
-                  ref={textareaRef}
+                <ComposerRichEditor
+                  editorRef={textareaRef}
                   value={input}
-                  onChange={(event) => {
-                    const nextValue = event.target.value
-                    writeComposer(nextValue, attachmentsRef.current)
-                    inlineMention.handleInputChange(
-                      nextValue,
-                      event.target.selectionStart ?? nextValue.length,
-                    )
-                  }}
-                  onKeyDown={handleKeyDown}
-                  onPaste={async (event) => {
-                    const items = Array.from(event.clipboardData?.items ?? [])
-                    const imageItems = items.filter((it) => it.type.startsWith('image/'))
-                    if (imageItems.length === 0) return // fall through to default text paste
-                    event.preventDefault()
-                    const saved: string[] = []
-                    for (const item of imageItems) {
-                      const file = item.getAsFile()
-                      if (!file) continue
-                      const buf = new Uint8Array(await file.arrayBuffer())
-                      const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg')
-                      const name =
-                        file.name && file.name.trim() ? file.name : `clipboard-${Date.now()}.${ext}`
-                      try {
-                        const stored = await window.cells.app.saveTempFile(buf, name)
-                        if (stored) saved.push(stored)
-                      } catch (err) {
-                        console.error('[agent-chat] save pasted image failed', err)
-                      }
-                    }
-                    if (saved.length > 0) {
-                      writeComposer(inputRef.current, [...attachmentsRef.current, ...saved])
-                    }
-                  }}
+                  imageAttachments={composerImageAttachments}
                   placeholder={
                     isEditingQueuedMessage ? 'Edit queued message…' : composerPlaceholder
                   }
-                  spellCheck={false}
-                  rows={Math.min(8, Math.max(3, input.split('\n').length))}
-                  className="block w-full min-h-[72px] resize-none bg-transparent px-4 pt-3.5 pb-2 text-[14px] leading-6 text-foreground placeholder:text-muted-foreground/55 outline-none border-0 focus:outline-none focus-visible:outline-none"
+                  onChange={(nextValue, cursorPosition) => {
+                    writeComposer(nextValue, attachmentsRef.current)
+                    inlineMention.handleInputChange(nextValue, cursorPosition)
+                  }}
+                  onKeyDown={handleKeyDown}
+                  onPasteImages={(files, insertOffset) => {
+                    void (async () => {
+                      const saved: string[] = []
+                      for (const file of files) {
+                        const buf = new Uint8Array(await file.arrayBuffer())
+                        const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg')
+                        const name =
+                          file.name && file.name.trim()
+                            ? file.name
+                            : `clipboard-${Date.now()}.${ext}`
+                        try {
+                          const stored = await window.cells.app.saveTempFile(buf, name)
+                          if (stored) saved.push(stored)
+                        } catch (err) {
+                          console.error('[agent-chat] save pasted image failed', err)
+                        }
+                      }
+                      if (saved.length > 0) {
+                        writeComposer(
+                          insertImageTokensAtOffset(
+                            inputRef.current,
+                            insertOffset,
+                            attachmentsRef.current,
+                            saved,
+                          ),
+                          [...attachmentsRef.current, ...saved],
+                        )
+                      }
+                    })()
+                  }}
+                  onRemoveImage={removeAttachment}
                 />
                 <ComposerImagePreviewDialog
                   path={visibleComposerPreviewPath}

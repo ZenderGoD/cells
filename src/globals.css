@@ -317,11 +317,6 @@ body {
   height: 3px;
 }
 
-*:hover::-webkit-scrollbar {
-  width: 4px;
-  height: 4px;
-}
-
 ::-webkit-scrollbar-track {
   background: transparent;
 }
@@ -445,11 +440,6 @@ textarea[data-ghostty] {
   border-radius: 999px;
   background: var(--border);
   background-clip: padding-box;
-}
-.scrollbar-hover:hover::-webkit-scrollbar-thumb,
-.group:hover .scrollbar-hover::-webkit-scrollbar-thumb {
-  border-width: 0.5px;
-  background: var(--scrollbar-thumb-hover);
 }
 .scrollbar-hover::-webkit-scrollbar-thumb:hover,
 .group:hover .scrollbar-hover::-webkit-scrollbar-thumb:hover {

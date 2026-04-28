@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-const { getOverviewTransform, getWindowSnapTransform } = await import(
+const { getCanvasViewportSize, getOverviewTransform, getWindowSnapTransform } = await import(
   new URL('./canvas-navigation.ts', import.meta.url).href
 )
 
@@ -51,4 +51,39 @@ test('getWindowSnapTransform peek mode leaves extra surrounding canvas visible',
   assert.ok(peek.scale < fill.scale)
   assert.equal(peek.x.toFixed(3), '96.721')
   assert.equal(peek.y.toFixed(3), '78.689')
+})
+
+test('getCanvasViewportSize prefers the rendered canvas stage over window fallback', () => {
+  const originalWindow = globalThis.window
+  const originalDocument = globalThis.document
+
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { innerWidth: 1000, innerHeight: 800 },
+  })
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    value: {
+      querySelector: (selector: string) =>
+        selector === '.canvas-stage'
+          ? { getBoundingClientRect: () => ({ width: 640, height: 360 }) }
+          : null,
+    },
+  })
+
+  try {
+    assert.deepEqual(getCanvasViewportSize({ titleBarHidden: false }), {
+      width: 640,
+      height: 360,
+    })
+  } finally {
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: originalWindow,
+    })
+    Object.defineProperty(globalThis, 'document', {
+      configurable: true,
+      value: originalDocument,
+    })
+  }
 })

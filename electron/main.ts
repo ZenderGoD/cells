@@ -19,6 +19,7 @@ import os from 'os'
 import { randomUUID } from 'crypto'
 import { execFileSync, spawnSync } from 'child_process'
 import { autoUpdater } from 'electron-updater'
+import { updateAgentClisForCellsUpdate } from './agent-cli-updater'
 import { getPickFolderDialogOptions } from './app-dialog-options'
 import { PtyDaemonClient } from './pty-client'
 import { ensureDaemon } from './daemon-lifecycle'
@@ -3856,6 +3857,24 @@ ipcMain.handle('updater:install', () => {
       }
     }
 
+    const cliResults = await updateAgentClisForCellsUpdate((progress) => {
+      if (progress.phase === 'agent-started') {
+        sendUpdateStatus('agent-cli-updating', { agent: progress.agent })
+        return
+      }
+      if (progress.phase === 'agent-finished') {
+        sendUpdateStatus('agent-cli-updated', { result: progress.result })
+        return
+      }
+      if (progress.phase === 'finished') {
+        sendUpdateStatus('agent-cli-complete', { results: progress.results })
+      }
+    })
+    const failedCliUpdates = cliResults.filter((result) => result.status === 'failed')
+    if (failedCliUpdates.length > 0) {
+      console.warn('[updater] agent CLI update failures', failedCliUpdates)
+    }
+    sendUpdateStatus('installing', { agentCliUpdates: cliResults })
     autoUpdater.quitAndInstall()
     return true
   })()

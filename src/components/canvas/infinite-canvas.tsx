@@ -11,7 +11,7 @@ import { motion, useMotionValue, useSpring } from 'motion/react'
 import { hasPrimaryModifier, isPrimaryModifierKey } from '@/lib/keyboard-shortcuts'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
-import { STATUS_BAR_HEIGHT, getCanvasWindows, getViewportRect } from '@/lib/canvas-navigation'
+import { getCanvasViewportSize, getCanvasWindows, getViewportRect } from '@/lib/canvas-navigation'
 import {
   applySelectionDelta,
   createSelectionOrigins,
@@ -138,11 +138,8 @@ export function InfiniteCanvas() {
   const animatedX = reducedMotion ? motionX : springX
   const animatedY = reducedMotion ? motionY : springY
   const animatedScale = reducedMotion ? motionScale : springScale
-  const viewportRect = getViewportRect(
-    transform,
-    window.innerWidth,
-    window.innerHeight - (titleBarHidden ? 0 : STATUS_BAR_HEIGHT),
-  )
+  const viewportSize = getCanvasViewportSize({ titleBarHidden })
+  const viewportRect = getViewportRect(transform, viewportSize.width, viewportSize.height)
   const terminalViewportRect = useMemo(() => {
     const overscan = TERMINAL_VISIBILITY_OVERSCAN_PX / Math.max(transform.scale, MIN_ZOOM)
     return {
@@ -308,8 +305,9 @@ export function InfiniteCanvas() {
     if (windows.length === 0) return
 
     // Find the window with the most overlap with the viewport
-    const viewW = window.innerWidth
-    const viewH = window.innerHeight - (useStore.getState().titleBarHidden ? 0 : STATUS_BAR_HEIGHT)
+    const { width: viewW, height: viewH } = getCanvasViewportSize({
+      titleBarHidden: useStore.getState().titleBarHidden,
+    })
     const viewL = -canvas.x / canvas.scale
     const viewT = -canvas.y / canvas.scale
     const viewR = viewL + viewW / canvas.scale

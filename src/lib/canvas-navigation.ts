@@ -118,6 +118,26 @@ export function getViewportRect(
   }
 }
 
+export function getCanvasViewportSize(options?: { titleBarHidden?: boolean }) {
+  if (typeof window === 'undefined') return { width: 0, height: 0 }
+
+  const fallback = {
+    width: window.innerWidth,
+    height: window.innerHeight - (options?.titleBarHidden ? 0 : STATUS_BAR_HEIGHT),
+  }
+
+  if (typeof document === 'undefined') return fallback
+
+  const canvasStage = document.querySelector<HTMLElement>('.canvas-stage')
+  const rect = canvasStage?.getBoundingClientRect()
+  if (!rect || rect.width <= 0 || rect.height <= 0) return fallback
+
+  return {
+    width: rect.width,
+    height: rect.height,
+  }
+}
+
 export function getViewportCenter(transform: { x: number; y: number; scale: number }) {
   const viewport = getViewportRect(transform)
   return {

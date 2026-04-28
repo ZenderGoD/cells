@@ -108,6 +108,8 @@ const CLAUDE_CONTEXT_1M_BETA = 'context-1m-2025-08-07' as const
 // that's genuinely stuck in a loop.
 const CLAUDE_AUTO_CONTINUE_CAP = 3
 const CLAUDE_IDLE_STREAM_BACKOFF_MS = 250
+const CODEX_INTERRUPT_REQUEST_TIMEOUT_MS = 5_000
+const CODEX_INTERRUPT_GRACE_MS = 30_000
 const AGENT_SESSION_DEBUG = process.env.CELLS_AGENT_SESSION_DEBUG === '1'
 
 // Fold legacy ('safe' / 'allow-all') values from older saved sessions into
@@ -256,6 +258,20 @@ function imageMediaType(filePath: string): 'image/png' | 'image/jpeg' | 'image/g
   if (ext === '.gif') return 'image/gif'
   if (ext === '.webp') return 'image/webp'
   return 'image/png'
+}
+
+const ATTACHMENTS_ONLY_TEXT = '(attached files)'
+
+function imageAttachmentReference(index: number) {
+  return `[Image ${index + 1}]`
+}
+
+function buildImageReferenceLine(paths: string[], text: string) {
+  const missingRefs = paths
+    .map((_p, index) => imageAttachmentReference(index))
+    .filter((ref) => !text.includes(ref))
+  if (missingRefs.length === 0) return ''
+  return missingRefs.join(' ') + '\n\n'
 }
 
 type ClaudeImageMediaType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp'
@@ -602,10 +618,17 @@ function isCodexRecoverableThreadResumeError(error: unknown): boolean {
   return (
     message.includes('thread') &&
     (message.includes('not found') ||
+      message.includes('no rollout found') ||
       message.includes('does not exist') ||
       message.includes('unknown thread') ||
       message.includes('failed to resume'))
   )
+}
+
+function isCodexReconnectMessage(message: string | null | undefined): boolean {
+  const trimmed = message?.trim() ?? ''
+  if (!trimmed) return false
+  return /^reconnecting(?:\.{3}|…)?\s*(?:(\d+)\s*\/\s*(\d+))?$/i.test(trimmed)
 }
 
 function codexQuestionResponse(answers: Record<string, string[]>): {
@@ -2932,7 +2955,11 @@ export class AgentSessionService extends EventEmitter {
       ? nonImageAttachments.map((p) => `[${p}]`).join(' ') + '\n\n'
       : ''
     const userText = visibleInput.trim()
-    const providerText = `${nonImageLine}${rewrittenInput.text}`.trim() || rewrittenInput.text
+    const rewrittenProviderText =
+      rewrittenInput.text.trim() === ATTACHMENTS_ONLY_TEXT ? '' : rewrittenInput.text
+    const imageLine = buildImageReferenceLine(imageAttachments, rewrittenProviderText)
+    const providerText =
+      `${nonImageLine}${imageLine}${rewrittenProviderText}`.trim() || rewrittenProviderText
 
     // Real user turn — reset the auto-continue watchdog so a fresh prompt
     // gets its own three-try budget if it also bottoms out on max_turns.
@@ -3021,8 +3048,8 @@ export class AgentSessionService extends EventEmitter {
     const runtime = this.runtimes.get(windowId)
     log('close', { windowId, hasRuntime: !!runtime })
     if (!runtime) return
-    runtime.closed = true
     if (runtime.kind === 'claude') {
+      runtime.closed = true
       try {
         runtime.session.close()
       } catch {
@@ -3045,12 +3072,24 @@ export class AgentSessionService extends EventEmitter {
       runtime.snapshot.pendingApproval = null
       runtime.pendingQuestion = null
       runtime.snapshot.pendingQuestion = null
+      const interruptedTurn = runtime.turnPromise
+      let interruptAccepted = !runtime.activeTurnId
       if (runtime.activeTurnId && (runtime.providerThreadId || runtime.snapshot.codexThreadId)) {
         try {
-          await runtime.client.request('turn/interrupt', {
-            threadId: runtime.providerThreadId ?? runtime.snapshot.codexThreadId,
-            turnId: runtime.activeTurnId,
-          })
+          interruptAccepted = await Promise.race([
+            runtime.client
+              .request('turn/interrupt', {
+                threadId: runtime.providerThreadId ?? runtime.snapshot.codexThreadId,
+                turnId: runtime.activeTurnId,
+              })
+              .then(() => true),
+            new Promise<boolean>((resolve) =>
+              setTimeout(() => resolve(false), CODEX_INTERRUPT_REQUEST_TIMEOUT_MS),
+            ),
+          ])
+          if (!interruptAccepted) {
+            log('codex.turn.interrupt.request-timeout', { windowId })
+          }
         } catch (err) {
           log('codex.turn.interrupt.error', {
             windowId,
@@ -3058,9 +3097,28 @@ export class AgentSessionService extends EventEmitter {
           })
         }
       }
-      runtime.activeTurnId = null
-      runtime.resolveTurn?.()
-      await runtime.client.close()
+      if (interruptedTurn && interruptAccepted) {
+        const completed = await Promise.race([
+          interruptedTurn.then(() => true).catch(() => true),
+          new Promise<boolean>((resolve) =>
+            setTimeout(() => resolve(false), CODEX_INTERRUPT_GRACE_MS),
+          ),
+        ])
+        if (!completed) {
+          log('codex.turn.interrupt.timeout', { windowId })
+          runtime.activeTurnId = null
+          runtime.resolveTurn?.()
+          runtime.closed = true
+          await runtime.client.close()
+        }
+      } else if (interruptedTurn) {
+        runtime.activeTurnId = null
+        runtime.resolveTurn?.()
+        runtime.closed = true
+        await runtime.client.close()
+      } else {
+        runtime.activeTurnId = null
+      }
     }
     runtime.snapshot.codexPlan = null
     runtime.snapshot.status = 'idle'
@@ -3777,6 +3835,11 @@ export class AgentSessionService extends EventEmitter {
         asNonEmptyString(params?.itemId) ?? asNonEmptyString(asRecord(params?.item)?.id) ?? null,
     })
 
+    if (method !== 'error' && isCodexReconnectMessage(runtime.snapshot.error)) {
+      runtime.snapshot.error = null
+      runtime.snapshot.updatedAt = now()
+    }
+
     if (method === 'thread/started') {
       const thread = asRecord(params?.thread)
       const threadId = asNonEmptyString(thread?.id) ?? asNonEmptyString(params?.threadId)
@@ -3886,6 +3949,19 @@ export class AgentSessionService extends EventEmitter {
         asNonEmptyString(params?.message) ||
         asNonEmptyString(asRecord(params?.error)?.message) ||
         'Codex failed'
+      // Codex emits these while its own stream transport is retrying. The turn is
+      // still alive, so treating them as terminal errors lets queued messages send
+      // into the same active thread before the original turn finishes.
+      if (isCodexReconnectMessage(message)) {
+        runtime.snapshot.error = message
+        if (runtime.turnPromise || runtime.activeTurnId) {
+          runtime.snapshot.status = 'running'
+        } else if (runtime.snapshot.status === 'error') {
+          runtime.snapshot.status = 'idle'
+        }
+        runtime.snapshot.updatedAt = now()
+        return
+      }
       runtime.pendingApproval = null
       runtime.snapshot.pendingApproval = null
       runtime.snapshot.status = 'error'

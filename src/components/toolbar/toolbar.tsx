@@ -28,8 +28,8 @@ import { motion, AnimatePresence, Reorder, useDragControls, useReducedMotion } f
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
 import {
-  STATUS_BAR_HEIGHT,
   getCanvasBounds,
+  getCanvasViewportSize,
   getCanvasWindows,
   getClosestWindow,
   getViewportRect,
@@ -489,11 +489,8 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
   const copyResetRef = useRef<number | null>(null)
   const showCopied = !!focusedBrowser?.url && copiedBrowserId === focusedBrowser.id
   const allWindows = getCanvasWindows(terminals, browsers, agentWindows)
-  const viewportRect = getViewportRect(
-    canvas,
-    window.innerWidth,
-    window.innerHeight - (titleBarHidden ? 0 : STATUS_BAR_HEIGHT),
-  )
+  const viewportSize = getCanvasViewportSize({ titleBarHidden })
+  const viewportRect = getViewportRect(canvas, viewportSize.width, viewportSize.height)
   const overviewBounds = getCanvasBounds([viewportRect, ...allWindows])
   const titleBarOverviewHeight = 38
   const titleBarOverviewWidth = overviewBounds
@@ -1457,6 +1454,34 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
                 >
                   <Loader2 className="w-2.5 h-2.5 animate-spin" />
                   Updating...
+                </motion.span>
+              )}
+              {(updateStatus === 'agent-cli-updating' || updateStatus === 'agent-cli-updated') && (
+                <motion.span
+                  key="update-agent-clis"
+                  layout
+                  initial={reduceMotion ? false : { opacity: 0, x: 8, scale: 0.96 }}
+                  animate={{ opacity: 1, x: 0, scale: 1 }}
+                  exit={reduceMotion ? { opacity: 0 } : { opacity: 0, x: 8, scale: 0.96 }}
+                  transition={{ duration: 0.2, ease: EASE_OUT }}
+                  className="flex shrink-0 items-center gap-1.5 rounded-md border border-border/30 bg-background/40 px-2 py-0.5 text-[10px] text-muted-foreground/65"
+                >
+                  <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                  Updating CLIs...
+                </motion.span>
+              )}
+              {(updateStatus === 'agent-cli-complete' || updateStatus === 'installing') && (
+                <motion.span
+                  key="update-installing"
+                  layout
+                  initial={reduceMotion ? false : { opacity: 0, x: 8, scale: 0.96 }}
+                  animate={{ opacity: 1, x: 0, scale: 1 }}
+                  exit={reduceMotion ? { opacity: 0 } : { opacity: 0, x: 8, scale: 0.96 }}
+                  transition={{ duration: 0.2, ease: EASE_OUT }}
+                  className="flex shrink-0 items-center gap-1.5 rounded-md border border-border/30 bg-background/40 px-2 py-0.5 text-[10px] text-muted-foreground/65"
+                >
+                  <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                  Installing...
                 </motion.span>
               )}
               {updateStatus === 'ready' && (
