@@ -453,6 +453,9 @@ export function CommandPalette() {
   const worktrees = useStore((s) => s.worktrees)
   const focusedTerminalId = useStore((s) => s.focusedTerminalId)
   const focusedAgentWindowId = useStore((s) => s.focusedAgentWindowId)
+  const hasFocusedWindow = useStore(
+    (s) => !!(s.focusedTerminalId || s.focusedBrowserId || s.focusedAgentWindowId),
+  )
   const selectionMode = useStore((s) => s.selectionMode)
   const selectedNodeIds = useStore((s) => s.selectedNodeIds)
   // Always surface all supported agents — the detection heuristic occasionally
@@ -984,9 +987,11 @@ export function CommandPalette() {
             title bar — keep <StatusBar embedded /> and the full bar in
             toolbar.tsx in sync when editing either. Wrapper sits outside
             <Command> but uses bg-popover to match so there is no color seam. */}
-        <div className="min-w-0 overflow-hidden border-b border-border/40 bg-popover">
-          <StatusBar embedded />
-        </div>
+        {hasFocusedWindow ? (
+          <div className="min-w-0 overflow-hidden border-b border-border/40 bg-popover">
+            <StatusBar embedded />
+          </div>
+        ) : null}
         <Command
           data-command-palette-root
           loop

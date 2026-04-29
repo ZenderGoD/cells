@@ -376,6 +376,9 @@ function sanitizeComposerAttachments(paths: string[] | null | undefined): string
 
 const IMAGE_ATTACHMENT_TOKEN_RE = /\[Image\s+\d+\]\s*/gi
 const IMAGE_ATTACHMENT_TOKEN_CAPTURE_RE = /\[Image\s+(\d+)\]/gi
+const USER_IMAGE_TOKEN_CHIP_CLASS =
+  'mx-0.5 inline-flex h-6 max-w-full items-center gap-1.5 rounded-[6px] border border-border/35 bg-background/45 py-0.5 pl-1 text-[12px] font-medium text-foreground/85 shadow-minimal'
+const USER_IMAGE_TOKEN_THUMB_CLASS = 'size-4 shrink-0 rounded-[3px] bg-foreground/10 object-cover'
 
 function imageAttachmentToken(index: number) {
   return `[Image ${index + 1}]`
@@ -430,9 +433,16 @@ function createImageChipElement(index: number) {
   const chip = document.createElement('span')
   chip.contentEditable = 'false'
   chip.dataset.imageChipIndex = String(index)
-  chip.className =
-    'inline-flex h-6 items-center gap-1 rounded-[6px] border border-border/35 bg-foreground/6 pl-2 pr-1 text-[12px] font-medium text-foreground/85 align-middle'
-  chip.textContent = `Image ${index + 1}`
+  chip.className = `${USER_IMAGE_TOKEN_CHIP_CLASS} pr-1 align-[-0.18em]`
+
+  const thumb = document.createElement('span')
+  thumb.className = USER_IMAGE_TOKEN_THUMB_CLASS
+  chip.appendChild(thumb)
+
+  const label = document.createElement('span')
+  label.className = 'truncate'
+  label.textContent = `Image ${index + 1}`
+  chip.appendChild(label)
 
   const remove = document.createElement('button')
   remove.type = 'button'
@@ -740,13 +750,13 @@ function UserImageTokenChip({
       type="button"
       onClick={onPreview}
       disabled={!path}
-      className="mx-0.5 inline-flex h-6 max-w-full items-center gap-1.5 rounded-[6px] border border-border/35 bg-background/45 py-0.5 pl-1 pr-2 align-middle text-[12px] font-medium text-foreground/85 shadow-minimal transition-colors hover:bg-background/65 disabled:pointer-events-none disabled:opacity-70"
+      className={`${USER_IMAGE_TOKEN_CHIP_CLASS} pr-2 align-[-0.18em] transition-colors hover:bg-background/65 disabled:pointer-events-none disabled:opacity-70`}
       title={path ?? label}
     >
       {url ? (
-        <img src={url} alt="" className="size-4 shrink-0 rounded-[3px] object-cover" />
+        <img src={url} alt="" className={USER_IMAGE_TOKEN_THUMB_CLASS} />
       ) : (
-        <span className="size-4 shrink-0 rounded-[3px] bg-foreground/10" />
+        <span className={USER_IMAGE_TOKEN_THUMB_CLASS} />
       )}
       <span className="truncate">{label}</span>
     </button>
