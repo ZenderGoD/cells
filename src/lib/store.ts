@@ -8,6 +8,10 @@ import type {
   BrowserNode,
   CanvasSnapMode,
   CanvasTransform,
+  DwindleForceSplit,
+  DwindleSplitDirection,
+  DwindleLayoutSettings,
+  DwindleLayoutTree,
   GitWorktreeCreateOptions,
   GitWorktree,
   InputPrefix,
@@ -18,6 +22,8 @@ import type {
   TerminalNode,
   TerminalProcessInfo,
   TitleBarPosition,
+  WindowAutoArrangeMode,
+  WindowSection,
 } from '../types'
 import {
   DEFAULT_AGENT_NOTIFICATION_SETTINGS,
@@ -43,9 +49,9 @@ import {
   DEFAULT_CANVAS_SNAP_MODE,
   getCanvasViewportSize,
   getCanvasWindows,
-  getClosestWindow,
   getDirectionalWindow,
   getOverviewTransform,
+  getViewportRect,
   getWindowSnapTransform,
   getWindowCenter,
   getViewportCenter,
@@ -118,6 +124,7 @@ interface StoreState {
   focusedTerminalId: string | null
   focusedBrowserId: string | null
   focusedAgentWindowId: string | null
+  focusedWindowSectionId: string | null
   focusHistory: string[] // stack of recently focused IDs (most recent last)
   focusCounts: Record<string, number> // per-window focus counts for usage ranking
   commandActionCounts: Record<string, number> // per-project catch-all action usage (search, agent-claude, agent-opencode, run, etc.)
@@ -136,6 +143,9 @@ interface StoreState {
   autoUpdate: boolean
   agentNotificationSettings: AgentNotificationSettings
   autoArrangeOnCreate: boolean
+  autoArrangeMode: WindowAutoArrangeMode
+  dwindleLayoutSettings: Required<DwindleLayoutSettings>
+  windowSections: WindowSection[]
   overlayOpen: boolean // true when popover/dialog is open — hides browser native views
   overlayOwners: string[]
   searchEngine: string
@@ -242,6 +252,7 @@ interface StoreState {
   focusTerminal(id: string | null): void
   bringToFront(id: string): void
   togglePin(id: string, type?: 'terminal' | 'browser' | 'agent'): void
+  togglePinSection(id: string): void
   togglePinFocused(): void
   panToTerminal(id: string): void
   panToBrowser(id: string): void
@@ -274,6 +285,7 @@ interface StoreState {
   bringAgentWindowToFront(id: string): void
   panToAgentWindow(id: string): void
   snapToAgentWindow(id: string, options?: { keepScale?: boolean; mode?: CanvasSnapMode }): void
+  snapToWindowSection(id: string, options?: { keepScale?: boolean; mode?: CanvasSnapMode }): void
   syncAgentWindow(id: string, patch: Partial<AgentWindowNode>): void
   snapToTerminal(id: string, options?: { keepScale?: boolean; mode?: CanvasSnapMode }): void
   zoomToFit(id: string): void
@@ -296,6 +308,20 @@ interface StoreState {
   setAutoUpdate(enabled: boolean): void
   setAgentNotificationSettings(settings: Partial<AgentNotificationSettings>): void
   setAutoArrangeOnCreate(enabled: boolean): void
+  setAutoArrangeMode(mode: WindowAutoArrangeMode): void
+  setDwindleLayoutSettings(settings: Partial<DwindleLayoutSettings>): void
+  createWindowSectionFromSelection(): void
+  createWindowSectionFromViewport(): void
+  createWindowSection(): void
+  renameWindowSection(id: string, name: string): void
+  setWindowSectionColor(id: string, color: NonNullable<WindowSection['color']>): void
+  moveWindowSection(id: string, x: number, y: number): void
+  resizeWindowSection(
+    id: string,
+    rect: { x: number; y: number; width: number; height: number },
+  ): void
+  removeWindowSection(id: string): void
+  commitWindowSectionDrag(ids: string[]): void
 
   setCanvasTransform(transform: CanvasTransform): void
   resizeWindowToFitFocused(): void
@@ -335,6 +361,7 @@ interface StoreState {
   confirmPendingClose(skipFuturePrompts?: boolean): void
   restoreLastClosedWindow(): void
   autoArrangeGrid(skipOverview?: boolean): void
+  arrangeDwindleSections(skipOverview?: boolean, splitTargetId?: string | null): void
   reloadFocused(): void
   getAgentCommand(agent: string): string
   getSearchUrl(query: string): string
@@ -404,6 +431,18 @@ const pendingCommands = new Map<string, string>()
 const pendingWorktreePaths = new Map<string, string>()
 const TERMINAL_GAP = 60
 const DEFAULT_CANVAS: CanvasTransform = { x: 0, y: 0, scale: 1 }
+const DEFAULT_AUTO_ARRANGE_MODE: WindowAutoArrangeMode = 'grid'
+const DEFAULT_DWINDLE_LAYOUT_SETTINGS: Required<DwindleLayoutSettings> = {
+  forceSplit: 'auto',
+  preserveSplit: false,
+  useActiveForSplits: true,
+  splitWidthMultiplier: 1,
+  defaultSplitRatio: 1,
+  splitBias: 'directional',
+  gap: 12,
+  padding: 16,
+  animationMs: 300,
+}
 const DEFAULT_SEARCH_ENGINE = 'https://www.google.com/search?q=%s'
 const DEFAULT_HOME_PAGE = ''
 const DEFAULT_CLOSE_UNDO_TIMEOUT_MS = 15000
@@ -579,6 +618,12 @@ function destroyAgentWindowResources(id: string) {
   window.cells.agentSession.dispose(id).catch(() => {})
 }
 
+export const AGENT_WINDOW_RELOAD_EVENT = 'agent-window-reload'
+
+export interface AgentWindowReloadEventDetail {
+  windowId: string
+}
+
 function parkProjectBrowsers(project: Pick<Project, 'browsers'>) {
   for (const browser of project.browsers ?? []) {
     window.cells.browser.park(browser.id).catch(() => {})
@@ -747,6 +792,665 @@ function mapAgentWindowsEverywhere(
   }
 }
 
+type MutableCanvasNode = {
+  id: string
+  type: 'terminal' | 'browser' | 'agent'
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+function normalizeAutoArrangeMode(value: unknown): WindowAutoArrangeMode {
+  return value === 'dwindle' ? 'dwindle' : DEFAULT_AUTO_ARRANGE_MODE
+}
+
+function normalizeDwindleForceSplit(value: unknown): DwindleForceSplit {
+  return value === 'left' || value === 'right' ? value : 'auto'
+}
+
+function normalizeDwindleLayoutSettings(
+  settings?: DwindleLayoutSettings | null,
+): Required<DwindleLayoutSettings> {
+  const ratio =
+    typeof settings?.defaultSplitRatio === 'number' && Number.isFinite(settings.defaultSplitRatio)
+      ? Math.min(1.9, Math.max(0.1, settings.defaultSplitRatio))
+      : DEFAULT_DWINDLE_LAYOUT_SETTINGS.defaultSplitRatio
+  const widthMultiplier =
+    typeof settings?.splitWidthMultiplier === 'number' &&
+    Number.isFinite(settings.splitWidthMultiplier)
+      ? Math.max(0.1, settings.splitWidthMultiplier)
+      : DEFAULT_DWINDLE_LAYOUT_SETTINGS.splitWidthMultiplier
+  const animationMs =
+    typeof settings?.animationMs === 'number' && Number.isFinite(settings.animationMs)
+      ? Math.min(600, Math.max(0, settings.animationMs))
+      : DEFAULT_DWINDLE_LAYOUT_SETTINGS.animationMs
+  const gap =
+    typeof settings?.gap === 'number' && Number.isFinite(settings.gap)
+      ? Math.min(80, Math.max(0, settings.gap))
+      : DEFAULT_DWINDLE_LAYOUT_SETTINGS.gap
+  const padding =
+    typeof settings?.padding === 'number' && Number.isFinite(settings.padding)
+      ? Math.min(120, Math.max(0, settings.padding))
+      : DEFAULT_DWINDLE_LAYOUT_SETTINGS.padding
+
+  return {
+    forceSplit: normalizeDwindleForceSplit(settings?.forceSplit),
+    preserveSplit: settings?.preserveSplit === true,
+    useActiveForSplits: settings?.useActiveForSplits !== false,
+    splitWidthMultiplier: widthMultiplier,
+    defaultSplitRatio: ratio,
+    splitBias: settings?.splitBias === 'current' ? 'current' : 'directional',
+    gap,
+    padding,
+    animationMs,
+  }
+}
+
+function getAllMutableCanvasNodes(
+  state: Pick<StoreState, 'terminals' | 'browsers' | 'agentWindows'>,
+) {
+  return [
+    ...state.terminals.map((terminal) => ({
+      ...terminal,
+      type: 'terminal' as const,
+    })),
+    ...state.browsers
+      .filter((browser) => !browser.pinned)
+      .map((browser) => ({
+        ...browser,
+        type: 'browser' as const,
+      })),
+    ...state.agentWindows.map((agentWindow) => ({
+      ...agentWindow,
+      type: 'agent' as const,
+    })),
+  ]
+}
+
+function getFocusedWindowId(
+  state: Pick<StoreState, 'focusedTerminalId' | 'focusedBrowserId' | 'focusedAgentWindowId'>,
+) {
+  return state.focusedTerminalId ?? state.focusedBrowserId ?? state.focusedAgentWindowId ?? null
+}
+
+function sanitizeDwindleTree(
+  tree: DwindleLayoutTree | null | undefined,
+  validIds: Set<string>,
+): DwindleLayoutTree | null {
+  if (!tree) return null
+  if (tree.type === 'leaf') return validIds.has(tree.id) ? tree : null
+
+  const first = sanitizeDwindleTree(tree.first, validIds)
+  const second = sanitizeDwindleTree(tree.second, validIds)
+  if (first && second) {
+    return {
+      type: 'split',
+      direction: tree.direction === 'vertical' ? 'vertical' : 'horizontal',
+      ratio: Math.min(0.95, Math.max(0.05, tree.ratio)),
+      first,
+      second,
+    }
+  }
+  return first ?? second
+}
+
+function collectDwindleLeafIds(tree: DwindleLayoutTree | null | undefined): string[] {
+  if (!tree) return []
+  if (tree.type === 'leaf') return [tree.id]
+  return [...collectDwindleLeafIds(tree.first), ...collectDwindleLeafIds(tree.second)]
+}
+
+function dwindleTreeContainsId(tree: DwindleLayoutTree | null | undefined, id: string): boolean {
+  if (!tree) return false
+  if (tree.type === 'leaf') return tree.id === id
+  return dwindleTreeContainsId(tree.first, id) || dwindleTreeContainsId(tree.second, id)
+}
+
+function chooseDwindleSplitDirection(
+  rect: Pick<MutableCanvasNode, 'width' | 'height'>,
+  settings: Required<DwindleLayoutSettings>,
+) {
+  return rect.width * settings.splitWidthMultiplier > rect.height ? 'horizontal' : 'vertical'
+}
+
+function insertIntoDwindleTree(
+  tree: DwindleLayoutTree,
+  newId: string,
+  targetId: string,
+  targetRect: Pick<MutableCanvasNode, 'width' | 'height'>,
+  settings: Required<DwindleLayoutSettings>,
+): DwindleLayoutTree {
+  if (tree.type === 'leaf') {
+    if (tree.id !== targetId) return tree
+
+    const newLeaf: DwindleLayoutTree = { type: 'leaf', id: newId }
+    const currentLeaf: DwindleLayoutTree = { type: 'leaf', id: tree.id }
+    const newFirst = settings.forceSplit === 'left'
+    const ratio = settings.defaultSplitRatio / (settings.defaultSplitRatio + 1)
+    const first = newFirst ? newLeaf : currentLeaf
+    const second = newFirst ? currentLeaf : newLeaf
+    const directionalRatio = newFirst ? ratio : 1 - ratio
+    const currentRatio = newFirst ? 1 - ratio : ratio
+
+    return {
+      type: 'split',
+      direction: chooseDwindleSplitDirection(targetRect, settings),
+      ratio: settings.splitBias === 'current' ? currentRatio : directionalRatio,
+      first,
+      second,
+    }
+  }
+
+  return {
+    ...tree,
+    first: insertIntoDwindleTree(tree.first, newId, targetId, targetRect, settings),
+    second: insertIntoDwindleTree(tree.second, newId, targetId, targetRect, settings),
+  }
+}
+
+function reconcileDwindleTree(
+  tree: DwindleLayoutTree | null | undefined,
+  nodes: MutableCanvasNode[],
+  focusedId: string | null,
+  settings: Required<DwindleLayoutSettings>,
+): DwindleLayoutTree | null {
+  if (nodes.length === 0) return null
+
+  const validIds = new Set(nodes.map((node) => node.id))
+  let nextTree = sanitizeDwindleTree(tree, validIds)
+  if (!nextTree) nextTree = { type: 'leaf', id: nodes[0].id }
+
+  const idsInTree = new Set(collectDwindleLeafIds(nextTree))
+  for (const node of nodes) {
+    if (idsInTree.has(node.id)) continue
+    const leafIds = collectDwindleLeafIds(nextTree)
+    const targetId =
+      settings.useActiveForSplits && focusedId && leafIds.includes(focusedId)
+        ? focusedId
+        : leafIds[leafIds.length - 1]
+    const target = nodes.find((candidate) => candidate.id === targetId) ?? nodes[0]
+    nextTree = insertIntoDwindleTree(nextTree, node.id, target.id, target, settings)
+    idsInTree.add(node.id)
+  }
+
+  return nextTree
+}
+
+function getDwindleSplitGap(
+  rect: Pick<MutableCanvasNode, 'width' | 'height'>,
+  direction: DwindleSplitDirection,
+  settings: Required<DwindleLayoutSettings>,
+) {
+  const axisSize = direction === 'horizontal' ? rect.width : rect.height
+  return Math.min(settings.gap, Math.max(0, axisSize - 2))
+}
+
+function splitDwindleRect(
+  rect: { x: number; y: number; width: number; height: number },
+  direction: DwindleSplitDirection,
+  ratio: number,
+  settings: Required<DwindleLayoutSettings>,
+) {
+  const boundedRatio = Math.min(0.95, Math.max(0.05, ratio))
+  const gap = getDwindleSplitGap(rect, direction, settings)
+
+  if (direction === 'horizontal') {
+    const availableWidth = Math.max(1, rect.width - gap)
+    const firstWidth = availableWidth * boundedRatio
+    const secondWidth = availableWidth - firstWidth
+    return {
+      first: { x: rect.x, y: rect.y, width: firstWidth, height: rect.height },
+      second: {
+        x: rect.x + firstWidth + gap,
+        y: rect.y,
+        width: secondWidth,
+        height: rect.height,
+      },
+    }
+  }
+
+  const availableHeight = Math.max(1, rect.height - gap)
+  const firstHeight = availableHeight * boundedRatio
+  const secondHeight = availableHeight - firstHeight
+  return {
+    first: { x: rect.x, y: rect.y, width: rect.width, height: firstHeight },
+    second: {
+      x: rect.x,
+      y: rect.y + firstHeight + gap,
+      width: rect.width,
+      height: secondHeight,
+    },
+  }
+}
+
+function applyDwindleTreeToRects(
+  tree: DwindleLayoutTree | null | undefined,
+  rect: { x: number; y: number; width: number; height: number },
+  output: Map<string, { x: number; y: number; width: number; height: number }>,
+  settings: Required<DwindleLayoutSettings>,
+) {
+  if (!tree) return
+  if (tree.type === 'leaf') {
+    output.set(tree.id, rect)
+    return
+  }
+
+  const ratio = Math.min(0.95, Math.max(0.05, tree.ratio))
+  const direction = settings.preserveSplit
+    ? tree.direction
+    : chooseDwindleSplitDirection(rect, settings)
+  const split = splitDwindleRect(rect, direction, ratio, settings)
+  if (direction === 'horizontal') {
+    applyDwindleTreeToRects(tree.first, split.first, output, settings)
+    applyDwindleTreeToRects(tree.second, split.second, output, settings)
+    return
+  }
+
+  applyDwindleTreeToRects(tree.first, split.first, output, settings)
+  applyDwindleTreeToRects(tree.second, split.second, output, settings)
+}
+
+function getWindowSectionRect(
+  section: Pick<WindowSection, 'x' | 'y' | 'width' | 'height'>,
+  options: { titleBarHidden: boolean },
+) {
+  const viewport = getCanvasViewportSize({ titleBarHidden: options.titleBarHidden })
+  return {
+    x: section.x,
+    y: section.y,
+    width: Math.max(320, section.width ?? viewport.width - TERMINAL_PAD * 2),
+    height: Math.max(220, section.height ?? viewport.height - TERMINAL_PAD * 2),
+  }
+}
+
+function getDwindleLayoutRectForSection(
+  sectionRect: { x: number; y: number; width: number; height: number },
+  settings: Required<DwindleLayoutSettings>,
+) {
+  const maxInset = Math.max(0, Math.min(sectionRect.width, sectionRect.height) / 2 - 1)
+  const inset = Math.min(settings.padding, maxInset)
+  return {
+    x: sectionRect.x + inset,
+    y: sectionRect.y + inset,
+    width: Math.max(1, sectionRect.width - inset * 2),
+    height: Math.max(1, sectionRect.height - inset * 2),
+  }
+}
+
+function getDwindleLeafRect(
+  tree: DwindleLayoutTree | null | undefined,
+  windowId: string,
+  rect: { x: number; y: number; width: number; height: number },
+  settings: Required<DwindleLayoutSettings>,
+): { x: number; y: number; width: number; height: number } | null {
+  if (!tree) return null
+  if (tree.type === 'leaf') return tree.id === windowId ? rect : null
+
+  const direction = settings.preserveSplit
+    ? tree.direction
+    : chooseDwindleSplitDirection(rect, settings)
+  const split = splitDwindleRect(rect, direction, tree.ratio, settings)
+  return (
+    getDwindleLeafRect(tree.first, windowId, split.first, settings) ??
+    getDwindleLeafRect(tree.second, windowId, split.second, settings)
+  )
+}
+
+function updateDwindleSplitForResizeStep(
+  tree: DwindleLayoutTree,
+  windowId: string,
+  rect: { x: number; y: number; width: number; height: number },
+  resized: Pick<MutableCanvasNode, 'width' | 'height'>,
+  targetDirection: DwindleSplitDirection,
+  settings: Required<DwindleLayoutSettings>,
+): { tree: DwindleLayoutTree; updated: boolean } {
+  if (tree.type === 'leaf') return { tree, updated: false }
+
+  const direction = settings.preserveSplit
+    ? tree.direction
+    : chooseDwindleSplitDirection(rect, settings)
+  const firstHasWindow = dwindleTreeContainsId(tree.first, windowId)
+  const secondHasWindow = dwindleTreeContainsId(tree.second, windowId)
+  if (!firstHasWindow && !secondHasWindow) return { tree, updated: false }
+
+  const split = splitDwindleRect(rect, direction, tree.ratio, settings)
+  if (firstHasWindow) {
+    const nextFirst = updateDwindleSplitForResizeStep(
+      tree.first,
+      windowId,
+      split.first,
+      resized,
+      targetDirection,
+      settings,
+    )
+    if (nextFirst.updated) {
+      return {
+        tree: {
+          ...tree,
+          direction,
+          first: nextFirst.tree,
+        },
+        updated: true,
+      }
+    }
+  }
+
+  if (secondHasWindow) {
+    const nextSecond = updateDwindleSplitForResizeStep(
+      tree.second,
+      windowId,
+      split.second,
+      resized,
+      targetDirection,
+      settings,
+    )
+    if (nextSecond.updated) {
+      return {
+        tree: {
+          ...tree,
+          direction,
+          second: nextSecond.tree,
+        },
+        updated: true,
+      }
+    }
+  }
+
+  if (direction === targetDirection) {
+    const axisSize = direction === 'horizontal' ? rect.width : rect.height
+    const gap = getDwindleSplitGap(rect, direction, settings)
+    const availableSize = Math.max(1, axisSize - gap)
+    const desiredSize = direction === 'horizontal' ? resized.width : resized.height
+    const desiredRatio = desiredSize / availableSize
+    const ratio = firstHasWindow ? desiredRatio : 1 - desiredRatio
+
+    return {
+      tree: {
+        ...tree,
+        direction,
+        ratio: Math.min(0.95, Math.max(0.05, ratio)),
+      },
+      updated: true,
+    }
+  }
+
+  return {
+    tree: {
+      ...tree,
+      direction,
+    },
+    updated: false,
+  }
+}
+
+function updateDwindleSplitForResize(
+  tree: DwindleLayoutTree | null | undefined,
+  windowId: string,
+  rect: { x: number; y: number; width: number; height: number },
+  resized: Pick<MutableCanvasNode, 'width' | 'height'>,
+  targetDirection: DwindleSplitDirection,
+  settings: Required<DwindleLayoutSettings>,
+): DwindleLayoutTree | null {
+  if (!tree) return null
+  return updateDwindleSplitForResizeStep(tree, windowId, rect, resized, targetDirection, settings)
+    .tree
+}
+
+function getDwindleSectionResizePatch(
+  state: Pick<
+    StoreState,
+    | 'windowSections'
+    | 'terminals'
+    | 'browsers'
+    | 'agentWindows'
+    | 'focusedTerminalId'
+    | 'focusedBrowserId'
+    | 'focusedAgentWindowId'
+    | 'titleBarHidden'
+    | 'dwindleLayoutSettings'
+  >,
+  windowId: string,
+  width: number,
+  height: number,
+) {
+  const sectionIndex = state.windowSections.findIndex((section) =>
+    section.windowIds.includes(windowId),
+  )
+  if (sectionIndex < 0) return null
+
+  const allNodes = getAllMutableCanvasNodes(state)
+  const nodeById = new Map(allNodes.map((node) => [node.id, node]))
+  const section = state.windowSections[sectionIndex]
+  const sectionNodes = section.windowIds
+    .map((id) => nodeById.get(id))
+    .filter(Boolean) as MutableCanvasNode[]
+  if (sectionNodes.length === 0) return null
+
+  const settings = normalizeDwindleLayoutSettings(state.dwindleLayoutSettings)
+  const focusedId = getFocusedWindowId(state)
+  const tree = reconcileDwindleTree(
+    section.layoutTree,
+    sectionNodes,
+    windowId || focusedId,
+    settings,
+  )
+  if (!tree) return null
+
+  if (sectionNodes.length < 2) {
+    return state.windowSections.map((candidate, index) =>
+      index === sectionIndex
+        ? {
+            ...candidate,
+            windowIds: collectDwindleLeafIds(tree),
+            layoutTree: tree,
+          }
+        : candidate,
+    )
+  }
+
+  const sectionRect = getWindowSectionRect(section, { titleBarHidden: state.titleBarHidden })
+  const layoutRect = getDwindleLayoutRectForSection(sectionRect, settings)
+  const currentRect = getDwindleLeafRect(tree, windowId, layoutRect, settings)
+  const targetDirection =
+    currentRect && Math.abs(height - currentRect.height) > Math.abs(width - currentRect.width)
+      ? 'vertical'
+      : 'horizontal'
+  const nextTree = updateDwindleSplitForResize(
+    tree,
+    windowId,
+    layoutRect,
+    { width, height },
+    targetDirection,
+    settings,
+  )
+  if (!nextTree) return null
+
+  return state.windowSections.map((candidate, index) =>
+    index === sectionIndex
+      ? {
+          ...candidate,
+          windowIds: collectDwindleLeafIds(nextTree),
+          layoutTree: nextTree,
+        }
+      : candidate,
+  )
+}
+
+function getDefaultSectionSize(options: { titleBarHidden: boolean }) {
+  const viewport = getCanvasViewportSize({ titleBarHidden: options.titleBarHidden })
+  return {
+    width: Math.max(320, viewport.width - TERMINAL_PAD * 2),
+    height: Math.max(220, viewport.height - TERMINAL_PAD * 2),
+  }
+}
+
+function getSectionSnapTransform(
+  section: { x: number; y: number; width: number; height: number },
+  canvas: CanvasTransform,
+  viewWidth: number,
+  viewHeight: number,
+  options?: { keepScale?: boolean },
+) {
+  const scale = options?.keepScale ? canvas.scale : 1
+  const isLargerThanViewport =
+    section.width * scale > viewWidth || section.height * scale > viewHeight
+
+  if (isLargerThanViewport) {
+    return {
+      x: -section.x * scale,
+      y: -section.y * scale,
+      scale,
+    }
+  }
+
+  return {
+    x: viewWidth / 2 - (section.x + section.width / 2) * scale,
+    y: viewHeight / 2 - (section.y + section.height / 2) * scale,
+    scale,
+  }
+}
+
+function getCanvasTransformWithRectInView(
+  rect: { x: number; y: number; width: number; height: number },
+  canvas: CanvasTransform,
+  viewWidth: number,
+  viewHeight: number,
+  padding = TERMINAL_PAD,
+) {
+  const scale = canvas.scale
+  const pad = padding / scale
+  const viewLeft = -canvas.x / scale
+  const viewTop = -canvas.y / scale
+  const viewRight = viewLeft + viewWidth / scale
+  const viewBottom = viewTop + viewHeight / scale
+  let nextLeft = viewLeft
+  let nextTop = viewTop
+
+  if (rect.width + pad * 2 > viewWidth / scale) {
+    nextLeft = rect.x - pad
+  } else if (rect.x < viewLeft + pad) {
+    nextLeft = rect.x - pad
+  } else if (rect.x + rect.width > viewRight - pad) {
+    nextLeft = rect.x + rect.width + pad - viewWidth / scale
+  }
+
+  if (rect.height + pad * 2 > viewHeight / scale) {
+    nextTop = rect.y - pad
+  } else if (rect.y < viewTop + pad) {
+    nextTop = rect.y - pad
+  } else if (rect.y + rect.height > viewBottom - pad) {
+    nextTop = rect.y + rect.height + pad - viewHeight / scale
+  }
+
+  return {
+    x: -nextLeft * scale,
+    y: -nextTop * scale,
+    scale,
+  }
+}
+
+function getClosestCanvasRect<T extends { x: number; y: number; width: number; height: number }>(
+  targets: T[],
+  point: { x: number; y: number },
+) {
+  let best: T | null = null
+  let bestDistance = Infinity
+
+  for (const target of targets) {
+    const centerX = target.x + target.width / 2
+    const centerY = target.y + target.height / 2
+    const dx = centerX - point.x
+    const dy = centerY - point.y
+    const distance = dx * dx + dy * dy
+    if (distance < bestDistance) {
+      best = target
+      bestDistance = distance
+    }
+  }
+
+  return best
+}
+
+function getWindowSectionSnapTargets(
+  sections: WindowSection[],
+  options: { titleBarHidden: boolean },
+) {
+  return sections.map((section) => ({
+    id: section.id,
+    type: 'section' as const,
+    title: section.name,
+    ...getWindowSectionRect(section, options),
+  }))
+}
+
+function assignWindowToFocusedSection(
+  sections: WindowSection[],
+  windowId: string,
+  focusedWindowId: string | null,
+  focusedSectionId?: string | null,
+) {
+  const targetSection =
+    (focusedSectionId ? sections.find((section) => section.id === focusedSectionId) : null) ??
+    (focusedWindowId
+      ? sections.find((section) => section.windowIds.includes(focusedWindowId))
+      : null)
+  if (!targetSection) return { sections, sectionId: null as string | null }
+
+  return {
+    sectionId: targetSection.id,
+    sections: sections.map((section) => {
+      const windowIds = section.windowIds.filter((id) => id !== windowId)
+      if (section.id !== targetSection.id) {
+        return {
+          ...section,
+          windowIds,
+          layoutTree: sanitizeDwindleTree(section.layoutTree, new Set(windowIds)),
+        }
+      }
+      return {
+        ...section,
+        windowIds: windowIds.includes(windowId) ? windowIds : [...windowIds, windowId],
+      }
+    }),
+  }
+}
+
+function getFocusedSectionWindowSnap(
+  state: Pick<
+    StoreState,
+    'focusedWindowSectionId' | 'windowSections' | 'titleBarHidden' | 'canvas'
+  >,
+  windowId: string,
+  windowRect: { x: number; y: number; width: number; height: number },
+  viewWidth: number,
+  viewHeight: number,
+) {
+  const focusedSection = state.focusedWindowSectionId
+    ? state.windowSections.find((entry) => entry.id === state.focusedWindowSectionId)
+    : null
+  const section =
+    focusedSection?.windowIds.includes(windowId) === true
+      ? focusedSection
+      : state.windowSections.find((entry) => entry.windowIds.includes(windowId))
+  if (!section) return null
+
+  const sectionRect = getWindowSectionRect(section, { titleBarHidden: state.titleBarHidden })
+  const sectionIsLargerThanViewport =
+    sectionRect.width > viewWidth || sectionRect.height > viewHeight
+
+  return {
+    sectionId: section.id,
+    canvas: sectionIsLargerThanViewport
+      ? getCanvasTransformWithRectInView(windowRect, state.canvas, viewWidth, viewHeight)
+      : getSectionSnapTransform(sectionRect, state.canvas, viewWidth, viewHeight),
+  }
+}
+
+function getSectionIdForWindow(sections: WindowSection[], windowId: string) {
+  return sections.find((section) => section.windowIds.includes(windowId))?.id ?? null
+}
+
 function pushFocusHistory(history: string[], id: string) {
   const next = history.filter((entry) => entry !== id)
   next.push(id)
@@ -868,6 +1572,9 @@ function snapshotActiveProject(state: StoreState): Project[] {
           focusCounts: state.focusCounts,
           commandActionCounts: state.commandActionCounts,
           autoArrangeOnCreate: state.autoArrangeOnCreate,
+          autoArrangeMode: state.autoArrangeMode,
+          dwindleLayoutSettings: state.dwindleLayoutSettings,
+          windowSections: state.windowSections,
         }
       : p,
   )
@@ -907,10 +1614,14 @@ function projectToWorkingState(project: Project, preserveRuntime = false) {
     focusedTerminalId: focused.focusedTerminalId,
     focusedBrowserId: focused.focusedBrowserId,
     focusedAgentWindowId: focused.focusedAgentWindowId,
+    focusedWindowSectionId: null,
     focusHistory: [] as string[],
     focusCounts: (project.focusCounts ?? {}) as Record<string, number>,
     commandActionCounts: (project.commandActionCounts ?? {}) as Record<string, number>,
     autoArrangeOnCreate: project.autoArrangeOnCreate ?? false,
+    autoArrangeMode: normalizeAutoArrangeMode(project.autoArrangeMode),
+    dwindleLayoutSettings: normalizeDwindleLayoutSettings(project.dwindleLayoutSettings),
+    windowSections: project.windowSections ?? [],
   }
 }
 
@@ -937,6 +1648,7 @@ export const useStore = create<StoreState>((set, get) => ({
   focusedTerminalId: null,
   focusedBrowserId: null,
   focusedAgentWindowId: null,
+  focusedWindowSectionId: null,
   focusHistory: [],
   focusCounts: {},
   commandActionCounts: {},
@@ -955,6 +1667,9 @@ export const useStore = create<StoreState>((set, get) => ({
   autoUpdate: true,
   agentNotificationSettings: DEFAULT_AGENT_NOTIFICATION_SETTINGS,
   autoArrangeOnCreate: false,
+  autoArrangeMode: DEFAULT_AUTO_ARRANGE_MODE,
+  dwindleLayoutSettings: DEFAULT_DWINDLE_LAYOUT_SETTINGS,
+  windowSections: [],
   overlayOpen: false,
   overlayOwners: [],
   searchEngine: DEFAULT_SEARCH_ENGINE,
@@ -1197,6 +1912,12 @@ export const useStore = create<StoreState>((set, get) => ({
           set((s) => ({
             agentWindows: s.agentWindows.map((a) => (a.id === id ? { ...a, pinned: false } : a)),
           }))
+        } else if (type === 'section') {
+          set((s) => ({
+            windowSections: s.windowSections.map((section) =>
+              section.id === id ? { ...section, pinned: false } : section,
+            ),
+          }))
         } else {
           set((s) => ({
             browsers: s.browsers.map((browser) =>
@@ -1244,6 +1965,15 @@ export const useStore = create<StoreState>((set, get) => ({
                 : a,
             ),
           }))
+        } else if (type === 'section') {
+          set((s) => ({
+            windowSections: s.windowSections.map((section) =>
+              section.id === id
+                ? { ...section, width: Math.max(320, width), height: Math.max(220, height) }
+                : section,
+            ),
+          }))
+          get().arrangeDwindleSections(true)
         } else {
           set((s) => ({
             browsers: s.browsers.map((b) =>
@@ -1330,9 +2060,16 @@ export const useStore = create<StoreState>((set, get) => ({
         ) {
           didStripLegacyProjectSettings = true
         }
-        return rest.autoArrangeOnCreate == null && ps.autoArrangeOnCreate != null
-          ? { ...rest, autoArrangeOnCreate: ps.autoArrangeOnCreate }
-          : rest
+        const migrated =
+          rest.autoArrangeOnCreate == null && ps.autoArrangeOnCreate != null
+            ? { ...rest, autoArrangeOnCreate: ps.autoArrangeOnCreate }
+            : rest
+        return {
+          ...migrated,
+          autoArrangeMode: normalizeAutoArrangeMode(migrated.autoArrangeMode),
+          dwindleLayoutSettings: normalizeDwindleLayoutSettings(migrated.dwindleLayoutSettings),
+          windowSections: migrated.windowSections ?? [],
+        }
       })
       const projectLinkSettings = sanitizeProjectLinkSettings(
         projects,
@@ -2133,6 +2870,7 @@ export const useStore = create<StoreState>((set, get) => ({
     const id = nanoid(8)
     const newZ = get().topZIndex + 1
     const { terminals, browsers, agentWindows, focusHistory } = get()
+    const previousFocusedId = getFocusedWindowId(get())
 
     // Size: fill the actual canvas viewport minus padding.
     const viewport = getCanvasViewportSize({ titleBarHidden: get().titleBarHidden })
@@ -2169,8 +2907,28 @@ export const useStore = create<StoreState>((set, get) => ({
       focusedAgentWindowId: null,
       focusHistory: pushFocusHistory(focusHistory, id),
     }))
-    if (get().autoArrangeOnCreate) {
-      get().autoArrangeGrid(true)
+    const sectionAssignment =
+      get().windowSections.length > 0
+        ? assignWindowToFocusedSection(
+            get().windowSections,
+            id,
+            previousFocusedId,
+            get().focusedWindowSectionId,
+          )
+        : { sections: get().windowSections, sectionId: null as string | null }
+    if (sectionAssignment.sectionId) {
+      set({ windowSections: sectionAssignment.sections })
+      get().arrangeDwindleSections(true, previousFocusedId)
+      set({
+        focusedTerminalId: id,
+        focusedBrowserId: null,
+        focusedAgentWindowId: null,
+        canvas: { ...get().canvas, scale: 1 },
+      })
+      get().snapToWindowSection(sectionAssignment.sectionId)
+    } else if (get().autoArrangeOnCreate) {
+      if (get().autoArrangeMode === 'dwindle') get().arrangeDwindleSections(true)
+      else get().autoArrangeGrid(true)
       // Stay focused on the new terminal — no overview zoom
       set({
         focusedTerminalId: id,
@@ -2377,6 +3135,7 @@ export const useStore = create<StoreState>((set, get) => ({
     clearPendingCloseTimer(id)
     destroyTerminalResources(id)
     const state = get()
+    const removedSectionId = getSectionIdForWindow(state.windowSections, id)
     const remaining = state.terminals.filter((t) => t.id !== id)
     const history = state.focusHistory.filter((h) => h !== id)
     const wasFocused = state.focusedTerminalId === id
@@ -2384,10 +3143,28 @@ export const useStore = create<StoreState>((set, get) => ({
       terminals: remaining,
       focusHistory: history,
       focusedTerminalId: wasFocused ? null : state.focusedTerminalId,
+      windowSections: state.windowSections.map((section) => ({
+        ...section,
+        windowIds: section.windowIds.filter((windowId) => windowId !== id),
+        layoutTree: sanitizeDwindleTree(
+          section.layoutTree,
+          new Set(section.windowIds.filter((windowId) => windowId !== id)),
+        ),
+      })),
       pendingClosedWindows: state.pendingClosedWindows.filter((entry) => entry.id !== id),
       pendingCloseDialog:
         state.pendingCloseDialog?.target.id === id ? null : state.pendingCloseDialog,
     })
+    if (removedSectionId) {
+      set((current) => ({
+        focusedWindowSectionId: current.windowSections.some(
+          (section) => section.id === removedSectionId && section.windowIds.length > 0,
+        )
+          ? removedSectionId
+          : null,
+      }))
+      get().arrangeDwindleSections(true)
+    }
     if (wasFocused) {
       const previousId = getPreviousWindowId(history, remaining, state.browsers, state.agentWindows)
       if (previousId) {
@@ -2455,6 +3232,7 @@ export const useStore = create<StoreState>((set, get) => ({
           focusedTerminalId: id,
           focusedBrowserId: null,
           focusedAgentWindowId: null,
+          focusedWindowSectionId: getSectionIdForWindow(get().windowSections, id),
           focusHistory: history,
           focusCounts: counts,
           focusedTerminalSince: Date.now(),
@@ -2465,6 +3243,7 @@ export const useStore = create<StoreState>((set, get) => ({
         focusedTerminalId: id,
         focusedBrowserId: null,
         focusedAgentWindowId: null,
+        focusedWindowSectionId: id ? getSectionIdForWindow(get().windowSections, id) : null,
         focusedTerminalSince: id ? Date.now() : 0,
       })
     }
@@ -2532,15 +3311,56 @@ export const useStore = create<StoreState>((set, get) => ({
     get().persist()
   },
 
+  togglePinSection(id) {
+    const state = get()
+    const section = state.windowSections.find((entry) => entry.id === id)
+    if (!section) return
+
+    const rect = getWindowSectionRect(section, { titleBarHidden: state.titleBarHidden })
+    const screenX = rect.x * state.canvas.scale + state.canvas.x
+    const screenY = rect.y * state.canvas.scale + state.canvas.y
+    const bounds = {
+      x: screenX,
+      y: screenY,
+      width: rect.width,
+      height: rect.height,
+    }
+
+    if (section.pinned) {
+      void window.cells.app.unpinWindow(id)
+      set((s) => ({
+        windowSections: s.windowSections.map((entry) =>
+          entry.id === id ? { ...entry, pinned: false } : entry,
+        ),
+      }))
+    } else {
+      set((s) => ({
+        windowSections: s.windowSections.map((entry) =>
+          entry.id === id ? { ...entry, pinned: true } : entry,
+        ),
+      }))
+      void window.cells.app.pinWindow(id, 'section', bounds)
+    }
+    get().persist()
+  },
+
   togglePinFocused() {
-    const { focusedTerminalId, focusedBrowserId, focusedAgentWindowId } = get()
-    if (focusedTerminalId) get().togglePin(focusedTerminalId, 'terminal')
+    const { focusedTerminalId, focusedBrowserId, focusedAgentWindowId, focusedWindowSectionId } =
+      get()
+    if (
+      focusedWindowSectionId &&
+      !focusedTerminalId &&
+      !focusedBrowserId &&
+      !focusedAgentWindowId
+    ) {
+      get().togglePinSection(focusedWindowSectionId)
+    } else if (focusedTerminalId) get().togglePin(focusedTerminalId, 'terminal')
     else if (focusedBrowserId) get().togglePin(focusedBrowserId, 'browser')
     else if (focusedAgentWindowId) get().togglePin(focusedAgentWindowId, 'agent')
   },
 
   reloadFocused() {
-    const { focusedTerminalId, focusedBrowserId } = get()
+    const { focusedTerminalId, focusedBrowserId, focusedAgentWindowId } = get()
     if (focusedTerminalId) {
       const terminal = get().terminals.find((candidate) => candidate.id === focusedTerminalId)
       if (terminal?.exited) {
@@ -2550,11 +3370,22 @@ export const useStore = create<StoreState>((set, get) => ({
       }
     } else if (focusedBrowserId) {
       window.cells.browser.reload(focusedBrowserId)
+    } else if (focusedAgentWindowId) {
+      window.dispatchEvent(
+        new CustomEvent<AgentWindowReloadEventDetail>(AGENT_WINDOW_RELOAD_EVENT, {
+          detail: { windowId: focusedAgentWindowId },
+        }),
+      )
     }
   },
 
   moveTerminal(id, x, y) {
-    if (get().autoArrangeOnCreate) {
+    if (getSectionIdForWindow(get().windowSections, id)) {
+      get().arrangeDwindleSections(true, id)
+      return
+    }
+
+    if (get().autoArrangeOnCreate && get().autoArrangeMode === 'grid') {
       get().setAutoArrangeOnCreate(false)
       showToast('Auto-arrange disabled', 'info')
     }
@@ -2567,7 +3398,7 @@ export const useStore = create<StoreState>((set, get) => ({
   moveCanvasNodes(updates) {
     if (updates.length === 0) return
 
-    if (get().autoArrangeOnCreate) {
+    if (get().autoArrangeOnCreate && get().autoArrangeMode === 'grid') {
       get().setAutoArrangeOnCreate(false)
       showToast('Auto-arrange disabled', 'info')
     }
@@ -2613,6 +3444,13 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   resizeTerminal(id, width, height) {
+    const sectionResize = getDwindleSectionResizePatch(get(), id, width, height)
+    if (sectionResize) {
+      set({ windowSections: sectionResize })
+      get().arrangeDwindleSections(true, id)
+      return
+    }
+
     set((s) => ({
       terminals: s.terminals.map((t) => (t.id === id ? { ...t, width, height } : t)),
     }))
@@ -2642,30 +3480,42 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   panToTerminal(id) {
-    const { terminals, canvas } = get()
-    const terminal = terminals.find((t) => t.id === id)
+    const state = get()
+    const terminal = state.terminals.find((t) => t.id === id)
     if (!terminal) return
     const { width: viewW, height: viewH } = getCanvasViewportSize({
-      titleBarHidden: get().titleBarHidden,
+      titleBarHidden: state.titleBarHidden,
     })
+    const sectionSnap = getFocusedSectionWindowSnap(state, id, terminal, viewW, viewH)
+    if (sectionSnap) {
+      set({ focusedWindowSectionId: sectionSnap.sectionId })
+      get().setCanvasTransform(sectionSnap.canvas)
+      return
+    }
     get().setCanvasTransform({
-      ...canvas,
-      x: viewW / 2 - (terminal.x + terminal.width / 2) * canvas.scale,
-      y: viewH / 2 - (terminal.y + terminal.height / 2) * canvas.scale,
+      ...state.canvas,
+      x: viewW / 2 - (terminal.x + terminal.width / 2) * state.canvas.scale,
+      y: viewH / 2 - (terminal.y + terminal.height / 2) * state.canvas.scale,
     })
   },
 
   panToBrowser(id) {
-    const { browsers, canvas } = get()
-    const browser = browsers.find((entry) => entry.id === id)
+    const state = get()
+    const browser = state.browsers.find((entry) => entry.id === id)
     if (!browser) return
     const { width: viewW, height: viewH } = getCanvasViewportSize({
-      titleBarHidden: get().titleBarHidden,
+      titleBarHidden: state.titleBarHidden,
     })
+    const sectionSnap = getFocusedSectionWindowSnap(state, id, browser, viewW, viewH)
+    if (sectionSnap) {
+      set({ focusedWindowSectionId: sectionSnap.sectionId })
+      get().setCanvasTransform(sectionSnap.canvas)
+      return
+    }
     get().setCanvasTransform({
-      ...canvas,
-      x: viewW / 2 - (browser.x + browser.width / 2) * canvas.scale,
-      y: viewH / 2 - (browser.y + browser.height / 2) * canvas.scale,
+      ...state.canvas,
+      x: viewW / 2 - (browser.x + browser.width / 2) * state.canvas.scale,
+      y: viewH / 2 - (browser.y + browser.height / 2) * state.canvas.scale,
     })
   },
 
@@ -2683,11 +3533,14 @@ export const useStore = create<StoreState>((set, get) => ({
     const { width: viewW, height: viewH } = getCanvasViewportSize({
       titleBarHidden: state.titleBarHidden,
     })
-    const canvas = getWindowSnapTransform(terminal, viewW, viewH, {
-      basePadding: TERMINAL_PAD,
-      mode: options?.mode ?? state.snapMode,
-      scale: options?.keepScale ? state.canvas.scale : undefined,
-    })
+    const sectionSnap = getFocusedSectionWindowSnap(state, id, terminal, viewW, viewH)
+    const canvas =
+      sectionSnap?.canvas ??
+      getWindowSnapTransform(terminal, viewW, viewH, {
+        basePadding: TERMINAL_PAD,
+        mode: options?.mode ?? state.snapMode,
+        scale: options?.keepScale ? state.canvas.scale : undefined,
+      })
 
     set({
       terminals: shouldBringToFront
@@ -2696,12 +3549,33 @@ export const useStore = create<StoreState>((set, get) => ({
       focusedTerminalId: id,
       focusedBrowserId: null,
       focusedAgentWindowId: null,
+      focusedWindowSectionId: sectionSnap?.sectionId ?? null,
       focusedTerminalSince: Date.now(),
       snapPaused: false,
       snapFast: true,
       focusHistory,
       focusCounts,
       topZIndex: nextTopZIndex,
+      canvas,
+    })
+    debouncedPersist(() => get().persist())
+  },
+
+  snapToWindowSection(id, options) {
+    const state = get()
+    const section = state.windowSections.find((entry) => entry.id === id)
+    if (!section) return
+
+    const rect = getWindowSectionRect(section, { titleBarHidden: state.titleBarHidden })
+    const { width: viewW, height: viewH } = getCanvasViewportSize({
+      titleBarHidden: state.titleBarHidden,
+    })
+    const canvas = getSectionSnapTransform(rect, state.canvas, viewW, viewH, options)
+
+    set({
+      snapPaused: false,
+      snapFast: true,
+      focusedWindowSectionId: id,
       canvas,
     })
     debouncedPersist(() => get().persist())
@@ -2727,6 +3601,7 @@ export const useStore = create<StoreState>((set, get) => ({
         focusedTerminalId: id,
         focusedBrowserId: null,
         focusedAgentWindowId: null,
+        focusedWindowSectionId: null,
         snapPaused: false,
         snapFast: true,
       })
@@ -2736,6 +3611,7 @@ export const useStore = create<StoreState>((set, get) => ({
         focusedTerminalId: null,
         focusedBrowserId: id,
         focusedAgentWindowId: null,
+        focusedWindowSectionId: null,
         snapPaused: false,
         snapFast: true,
       })
@@ -2745,6 +3621,7 @@ export const useStore = create<StoreState>((set, get) => ({
         focusedTerminalId: null,
         focusedBrowserId: null,
         focusedAgentWindowId: id,
+        focusedWindowSectionId: null,
         snapPaused: false,
         snapFast: true,
       })
@@ -2882,14 +3759,34 @@ export const useStore = create<StoreState>((set, get) => ({
 
   snapToClosest() {
     set({ snapFast: false })
-    const { terminals, browsers, agentWindows, canvas } = get()
-    const windows = getCanvasWindows(terminals, browsers, agentWindows)
-    if (windows.length === 0) return
+    const {
+      terminals,
+      browsers,
+      agentWindows,
+      canvas,
+      windowSections,
+      titleBarHidden,
+      focusedWindowSectionId,
+    } = get()
+    if (
+      focusedWindowSectionId &&
+      windowSections.some((section) => section.id === focusedWindowSectionId)
+    ) {
+      get().snapToWindowSection(focusedWindowSectionId)
+      return
+    }
 
-    const best = getClosestWindow(windows, getViewportCenter(canvas))
+    const windows = getCanvasWindows(terminals, browsers, agentWindows)
+    const sectionTargets = getWindowSectionSnapTargets(windowSections, { titleBarHidden })
+    const targets = [...windows, ...sectionTargets]
+    if (targets.length === 0) return
+
+    const best = getClosestCanvasRect(targets, getViewportCenter(canvas))
     if (!best) return
 
-    if (best.type === 'terminal') {
+    if (best.type === 'section') {
+      get().snapToWindowSection(best.id)
+    } else if (best.type === 'terminal') {
       get().snapToTerminal(best.id)
     } else if (best.type === 'agent') {
       get().snapToAgentWindow(best.id)
@@ -2970,7 +3867,246 @@ export const useStore = create<StoreState>((set, get) => ({
 
   setAutoArrangeOnCreate(enabled) {
     set({ autoArrangeOnCreate: enabled })
+    if (enabled && get().autoArrangeMode === 'dwindle') {
+      get().arrangeDwindleSections(true)
+    }
     get().persist()
+  },
+
+  setAutoArrangeMode(mode) {
+    const nextMode = normalizeAutoArrangeMode(mode)
+    set({ autoArrangeMode: nextMode })
+    if (get().autoArrangeOnCreate && nextMode === 'dwindle') {
+      get().arrangeDwindleSections(true)
+    }
+    get().persist()
+  },
+
+  setDwindleLayoutSettings(settings) {
+    set((state) => ({
+      dwindleLayoutSettings: normalizeDwindleLayoutSettings({
+        ...state.dwindleLayoutSettings,
+        ...settings,
+      }),
+    }))
+    if (get().autoArrangeMode === 'dwindle') {
+      get().arrangeDwindleSections(true)
+    }
+    get().persist()
+  },
+
+  createWindowSectionFromSelection() {
+    const state = get()
+    const selectedIds =
+      state.selectedNodeIds.length > 0
+        ? state.selectedNodeIds
+        : ([getFocusedWindowId(state)].filter(Boolean) as string[])
+    const nodes = getAllMutableCanvasNodes(state).filter((node) => selectedIds.includes(node.id))
+    if (nodes.length === 0) return
+
+    const viewport = getCanvasViewportSize({ titleBarHidden: state.titleBarHidden })
+    const viewportRect = getViewportRect(state.canvas, viewport.width, viewport.height)
+    const sectionSize = getDefaultSectionSize({ titleBarHidden: state.titleBarHidden })
+    const section: WindowSection = {
+      id: nanoid(8),
+      name: `Section ${state.windowSections.length + 1}`,
+      x: viewportRect.x + TERMINAL_PAD,
+      y: viewportRect.y + TERMINAL_PAD,
+      width: sectionSize.width,
+      height: sectionSize.height,
+      color: 'blue',
+      windowIds: nodes.map((node) => node.id),
+      layoutTree: null,
+    }
+    set({
+      autoArrangeMode: 'dwindle',
+      windowSections: [
+        ...state.windowSections.map((existing) => ({
+          ...existing,
+          windowIds: existing.windowIds.filter((id) => !section.windowIds.includes(id)),
+        })),
+        section,
+      ],
+    })
+    get().arrangeDwindleSections(true)
+  },
+
+  createWindowSectionFromViewport() {
+    const state = get()
+    const viewport = getCanvasViewportSize({ titleBarHidden: state.titleBarHidden })
+    const viewportRect = getViewportRect(state.canvas, viewport.width, viewport.height)
+    const sectionSize = getDefaultSectionSize({ titleBarHidden: state.titleBarHidden })
+    const nodes = getAllMutableCanvasNodes(state).filter((node) => {
+      const centerX = node.x + node.width / 2
+      const centerY = node.y + node.height / 2
+      return (
+        centerX >= viewportRect.x &&
+        centerX <= viewportRect.x + viewportRect.width &&
+        centerY >= viewportRect.y &&
+        centerY <= viewportRect.y + viewportRect.height
+      )
+    })
+    const sectionIds = nodes.length > 0 ? nodes.map((node) => node.id) : []
+    const section: WindowSection = {
+      id: nanoid(8),
+      name: `Section ${state.windowSections.length + 1}`,
+      x: viewportRect.x + TERMINAL_PAD,
+      y: viewportRect.y + TERMINAL_PAD,
+      width: sectionSize.width,
+      height: sectionSize.height,
+      color: 'blue',
+      windowIds: sectionIds,
+      layoutTree: null,
+    }
+    set({
+      autoArrangeMode: 'dwindle',
+      windowSections: [
+        ...state.windowSections.map((existing) => ({
+          ...existing,
+          windowIds: existing.windowIds.filter((id) => !sectionIds.includes(id)),
+        })),
+        section,
+      ],
+    })
+    if (sectionIds.length > 0) get().arrangeDwindleSections(true)
+    get().persist()
+  },
+
+  createWindowSection() {
+    const state = get()
+    const viewport = getCanvasViewportSize({ titleBarHidden: state.titleBarHidden })
+    const viewportRect = getViewportRect(state.canvas, viewport.width, viewport.height)
+    const sectionSize = getDefaultSectionSize({ titleBarHidden: state.titleBarHidden })
+    const section: WindowSection = {
+      id: nanoid(8),
+      name: `Section ${state.windowSections.length + 1}`,
+      x: viewportRect.x + TERMINAL_PAD,
+      y: viewportRect.y + TERMINAL_PAD,
+      width: sectionSize.width,
+      height: sectionSize.height,
+      color: 'blue',
+      windowIds: [],
+      layoutTree: null,
+    }
+    set({
+      autoArrangeMode: 'dwindle',
+      windowSections: [...state.windowSections, section],
+    })
+    get().persist()
+  },
+
+  renameWindowSection(id, name) {
+    const trimmed = name.trim()
+    if (!trimmed) return
+    set((state) => ({
+      windowSections: state.windowSections.map((section) =>
+        section.id === id ? { ...section, name: trimmed } : section,
+      ),
+    }))
+    get().persist()
+  },
+
+  setWindowSectionColor(id, color) {
+    set((state) => ({
+      windowSections: state.windowSections.map((section) =>
+        section.id === id ? { ...section, color } : section,
+      ),
+    }))
+    get().persist()
+  },
+
+  moveWindowSection(id, x, y) {
+    set((state) => ({
+      ...(() => {
+        const section = state.windowSections.find((entry) => entry.id === id)
+        if (!section) return { windowSections: state.windowSections }
+
+        const dx = x - section.x
+        const dy = y - section.y
+        const movedIds = new Set(section.windowIds)
+        return {
+          windowSections: state.windowSections.map((entry) =>
+            entry.id === id ? { ...entry, x, y } : entry,
+          ),
+          terminals: state.terminals.map((terminal) =>
+            movedIds.has(terminal.id)
+              ? { ...terminal, x: terminal.x + dx, y: terminal.y + dy }
+              : terminal,
+          ),
+          browsers: state.browsers.map((browser) =>
+            movedIds.has(browser.id)
+              ? { ...browser, x: browser.x + dx, y: browser.y + dy }
+              : browser,
+          ),
+          agentWindows: state.agentWindows.map((agentWindow) =>
+            movedIds.has(agentWindow.id)
+              ? { ...agentWindow, x: agentWindow.x + dx, y: agentWindow.y + dy }
+              : agentWindow,
+          ),
+        }
+      })(),
+    }))
+    get().persist()
+  },
+
+  resizeWindowSection(id, rect) {
+    set((state) => ({
+      windowSections: state.windowSections.map((section) =>
+        section.id === id
+          ? {
+              ...section,
+              x: rect.x,
+              y: rect.y,
+              width: Math.max(320, rect.width),
+              height: Math.max(220, rect.height),
+            }
+          : section,
+      ),
+    }))
+    get().persist()
+  },
+
+  removeWindowSection(id) {
+    set((state) => ({
+      windowSections: state.windowSections.filter((section) => section.id !== id),
+      focusedWindowSectionId:
+        state.focusedWindowSectionId === id ? null : state.focusedWindowSectionId,
+    }))
+    get().persist()
+  },
+
+  commitWindowSectionDrag(ids) {
+    const movingIds = [...new Set(ids)]
+    if (movingIds.length === 0 || get().autoArrangeMode !== 'dwindle') return
+
+    const state = get()
+    if (state.windowSections.length === 0) return
+    const nodes = getAllMutableCanvasNodes(state)
+    const nodeById = new Map(nodes.map((node) => [node.id, node]))
+    const nextSections = state.windowSections.map((section) => {
+      const rect = getWindowSectionRect(section, { titleBarHidden: state.titleBarHidden })
+      const keptIds = section.windowIds.filter((id) => !movingIds.includes(id))
+      const idsToAdd = movingIds.filter((id) => {
+        const node = nodeById.get(id)
+        if (!node) return false
+        const centerX = node.x + node.width / 2
+        const centerY = node.y + node.height / 2
+        return (
+          centerX >= rect.x &&
+          centerX <= rect.x + rect.width &&
+          centerY >= rect.y &&
+          centerY <= rect.y + rect.height
+        )
+      })
+      return {
+        ...section,
+        windowIds: [...keptIds, ...idsToAdd.filter((id) => !keptIds.includes(id))],
+        layoutTree: sanitizeDwindleTree(section.layoutTree, new Set(keptIds)),
+      }
+    })
+
+    set({ windowSections: nextSections })
+    get().arrangeDwindleSections(true)
   },
 
   resizeWindowToFitFocused() {
@@ -3009,10 +4145,34 @@ export const useStore = create<StoreState>((set, get) => ({
       focusedTerminalId,
       focusedBrowserId,
       focusedAgentWindowId,
+      focusedWindowSectionId,
+      windowSections,
     } = get()
     const viewport = getCanvasViewportSize({ titleBarHidden: get().titleBarHidden })
     const viewW = viewport.width - TERMINAL_PAD * 2
     const viewH = viewport.height - TERMINAL_PAD * 2
+    const focusedWindowId = focusedTerminalId ?? focusedBrowserId ?? focusedAgentWindowId
+    const focusedSection =
+      (focusedWindowSectionId
+        ? windowSections.find((section) => section.id === focusedWindowSectionId)
+        : null) ??
+      (focusedWindowId
+        ? windowSections.find((section) => section.windowIds.includes(focusedWindowId))
+        : null)
+
+    if (focusedSection) {
+      get().resizeWindowSection(focusedSection.id, {
+        x: focusedSection.x,
+        y: focusedSection.y,
+        width: viewW,
+        height: viewH,
+      })
+      set({ focusedWindowSectionId: focusedSection.id })
+      get().arrangeDwindleSections(true)
+      requestAnimationFrame(() => get().snapToWindowSection(focusedSection.id))
+      return
+    }
+
     if (focusedTerminalId) {
       const t = terminals.find((t) => t.id === focusedTerminalId)
       if (!t) return
@@ -3032,7 +4192,8 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   zoomToFitAll() {
-    const { terminals, browsers, agentWindows } = get()
+    const { terminals, browsers, agentWindows, windowSections } = get()
+    const viewport = getCanvasViewportSize({ titleBarHidden: get().titleBarHidden })
     const allNodes = [
       ...terminals.map((t) => ({ x: t.x, y: t.y, width: t.width, height: t.height })),
       ...browsers.map((b) => ({ x: b.x, y: b.y, width: b.width, height: b.height })),
@@ -3042,8 +4203,10 @@ export const useStore = create<StoreState>((set, get) => ({
         width: entry.width,
         height: entry.height,
       })),
+      ...windowSections.map((section) => ({
+        ...getWindowSectionRect(section, { titleBarHidden: get().titleBarHidden }),
+      })),
     ]
-    const viewport = getCanvasViewportSize({ titleBarHidden: get().titleBarHidden })
     const nextTransform = getOverviewTransform(allNodes, viewport.width, viewport.height)
     if (!nextTransform) return
 
@@ -3225,6 +4388,105 @@ export const useStore = create<StoreState>((set, get) => ({
 
       // Clear animation flag after transition completes
       setTimeout(() => set({ arrangeAnimating: false }), 350)
+    })
+  },
+
+  arrangeDwindleSections(skipOverview?: boolean, splitTargetId?: string | null) {
+    const state = get()
+    const allNodes = getAllMutableCanvasNodes(state)
+    if (allNodes.length === 0) return
+
+    const nodeById = new Map(allNodes.map((node) => [node.id, node]))
+    const focusedId = getFocusedWindowId(state)
+    const viewport = getCanvasViewportSize({ titleBarHidden: state.titleBarHidden })
+    const viewportRect = getViewportRect(state.canvas, viewport.width, viewport.height)
+    const settings = normalizeDwindleLayoutSettings(state.dwindleLayoutSettings)
+    let sections = state.windowSections.map((section) => ({
+      ...section,
+      windowIds: section.windowIds.filter((id) => nodeById.has(id)),
+    }))
+
+    if (sections.length === 0) {
+      sections = [
+        {
+          id: nanoid(8),
+          name: 'Main',
+          x: viewportRect.x + TERMINAL_PAD,
+          y: viewportRect.y + TERMINAL_PAD,
+          ...getDefaultSectionSize({ titleBarHidden: state.titleBarHidden }),
+          windowIds: allNodes.map((node) => node.id),
+          layoutTree: null,
+        },
+      ]
+    } else if (state.autoArrangeOnCreate) {
+      const assigned = new Set(sections.flatMap((section) => section.windowIds))
+      const unassigned = allNodes.filter((node) => !assigned.has(node.id))
+      if (unassigned.length > 0) {
+        const focusedSectionIndex = focusedId
+          ? sections.findIndex((section) => section.windowIds.includes(focusedId))
+          : -1
+        const targetIndex = focusedSectionIndex >= 0 ? focusedSectionIndex : 0
+        sections = sections.map((section, index) =>
+          index === targetIndex
+            ? {
+                ...section,
+                windowIds: [...section.windowIds, ...unassigned.map((node) => node.id)],
+              }
+            : section,
+        )
+      }
+    }
+
+    const nextRects = new Map<string, { x: number; y: number; width: number; height: number }>()
+    const nextSections = sections.map((section) => {
+      const sectionNodes = section.windowIds
+        .map((id) => nodeById.get(id))
+        .filter(Boolean) as MutableCanvasNode[]
+      const tree = reconcileDwindleTree(
+        section.layoutTree,
+        sectionNodes,
+        splitTargetId ?? focusedId,
+        settings,
+      )
+      applyDwindleTreeToRects(
+        tree,
+        getDwindleLayoutRectForSection(
+          getWindowSectionRect(section, { titleBarHidden: state.titleBarHidden }),
+          settings,
+        ),
+        nextRects,
+        settings,
+      )
+      return {
+        ...section,
+        layoutTree: tree,
+        windowIds: collectDwindleLeafIds(tree),
+      }
+    })
+
+    set({ arrangeAnimating: settings.animationMs > 0, windowSections: nextSections })
+    requestAnimationFrame(() => {
+      set((current) => ({
+        terminals: current.terminals.map((terminal) => {
+          const rect = nextRects.get(terminal.id)
+          return rect ? { ...terminal, ...rect } : terminal
+        }),
+        browsers: current.browsers.map((browser) => {
+          const rect = nextRects.get(browser.id)
+          return rect ? { ...browser, ...rect } : browser
+        }),
+        agentWindows: current.agentWindows.map((agentWindow) => {
+          const rect = nextRects.get(agentWindow.id)
+          return rect ? { ...agentWindow, ...rect } : agentWindow
+        }),
+      }))
+
+      if (!skipOverview) get().zoomToFitAll()
+      get().persist()
+
+      if (settings.animationMs > 0) {
+        setTimeout(() => set({ arrangeAnimating: false }), settings.animationMs)
+      }
     })
   },
 
@@ -3927,6 +5189,7 @@ export const useStore = create<StoreState>((set, get) => ({
     const id = requestedId ?? nanoid(8)
     const newZ = get().topZIndex + 1
     const { terminals, browsers, agentWindows, focusHistory } = get()
+    const previousFocusedId = getFocusedWindowId(get())
     const savedDefaults =
       get().lastAgentSessionDefaults[agent] ?? DEFAULT_AGENT_SESSION_DEFAULTS[agent]
     const viewport = getCanvasViewportSize({ titleBarHidden: get().titleBarHidden })
@@ -3986,8 +5249,28 @@ export const useStore = create<StoreState>((set, get) => ({
       focusedAgentWindowId: id,
       focusHistory: pushFocusHistory(focusHistory, id),
     }))
-    if (get().autoArrangeOnCreate) {
-      get().autoArrangeGrid(true)
+    const sectionAssignment =
+      get().windowSections.length > 0
+        ? assignWindowToFocusedSection(
+            get().windowSections,
+            id,
+            previousFocusedId,
+            get().focusedWindowSectionId,
+          )
+        : { sections: get().windowSections, sectionId: null as string | null }
+    if (sectionAssignment.sectionId) {
+      set({ windowSections: sectionAssignment.sections })
+      get().arrangeDwindleSections(true, previousFocusedId)
+      set({
+        focusedTerminalId: null,
+        focusedBrowserId: null,
+        focusedAgentWindowId: id,
+        canvas: { ...get().canvas, scale: 1 },
+      })
+      get().snapToWindowSection(sectionAssignment.sectionId)
+    } else if (get().autoArrangeOnCreate) {
+      if (get().autoArrangeMode === 'dwindle') get().arrangeDwindleSections(true)
+      else get().autoArrangeGrid(true)
       set({
         focusedTerminalId: null,
         focusedBrowserId: null,
@@ -4007,6 +5290,7 @@ export const useStore = create<StoreState>((set, get) => ({
     clearPendingCloseTimer(id)
     void window.cells.agentSession.dispose(id).catch(() => {})
     const state = get()
+    const removedSectionId = getSectionIdForWindow(state.windowSections, id)
     const remaining = state.agentWindows.filter((entry) => entry.id !== id)
     const history = state.focusHistory.filter((entry) => entry !== id)
     const wasFocused = state.focusedAgentWindowId === id
@@ -4014,10 +5298,28 @@ export const useStore = create<StoreState>((set, get) => ({
       agentWindows: remaining,
       focusHistory: history,
       focusedAgentWindowId: wasFocused ? null : state.focusedAgentWindowId,
+      windowSections: state.windowSections.map((section) => ({
+        ...section,
+        windowIds: section.windowIds.filter((windowId) => windowId !== id),
+        layoutTree: sanitizeDwindleTree(
+          section.layoutTree,
+          new Set(section.windowIds.filter((windowId) => windowId !== id)),
+        ),
+      })),
       pendingClosedWindows: state.pendingClosedWindows.filter((entry) => entry.id !== id),
       pendingCloseDialog:
         state.pendingCloseDialog?.target.id === id ? null : state.pendingCloseDialog,
     })
+    if (removedSectionId) {
+      set((current) => ({
+        focusedWindowSectionId: current.windowSections.some(
+          (section) => section.id === removedSectionId && section.windowIds.length > 0,
+        )
+          ? removedSectionId
+          : null,
+      }))
+      get().arrangeDwindleSections(true)
+    }
     if (wasFocused) {
       const previousId = getPreviousWindowId(history, state.terminals, state.browsers, remaining)
       if (previousId) {
@@ -4060,7 +5362,12 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   moveAgentWindow(id, x, y) {
-    if (get().autoArrangeOnCreate) {
+    if (getSectionIdForWindow(get().windowSections, id)) {
+      get().arrangeDwindleSections(true, id)
+      return
+    }
+
+    if (get().autoArrangeOnCreate && get().autoArrangeMode === 'grid') {
       get().setAutoArrangeOnCreate(false)
       showToast('Auto-arrange disabled', 'info')
     }
@@ -4073,6 +5380,13 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   resizeAgentWindow(id, width, height) {
+    const sectionResize = getDwindleSectionResizePatch(get(), id, width, height)
+    if (sectionResize) {
+      set({ windowSections: sectionResize })
+      get().arrangeDwindleSections(true, id)
+      return
+    }
+
     set((s) => ({
       agentWindows: s.agentWindows.map((agentWindow) =>
         agentWindow.id === id ? { ...agentWindow, width, height } : agentWindow,
@@ -4094,6 +5408,7 @@ export const useStore = create<StoreState>((set, get) => ({
           focusedTerminalId: null,
           focusedBrowserId: null,
           focusedAgentWindowId: id,
+          focusedWindowSectionId: getSectionIdForWindow(get().windowSections, id),
           focusHistory: history,
           focusCounts: counts,
         })
@@ -4103,6 +5418,7 @@ export const useStore = create<StoreState>((set, get) => ({
         focusedTerminalId: null,
         focusedBrowserId: null,
         focusedAgentWindowId: id,
+        focusedWindowSectionId: id ? getSectionIdForWindow(get().windowSections, id) : null,
       })
     }
   },
@@ -4118,16 +5434,22 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   panToAgentWindow(id) {
-    const { agentWindows, canvas } = get()
-    const agentWindow = agentWindows.find((entry) => entry.id === id)
+    const state = get()
+    const agentWindow = state.agentWindows.find((entry) => entry.id === id)
     if (!agentWindow) return
     const { width: viewW, height: viewH } = getCanvasViewportSize({
-      titleBarHidden: get().titleBarHidden,
+      titleBarHidden: state.titleBarHidden,
     })
+    const sectionSnap = getFocusedSectionWindowSnap(state, id, agentWindow, viewW, viewH)
+    if (sectionSnap) {
+      set({ focusedWindowSectionId: sectionSnap.sectionId })
+      get().setCanvasTransform(sectionSnap.canvas)
+      return
+    }
     get().setCanvasTransform({
-      ...canvas,
-      x: viewW / 2 - (agentWindow.x + agentWindow.width / 2) * canvas.scale,
-      y: viewH / 2 - (agentWindow.y + agentWindow.height / 2) * canvas.scale,
+      ...state.canvas,
+      x: viewW / 2 - (agentWindow.x + agentWindow.width / 2) * state.canvas.scale,
+      y: viewH / 2 - (agentWindow.y + agentWindow.height / 2) * state.canvas.scale,
     })
   },
 
@@ -4145,11 +5467,14 @@ export const useStore = create<StoreState>((set, get) => ({
     const { width: viewW, height: viewH } = getCanvasViewportSize({
       titleBarHidden: state.titleBarHidden,
     })
-    const canvas = getWindowSnapTransform(agentWindow, viewW, viewH, {
-      basePadding: TERMINAL_PAD,
-      mode: options?.mode ?? state.snapMode,
-      scale: options?.keepScale ? state.canvas.scale : undefined,
-    })
+    const sectionSnap = getFocusedSectionWindowSnap(state, id, agentWindow, viewW, viewH)
+    const canvas =
+      sectionSnap?.canvas ??
+      getWindowSnapTransform(agentWindow, viewW, viewH, {
+        basePadding: TERMINAL_PAD,
+        mode: options?.mode ?? state.snapMode,
+        scale: options?.keepScale ? state.canvas.scale : undefined,
+      })
 
     set({
       agentWindows: shouldBringToFront
@@ -4160,6 +5485,7 @@ export const useStore = create<StoreState>((set, get) => ({
       focusedTerminalId: null,
       focusedBrowserId: null,
       focusedAgentWindowId: id,
+      focusedWindowSectionId: sectionSnap?.sectionId ?? null,
       snapPaused: false,
       snapFast: true,
       focusHistory,
@@ -4186,6 +5512,7 @@ export const useStore = create<StoreState>((set, get) => ({
     const id = nanoid(8)
     const newZ = get().topZIndex + 1
     const { terminals, browsers, agentWindows, focusHistory } = get()
+    const previousFocusedId = getFocusedWindowId(get())
 
     const viewport = getCanvasViewportSize({ titleBarHidden: get().titleBarHidden })
     const width = viewport.width - TERMINAL_PAD * 2
@@ -4234,8 +5561,28 @@ export const useStore = create<StoreState>((set, get) => ({
       focusedAgentWindowId: null,
       focusHistory: pushFocusHistory(focusHistory, id),
     }))
-    if (get().autoArrangeOnCreate) {
-      get().autoArrangeGrid(true)
+    const sectionAssignment =
+      get().windowSections.length > 0
+        ? assignWindowToFocusedSection(
+            get().windowSections,
+            id,
+            previousFocusedId,
+            get().focusedWindowSectionId,
+          )
+        : { sections: get().windowSections, sectionId: null as string | null }
+    if (sectionAssignment.sectionId) {
+      set({ windowSections: sectionAssignment.sections })
+      get().arrangeDwindleSections(true, previousFocusedId)
+      set({
+        focusedTerminalId: null,
+        focusedBrowserId: id,
+        focusedAgentWindowId: null,
+        canvas: { ...get().canvas, scale: 1 },
+      })
+      get().snapToWindowSection(sectionAssignment.sectionId)
+    } else if (get().autoArrangeOnCreate) {
+      if (get().autoArrangeMode === 'dwindle') get().arrangeDwindleSections(true)
+      else get().autoArrangeGrid(true)
       // Stay focused on the new browser — no overview zoom
       set({
         focusedTerminalId: null,
@@ -4282,6 +5629,7 @@ export const useStore = create<StoreState>((set, get) => ({
     clearPendingCloseTimer(id)
     destroyBrowserResources(id)
     const state = get()
+    const removedSectionId = getSectionIdForWindow(state.windowSections, id)
     const returnCtx = state.crossProjectReturn
     const shouldReturn = returnCtx?.browserId === id
     const remaining = state.browsers.filter((b) => b.id !== id)
@@ -4291,11 +5639,29 @@ export const useStore = create<StoreState>((set, get) => ({
       browsers: remaining,
       focusHistory: history,
       focusedBrowserId: wasFocused ? null : state.focusedBrowserId,
+      windowSections: state.windowSections.map((section) => ({
+        ...section,
+        windowIds: section.windowIds.filter((windowId) => windowId !== id),
+        layoutTree: sanitizeDwindleTree(
+          section.layoutTree,
+          new Set(section.windowIds.filter((windowId) => windowId !== id)),
+        ),
+      })),
       pendingClosedWindows: state.pendingClosedWindows.filter((entry) => entry.id !== id),
       pendingCloseDialog:
         state.pendingCloseDialog?.target.id === id ? null : state.pendingCloseDialog,
       crossProjectReturn: shouldReturn ? null : state.crossProjectReturn,
     })
+    if (removedSectionId) {
+      set((current) => ({
+        focusedWindowSectionId: current.windowSections.some(
+          (section) => section.id === removedSectionId && section.windowIds.length > 0,
+        )
+          ? removedSectionId
+          : null,
+      }))
+      get().arrangeDwindleSections(true)
+    }
     if (shouldReturn) {
       get().persist()
       get().switchProject(returnCtx.sourceProjectId)
@@ -4348,7 +5714,12 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   moveBrowser(id, x, y) {
-    if (get().autoArrangeOnCreate) {
+    if (getSectionIdForWindow(get().windowSections, id)) {
+      get().arrangeDwindleSections(true, id)
+      return
+    }
+
+    if (get().autoArrangeOnCreate && get().autoArrangeMode === 'grid') {
       get().setAutoArrangeOnCreate(false)
       showToast('Auto-arrange disabled', 'info')
     }
@@ -4359,6 +5730,13 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   resizeBrowser(id, width, height) {
+    const sectionResize = getDwindleSectionResizePatch(get(), id, width, height)
+    if (sectionResize) {
+      set({ windowSections: sectionResize })
+      get().arrangeDwindleSections(true, id)
+      return
+    }
+
     set((s) => ({
       browsers: s.browsers.map((b) => (b.id === id ? { ...b, width, height } : b)),
     }))
@@ -4398,21 +5776,28 @@ export const useStore = create<StoreState>((set, get) => ({
       set({ crossProjectReturn: null })
     }
     if (id && id !== prev) {
-      get().bringBrowserToFront(id)
-      const history = pushFocusHistory(get().focusHistory, id)
-      const counts = { ...get().focusCounts, [id]: (get().focusCounts[id] ?? 0) + 1 }
+      if (get().snapOnFocus) {
+        get().snapToBrowser(id)
+      } else {
+        get().bringBrowserToFront(id)
+        const history = pushFocusHistory(get().focusHistory, id)
+        const counts = { ...get().focusCounts, [id]: (get().focusCounts[id] ?? 0) + 1 }
+        set({
+          focusedTerminalId: null,
+          focusedBrowserId: id,
+          focusedAgentWindowId: null,
+          focusedWindowSectionId: getSectionIdForWindow(get().windowSections, id),
+          focusHistory: history,
+          focusCounts: counts,
+        })
+      }
+    } else {
       set({
         focusedTerminalId: null,
         focusedBrowserId: id,
         focusedAgentWindowId: null,
-        focusHistory: history,
-        focusCounts: counts,
+        focusedWindowSectionId: id ? getSectionIdForWindow(get().windowSections, id) : null,
       })
-    } else {
-      set({ focusedTerminalId: null, focusedBrowserId: id, focusedAgentWindowId: null })
-    }
-    if (id && id !== prev && get().snapOnFocus) {
-      get().snapToBrowser(id)
     }
   },
 
@@ -4430,11 +5815,14 @@ export const useStore = create<StoreState>((set, get) => ({
     const { width: viewW, height: viewH } = getCanvasViewportSize({
       titleBarHidden: state.titleBarHidden,
     })
-    const canvas = getWindowSnapTransform(browser, viewW, viewH, {
-      basePadding: TERMINAL_PAD,
-      mode: options?.mode ?? state.snapMode,
-      scale: options?.keepScale ? state.canvas.scale : undefined,
-    })
+    const sectionSnap = getFocusedSectionWindowSnap(state, id, browser, viewW, viewH)
+    const canvas =
+      sectionSnap?.canvas ??
+      getWindowSnapTransform(browser, viewW, viewH, {
+        basePadding: TERMINAL_PAD,
+        mode: options?.mode ?? state.snapMode,
+        scale: options?.keepScale ? state.canvas.scale : undefined,
+      })
 
     set({
       browsers: shouldBringToFront
@@ -4443,6 +5831,7 @@ export const useStore = create<StoreState>((set, get) => ({
       focusedTerminalId: null,
       focusedBrowserId: id,
       focusedAgentWindowId: null,
+      focusedWindowSectionId: sectionSnap?.sectionId ?? null,
       snapPaused: false,
       snapFast: true,
       focusHistory,

@@ -5,9 +5,11 @@ import { getCanvasBounds, type CanvasRect, type CanvasWindow } from '@/lib/canva
 import { AgentIcon } from '@/components/agent-icon'
 import { getAgentWindowStatusPresentation, getStatusPresentation } from '@/lib/status-indicator'
 import { getAgentWindowColor } from '@/lib/agent-window-colors'
+import type { WindowSection } from '@/types'
 
 interface WindowOverviewMapProps {
   windows: CanvasWindow[]
+  sections?: WindowSection[]
   currentId?: string | null
   focusedId?: string | null
   viewport?: CanvasRect
@@ -53,8 +55,21 @@ function WindowIcon({ window, iconSize }: { window: CanvasWindow; iconSize: numb
 
 const DRAG_THRESHOLD = 3
 
+const SECTION_COLOR_CLASSES: Record<
+  NonNullable<WindowSection['color']>,
+  { border: string; fill: string }
+> = {
+  slate: { border: 'border-slate-300/75', fill: 'bg-slate-400/16' },
+  blue: { border: 'border-sky-300/85', fill: 'bg-sky-400/18' },
+  green: { border: 'border-emerald-300/80', fill: 'bg-emerald-400/18' },
+  amber: { border: 'border-amber-300/85', fill: 'bg-amber-400/18' },
+  rose: { border: 'border-rose-300/80', fill: 'bg-rose-400/18' },
+  violet: { border: 'border-violet-300/80', fill: 'bg-violet-400/18' },
+}
+
 export function WindowOverviewMap({
   windows,
+  sections = [],
   currentId = null,
   focusedId = null,
   viewport,
@@ -64,7 +79,15 @@ export function WindowOverviewMap({
   onSelect,
   onMove,
 }: WindowOverviewMapProps) {
-  const bounds = getCanvasBounds(viewport ? [viewport, ...windows] : windows)
+  const sectionRects = sections.map((section) => ({
+    x: section.x,
+    y: section.y,
+    width: section.width ?? viewport?.width ?? 800,
+    height: section.height ?? viewport?.height ?? 500,
+  }))
+  const bounds = getCanvasBounds(
+    viewport ? [viewport, ...sectionRects, ...windows] : [...sectionRects, ...windows],
+  )
   const dragRef = useRef<{
     windowId: string
     startX: number
@@ -188,6 +211,27 @@ export function WindowOverviewMap({
           style={renderRect(viewport)}
         />
       )}
+
+      {sections.map((section) => {
+        const color = SECTION_COLOR_CLASSES[section.color ?? 'blue']
+        return (
+          <div
+            key={section.id}
+            className={cn(
+              'pointer-events-none absolute rounded-none border-2 border-dashed shadow-[inset_0_0_0_1px_rgba(255,255,255,0.12)]',
+              color.border,
+              color.fill,
+            )}
+            style={renderRect({
+              x: section.x,
+              y: section.y,
+              width: section.width ?? viewport?.width ?? 800,
+              height: section.height ?? viewport?.height ?? 500,
+            })}
+            title={section.name}
+          />
+        )
+      })}
 
       {[...windows]
         .sort((a, b) => a.zIndex - b.zIndex)

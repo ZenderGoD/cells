@@ -36,6 +36,7 @@ import {
   Download,
   LayoutGrid,
   BookOpen,
+  PanelsTopLeft,
 } from 'lucide-react'
 import { useCommandState } from 'cmdk'
 import {
@@ -538,6 +539,7 @@ export function CommandPalette() {
       'Install MCP Server',
       'Manage Extensions',
       'Settings',
+      'Create Section',
     ]
     return candidates.some((label) => label && fuzzyMatch(label))
   })()
@@ -1526,6 +1528,13 @@ export function CommandPalette() {
                       >
                         <LayoutGrid className="text-muted-foreground" />
                         Arrange Windows
+                      </CommandItem>
+                      <CommandItem
+                        value="create-section"
+                        onSelect={() => runAction(() => useStore.getState().createWindowSection())}
+                      >
+                        <PanelsTopLeft className="text-muted-foreground" />
+                        Create Section
                       </CommandItem>
                       <CommandItem
                         onSelect={() =>

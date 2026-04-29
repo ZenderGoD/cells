@@ -11,6 +11,7 @@ import {
   Download,
   Loader2,
   Magnet,
+  PanelsTopLeft,
   ArrowUpRight,
   ArrowDownLeft,
   Pin,
@@ -23,7 +24,7 @@ import {
   TerminalSquare,
   X,
 } from 'lucide-react'
-import type { ExtensionMeta } from '@/types'
+import type { ExtensionMeta, WindowSection } from '@/types'
 import { motion, AnimatePresence, Reorder, useDragControls, useReducedMotion } from 'motion/react'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
@@ -96,6 +97,33 @@ const EMPTY_BROWSER_UI = {
   themeColor: null as string | null,
 }
 
+const SECTION_COLORS: Array<NonNullable<WindowSection['color']>> = [
+  'blue',
+  'green',
+  'amber',
+  'rose',
+  'violet',
+  'slate',
+]
+
+function sectionSwatchClass(color: WindowSection['color']) {
+  switch (color) {
+    case 'green':
+      return 'bg-emerald-400'
+    case 'amber':
+      return 'bg-amber-400'
+    case 'rose':
+      return 'bg-rose-400'
+    case 'violet':
+      return 'bg-violet-400'
+    case 'slate':
+      return 'bg-slate-400'
+    case 'blue':
+    default:
+      return 'bg-sky-400'
+  }
+}
+
 function shortenUrl(url?: string): string {
   if (!url) return ''
   try {
@@ -117,6 +145,7 @@ function ProjectTab({
   setProjectTitleBarPinned,
   requestCloseProject,
   allWindows,
+  windowSections,
   titleBarOverviewWidth,
   titleBarOverviewHeight,
   overviewAnchor,
@@ -138,6 +167,7 @@ function ProjectTab({
   setProjectTitleBarPinned: (id: string, pinned: boolean) => void
   requestCloseProject: (id: string) => Promise<void>
   allWindows: import('@/lib/canvas-navigation').CanvasWindow[]
+  windowSections: WindowSection[]
   titleBarOverviewWidth: number
   titleBarOverviewHeight: number
   overviewAnchor: import('@/lib/canvas-navigation').CanvasWindow | null | undefined
@@ -293,7 +323,7 @@ function ProjectTab({
         </div>
       ) : null}
       <AnimatePresence>
-        {isActive && allWindows.length > 0 && (
+        {isActive && (allWindows.length > 0 || windowSections.length > 0) && (
           <motion.div
             // Width animation triggers layout (skill's golden rule prefers
             // transform/opacity), but the overview reveals only on project
@@ -316,6 +346,7 @@ function ProjectTab({
           >
             <WindowOverviewMap
               windows={allWindows}
+              sections={windowSections}
               currentId={overviewAnchor?.id}
               focusedId={focusedWindow?.id ?? null}
               viewport={viewportRect}
@@ -416,6 +447,16 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
   const autoArrangeGrid = useStore((s) => s.autoArrangeGrid)
   const autoArrangeOnCreate = useStore((s) => s.autoArrangeOnCreate)
   const setAutoArrangeOnCreate = useStore((s) => s.setAutoArrangeOnCreate)
+  const autoArrangeMode = useStore((s) => s.autoArrangeMode)
+  const setAutoArrangeMode = useStore((s) => s.setAutoArrangeMode)
+  const windowSections = useStore((s) => s.windowSections)
+  const focusedWindowSectionId = useStore((s) => s.focusedWindowSectionId)
+  const createWindowSectionFromSelection = useStore((s) => s.createWindowSectionFromSelection)
+  const createWindowSection = useStore((s) => s.createWindowSection)
+  const renameWindowSection = useStore((s) => s.renameWindowSection)
+  const setWindowSectionColor = useStore((s) => s.setWindowSectionColor)
+  const removeWindowSection = useStore((s) => s.removeWindowSection)
+  const togglePinSection = useStore((s) => s.togglePinSection)
   const snapToTerminal = useStore((s) => s.snapToTerminal)
   const snapToBrowser = useStore((s) => s.snapToBrowser)
   const snapToAgentWindow = useStore((s) => s.snapToAgentWindow)
@@ -433,6 +474,8 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
   const updateVersion = useStore((s) => s.updateVersion)
   const [showSettings, setShowSettingsRaw] = useState(false)
   const [showNewProject, setShowNewProjectRaw] = useState(false)
+  const [sectionEditorOpen, setSectionEditorOpenRaw] = useState(false)
+  const [sectionNameDraft, setSectionNameDraft] = useState('')
   const setShowSettings = (v: boolean) => {
     setShowSettingsRaw(v)
     setOverlayOpen('toolbar-settings', v)
@@ -441,6 +484,11 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
   const setShowNewProject = (v: boolean) => {
     setShowNewProjectRaw(v)
     setOverlayOpen('toolbar-new-project', v)
+    if (!v) requestAnimationFrame(() => window.dispatchEvent(new Event('terminal-refocus')))
+  }
+  const setSectionEditorOpen = (v: boolean) => {
+    setSectionEditorOpenRaw(v)
+    setOverlayOpen('toolbar-section-editor', v)
     if (!v) requestAnimationFrame(() => window.dispatchEvent(new Event('terminal-refocus')))
   }
   const [plusOpen, setPlusOpen] = useState(false)
@@ -492,7 +540,16 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
   const allWindows = getCanvasWindows(terminals, browsers, agentWindows)
   const viewportSize = getCanvasViewportSize({ titleBarHidden })
   const viewportRect = getViewportRect(canvas, viewportSize.width, viewportSize.height)
-  const overviewBounds = getCanvasBounds([viewportRect, ...allWindows])
+  const focusedWindowSection = focusedWindowSectionId
+    ? windowSections.find((section) => section.id === focusedWindowSectionId)
+    : null
+  const sectionRects = windowSections.map((section) => ({
+    x: section.x,
+    y: section.y,
+    width: section.width ?? viewportRect.width,
+    height: section.height ?? viewportRect.height,
+  }))
+  const overviewBounds = getCanvasBounds([viewportRect, ...sectionRects, ...allWindows])
   const titleBarOverviewHeight = 38
   const titleBarOverviewWidth = overviewBounds
     ? Math.max(
@@ -568,6 +625,27 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
       })
       .catch(() => {})
   }, [focusedBrowser])
+
+  const commitSectionName = useCallback(() => {
+    if (!focusedWindowSection) return
+    const trimmed = sectionNameDraft.trim()
+    if (!trimmed) {
+      setSectionNameDraft(focusedWindowSection.name)
+      return
+    }
+    if (trimmed !== focusedWindowSection.name) {
+      renameWindowSection(focusedWindowSection.id, trimmed)
+    }
+  }, [focusedWindowSection, renameWindowSection, sectionNameDraft])
+
+  useEffect(() => {
+    if (focusedWindowSection || !sectionEditorOpen) return
+    const timeout = window.setTimeout(() => {
+      setSectionEditorOpenRaw(false)
+      setOverlayOpen('toolbar-section-editor', false)
+    }, 0)
+    return () => window.clearTimeout(timeout)
+  }, [focusedWindowSection, sectionEditorOpen, setOverlayOpen])
 
   useEffect(() => {
     if (embedded) return
@@ -789,13 +867,15 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
             {visibleProjects.map((project) => {
               const isActive = project.id === activeProjectId
               const projectWindowCount = isActive
-                ? windowCount
+                ? windowCount + windowSections.length
                 : (project.terminals?.length ?? 0) +
                   (project.browsers?.length ?? 0) +
-                  (project.agentWindows?.length ?? 0)
+                  (project.agentWindows?.length ?? 0) +
+                  (project.windowSections?.length ?? 0)
 
               const projectTerminals = isActive ? terminals : (project.terminals ?? [])
               const projectAgentWindows = isActive ? agentWindows : (project.agentWindows ?? [])
+              const projectSections = isActive ? windowSections : (project.windowSections ?? [])
               const attention = getProjectRuntimeAttention(projectTerminals)
               const activities = getProjectWindowActivities(projectTerminals, projectAgentWindows, {
                 limit: 8,
@@ -811,6 +891,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
                   setProjectTitleBarPinned={setProjectTitleBarPinned}
                   requestCloseProject={requestCloseProject}
                   allWindows={allWindows}
+                  windowSections={projectSections}
                   titleBarOverviewWidth={titleBarOverviewWidth}
                   titleBarOverviewHeight={titleBarOverviewHeight}
                   overviewAnchor={overviewAnchor}
@@ -1180,6 +1261,99 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
         {/* Right side controls */}
         {!embedded && (
           <div className="flex items-center gap-3 px-3 shrink-0 no-drag">
+            {focusedWindowSection ? (
+              <Popover
+                open={sectionEditorOpen}
+                onOpenChange={(open) => {
+                  if (open) setSectionNameDraft(focusedWindowSection.name)
+                  setSectionEditorOpen(open)
+                }}
+              >
+                <PopoverTrigger
+                  className="flex max-w-44 shrink min-w-0 items-center gap-1.5 rounded-md border border-border/30 bg-background/35 px-2 py-1 text-[10px] text-muted-foreground/70 transition-colors hover:bg-muted/45 hover:text-foreground"
+                  title={`Section: ${focusedWindowSection.name}`}
+                >
+                  <span
+                    className={cn(
+                      'size-2.5 shrink-0 rounded-full',
+                      sectionSwatchClass(focusedWindowSection.color),
+                    )}
+                  />
+                  <PanelsTopLeft className="h-3 w-3 shrink-0 text-muted-foreground/55" />
+                  <span className="min-w-0 truncate font-medium">{focusedWindowSection.name}</span>
+                  <ChevronUp className="h-3 w-3 shrink-0 text-muted-foreground/45" />
+                </PopoverTrigger>
+                <PopoverContent align="end" side="top" sideOffset={8} className="w-56 p-2">
+                  <div className="mb-2 flex items-center gap-2 px-1">
+                    <span
+                      className={cn(
+                        'size-2.5 shrink-0 rounded-full',
+                        sectionSwatchClass(focusedWindowSection.color),
+                      )}
+                    />
+                    <div className="min-w-0">
+                      <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/50">
+                        Current section
+                      </div>
+                      <div className="truncate text-[11px] text-foreground/80">
+                        {focusedWindowSection.name}
+                      </div>
+                    </div>
+                  </div>
+                  <input
+                    value={sectionNameDraft}
+                    onChange={(event) => setSectionNameDraft(event.target.value)}
+                    onBlur={commitSectionName}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault()
+                        commitSectionName()
+                        setSectionEditorOpen(false)
+                      } else if (event.key === 'Escape') {
+                        event.preventDefault()
+                        setSectionNameDraft(focusedWindowSection.name)
+                        setSectionEditorOpen(false)
+                      }
+                    }}
+                    className="mb-2 h-8 w-full rounded-md border border-input/35 bg-input/25 px-2 text-[11px] text-foreground outline-none transition-colors placeholder:text-muted-foreground/45 focus:border-primary/35 focus:bg-input/35"
+                  />
+                  <div className="grid grid-cols-6 gap-1 px-1">
+                    {SECTION_COLORS.map((color) => (
+                      <button
+                        key={color}
+                        onClick={() => {
+                          hapticBuzz()
+                          setWindowSectionColor(focusedWindowSection.id, color)
+                        }}
+                        className={cn(
+                          'flex size-6 items-center justify-center rounded-md border border-transparent transition-colors hover:bg-muted/60',
+                          (focusedWindowSection.color ?? 'blue') === color &&
+                            'border-foreground/20 bg-muted/50',
+                        )}
+                        title={color}
+                      >
+                        <span className={cn('size-3 rounded-full', sectionSwatchClass(color))} />
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    onClick={() => {
+                      hapticBuzz()
+                      togglePinSection(focusedWindowSection.id)
+                      setSectionEditorOpen(false)
+                    }}
+                    className="mt-2 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-[11px] text-foreground transition-colors hover:bg-muted/60"
+                  >
+                    {focusedWindowSection.pinned ? (
+                      <ArrowDownLeft className="h-3.5 w-3.5 text-muted-foreground" />
+                    ) : (
+                      <ArrowUpRight className="h-3.5 w-3.5 text-muted-foreground" />
+                    )}
+                    {focusedWindowSection.pinned ? 'Pop section back in' : 'Pop section out'}
+                  </button>
+                </PopoverContent>
+              </Popover>
+            ) : null}
             <AnimatePresence initial={false}>
               {latestClosedProject && projectUndoSecondsLeft > 0 ? (
                 <motion.button
@@ -1288,15 +1462,58 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
                     <span className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-primary" />
                   )}
                 </PopoverTrigger>
-                <PopoverContent side="top" sideOffset={8} className="w-48 p-1">
+                <PopoverContent side="top" sideOffset={8} className="w-64 p-1">
+                  <div className="px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/50">
+                    Arrange mode
+                  </div>
+                  <div className="mb-1 grid grid-cols-2 gap-1 px-1">
+                    <button
+                      onClick={() => {
+                        hapticBuzz()
+                        setAutoArrangeMode('grid')
+                      }}
+                      className={cn(
+                        'flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] transition-colors',
+                        autoArrangeMode === 'grid'
+                          ? 'bg-muted text-foreground'
+                          : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
+                      )}
+                    >
+                      <LayoutGrid className="h-3.5 w-3.5" />
+                      Grid
+                    </button>
+                    <button
+                      onClick={() => {
+                        hapticBuzz()
+                        setAutoArrangeMode('dwindle')
+                      }}
+                      className={cn(
+                        'flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] transition-colors',
+                        autoArrangeMode === 'dwindle'
+                          ? 'bg-muted text-foreground'
+                          : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
+                      )}
+                    >
+                      <PanelsTopLeft className="h-3.5 w-3.5" />
+                      Sections
+                    </button>
+                  </div>
                   <button
                     onClick={() => {
                       hapticSuccess()
-                      autoArrangeGrid()
+                      if (autoArrangeMode === 'dwindle') {
+                        useStore.getState().arrangeDwindleSections()
+                      } else {
+                        autoArrangeGrid()
+                      }
                     }}
                     className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-md text-[11px] text-foreground hover:bg-muted/60 transition-colors"
                   >
-                    <LayoutGrid className="w-3.5 h-3.5 text-muted-foreground" />
+                    {autoArrangeMode === 'dwindle' ? (
+                      <PanelsTopLeft className="w-3.5 h-3.5 text-muted-foreground" />
+                    ) : (
+                      <LayoutGrid className="w-3.5 h-3.5 text-muted-foreground" />
+                    )}
                     Arrange now
                   </button>
                   <button
@@ -1313,6 +1530,93 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
                     )}
                     Auto on create
                   </button>
+                  {autoArrangeMode === 'dwindle' ? (
+                    <>
+                      <div className="my-1 h-px bg-border/50" />
+                      <button
+                        onClick={() => {
+                          hapticSuccess()
+                          createWindowSection()
+                        }}
+                        className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-md text-[11px] text-foreground hover:bg-muted/60 transition-colors"
+                      >
+                        <PanelsTopLeft className="w-3.5 h-3.5 text-muted-foreground" />
+                        Create section
+                      </button>
+                      <button
+                        onClick={() => {
+                          hapticSuccess()
+                          createWindowSectionFromSelection()
+                        }}
+                        className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-md text-[11px] text-foreground hover:bg-muted/60 transition-colors"
+                      >
+                        <PanelsTopLeft className="w-3.5 h-3.5 text-muted-foreground" />
+                        Section from selection
+                      </button>
+                      {windowSections.length > 0 ? (
+                        <div className="mt-1 space-y-0.5">
+                          <div className="px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/50">
+                            Sections
+                          </div>
+                          {windowSections.map((section) => (
+                            <div
+                              key={section.id}
+                              className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-muted-foreground"
+                            >
+                              <span
+                                className={cn(
+                                  'size-2.5 shrink-0 rounded-full',
+                                  sectionSwatchClass(section.color),
+                                )}
+                              />
+                              <span className="min-w-0 flex-1 truncate">{section.name}</span>
+                              <div className="flex shrink-0 items-center gap-0.5">
+                                {SECTION_COLORS.map((color) => (
+                                  <button
+                                    key={color}
+                                    onClick={() => setWindowSectionColor(section.id, color)}
+                                    className={cn(
+                                      'size-3 rounded-full ring-offset-1 ring-offset-background transition-transform hover:scale-110',
+                                      sectionSwatchClass(color),
+                                      (section.color ?? 'blue') === color &&
+                                        'ring-1 ring-foreground/60',
+                                    )}
+                                    title={color}
+                                  />
+                                ))}
+                              </div>
+                              <button
+                                onClick={() => togglePinSection(section.id)}
+                                className="rounded p-1 transition-colors hover:bg-muted/70 hover:text-foreground"
+                                title={section.pinned ? 'Pop section back in' : 'Pop section out'}
+                              >
+                                {section.pinned ? (
+                                  <ArrowDownLeft className="h-3 w-3" />
+                                ) : (
+                                  <ArrowUpRight className="h-3 w-3" />
+                                )}
+                              </button>
+                              <button
+                                onClick={() => {
+                                  const nextName = window.prompt('Section name', section.name)
+                                  if (nextName) renameWindowSection(section.id, nextName)
+                                }}
+                                className="rounded p-1 transition-colors hover:bg-muted/70 hover:text-foreground"
+                              >
+                                <Code className="h-3 w-3" />
+                              </button>
+                              <button
+                                onClick={() => removeWindowSection(section.id)}
+                                className="rounded p-1 transition-colors hover:bg-muted/70 hover:text-foreground"
+                              >
+                                <X className="h-3 w-3" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </>
+                  ) : null}
                 </PopoverContent>
               </Popover>
             )}

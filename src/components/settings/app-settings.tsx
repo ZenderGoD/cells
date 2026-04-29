@@ -10,6 +10,7 @@ import {
   GripVertical,
   KeyRound,
   Loader2,
+  PanelsTopLeft,
   Pin,
   PinOff,
   Plus,
@@ -57,7 +58,12 @@ import {
   terminalThemes,
 } from '@/lib/terminal-themes'
 import { cn } from '@/lib/utils'
-import type { CanvasSnapMode, TitleBarPosition } from '@/types'
+import type {
+  CanvasSnapMode,
+  DwindleForceSplit,
+  TitleBarPosition,
+  WindowAutoArrangeMode,
+} from '@/types'
 
 import { SETTINGS_SHEET_CLASSNAMES } from './settings-layout'
 import { NewProjectDialog } from '../new-project-dialog'
@@ -137,6 +143,25 @@ const SNAP_MODE_OPTIONS: Array<{ value: CanvasSnapMode; label: string; hint: str
   { value: 'peek', label: 'Peek', hint: 'Show neighbors' },
 ]
 
+const AUTO_ARRANGE_MODE_OPTIONS: Array<{
+  value: WindowAutoArrangeMode
+  label: string
+  hint: string
+}> = [
+  { value: 'grid', label: 'Grid', hint: 'Keep rows tidy' },
+  { value: 'dwindle', label: 'Sections', hint: 'Hyprland-style splits' },
+]
+
+const DWINDLE_FORCE_SPLIT_OPTIONS: Array<{
+  value: DwindleForceSplit
+  label: string
+  hint: string
+}> = [
+  { value: 'auto', label: 'Auto', hint: 'Use shape' },
+  { value: 'right', label: 'Right / Bottom', hint: 'New after' },
+  { value: 'left', label: 'Left / Top', hint: 'New before' },
+]
+
 const CLOSE_UNDO_TIMEOUT_OPTIONS: SettingsSelectOption[] = [
   { value: '0', label: 'Immediate', hint: 'Delete on close' },
   { value: '5000', label: '5 seconds', hint: 'Short undo window' },
@@ -175,6 +200,9 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const dimWhenUnfocused = useStore((s) => s.dimWhenUnfocused)
   const snapOnFocus = useStore((s) => s.snapOnFocus)
   const snapMode = useStore((s) => s.snapMode)
+  const autoArrangeOnCreate = useStore((s) => s.autoArrangeOnCreate)
+  const autoArrangeMode = useStore((s) => s.autoArrangeMode)
+  const dwindleLayoutSettings = useStore((s) => s.dwindleLayoutSettings)
   const tabSwitchMode = useStore((s) => s.tabSwitchMode)
   const projectSwitchMode = useStore((s) => s.projectSwitchMode)
   const reducedMotion = useStore((s) => s.reducedMotion)
@@ -197,6 +225,9 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const setDimWhenUnfocused = useStore((s) => s.setDimWhenUnfocused)
   const setSnapOnFocus = useStore((s) => s.setSnapOnFocus)
   const setSnapMode = useStore((s) => s.setSnapMode)
+  const setAutoArrangeOnCreate = useStore((s) => s.setAutoArrangeOnCreate)
+  const setAutoArrangeMode = useStore((s) => s.setAutoArrangeMode)
+  const setDwindleLayoutSettings = useStore((s) => s.setDwindleLayoutSettings)
   const setTabSwitchMode = useStore((s) => s.setTabSwitchMode)
   const setProjectSwitchMode = useStore((s) => s.setProjectSwitchMode)
   const setReducedMotion = useStore((s) => s.setReducedMotion)
@@ -657,6 +688,174 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                           </button>
                         ))}
                       </div>
+                    </SettingsGroup>
+
+                    <SettingsGroup title="Auto Arrange">
+                      <button
+                        onClick={() => setAutoArrangeOnCreate(!autoArrangeOnCreate)}
+                        className="mb-2 flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-[11px] transition-colors hover:bg-muted/40"
+                      >
+                        <span className="text-foreground">Arrange new windows automatically</span>
+                        <div
+                          className={cn(
+                            'relative h-3.5 w-6 rounded-full transition-colors',
+                            autoArrangeOnCreate ? 'bg-primary' : 'bg-muted-foreground/25',
+                          )}
+                        >
+                          <div
+                            className={cn(
+                              'absolute top-0.5 h-2.5 w-2.5 rounded-full bg-background transition-transform',
+                              autoArrangeOnCreate ? 'translate-x-3' : 'translate-x-0.5',
+                            )}
+                          />
+                        </div>
+                      </button>
+                      <div className="space-y-0.5">
+                        {AUTO_ARRANGE_MODE_OPTIONS.map((mode) => (
+                          <button
+                            key={mode.value}
+                            onClick={() => setAutoArrangeMode(mode.value)}
+                            className={cn(
+                              'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
+                              autoArrangeMode === mode.value
+                                ? 'bg-accent text-accent-foreground'
+                                : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
+                            )}
+                          >
+                            {mode.value === 'dwindle' ? (
+                              <PanelsTopLeft className="h-3.5 w-3.5 shrink-0" />
+                            ) : null}
+                            <span className="flex-1">{mode.label}</span>
+                            <span className="text-[10px] text-muted-foreground/40">
+                              {mode.hint}
+                            </span>
+                            {autoArrangeMode === mode.value && (
+                              <Check className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
+                            )}
+                          </button>
+                        ))}
+                      </div>
+
+                      {autoArrangeMode === 'dwindle' ? (
+                        <div className="mt-2 space-y-2.5 border-t border-border/40 pt-2">
+                          <SettingsField label="New split">
+                            <div className="space-y-0.5">
+                              {DWINDLE_FORCE_SPLIT_OPTIONS.map((option) => (
+                                <button
+                                  key={option.value}
+                                  onClick={() =>
+                                    setDwindleLayoutSettings({ forceSplit: option.value })
+                                  }
+                                  className={cn(
+                                    'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
+                                    dwindleLayoutSettings.forceSplit === option.value
+                                      ? 'bg-accent text-accent-foreground'
+                                      : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
+                                  )}
+                                >
+                                  <span className="flex-1">{option.label}</span>
+                                  <span className="text-[10px] text-muted-foreground/40">
+                                    {option.hint}
+                                  </span>
+                                  {dwindleLayoutSettings.forceSplit === option.value && (
+                                    <Check className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
+                                  )}
+                                </button>
+                              ))}
+                            </div>
+                          </SettingsField>
+                          <button
+                            onClick={() =>
+                              setDwindleLayoutSettings({
+                                preserveSplit: !dwindleLayoutSettings.preserveSplit,
+                              })
+                            }
+                            className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-[11px] transition-colors hover:bg-muted/40"
+                          >
+                            <span className="text-foreground">Preserve split direction</span>
+                            <div
+                              className={cn(
+                                'relative h-3.5 w-6 rounded-full transition-colors',
+                                dwindleLayoutSettings.preserveSplit
+                                  ? 'bg-primary'
+                                  : 'bg-muted-foreground/25',
+                              )}
+                            >
+                              <div
+                                className={cn(
+                                  'absolute top-0.5 h-2.5 w-2.5 rounded-full bg-background transition-transform',
+                                  dwindleLayoutSettings.preserveSplit
+                                    ? 'translate-x-3'
+                                    : 'translate-x-0.5',
+                                )}
+                              />
+                            </div>
+                          </button>
+                          <SettingsField
+                            label="Section padding"
+                            hint={`${dwindleLayoutSettings.padding}px`}
+                          >
+                            <div className="flex items-center gap-2 rounded-md px-2.5 py-1.5 hover:bg-muted/40">
+                              <input
+                                type="range"
+                                min={0}
+                                max={80}
+                                step={1}
+                                value={dwindleLayoutSettings.padding}
+                                onChange={(event) =>
+                                  setDwindleLayoutSettings({
+                                    padding: Number(event.currentTarget.value),
+                                  })
+                                }
+                                className="h-4 min-w-0 flex-1 accent-primary"
+                              />
+                              <input
+                                type="number"
+                                min={0}
+                                max={120}
+                                step={1}
+                                value={dwindleLayoutSettings.padding}
+                                onChange={(event) =>
+                                  setDwindleLayoutSettings({
+                                    padding: Number(event.currentTarget.value),
+                                  })
+                                }
+                                className="h-6 w-14 rounded border border-border/60 bg-background px-1.5 text-right text-[11px] text-foreground outline-none focus:border-primary/60"
+                              />
+                            </div>
+                          </SettingsField>
+                          <SettingsField label="Window gap" hint={`${dwindleLayoutSettings.gap}px`}>
+                            <div className="flex items-center gap-2 rounded-md px-2.5 py-1.5 hover:bg-muted/40">
+                              <input
+                                type="range"
+                                min={0}
+                                max={64}
+                                step={1}
+                                value={dwindleLayoutSettings.gap}
+                                onChange={(event) =>
+                                  setDwindleLayoutSettings({
+                                    gap: Number(event.currentTarget.value),
+                                  })
+                                }
+                                className="h-4 min-w-0 flex-1 accent-primary"
+                              />
+                              <input
+                                type="number"
+                                min={0}
+                                max={80}
+                                step={1}
+                                value={dwindleLayoutSettings.gap}
+                                onChange={(event) =>
+                                  setDwindleLayoutSettings({
+                                    gap: Number(event.currentTarget.value),
+                                  })
+                                }
+                                className="h-6 w-14 rounded border border-border/60 bg-background px-1.5 text-right text-[11px] text-foreground outline-none focus:border-primary/60"
+                              />
+                            </div>
+                          </SettingsField>
+                        </div>
+                      ) : null}
                     </SettingsGroup>
 
                     <SettingsGroup title="Switcher Order">
@@ -2106,7 +2305,7 @@ const SHORTCUT_GROUPS = [
       { keys: '⌘ ←/→/↑/↓', action: 'Snap to nearest window' },
       { keys: '⌘ Enter', action: 'Snap to focused window' },
       { keys: '⌘ 0', action: 'Zoom to fit focused window' },
-      { keys: '⌘ ⇧ Enter', action: 'Resize focused window to fill viewport' },
+      { keys: '⌘ ⇧ Enter', action: 'Resize focused window or section to fill viewport' },
       { keys: '⌘ ⇧ 0', action: 'Resize app to fit focused window' },
       { keys: '⌘ H / J / K / L', action: 'Snap to nearest window left/down/up/right' },
       { keys: '⌘ O / ⌘ ⇧ O', action: 'Zoom to fit all windows' },

@@ -330,12 +330,14 @@ body {
   background: var(--scrollbar-thumb-hover);
 }
 
-/* Terminal focus/unfocus states */
+/* Canvas window focus/unfocus states */
+.window-focused,
 .terminal-focused {
-  box-shadow: 0 0 0 4px var(--color-primary);
+  box-shadow: 0 0 0 2px var(--color-primary);
   opacity: 1;
 }
 
+.window-unfocused,
 .terminal-unfocused {
   opacity: 0.9;
   transition: opacity 0.15s;

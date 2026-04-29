@@ -20,7 +20,7 @@ import {
 } from 'lucide-react'
 import { hapticBuzz } from '@/lib/haptics'
 import type { AgentWindowNode as AgentWindowNodeType } from '@/types'
-import { useStore } from '@/lib/store'
+import { AGENT_WINDOW_RELOAD_EVENT, type AgentWindowReloadEventDetail, useStore } from '@/lib/store'
 import { useShallow } from 'zustand/react/shallow'
 import { hasPrimaryModifier } from '@/lib/keyboard-shortcuts'
 import { cn } from '@/lib/utils'
@@ -64,6 +64,7 @@ interface AgentWindowNodeProps {
   selectionMode: boolean
   isSelected: boolean
   isFocused: boolean
+  showFocusRing: boolean
   onDragStart: (
     id: string,
     kind: 'terminal' | 'browser' | 'agent',
@@ -78,6 +79,7 @@ export const AgentWindowNode = memo(function AgentWindowNode({
   selectionMode,
   isSelected,
   isFocused,
+  showFocusRing,
   onDragStart,
 }: AgentWindowNodeProps) {
   const {
@@ -102,6 +104,7 @@ export const AgentWindowNode = memo(function AgentWindowNode({
   const [isEditingTitle, setIsEditingTitle] = useState(false)
   const [editValue, setEditValue] = useState('')
   const [isResizing, setIsResizing] = useState(false)
+  const [reloadKey, setReloadKey] = useState(0)
   const titleInputRef = useRef<HTMLInputElement>(null)
   const z = agentWindow.zIndex ?? 1
 
@@ -110,6 +113,30 @@ export const AgentWindowNode = memo(function AgentWindowNode({
     titleInputRef.current?.focus()
     titleInputRef.current?.select()
   }, [isEditingTitle])
+
+  useEffect(() => {
+    let active = true
+    const handleReload = (event: Event) => {
+      const detail = (event as CustomEvent<AgentWindowReloadEventDetail>).detail
+      if (detail?.windowId !== agentWindow.id) return
+      void (async () => {
+        try {
+          await window.cells.agentSession.close(agentWindow.id)
+          await window.cells.agentSession.dispose(agentWindow.id)
+        } catch (err) {
+          console.error('[agent-window] reload failed', err)
+        } finally {
+          if (active) setReloadKey((key) => key + 1)
+        }
+      })()
+    }
+
+    window.addEventListener(AGENT_WINDOW_RELOAD_EVENT, handleReload)
+    return () => {
+      active = false
+      window.removeEventListener(AGENT_WINDOW_RELOAD_EVENT, handleReload)
+    }
+  }, [agentWindow.id])
 
   const commitTitle = useCallback(() => {
     setIsEditingTitle(false)
@@ -125,10 +152,6 @@ export const AgentWindowNode = memo(function AgentWindowNode({
         focusAgentWindow(agentWindow.id)
         if (!isFocused) bringAgentWindowToFront(agentWindow.id)
         return
-      }
-      if (modifierDrag && !selectionMode) {
-        focusAgentWindow(agentWindow.id)
-        if (!isFocused) bringAgentWindowToFront(agentWindow.id)
       }
       event.preventDefault()
       event.stopPropagation()
@@ -151,10 +174,6 @@ export const AgentWindowNode = memo(function AgentWindowNode({
         focusAgentWindow(agentWindow.id)
         if (!isFocused) bringAgentWindowToFront(agentWindow.id)
         return
-      }
-      if (modifierDrag && !selectionMode) {
-        focusAgentWindow(agentWindow.id)
-        if (!isFocused) bringAgentWindowToFront(agentWindow.id)
       }
       event.preventDefault()
       event.stopPropagation()
@@ -283,6 +302,12 @@ export const AgentWindowNode = memo(function AgentWindowNode({
     hasColor && agentWindow.status === 'idle' && Boolean(agentWindow.hasUnviewedCompletion)
   const showStatusEdge = hasColor && (agentWindow.status !== 'idle' || showUnreadDoneEdge)
   const animateStatusEdge = showStatusEdge && statusPresentation.dotClass.includes('animate-pulse')
+  const focusRingStyle: CSSProperties | undefined =
+    isFocused && showFocusRing
+      ? {
+          boxShadow: `0 0 0 ${Math.min(8, Math.max(2, Math.round(2 / Math.max(scale, 0.2))))}px var(--color-primary)`,
+        }
+      : undefined
 
   return (
     <div
@@ -313,6 +338,7 @@ export const AgentWindowNode = memo(function AgentWindowNode({
               '--agent-window-status-accent': statusAccent,
             } as CSSProperties)
           : null),
+        ...focusRingStyle,
       }}
       onMouseDown={handleNodeMouseDown}
     >
@@ -444,7 +470,7 @@ export const AgentWindowNode = memo(function AgentWindowNode({
         </div>
       ) : (
         <div className="h-full bg-gradient-to-b from-background/30 to-background/55">
-          <AgentChatPanel agentWindow={agentWindow} />
+          <AgentChatPanel key={reloadKey} agentWindow={agentWindow} />
         </div>
       )}
 

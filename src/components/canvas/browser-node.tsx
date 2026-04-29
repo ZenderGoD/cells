@@ -66,6 +66,7 @@ interface BrowserNodeProps {
   selectionMode: boolean
   isSelected: boolean
   isFocused: boolean
+  showFocusRing: boolean
   onDragStart: (id: string, kind: 'terminal' | 'browser', startX: number, startY: number) => void
 }
 
@@ -75,6 +76,7 @@ export function BrowserNode({
   selectionMode,
   isSelected,
   isFocused,
+  showFocusRing,
   onDragStart,
 }: BrowserNodeProps) {
   const {
@@ -420,9 +422,16 @@ export function BrowserNode({
   }, [isFocused, viewReady])
 
   // Track window size so browser bounds update on resize
-  const [windowHeight, setWindowHeight] = useState(window.innerHeight)
+  const [windowSize, setWindowSize] = useState({
+    width: window.innerWidth,
+    height: window.innerHeight,
+  })
   useEffect(() => {
-    const onResize = () => setWindowHeight(window.innerHeight)
+    const onResize = () =>
+      setWindowSize({
+        width: window.innerWidth,
+        height: window.innerHeight,
+      })
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
   }, [])
@@ -444,16 +453,22 @@ export function BrowserNode({
     const screenH = browser.height * s
 
     const inset = BORDER_W * s
-    const maxBottom = windowHeight - bottomInset
-    const bx = screenX + inset
-    const by = screenY + inset
-    const bw = screenW - inset * 2
-    const bh = Math.min(screenH - inset * 2, maxBottom - by)
+    const minTop = topInset
+    const maxRight = windowSize.width
+    const maxBottom = windowSize.height - bottomInset
+    const rawLeft = screenX + inset
+    const rawTop = screenY + inset
+    const rawRight = screenX + screenW - inset
+    const rawBottom = screenY + screenH - inset
+    const bx = Math.max(0, Math.min(maxRight, rawLeft))
+    const by = Math.max(minTop, Math.min(maxBottom, rawTop))
+    const br = Math.max(bx, Math.min(maxRight, rawRight))
+    const bb = Math.max(by, Math.min(maxBottom, rawBottom))
     const bounds = {
       x: Math.round(bx),
       y: Math.round(by),
-      width: Math.round(Math.max(0, bw)),
-      height: Math.round(Math.max(0, bh)),
+      width: Math.round(Math.max(0, br - bx)),
+      height: Math.round(Math.max(0, bb - by)),
     }
     const last = lastBoundsRef.current
     if (
@@ -499,7 +514,8 @@ export function BrowserNode({
     suspended,
     transitionHidden,
     viewReady,
-    windowHeight,
+    windowSize.height,
+    windowSize.width,
     titleBarHidden,
     titleBarPosition,
   ])
@@ -571,9 +587,6 @@ export function BrowserNode({
         focusBrowser(browser.id)
         return
       }
-      if (modifierDrag && !selectionMode) {
-        focusBrowser(browser.id)
-      }
       e.preventDefault()
       e.stopPropagation()
       onDragStart(browser.id, 'browser', e.clientX, e.clientY)
@@ -587,9 +600,16 @@ export function BrowserNode({
   // Scale up ring widths when zoomed out so borders remain visible
   let ringStyle: React.CSSProperties | undefined
   if (scale < 1) {
-    const w = isSelected ? Math.min(10, Math.round(2 / scale)) : Math.min(6, Math.round(1 / scale))
-    ringStyle = {
-      ['--tw-ring-shadow' as string]: `0 0 0 calc(${w}px + var(--tw-ring-offset-width, 0px)) var(--tw-ring-color, currentcolor)`,
+    if (isFocused && showFocusRing) {
+      const w = Math.min(8, Math.round(2 / scale))
+      ringStyle = { boxShadow: `0 0 0 ${w}px var(--color-primary)` }
+    } else {
+      const w = isSelected
+        ? Math.min(10, Math.round(2 / scale))
+        : Math.min(6, Math.round(1 / scale))
+      ringStyle = {
+        ['--tw-ring-shadow' as string]: `0 0 0 calc(${w}px + var(--tw-ring-offset-width, 0px)) var(--tw-ring-color, currentcolor)`,
+      }
     }
   }
 
@@ -662,7 +682,11 @@ export function BrowserNode({
         ref={contentRef}
         className={cn(
           'w-full h-full rounded-lg overflow-hidden bg-background relative',
-          isFocused ? 'ring-1 ring-white/10' : 'ring-1 ring-border/20',
+          isFocused && showFocusRing
+            ? 'window-focused'
+            : isFocused
+              ? 'ring-1 ring-white/10'
+              : 'ring-1 ring-border/20',
           isSelected && 'ring-2 ring-primary/70 ring-offset-1 ring-offset-background',
         )}
         style={ringStyle}

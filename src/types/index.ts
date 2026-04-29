@@ -7,6 +7,45 @@ export interface CanvasTransform {
 }
 
 export type CanvasSnapMode = 'fill' | 'peek'
+export type WindowAutoArrangeMode = 'grid' | 'dwindle'
+export type DwindleForceSplit = 'auto' | 'left' | 'right'
+export type DwindleSplitBias = 'directional' | 'current'
+export type DwindleSplitDirection = 'horizontal' | 'vertical'
+
+export interface DwindleLayoutSettings {
+  forceSplit?: DwindleForceSplit
+  preserveSplit?: boolean
+  useActiveForSplits?: boolean
+  splitWidthMultiplier?: number
+  defaultSplitRatio?: number
+  splitBias?: DwindleSplitBias
+  gap?: number
+  padding?: number
+  animationMs?: number
+}
+
+export interface WindowSection {
+  id: string
+  name: string
+  x: number
+  y: number
+  width?: number
+  height?: number
+  color?: 'slate' | 'blue' | 'green' | 'amber' | 'rose' | 'violet'
+  pinned?: boolean
+  windowIds: string[]
+  layoutTree?: DwindleLayoutTree | null
+}
+
+export type DwindleLayoutTree =
+  | { type: 'leaf'; id: string }
+  | {
+      type: 'split'
+      direction: DwindleSplitDirection
+      ratio: number
+      first: DwindleLayoutTree
+      second: DwindleLayoutTree
+    }
 export type TitleBarPosition = 'top' | 'bottom'
 export type AgentName = 'claude' | 'codex' | 'opencode' | 'pi'
 export type AgentStatus = 'active' | 'unread' | 'done' | null
@@ -587,6 +626,11 @@ export interface Project {
   /** Per-window focus counts for usage-based grid arrangement */
   focusCounts?: Record<string, number>
   autoArrangeOnCreate?: boolean
+  autoArrangeMode?: WindowAutoArrangeMode
+  dwindleLayoutSettings?: DwindleLayoutSettings
+  windowSections?: WindowSection[]
+  /** @deprecated Replaced by named windowSections. */
+  dwindleLayoutTree?: DwindleLayoutTree | null
   /** Per-project usage counts for command palette catch-all actions (search, agent-claude, agent-codex, agent-opencode, run) */
   commandActionCounts?: Record<string, number>
 }
@@ -1023,7 +1067,7 @@ export interface CellsAPI {
       callback: (id: string, type: string, width: number, height: number) => void,
     ): () => void
     getPinnedId(): string | null
-    getPinnedType(): 'terminal' | 'browser' | 'agent' | null
+    getPinnedType(): 'terminal' | 'browser' | 'agent' | 'section' | null
     pickFolder(): Promise<string | null>
     pickFiles(): Promise<string[] | null>
     listRecentFiles(): Promise<Array<{ path: string; name: string; mtime: number; source: string }>>

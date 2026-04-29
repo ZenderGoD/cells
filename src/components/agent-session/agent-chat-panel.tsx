@@ -385,12 +385,7 @@ function stripImageAttachmentTokens(input: string) {
   return input.replace(IMAGE_ATTACHMENT_TOKEN_RE, '')
 }
 
-function insertTextAtOffset(value: string, offset: number, insertion: string) {
-  const safeOffset = Math.max(0, Math.min(offset, value.length))
-  return `${value.slice(0, safeOffset)}${insertion}${value.slice(safeOffset)}`
-}
-
-function insertImageTokensAtOffset(
+function getImageTokenInsertResult(
   value: string,
   offset: number,
   currentAttachments: string[],
@@ -402,8 +397,18 @@ function insertImageTokensAtOffset(
     .map((path) => nextAttachments.filter(isImagePath).indexOf(path))
     .filter((index) => index >= 0)
     .map(imageAttachmentToken)
-  if (tokens.length === 0) return value
-  return insertTextAtOffset(value, offset, `${tokens.join(' ')} `)
+  if (tokens.length === 0) return { value, offset }
+  const insertion = `${tokens.join(' ')} `
+  const safeOffset = Math.max(0, Math.min(offset, value.length))
+  return {
+    value: insertTextAtOffset(value, safeOffset, insertion),
+    offset: safeOffset + insertion.length,
+  }
+}
+
+function insertTextAtOffset(value: string, offset: number, insertion: string) {
+  const safeOffset = Math.max(0, Math.min(offset, value.length))
+  return `${value.slice(0, safeOffset)}${insertion}${value.slice(safeOffset)}`
 }
 
 function removeImageTokenForPath(value: string, path: string, currentAttachments: string[]) {
@@ -570,6 +575,31 @@ function setComposerSelectionOffset(root: HTMLElement | null, targetOffset: numb
   selection.addRange(range)
 }
 
+function insertPlainTextIntoComposer(root: HTMLElement | null, text: string) {
+  if (!root || text.length === 0) return false
+  root.focus()
+
+  const selection = window.getSelection()
+  if (!selection) return false
+  let range: Range
+  if (selection.rangeCount > 0 && root.contains(selection.getRangeAt(0).commonAncestorContainer)) {
+    range = selection.getRangeAt(0)
+  } else {
+    range = document.createRange()
+    range.selectNodeContents(root)
+    range.collapse(false)
+  }
+
+  range.deleteContents()
+  const textNode = document.createTextNode(text)
+  range.insertNode(textNode)
+  range.setStartAfter(textNode)
+  range.collapse(true)
+  selection.removeAllRanges()
+  selection.addRange(range)
+  return true
+}
+
 function useFileThumbnail(path: string, enabled = true, maxHeight = 96) {
   const [url, setUrl] = useState<string | null>(null)
 
@@ -676,6 +706,111 @@ function AttachmentPill({ path }: { path: string }) {
         <Copy className="size-3" />
       </button>
     </span>
+  )
+}
+
+function splitImageTokenText(text: string): Array<string | { imageIndex: number; token: string }> {
+  const parts: Array<string | { imageIndex: number; token: string }> = []
+  let cursor = 0
+  let match: RegExpExecArray | null
+  IMAGE_ATTACHMENT_TOKEN_CAPTURE_RE.lastIndex = 0
+  while ((match = IMAGE_ATTACHMENT_TOKEN_CAPTURE_RE.exec(text))) {
+    if (match.index > cursor) parts.push(text.slice(cursor, match.index))
+    const imageIndex = Number.parseInt(match[1] ?? '', 10) - 1
+    parts.push({ imageIndex, token: match[0] })
+    cursor = match.index + match[0].length
+  }
+  if (cursor < text.length) parts.push(text.slice(cursor))
+  return parts
+}
+
+function UserImageTokenChip({
+  imageIndex,
+  path,
+  onPreview,
+}: {
+  imageIndex: number
+  path: string | undefined
+  onPreview: () => void
+}) {
+  const url = useFileThumbnail(path ?? '', Boolean(path), 48)
+  const label = `Image ${imageIndex + 1}`
+  return (
+    <button
+      type="button"
+      onClick={onPreview}
+      disabled={!path}
+      className="mx-0.5 inline-flex h-6 max-w-full items-center gap-1.5 rounded-[6px] border border-border/35 bg-background/45 py-0.5 pl-1 pr-2 align-middle text-[12px] font-medium text-foreground/85 shadow-minimal transition-colors hover:bg-background/65 disabled:pointer-events-none disabled:opacity-70"
+      title={path ?? label}
+    >
+      {url ? (
+        <img src={url} alt="" className="size-4 shrink-0 rounded-[3px] object-cover" />
+      ) : (
+        <span className="size-4 shrink-0 rounded-[3px] bg-foreground/10" />
+      )}
+      <span className="truncate">{label}</span>
+    </button>
+  )
+}
+
+function UserMessageText({
+  text,
+  images,
+  renderAsPlainText,
+  visiblePlainText,
+  onPreview,
+}: {
+  text: string
+  images: string[]
+  renderAsPlainText: boolean
+  visiblePlainText: string
+  onPreview: (path: string) => void
+}) {
+  const displayText = renderAsPlainText ? visiblePlainText : text
+  const parts = useMemo(() => splitImageTokenText(displayText), [displayText])
+  const hasTokenParts = parts.some((part) => typeof part !== 'string')
+
+  if (!hasTokenParts) {
+    if (renderAsPlainText) {
+      return (
+        <pre className="m-0 max-w-full whitespace-pre-wrap break-words font-sans leading-[1.45] [overflow-wrap:anywhere]">
+          {visiblePlainText}
+        </pre>
+      )
+    }
+    return (
+      <AgentMarkdown inline breaks onImageClick={onPreview}>
+        {text}
+      </AgentMarkdown>
+    )
+  }
+
+  return (
+    <div className="whitespace-pre-wrap">
+      {parts.map((part, index) => {
+        if (typeof part === 'string') {
+          if (!part) return null
+          return renderAsPlainText ? (
+            <span key={index}>{part}</span>
+          ) : (
+            <AgentMarkdown key={index} inline breaks className="inline" onImageClick={onPreview}>
+              {part}
+            </AgentMarkdown>
+          )
+        }
+        const path = images[part.imageIndex]
+        return (
+          <UserImageTokenChip
+            key={`${part.token}-${index}`}
+            imageIndex={part.imageIndex}
+            path={path}
+            onPreview={() => {
+              if (path) onPreview(path)
+            }}
+          />
+        )
+      })}
+    </div>
   )
 }
 
@@ -862,6 +997,8 @@ function ComposerRichEditor({
   value,
   imageAttachments,
   placeholder,
+  selectionOffset,
+  onSelectionOffsetApplied,
   onChange,
   onKeyDown,
   onPasteImages,
@@ -871,6 +1008,8 @@ function ComposerRichEditor({
   value: string
   imageAttachments: string[]
   placeholder: string
+  selectionOffset: number | null
+  onSelectionOffsetApplied: () => void
   onChange: (value: string, cursorPosition: number) => void
   onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => void
   onPasteImages: (files: File[], insertOffset: number) => void
@@ -884,10 +1023,15 @@ function ComposerRichEditor({
     const root = editorRef.current
     if (!root) return
     const current = serializeComposerElement(root)
-    if (current === value && renderedValueRef.current === value) return
-    renderComposerValueInto(root, value, imageCount)
-    renderedValueRef.current = value
-  }, [editorRef, imageCount, value])
+    if (current !== value || renderedValueRef.current !== value) {
+      renderComposerValueInto(root, value, imageCount)
+      renderedValueRef.current = value
+    }
+    if (selectionOffset !== null) {
+      setComposerSelectionOffset(root, selectionOffset)
+      onSelectionOffsetApplied()
+    }
+  }, [editorRef, imageCount, onSelectionOffsetApplied, selectionOffset, value])
 
   const emitChange = useCallback(() => {
     const root = editorRef.current
@@ -895,6 +1039,16 @@ function ComposerRichEditor({
     renderedValueRef.current = next
     onChange(next, getComposerSelectionOffset(root))
   }, [editorRef, onChange])
+
+  const pastePlainText = useCallback(async () => {
+    try {
+      const text = await navigator.clipboard.readText()
+      if (!insertPlainTextIntoComposer(editorRef.current, text)) return
+      emitChange()
+    } catch (err) {
+      console.error('[agent-chat] paste plain text failed', err)
+    }
+  }, [editorRef, emitChange])
 
   return (
     <div className="relative min-h-[72px] px-4 pt-3.5 pb-2">
@@ -911,7 +1065,20 @@ function ComposerRichEditor({
         spellCheck={false}
         suppressContentEditableWarning
         onInput={emitChange}
-        onKeyDown={onKeyDown}
+        onKeyDown={(event) => {
+          if (
+            event.key.toLowerCase() === 'v' &&
+            event.shiftKey &&
+            !event.altKey &&
+            hasPrimaryModifier(event.nativeEvent)
+          ) {
+            event.preventDefault()
+            event.stopPropagation()
+            void pastePlainText()
+            return
+          }
+          onKeyDown(event)
+        }}
         onClick={(event) => {
           const target = event.target as HTMLElement
           const button = target.closest<HTMLButtonElement>('[data-remove-image-chip-index]')
@@ -932,7 +1099,7 @@ function ComposerRichEditor({
           event.preventDefault()
           onPasteImages(imageFiles, getComposerSelectionOffset(editorRef.current))
         }}
-        className="min-h-[72px] whitespace-pre-wrap break-words text-[14px] leading-6 text-foreground outline-none [overflow-wrap:anywhere] [&_[data-image-chip-index]]:mx-0.5"
+        className="scrollbar-hover min-h-[72px] max-h-[min(38vh,260px)] overflow-y-auto overscroll-contain whitespace-pre-wrap break-words text-[14px] leading-6 text-foreground outline-none [overflow-wrap:anywhere] [&_[data-image-chip-index]]:mx-0.5"
       />
     </div>
   )
@@ -1017,15 +1184,13 @@ const UserBubble = memo(function UserBubble({ message }: { message: AgentSession
                 containIntrinsicSize: '0 180px',
               }}
             >
-              {renderAsPlainText ? (
-                <pre className="m-0 max-w-full whitespace-pre-wrap break-words font-sans leading-[1.45] [overflow-wrap:anywhere]">
-                  {visiblePlainText}
-                </pre>
-              ) : (
-                <AgentMarkdown inline breaks onImageClick={setPreviewPath}>
-                  {text}
-                </AgentMarkdown>
-              )}
+              <UserMessageText
+                text={text}
+                images={images}
+                renderAsPlainText={renderAsPlainText}
+                visiblePlainText={visiblePlainText}
+                onPreview={setPreviewPath}
+              />
             </div>
             {isLargeText ? (
               <div className="flex items-center justify-between gap-3 border-t border-border/30 px-3.5 py-1.5 text-[11px] text-muted-foreground/70">
@@ -3214,11 +3379,21 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   ])
 
   const queuedEditRestoreRef = useRef<{ input: string; attachments: string[] } | null>(null)
+  const [pendingComposerSelectionOffset, setPendingComposerSelectionOffset] = useState<
+    number | null
+  >(null)
 
   const writeComposer = useCallback(
-    (value: string, nextAttachments: string[]) => {
+    (
+      value: string,
+      nextAttachments: string[],
+      options?: {
+        selectionOffset?: number | null
+      },
+    ) => {
       const sanitizedAttachments = sanitizeComposerAttachments(nextAttachments)
       const sanitizedValue = value
+      setPendingComposerSelectionOffset(options?.selectionOffset ?? null)
       setInput(sanitizedValue)
       inputRef.current = sanitizedValue
       setAttachments(sanitizedAttachments)
@@ -3247,10 +3422,15 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       const picked = await window.cells.app.pickFiles()
       if (!picked || picked.length === 0) return
       const offset = getComposerSelectionOffset(textareaRef.current)
-      writeComposer(
-        insertImageTokensAtOffset(inputRef.current, offset, attachmentsRef.current, picked),
-        [...attachmentsRef.current, ...picked],
+      const inserted = getImageTokenInsertResult(
+        inputRef.current,
+        offset,
+        attachmentsRef.current,
+        picked,
       )
+      writeComposer(inserted.value, [...attachmentsRef.current, ...picked], {
+        selectionOffset: inserted.offset,
+      })
     } catch (err) {
       console.error('[agent-chat] pick files failed', err)
     }
@@ -3268,6 +3448,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     },
     [writeComposer],
   )
+
+  const clearPendingComposerSelectionOffset = useCallback(() => {
+    setPendingComposerSelectionOffset(null)
+  }, [])
 
   // Actually ship one message to the agent. Separated from submit() so the
   // queue-flusher effect can call it too.
@@ -3877,10 +4061,15 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       }
       if (saved.length > 0) {
         const offset = getComposerSelectionOffset(textareaRef.current)
-        writeComposer(
-          insertImageTokensAtOffset(inputRef.current, offset, attachmentsRef.current, saved),
-          [...attachmentsRef.current, ...saved],
+        const inserted = getImageTokenInsertResult(
+          inputRef.current,
+          offset,
+          attachmentsRef.current,
+          saved,
         )
+        writeComposer(inserted.value, [...attachmentsRef.current, ...saved], {
+          selectionOffset: inserted.offset,
+        })
       }
     },
     [writeComposer],
@@ -3960,10 +4149,9 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       clearTimeout(stopConfirmTimerRef.current)
       stopConfirmTimerRef.current = null
     }
-    // Effect-driven setState is deliberate: we need the armed bit cleared
-    // so the next running turn doesn't start already-armed.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (stopConfirmArmed) setStopConfirmArmed(false)
+    if (!stopConfirmArmed) return
+    const timeout = window.setTimeout(() => setStopConfirmArmed(false), 0)
+    return () => window.clearTimeout(timeout)
   }, [isRunning, stopConfirmArmed])
 
   useEffect(
@@ -4162,7 +4350,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                 viewportClassName="rounded-none"
               >
                 <div
-                  className="mx-auto min-h-full max-w-3xl py-6"
+                  className="mx-auto min-h-full w-[calc(100%-2rem)] max-w-3xl py-6"
                   style={{ paddingBottom: composerOverlayHeight + 24 }}
                 >
                   {isLoadingSnapshot ? (
@@ -4301,7 +4489,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                 extraData={streamingTextSignature || streamingTurnKey || ''}
                 keyExtractor={chatGroupKey}
                 renderItem={({ item }) => (
-                  <div className="mx-auto w-full min-w-0 max-w-3xl">
+                  <div className="mx-auto w-[calc(100%-2rem)] min-w-0 max-w-3xl">
                     <div className="pb-3">
                       <MessageGroupRow
                         group={item}
@@ -4325,7 +4513,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                 ListHeaderComponent={<div className="h-6" />}
                 ListFooterComponent={
                   <div
-                    className="mx-auto w-full min-w-0 max-w-3xl"
+                    className="mx-auto w-[calc(100%-2rem)] min-w-0 max-w-3xl"
                     style={{ paddingBottom: composerOverlayHeight + 24 }}
                   >
                     {showPendingLoader ? <PendingTurnIndicator agent={agentWindow.agent} /> : null}
@@ -4828,6 +5016,8 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                   placeholder={
                     isEditingQueuedMessage ? 'Edit queued message…' : composerPlaceholder
                   }
+                  selectionOffset={pendingComposerSelectionOffset}
+                  onSelectionOffsetApplied={clearPendingComposerSelectionOffset}
                   onChange={(nextValue, cursorPosition) => {
                     writeComposer(nextValue, attachmentsRef.current)
                     inlineMention.handleInputChange(nextValue, cursorPosition)
@@ -4851,15 +5041,15 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                         }
                       }
                       if (saved.length > 0) {
-                        writeComposer(
-                          insertImageTokensAtOffset(
-                            inputRef.current,
-                            insertOffset,
-                            attachmentsRef.current,
-                            saved,
-                          ),
-                          [...attachmentsRef.current, ...saved],
+                        const inserted = getImageTokenInsertResult(
+                          inputRef.current,
+                          insertOffset,
+                          attachmentsRef.current,
+                          saved,
                         )
+                        writeComposer(inserted.value, [...attachmentsRef.current, ...saved], {
+                          selectionOffset: inserted.offset,
+                        })
                       }
                     })()
                   }}

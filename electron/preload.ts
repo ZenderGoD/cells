@@ -382,7 +382,7 @@ const api: CellsAPI = {
     },
     getPinnedType: () => {
       const params = new URLSearchParams(window.location.search)
-      return params.get('type') as 'terminal' | 'browser' | 'agent' | null
+      return params.get('type') as 'terminal' | 'browser' | 'agent' | 'section' | null
     },
   },
   git: {

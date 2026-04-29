@@ -359,7 +359,7 @@ const terminalSubscriptionCounts = new Map<string, number>()
 const subscribedTerminals = new Set<string>()
 const pendingTerminalExitDetails = new Map<string, TerminalExitDetails>()
 const pinnedWindows = new Map<string, BrowserWindow>()
-const pinnedWindowTypes = new Map<string, 'terminal' | 'browser' | 'agent'>()
+const pinnedWindowTypes = new Map<string, 'terminal' | 'browser' | 'agent' | 'section'>()
 
 // MessagePort per BrowserWindow for high-throughput terminal data.
 // Bypasses Electron's main IPC event loop — structured clone over a direct
@@ -2505,7 +2505,7 @@ ipcMain.handle(
     })
 
     pinnedWindows.set(id, win)
-    pinnedWindowTypes.set(id, type as 'terminal' | 'browser' | 'agent')
+    pinnedWindowTypes.set(id, type as 'terminal' | 'browser' | 'agent' | 'section')
     let unpinNotified = false
 
     const notifyUnpinned = () => {
@@ -3501,13 +3501,21 @@ ipcMain.on(
   'browser:update-bounds',
   (_event, browserId: string, bounds: { x: number; y: number; width: number; height: number }) => {
     const view = browserViews.get(browserId)
-    if (!view) return
-    // Clamp to non-negative and integer values
+    if (!view || !mainWindow) return
+    const contentBounds = mainWindow.getContentBounds()
+    const rawX = Number.isFinite(bounds.x) ? bounds.x : 0
+    const rawY = Number.isFinite(bounds.y) ? bounds.y : 0
+    const rawWidth = Number.isFinite(bounds.width) ? bounds.width : 0
+    const rawHeight = Number.isFinite(bounds.height) ? bounds.height : 0
+    const left = Math.max(0, Math.min(contentBounds.width, rawX))
+    const top = Math.max(0, Math.min(contentBounds.height, rawY))
+    const right = Math.max(left, Math.min(contentBounds.width, rawX + rawWidth))
+    const bottom = Math.max(top, Math.min(contentBounds.height, rawY + rawHeight))
     view.setBounds({
-      x: Math.round(Math.max(0, bounds.x)),
-      y: Math.round(Math.max(0, bounds.y)),
-      width: Math.round(Math.max(0, bounds.width)),
-      height: Math.round(Math.max(0, bounds.height)),
+      x: Math.round(left),
+      y: Math.round(top),
+      width: Math.round(right - left),
+      height: Math.round(bottom - top),
     })
   },
 )

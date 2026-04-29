@@ -115,9 +115,6 @@ export const TerminalNode = memo(function TerminalNode({
         }
         return
       }
-      if (modifierDrag && !selectionMode) {
-        focusTerminal(terminal.id)
-      }
       e.preventDefault()
       e.stopPropagation()
       onDragStart(terminal.id, 'terminal', e.clientX, e.clientY)
@@ -238,9 +235,6 @@ export const TerminalNode = memo(function TerminalNode({
         }
         return
       }
-      if (modifierDrag && !selectionMode) {
-        focusTerminal(terminal.id)
-      }
       e.preventDefault()
       e.stopPropagation()
       onDragStart(terminal.id, 'terminal', e.clientX, e.clientY)
@@ -261,7 +255,7 @@ export const TerminalNode = memo(function TerminalNode({
   let ringStyle: React.CSSProperties | undefined
   if (scale < 1) {
     if (isFocused && showFocusRing) {
-      const w = Math.min(16, Math.round(4 / scale))
+      const w = Math.min(8, Math.round(2 / scale))
       ringStyle = { boxShadow: `0 0 0 ${w}px var(--color-primary)` }
     } else if (isSelected) {
       const w = Math.min(10, Math.round(2 / scale))

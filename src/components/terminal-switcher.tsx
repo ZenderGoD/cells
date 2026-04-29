@@ -33,6 +33,7 @@ export function TerminalSwitcher() {
   const terminals = useStore((s) => s.terminals)
   const browsers = useStore((s) => s.browsers)
   const agentWindows = useStore((s) => s.agentWindows)
+  const windowSections = useStore((s) => s.windowSections)
   const focusedTerminalId = useStore((s) => s.focusedTerminalId)
   const focusedBrowserId = useStore((s) => s.focusedBrowserId)
   const focusedAgentWindowId = useStore((s) => s.focusedAgentWindowId)
@@ -267,6 +268,7 @@ export function TerminalSwitcher() {
             <div ref={overviewContainerRef} className="min-w-0 px-1 pb-2">
               <WindowOverviewMap
                 windows={canvasWindows}
+                sections={windowSections}
                 currentId={selectedItemId}
                 focusedId={currentId}
                 viewport={viewportRect}

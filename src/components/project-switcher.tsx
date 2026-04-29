@@ -18,6 +18,7 @@ interface ProjectSwitcherItem {
   terminals: number
   browsers: number
   windows: ReturnType<typeof getCanvasWindows>
+  sections: Project['windowSections']
   isCurrent: boolean
   attention: ProjectAttention
 }
@@ -48,6 +49,7 @@ export function ProjectSwitcher() {
   const terminals = useStore((s) => s.terminals)
   const browsers = useStore((s) => s.browsers)
   const agentWindows = useStore((s) => s.agentWindows)
+  const windowSections = useStore((s) => s.windowSections)
   const switchProject = useStore((s) => s.switchProject)
   const setProjectTitleBarHidden = useStore((s) => s.setProjectTitleBarHidden)
   const setOverlayOpen = useStore((s) => s.setOverlayOpen)
@@ -85,6 +87,7 @@ export function ProjectSwitcher() {
       const projectTerminals = isCurrent ? terminals : project.terminals
       const projectBrowsers = isCurrent ? browsers : project.browsers
       const projectAgents = isCurrent ? agentWindows : (project.agentWindows ?? [])
+      const projectSections = isCurrent ? windowSections : (project.windowSections ?? [])
 
       const attention = getProjectRuntimeAttention(projectTerminals)
 
@@ -96,11 +99,20 @@ export function ProjectSwitcher() {
         terminals: projectTerminals.length,
         browsers: projectBrowsers.length,
         windows: getCanvasWindows(projectTerminals, projectBrowsers, projectAgents),
+        sections: projectSections,
         isCurrent,
         attention,
       }
     })
-  }, [activeProjectId, agentWindows, browsers, projectSwitchMode, projects, terminals])
+  }, [
+    activeProjectId,
+    agentWindows,
+    browsers,
+    projectSwitchMode,
+    projects,
+    terminals,
+    windowSections,
+  ])
 
   const currentId = activeProjectId
   const selectedItem = items[selectedIndex] ?? items.find((item) => item.id === currentId) ?? null
@@ -310,9 +322,10 @@ export function ProjectSwitcher() {
                       ) : null}
 
                       <div className="flex flex-1 items-center justify-center bg-background/70 px-2 py-2">
-                        {item.windows.length > 0 ? (
+                        {item.windows.length > 0 || (item.sections?.length ?? 0) > 0 ? (
                           <WindowOverviewMap
                             windows={item.windows}
+                            sections={item.sections ?? []}
                             width={164}
                             height={78}
                             className="border-border/20 bg-background/50 rounded-md"

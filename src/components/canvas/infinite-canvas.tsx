@@ -7,6 +7,7 @@ import {
   type MouseEvent,
   type WheelEvent,
 } from 'react'
+import { GripHorizontal, Move } from 'lucide-react'
 import { motion, useMotionValue, useSpring } from 'motion/react'
 import { hasPrimaryModifier, isPrimaryModifierKey } from '@/lib/keyboard-shortcuts'
 import { cn } from '@/lib/utils'
@@ -23,6 +24,7 @@ import { TerminalNode } from './terminal-node'
 import { BrowserNode } from './browser-node'
 import { AgentWindowNode } from './agent-window-node'
 import { useShallow } from 'zustand/react/shallow'
+import type { WindowSection } from '@/types'
 
 const MIN_ZOOM = 0.15
 const MAX_ZOOM = 1.5
@@ -34,9 +36,46 @@ const SNAP_POSITION_EPSILON = 0.5
 const SNAP_SCALE_EPSILON = 0.002
 const WHEEL_ZOOM_INTENSITY = 0.01
 const BROWSER_VIEW_INSET_PX = 3 // Must match the content inset used by BrowserNode.
+const SECTION_MIN_WIDTH = 320
+const SECTION_MIN_HEIGHT = 220
+const SECTION_HANDLE_SIZE = 10
+type SectionResizeEdge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
+const SECTION_RESIZE_EDGES: SectionResizeEdge[] = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw']
 
 const SPRING_NORMAL = { stiffness: 300, damping: 30 }
 const SPRING_FAST = { stiffness: 800, damping: 50 }
+
+function getSectionCanvasClass(color: WindowSection['color']) {
+  switch (color) {
+    case 'slate':
+      return 'border-slate-300/75 bg-slate-400/[0.12] outline-slate-300/25'
+    case 'green':
+      return 'border-emerald-300/80 bg-emerald-400/[0.13] outline-emerald-300/30'
+    case 'amber':
+      return 'border-amber-300/85 bg-amber-400/[0.14] outline-amber-300/30'
+    case 'rose':
+      return 'border-rose-300/80 bg-rose-400/[0.13] outline-rose-300/30'
+    case 'violet':
+      return 'border-violet-300/80 bg-violet-400/[0.13] outline-violet-300/30'
+    case 'blue':
+    default:
+      return 'border-sky-300/85 bg-sky-400/[0.14] outline-sky-300/30'
+  }
+}
+
+function getSectionResizeCursor(edge: SectionResizeEdge) {
+  if (edge === 'n' || edge === 's') return 'ns-resize'
+  if (edge === 'e' || edge === 'w') return 'ew-resize'
+  if (edge === 'ne' || edge === 'sw') return 'nesw-resize'
+  return 'nwse-resize'
+}
+
+function rectsIntersect(
+  a: { x: number; y: number; width: number; height: number },
+  b: { x: number; y: number; width: number; height: number },
+) {
+  return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y
+}
 
 export function InfiniteCanvas() {
   const {
@@ -45,10 +84,13 @@ export function InfiniteCanvas() {
     agentWindows,
     canvas,
     moveCanvasNodes,
+    commitWindowSectionDrag,
+    resizeWindowSection,
     setCanvasTransform,
     snapToTerminal,
     snapToBrowser,
     snapToAgentWindow,
+    snapToWindowSection,
     snapToClosest,
     snapEnabled,
     snapFast: snapFastFlag,
@@ -56,6 +98,10 @@ export function InfiniteCanvas() {
     reducedMotion,
     selectionMode,
     selectedNodeIds,
+    windowSections,
+    togglePinSection,
+    autoArrangeMode,
+    arrangeDwindleSections,
     setSelectedNodeIds,
     focusedTerminalId,
     focusedBrowserId,
@@ -69,10 +115,13 @@ export function InfiniteCanvas() {
       agentWindows: s.agentWindows,
       canvas: s.canvas,
       moveCanvasNodes: s.moveCanvasNodes,
+      commitWindowSectionDrag: s.commitWindowSectionDrag,
+      resizeWindowSection: s.resizeWindowSection,
       setCanvasTransform: s.setCanvasTransform,
       snapToTerminal: s.snapToTerminal,
       snapToBrowser: s.snapToBrowser,
       snapToAgentWindow: s.snapToAgentWindow,
+      snapToWindowSection: s.snapToWindowSection,
       snapToClosest: s.snapToClosest,
       snapEnabled: s.snapEnabled,
       snapFast: s.snapFast,
@@ -80,6 +129,10 @@ export function InfiniteCanvas() {
       reducedMotion: s.reducedMotion,
       selectionMode: s.selectionMode,
       selectedNodeIds: s.selectedNodeIds,
+      windowSections: s.windowSections,
+      togglePinSection: s.togglePinSection,
+      autoArrangeMode: s.autoArrangeMode,
+      arrangeDwindleSections: s.arrangeDwindleSections,
       setSelectedNodeIds: s.setSelectedNodeIds,
       focusedTerminalId: s.focusedTerminalId,
       focusedBrowserId: s.focusedBrowserId,
@@ -97,6 +150,8 @@ export function InfiniteCanvas() {
   const [isUserDriving, setIsUserDriving] = useState(false) // true while user is actively panning/scrolling
   const [isSnapAnimating, setIsSnapAnimating] = useState(false)
   const [primaryModifierHeld, setPrimaryModifierHeld] = useState(false)
+  const [draggingSectionId, setDraggingSectionId] = useState<string | null>(null)
+  const [resizingSectionId, setResizingSectionId] = useState<string | null>(null)
   const [marqueeBox, setMarqueeBox] = useState<{
     x: number
     y: number
@@ -114,6 +169,24 @@ export function InfiniteCanvas() {
     startY: number
     origins: ReturnType<typeof createSelectionOrigins>
     transientSelection: boolean
+    ids: string[]
+  } | null>(null)
+  const sectionDragRef = useRef<{
+    id: string
+    startX: number
+    startY: number
+    originX: number
+    originY: number
+  } | null>(null)
+  const sectionResizeRef = useRef<{
+    id: string
+    edge: SectionResizeEdge
+    startX: number
+    startY: number
+    originX: number
+    originY: number
+    originWidth: number
+    originHeight: number
   } | null>(null)
   const marqueeRef = useRef<{ startX: number; startY: number } | null>(null)
   const snapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -139,6 +212,18 @@ export function InfiniteCanvas() {
   const animatedY = reducedMotion ? motionY : springY
   const animatedScale = reducedMotion ? motionScale : springScale
   const viewportSize = getCanvasViewportSize({ titleBarHidden })
+  const sectionHandleScale = Math.min(5, Math.max(1, 1 / Math.max(transform.scale, 0.2)))
+  const sectionHandleExpanded = transform.scale < 0.55
+  const getSectionWidth = useCallback(
+    (section: WindowSection) =>
+      Math.max(SECTION_MIN_WIDTH, section.width ?? viewportSize.width - 16),
+    [viewportSize.width],
+  )
+  const getSectionHeight = useCallback(
+    (section: WindowSection) =>
+      Math.max(SECTION_MIN_HEIGHT, section.height ?? viewportSize.height - 16),
+    [viewportSize.height],
+  )
   const viewportRect = getViewportRect(transform, viewportSize.width, viewportSize.height)
   const terminalViewportRect = useMemo(() => {
     const overscan = TERMINAL_VISIBILITY_OVERSCAN_PX / Math.max(transform.scale, MIN_ZOOM)
@@ -179,8 +264,83 @@ export function InfiniteCanvas() {
       agentWindows,
     ],
   )
-  const showFocusedTerminalRing = visibleWindowCount >= 2
+  const showFocusedWindowRing = visibleWindowCount >= 2
   const canvasWillChange = isPanning || isDragging || isUserDriving ? 'transform' : undefined
+  const renderedWindowSections = useMemo(
+    () =>
+      windowSections.filter((section) =>
+        rectsIntersect(
+          {
+            x: section.x,
+            y: section.y,
+            width: getSectionWidth(section),
+            height: getSectionHeight(section),
+          },
+          terminalViewportRect,
+        ),
+      ),
+    [getSectionHeight, getSectionWidth, terminalViewportRect, windowSections],
+  )
+  const pinnedSectionWindowIds = useMemo(
+    () =>
+      new Set(
+        windowSections.filter((section) => section.pinned).flatMap((section) => section.windowIds),
+      ),
+    [windowSections],
+  )
+  const renderedTerminals = useMemo(
+    () =>
+      terminals.filter((terminal) => {
+        if (pinnedSectionWindowIds.has(terminal.id)) return false
+        return (
+          terminal.id === focusedTerminalId ||
+          selectedNodeIds.includes(terminal.id) ||
+          rectsIntersect(terminal, terminalViewportRect)
+        )
+      }),
+    [focusedTerminalId, pinnedSectionWindowIds, selectedNodeIds, terminalViewportRect, terminals],
+  )
+  const renderedBrowsers = useMemo(
+    () =>
+      browsers.filter((browser) => {
+        if (pinnedSectionWindowIds.has(browser.id)) return false
+        return (
+          browser.id === focusedBrowserId ||
+          selectedNodeIds.includes(browser.id) ||
+          rectsIntersect(browser, terminalViewportRect)
+        )
+      }),
+    [browsers, focusedBrowserId, pinnedSectionWindowIds, selectedNodeIds, terminalViewportRect],
+  )
+  const renderedAgentWindows = useMemo(
+    () =>
+      agentWindows.filter((agentWindow) => {
+        if (pinnedSectionWindowIds.has(agentWindow.id)) return false
+        return (
+          agentWindow.id === focusedAgentWindowId ||
+          selectedNodeIds.includes(agentWindow.id) ||
+          rectsIntersect(agentWindow, terminalViewportRect)
+        )
+      }),
+    [
+      agentWindows,
+      focusedAgentWindowId,
+      pinnedSectionWindowIds,
+      selectedNodeIds,
+      terminalViewportRect,
+    ],
+  )
+
+  useEffect(() => {
+    if (autoArrangeMode !== 'dwindle' || windowSections.length === 0) return
+    arrangeDwindleSections(true)
+  }, [
+    arrangeDwindleSections,
+    autoArrangeMode,
+    viewportSize.width,
+    viewportSize.height,
+    windowSections.length,
+  ])
 
   const isTerminalVisible = useCallback(
     (terminal: { x: number; y: number; width: number; height: number }) =>
@@ -295,6 +455,9 @@ export function InfiniteCanvas() {
       terminals: terms,
       browsers,
       agentWindows: agents,
+      windowSections: sections,
+      titleBarHidden: scheduledTitleBarHidden,
+      focusedWindowSectionId: scheduledFocusedWindowSectionId,
     } = useStore.getState()
     if (canvas.scale < SNAP_DISABLE_ZOOM) {
       setSnapPaused(true)
@@ -302,12 +465,25 @@ export function InfiniteCanvas() {
     }
     setSnapPaused(false)
     const windows = getCanvasWindows(terms, browsers, agents)
-    if (windows.length === 0) return
 
     // Find the window with the most overlap with the viewport
     const { width: viewW, height: viewH } = getCanvasViewportSize({
-      titleBarHidden: useStore.getState().titleBarHidden,
+      titleBarHidden: scheduledTitleBarHidden,
     })
+    const sectionTargets = sections.map((section) => ({
+      id: section.id,
+      type: 'section' as const,
+      x: section.x,
+      y: section.y,
+      width: Math.max(SECTION_MIN_WIDTH, section.width ?? viewW - 16),
+      height: Math.max(SECTION_MIN_HEIGHT, section.height ?? viewH - 16),
+    }))
+    const focusedSectionTarget = scheduledFocusedWindowSectionId
+      ? sectionTargets.find((section) => section.id === scheduledFocusedWindowSectionId)
+      : null
+    const targets = focusedSectionTarget ? [focusedSectionTarget] : [...windows, ...sectionTargets]
+    if (targets.length === 0) return
+
     const viewL = -canvas.x / canvas.scale
     const viewT = -canvas.y / canvas.scale
     const viewR = viewL + viewW / canvas.scale
@@ -315,20 +491,20 @@ export function InfiniteCanvas() {
     const viewArea = (viewR - viewL) * (viewB - viewT)
 
     let maxCoverage = 0
-    let bestWindow: ReturnType<typeof getCanvasWindows>[number] | null = null
-    for (const window of windows) {
+    let bestTarget: (typeof targets)[number] | null = null
+    for (const target of targets) {
       const overlapW = Math.max(
         0,
-        Math.min(window.x + window.width, viewR) - Math.max(window.x, viewL),
+        Math.min(target.x + target.width, viewR) - Math.max(target.x, viewL),
       )
       const overlapH = Math.max(
         0,
-        Math.min(window.y + window.height, viewB) - Math.max(window.y, viewT),
+        Math.min(target.y + target.height, viewB) - Math.max(target.y, viewT),
       )
       const coverage = (overlapW * overlapH) / viewArea
       if (coverage > maxCoverage) {
         maxCoverage = coverage
-        bestWindow = window
+        bestTarget = target
       }
     }
 
@@ -342,19 +518,29 @@ export function InfiniteCanvas() {
       if (useStore.getState().activeProjectId !== scheduledProjectId) return
       setIsUserDriving(false)
       setSnapPaused(false)
-      if (!bestWindow) {
+      if (!bestTarget) {
         snapToClosest()
         return
       }
-      if (bestWindow.type === 'terminal') {
-        snapToTerminal(bestWindow.id)
-      } else if (bestWindow.type === 'agent') {
-        snapToAgentWindow(bestWindow.id)
+      if (bestTarget.type === 'section') {
+        snapToWindowSection(bestTarget.id)
+      } else if (bestTarget.type === 'terminal') {
+        snapToTerminal(bestTarget.id)
+      } else if (bestTarget.type === 'agent') {
+        snapToAgentWindow(bestTarget.id)
       } else {
-        snapToBrowser(bestWindow.id)
+        snapToBrowser(bestTarget.id)
       }
     }, delay)
-  }, [snapToAgentWindow, snapToBrowser, snapToClosest, snapToTerminal, snapEnabled, setSnapPaused])
+  }, [
+    snapToAgentWindow,
+    snapToBrowser,
+    snapToClosest,
+    snapToTerminal,
+    snapToWindowSection,
+    snapEnabled,
+    setSnapPaused,
+  ])
 
   const cancelSnap = useCallback(() => {
     if (snapTimerRef.current) {
@@ -377,6 +563,8 @@ export function InfiniteCanvas() {
     cancelSnap()
     panRef.current = null
     dragRef.current = null
+    sectionDragRef.current = null
+    sectionResizeRef.current = null
     marqueeRef.current = null
     prevTransformRef.current = { x: transform.x, y: transform.y, scale: transform.scale }
     isSnapAnimatingRef.current = false
@@ -397,6 +585,8 @@ export function InfiniteCanvas() {
       setIsSnapAnimating(false)
       setMarqueeBox(null)
       setPrimaryModifierHeld(false)
+      setDraggingSectionId(null)
+      setResizingSectionId(null)
     })
 
     return () => {
@@ -455,7 +645,13 @@ export function InfiniteCanvas() {
         })
       }
 
-      if ((terminals.length > 0 || browsers.length > 0 || agentWindows.length > 0) && snapEnabled) {
+      if (
+        (terminals.length > 0 ||
+          browsers.length > 0 ||
+          agentWindows.length > 0 ||
+          windowSections.length > 0) &&
+        snapEnabled
+      ) {
         scheduleSnap()
       }
     },
@@ -466,6 +662,7 @@ export function InfiniteCanvas() {
       terminals.length,
       browsers.length,
       agentWindows.length,
+      windowSections.length,
       snapEnabled,
     ],
   )
@@ -544,6 +741,45 @@ export function InfiniteCanvas() {
         )
       }
 
+      if (sectionDragRef.current) {
+        const dx = (e.clientX - sectionDragRef.current.startX) / transform.scale
+        const dy = (e.clientY - sectionDragRef.current.startY) / transform.scale
+        useStore
+          .getState()
+          .moveWindowSection(
+            sectionDragRef.current.id,
+            sectionDragRef.current.originX + dx,
+            sectionDragRef.current.originY + dy,
+          )
+      }
+
+      if (sectionResizeRef.current) {
+        const dx = (e.clientX - sectionResizeRef.current.startX) / transform.scale
+        const dy = (e.clientY - sectionResizeRef.current.startY) / transform.scale
+        const resize = sectionResizeRef.current
+        const movesLeft = resize.edge.includes('w')
+        const movesRight = resize.edge.includes('e')
+        const movesTop = resize.edge.includes('n')
+        const movesBottom = resize.edge.includes('s')
+        let width = resize.originWidth
+        let height = resize.originHeight
+        let x = resize.originX
+        let y = resize.originY
+
+        if (movesRight) width = Math.max(SECTION_MIN_WIDTH, resize.originWidth + dx)
+        if (movesBottom) height = Math.max(SECTION_MIN_HEIGHT, resize.originHeight + dy)
+        if (movesLeft) {
+          width = Math.max(SECTION_MIN_WIDTH, resize.originWidth - dx)
+          x = resize.originX + (resize.originWidth - width)
+        }
+        if (movesTop) {
+          height = Math.max(SECTION_MIN_HEIGHT, resize.originHeight - dy)
+          y = resize.originY + (resize.originHeight - height)
+        }
+
+        resizeWindowSection(resize.id, { x, y, width, height })
+      }
+
       if (marqueeRef.current) {
         const rect = containerRef.current?.getBoundingClientRect()
         if (!rect) return
@@ -568,6 +804,7 @@ export function InfiniteCanvas() {
       transform,
       setCanvasTransform,
       moveCanvasNodes,
+      resizeWindowSection,
       selectableWindows,
       setSelectedNodeIds,
     ],
@@ -576,18 +813,35 @@ export function InfiniteCanvas() {
   const handleMouseUp = useCallback(() => {
     const wasPanning = isPanning
     const clearTransientSelection = dragRef.current?.transientSelection === true
+    const draggedIds = dragRef.current?.ids ?? []
+    const resizedSectionId = sectionResizeRef.current?.id ?? null
     setIsPanning(false)
     setIsDragging(false)
     setMarqueeBox(null)
     panRef.current = null
     dragRef.current = null
+    sectionDragRef.current = null
+    sectionResizeRef.current = null
     marqueeRef.current = null
+    setDraggingSectionId(null)
+    setResizingSectionId(null)
     if (clearTransientSelection) {
       setSelectedNodeIds([])
     }
+    if (draggedIds.length > 0) {
+      commitWindowSectionDrag(draggedIds)
+    }
+    if (resizedSectionId) {
+      arrangeDwindleSections(true)
+      setIsUserDriving(false)
+      return
+    }
     if (
       wasPanning &&
-      (terminals.length > 0 || browsers.length > 0 || agentWindows.length > 0) &&
+      (terminals.length > 0 ||
+        browsers.length > 0 ||
+        agentWindows.length > 0 ||
+        windowSections.length > 0) &&
       snapEnabled
     ) {
       scheduleSnap()
@@ -600,8 +854,11 @@ export function InfiniteCanvas() {
     terminals.length,
     browsers.length,
     agentWindows.length,
+    windowSections.length,
     scheduleSnap,
     snapEnabled,
+    commitWindowSectionDrag,
+    arrangeDwindleSections,
   ])
 
   useEffect(() => {
@@ -693,15 +950,18 @@ export function InfiniteCanvas() {
       options?: { transientSelection?: boolean },
     ) => {
       if (dragIds.length === 0) return
+      cancelSnap()
+      setIsUserDriving(true)
       setIsDragging(true)
       dragRef.current = {
         startX,
         startY,
         origins: createSelectionOrigins(selectableWindows, dragIds),
         transientSelection: options?.transientSelection === true,
+        ids: dragIds,
       }
     },
-    [selectableWindows],
+    [cancelSnap, selectableWindows],
   )
 
   const handleNodeDragStart = useCallback(
@@ -722,7 +982,7 @@ export function InfiniteCanvas() {
 
   // Global mouse listeners for drag/pan
   useEffect(() => {
-    if (isPanning || isDragging || marqueeBox) {
+    if (isPanning || isDragging || marqueeBox || draggingSectionId || resizingSectionId) {
       window.addEventListener('mousemove', handleMouseMove)
       window.addEventListener('mouseup', handleMouseUp)
       return () => {
@@ -730,14 +990,22 @@ export function InfiniteCanvas() {
         window.removeEventListener('mouseup', handleMouseUp)
       }
     }
-  }, [isPanning, isDragging, marqueeBox, handleMouseMove, handleMouseUp])
+  }, [
+    isPanning,
+    isDragging,
+    marqueeBox,
+    draggingSectionId,
+    resizingSectionId,
+    handleMouseMove,
+    handleMouseUp,
+  ])
 
   return (
     <div
       ref={containerRef}
       className={cn(
         'canvas-stage flex-1 min-h-0 overflow-hidden relative',
-        (isPanning || isDragging) && 'cursor-grabbing',
+        (isPanning || isDragging || draggingSectionId || resizingSectionId) && 'cursor-grabbing',
         primaryModifierHeld && !isPanning && !isDragging && 'cursor-grab',
         selectionMode && !isPanning && !isDragging && !primaryModifierHeld && 'cursor-default',
       )}
@@ -754,7 +1022,77 @@ export function InfiniteCanvas() {
           willChange: canvasWillChange,
         }}
       >
-        {terminals.map((terminal) => (
+        {renderedWindowSections.map((section) => {
+          const sectionWidth = getSectionWidth(section)
+          const sectionHeight = getSectionHeight(section)
+          return (
+            <div
+              key={section.id}
+              onMouseDown={(event) => {
+                if (hasPrimaryModifier(event)) {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  cancelSnap()
+                  setIsUserDriving(true)
+                  setDraggingSectionId(section.id)
+                  sectionDragRef.current = {
+                    id: section.id,
+                    startX: event.clientX,
+                    startY: event.clientY,
+                    originX: section.x,
+                    originY: section.y,
+                  }
+                  return
+                }
+
+                if (event.button === 0) {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  cancelSnap()
+                  setIsUserDriving(false)
+                  snapToWindowSection(section.id)
+                }
+              }}
+              className={cn(
+                'absolute rounded-lg border-[3px] border-dashed outline outline-2 outline-offset-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.16),0_18px_40px_rgba(0,0,0,0.24)] backdrop-blur-[1px] transition-[border-color,background-color,box-shadow]',
+                primaryModifierHeld || draggingSectionId === section.id
+                  ? 'cursor-grab active:cursor-grabbing'
+                  : 'cursor-pointer',
+                getSectionCanvasClass(section.color),
+              )}
+              style={{
+                left: section.x,
+                top: section.y,
+                width: sectionWidth,
+                height: sectionHeight,
+                zIndex: 0,
+              }}
+            >
+              <div className="pointer-events-none absolute inset-2 rounded-md border border-white/18 bg-background/[0.03]" />
+              {section.pinned ? (
+                <div className="absolute inset-0 flex items-center justify-center p-6">
+                  <div className="pointer-events-auto flex max-w-64 flex-col items-center gap-3 rounded-lg border border-border/60 bg-background/90 px-4 py-3 text-center shadow-minimal backdrop-blur">
+                    <div className="text-xs font-medium text-foreground/80">Popped out section</div>
+                    <div className="max-w-full truncate text-[11px] text-muted-foreground/60">
+                      {section.name}
+                    </div>
+                    <button
+                      onMouseDown={(event) => event.stopPropagation()}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        togglePinSection(section.id)
+                      }}
+                      className="rounded-md border border-border/60 bg-background/70 px-2.5 py-1.5 text-[11px] text-foreground transition-colors hover:bg-muted/40"
+                    >
+                      Pop back in
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          )
+        })}
+        {renderedTerminals.map((terminal) => (
           <TerminalNode
             key={terminal.id}
             terminal={terminal}
@@ -764,11 +1102,11 @@ export function InfiniteCanvas() {
             selectionMode={selectionMode}
             isSelected={selectedNodeIds.includes(terminal.id)}
             isFocused={focusedTerminalId === terminal.id}
-            showFocusRing={focusedTerminalId === terminal.id && showFocusedTerminalRing}
+            showFocusRing={focusedTerminalId === terminal.id && showFocusedWindowRing}
             onDragStart={handleNodeDragStart}
           />
         ))}
-        {browsers
+        {renderedBrowsers
           .filter((b) => !b.pinned)
           .map((browser) => (
             <BrowserNode
@@ -778,10 +1116,11 @@ export function InfiniteCanvas() {
               selectionMode={selectionMode}
               isSelected={selectedNodeIds.includes(browser.id)}
               isFocused={focusedBrowserId === browser.id}
+              showFocusRing={focusedBrowserId === browser.id && showFocusedWindowRing}
               onDragStart={handleNodeDragStart}
             />
           ))}
-        {agentWindows.map((agentWindow) => (
+        {renderedAgentWindows.map((agentWindow) => (
           <AgentWindowNode
             key={agentWindow.id}
             agentWindow={agentWindow}
@@ -789,9 +1128,128 @@ export function InfiniteCanvas() {
             selectionMode={selectionMode}
             isSelected={selectedNodeIds.includes(agentWindow.id)}
             isFocused={focusedAgentWindowId === agentWindow.id}
+            showFocusRing={focusedAgentWindowId === agentWindow.id && showFocusedWindowRing}
             onDragStart={handleNodeDragStart}
           />
         ))}
+        {renderedWindowSections.map((section) => {
+          const sectionWidth = getSectionWidth(section)
+          const sectionHeight = getSectionHeight(section)
+          return (
+            <div
+              key={`${section.id}-overlay`}
+              className={cn(
+                'pointer-events-none absolute rounded-lg border-[3px] border-dashed outline outline-2 outline-offset-2 shadow-[0_0_0_1px_rgba(0,0,0,0.32),0_0_24px_rgba(0,0,0,0.28)]',
+                getSectionCanvasClass(section.color),
+                'bg-transparent',
+              )}
+              style={{
+                left: section.x,
+                top: section.y,
+                width: sectionWidth,
+                height: sectionHeight,
+                zIndex: 200000,
+              }}
+            >
+              <button
+                type="button"
+                onMouseDown={(event) => {
+                  if (event.button !== 0) return
+                  event.preventDefault()
+                  event.stopPropagation()
+                  cancelSnap()
+                  setIsUserDriving(true)
+                  setDraggingSectionId(section.id)
+                  sectionDragRef.current = {
+                    id: section.id,
+                    startX: event.clientX,
+                    startY: event.clientY,
+                    originX: section.x,
+                    originY: section.y,
+                  }
+                }}
+                className={cn(
+                  'pointer-events-auto absolute left-2 top-0 z-20 flex max-w-72 items-center gap-1.5 rounded-md border border-white/18 bg-background/95 font-semibold text-foreground/85 shadow-[0_8px_24px_rgba(0,0,0,0.28)] backdrop-blur transition-colors hover:bg-muted/90 hover:text-foreground active:cursor-grabbing',
+                  draggingSectionId === section.id ? 'cursor-grabbing' : 'cursor-grab',
+                  sectionHandleExpanded ? 'px-3 py-2 text-[12px]' : 'px-2 py-1 text-[10px]',
+                )}
+                style={{
+                  transform: `translateY(calc(-100% - 8px)) scale(${sectionHandleScale})`,
+                  transformOrigin: 'left bottom',
+                }}
+                title="Drag section"
+              >
+                <Move
+                  className={cn(
+                    'shrink-0 text-muted-foreground/70',
+                    sectionHandleExpanded ? 'h-4 w-4' : 'h-3 w-3',
+                  )}
+                />
+                <span className="min-w-0 truncate">{section.name}</span>
+                <GripHorizontal
+                  className={cn(
+                    'shrink-0 text-muted-foreground/45',
+                    sectionHandleExpanded ? 'h-4 w-4' : 'h-3 w-3',
+                  )}
+                />
+              </button>
+              {SECTION_RESIZE_EDGES.map((edge) => (
+                <div
+                  key={edge}
+                  className="pointer-events-auto absolute z-10"
+                  style={{
+                    top: edge.includes('n')
+                      ? -SECTION_HANDLE_SIZE / 2
+                      : edge.includes('s')
+                        ? undefined
+                        : SECTION_HANDLE_SIZE,
+                    bottom: edge.includes('s')
+                      ? -SECTION_HANDLE_SIZE / 2
+                      : edge.includes('n')
+                        ? undefined
+                        : SECTION_HANDLE_SIZE,
+                    left: edge.includes('w')
+                      ? -SECTION_HANDLE_SIZE / 2
+                      : edge.includes('e')
+                        ? undefined
+                        : SECTION_HANDLE_SIZE,
+                    right: edge.includes('e')
+                      ? -SECTION_HANDLE_SIZE / 2
+                      : edge.includes('w')
+                        ? undefined
+                        : SECTION_HANDLE_SIZE,
+                    width:
+                      edge === 'n' || edge === 's'
+                        ? `calc(100% - ${SECTION_HANDLE_SIZE * 2}px)`
+                        : SECTION_HANDLE_SIZE * 2,
+                    height:
+                      edge === 'e' || edge === 'w'
+                        ? `calc(100% - ${SECTION_HANDLE_SIZE * 2}px)`
+                        : SECTION_HANDLE_SIZE * 2,
+                    cursor: getSectionResizeCursor(edge),
+                  }}
+                  onMouseDown={(event) => {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    cancelSnap()
+                    setIsUserDriving(true)
+                    setResizingSectionId(section.id)
+                    sectionResizeRef.current = {
+                      id: section.id,
+                      edge,
+                      startX: event.clientX,
+                      startY: event.clientY,
+                      originX: section.x,
+                      originY: section.y,
+                      originWidth: sectionWidth,
+                      originHeight: sectionHeight,
+                    }
+                  }}
+                />
+              ))}
+            </div>
+          )
+        })}
       </motion.div>
 
       {marqueeBox && (
