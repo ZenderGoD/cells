@@ -692,6 +692,25 @@ export function CommandPalette() {
     }
   }, [open])
 
+  useEffect(() => {
+    if (!open) return
+    let secondFrame: number | null = null
+    const focusPaletteInput = () => {
+      const input = document.querySelector(
+        '[data-command-palette-root] textarea[data-slot="command-input"]',
+      ) as HTMLTextAreaElement | null
+      input?.focus()
+    }
+    const firstFrame = requestAnimationFrame(() => {
+      focusPaletteInput()
+      secondFrame = requestAnimationFrame(focusPaletteInput)
+    })
+    return () => {
+      cancelAnimationFrame(firstFrame)
+      if (secondFrame !== null) cancelAnimationFrame(secondFrame)
+    }
+  }, [open])
+
   const runAction = (fn: () => any) => {
     const close = () => {
       setOpen(false)
@@ -969,6 +988,7 @@ export function CommandPalette() {
           <StatusBar embedded />
         </div>
         <Command
+          data-command-palette-root
           loop
           value={cmdkValue}
           onValueChange={setCmdkValue}

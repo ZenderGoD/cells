@@ -392,6 +392,7 @@ textarea[data-ghostty] {
 }
 .draggable-region button,
 .draggable-region [data-slot='popover-trigger'],
+.draggable-region [data-allow-focus],
 .draggable-region span,
 .draggable-region input,
 .draggable-region .no-drag {

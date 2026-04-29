@@ -79,6 +79,11 @@ function isCellsTerminalShortcutTarget(target: EventTarget | null) {
   return Boolean(target.closest('[data-cells-terminal-input="true"]'))
 }
 
+function isBrowserLocationInputTarget(target: EventTarget | null) {
+  if (!(target instanceof Element)) return false
+  return Boolean(target.closest('[data-browser-location-input="true"]'))
+}
+
 function MainApp() {
   const {
     initialized,
@@ -505,7 +510,11 @@ function MainApp() {
         },
       )
       if (shortcutCommand) {
-        const shortcutScope = getCellsShortcutScope(shortcutCommand)
+        const effectiveShortcutCommand =
+          shortcutCommand === 'open-browser-location' && isBrowserLocationInputTarget(event.target)
+            ? 'snap-right'
+            : shortcutCommand
+        const shortcutScope = getCellsShortcutScope(effectiveShortcutCommand)
         // Window-navigation carve-out for Cmd+hjkl.
         //
         // The default rule below skips canvas-scope shortcuts when focus is on
@@ -535,11 +544,12 @@ function MainApp() {
         // and overview are unambiguous — no textarea binds them. Cmd+Shift+Enter
         // is the explicit "fit focused window to viewport" shortcut, so it also
         // needs to work from the agent composer.
-        const isHjklSnap = shortcutCommand.startsWith('snap-') && /^[hjkl]$/i.test(event.key)
+        const isHjklSnap =
+          effectiveShortcutCommand.startsWith('snap-') && /^[hjkl]$/i.test(event.key)
         const allowFromEditableTarget =
           isHjklSnap ||
-          shortcutCommand === 'zoom-to-fit-all' ||
-          shortcutCommand === 'resize-focused-to-fit-viewport'
+          effectiveShortcutCommand === 'zoom-to-fit-all' ||
+          effectiveShortcutCommand === 'resize-focused-to-fit-viewport'
         if (
           isEditableTarget(event.target) &&
           shortcutScope === 'canvas' &&
@@ -548,11 +558,11 @@ function MainApp() {
         ) {
           return
         }
-        const handled = runShortcutCommand(shortcutCommand, { repeat: event.repeat })
+        const handled = runShortcutCommand(effectiveShortcutCommand, { repeat: event.repeat })
         if (handled) {
           event.preventDefault()
           event.stopPropagation()
-          if (shortcutCommand.startsWith('snap-')) beginKeyboardNavigation()
+          if (effectiveShortcutCommand.startsWith('snap-')) beginKeyboardNavigation()
           return
         }
       }

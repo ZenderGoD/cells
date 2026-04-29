@@ -174,12 +174,21 @@ function combinedFileHunks(
 
 const MAX_RENDERED_HUNK_ROWS = 800
 
-function HunksTable({ hunks }: { hunks: Array<DiffOp | 'ellipsis'> }) {
+function HunksTable({
+  hunks,
+  className,
+}: {
+  hunks: Array<DiffOp | 'ellipsis'>
+  className?: string
+}) {
   const truncated = hunks.length > MAX_RENDERED_HUNK_ROWS
   const rows = truncated ? hunks.slice(0, MAX_RENDERED_HUNK_ROWS) : hunks
   return (
     <ScrollArea
-      className="max-h-[min(55vh,520px)] rounded-[6px] border border-border/30 bg-[oklch(0.10_0.004_285)] text-[11px] leading-[1.6]"
+      className={cn(
+        'max-h-[min(55vh,520px)] rounded-[6px] border border-border/30 bg-[oklch(0.10_0.004_285)] text-[11px] leading-[1.6]',
+        className,
+      )}
       viewportClassName="overscroll-contain"
       maskHeight={16}
     >
@@ -243,16 +252,39 @@ function HunksTable({ hunks }: { hunks: Array<DiffOp | 'ellipsis'> }) {
   )
 }
 
-function FileDiffRow({ file }: { file: FileDiffStats }) {
-  const [expanded, setExpanded] = useState(false)
-  const reduceMotion = useReducedMotion()
-  const name = baseName(file.filePath)
-  const dir = file.filePath.slice(0, Math.max(0, file.filePath.length - name.length - 1))
+export function FileDiffPreview({
+  file,
+  className,
+  tableClassName,
+}: {
+  file: FileDiffStats
+  className?: string
+  tableClassName?: string
+}) {
   const combinedHunks = useMemo(
     () => combinedFileHunks(file.edits, file.patches ?? []),
     [file.edits, file.patches],
   )
   const hasDetails = combinedHunks.length > 0
+
+  return (
+    <div className={className}>
+      {hasDetails ? (
+        <HunksTable hunks={combinedHunks} className={tableClassName} />
+      ) : (
+        <div className="rounded-[6px] border border-border/25 bg-background/40 px-2.5 py-2 text-[11px] text-muted-foreground/60">
+          Diff summary available, but the full patch was not preserved for this file.
+        </div>
+      )}
+    </div>
+  )
+}
+
+function FileDiffRow({ file }: { file: FileDiffStats }) {
+  const [expanded, setExpanded] = useState(false)
+  const reduceMotion = useReducedMotion()
+  const name = baseName(file.filePath)
+  const dir = file.filePath.slice(0, Math.max(0, file.filePath.length - name.length - 1))
   return (
     <li className="border-b border-border/20 last:border-b-0">
       <button
@@ -291,13 +323,7 @@ function FileDiffRow({ file }: { file: FileDiffStats }) {
             style={{ overflow: 'hidden' }}
           >
             <div className="px-3 pb-2 pr-2">
-              {hasDetails ? (
-                <HunksTable hunks={combinedHunks} />
-              ) : (
-                <div className="rounded-[6px] border border-border/25 bg-background/40 px-2.5 py-2 text-[11px] text-muted-foreground/60">
-                  Diff summary available, but the full patch was not preserved for this file.
-                </div>
-              )}
+              <FileDiffPreview file={file} />
             </div>
           </motion.div>
         ) : null}

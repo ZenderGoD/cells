@@ -23,6 +23,7 @@ import {
 } from '@/lib/tool-diff-stats'
 import { AgentMarkdown } from './agent-markdown'
 import { LoadingIndicator, Spinner } from './agent-loading-indicator'
+import { FileDiffPreview } from './session-diffs-panel'
 
 const RESPONSE_MAX_HEIGHT = 540
 
@@ -339,6 +340,47 @@ function DiffStatsBadge({ stats, className }: { stats: DiffStats; className?: st
   )
 }
 
+function ActivityDiffDetails({
+  files,
+  depth,
+}: {
+  files: ReturnType<typeof groupDiffsByFile>
+  depth: number
+}) {
+  if (files.length === 0) return null
+  return (
+    <div className="mt-1 mb-1 space-y-2" style={{ marginLeft: `${24 + depth * 12}px` }}>
+      {files.map((file) => {
+        const name = baseName(file.filePath)
+        const dir = file.filePath.slice(0, Math.max(0, file.filePath.length - name.length - 1))
+        return (
+          <div key={file.filePath} className="min-w-0">
+            <div className="mb-1 flex min-w-0 items-center gap-2 px-1 text-[11.5px]">
+              <FileText className="size-3 shrink-0 text-muted-foreground/45" />
+              <span className="min-w-0 truncate" title={file.filePath}>
+                <span className="font-medium text-foreground/80">{name}</span>
+                {dir ? <span className="ml-1.5 text-muted-foreground/45">{dir}</span> : null}
+              </span>
+              <span className="ml-auto shrink-0 text-[11px] tabular-nums">
+                {file.additions > 0 ? (
+                  <span className="text-emerald-400/80">+{file.additions}</span>
+                ) : null}
+                {file.additions > 0 && file.deletions > 0 ? (
+                  <span className="text-muted-foreground/30"> · </span>
+                ) : null}
+                {file.deletions > 0 ? (
+                  <span className="text-rose-400/80">-{file.deletions}</span>
+                ) : null}
+              </span>
+            </div>
+            <FileDiffPreview file={file} tableClassName="max-h-[min(44vh,420px)]" />
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 // Activity row — Craft layout: [status icon] [tool name] [filename pill]
 // [ · description · summary]. Depth controls left indentation so subagent
 // children nest visually.
@@ -392,6 +434,8 @@ function ActivityRow({ node, depth }: { node: ActivityNode; depth: number }) {
       : undefined
   const hasTrailing = !!(row.description || row.summary || assistantInline)
   const rowDiffStats = diffStatsFromMessage(message)
+  const diffFiles = useMemo(() => groupDiffsByFile([message]), [message])
+  const hasDiffDetails = diffFiles.length > 0
   const durationMs = getMessageDurationMs(message)
   const isSettled = message.status === 'completed' || message.status === 'failed'
 
@@ -450,8 +494,9 @@ function ActivityRow({ node, depth }: { node: ActivityNode; depth: number }) {
           )}
         />
       </button>
-      {/* Regular leaf rows show the raw payload in a <pre> when expanded;
-       *  rows with children render those children instead. */}
+      {/* Diff-producing leaf rows show a rendered diff when expanded; other
+       *  leaf rows show the raw payload. Rows with children render those
+       *  children instead. */}
       <AnimatePresence initial={false}>
         {expanded && !hasChildren ? (
           <motion.div
@@ -462,17 +507,21 @@ function ActivityRow({ node, depth }: { node: ActivityNode; depth: number }) {
             transition={EXPAND_TRANSITION}
             style={{ overflow: 'hidden' }}
           >
-            <pre
-              className={cn(
-                'mt-1 mb-1 select-text whitespace-pre-wrap break-words rounded-[8px] border border-border/40 bg-background/50 px-3 py-2 text-[13px] leading-[1.5]',
-                message.role === 'reasoning'
-                  ? 'font-sans text-foreground/80'
-                  : 'font-mono text-foreground/75',
-              )}
-              style={{ marginLeft: `${24 + depth * 12}px` }}
-            >
-              {message.text || '(no output)'}
-            </pre>
+            {hasDiffDetails ? (
+              <ActivityDiffDetails files={diffFiles} depth={depth} />
+            ) : (
+              <pre
+                className={cn(
+                  'mt-1 mb-1 select-text whitespace-pre-wrap break-words rounded-[8px] border border-border/40 bg-background/50 px-3 py-2 text-[13px] leading-[1.5]',
+                  message.role === 'reasoning'
+                    ? 'font-sans text-foreground/80'
+                    : 'font-mono text-foreground/75',
+                )}
+                style={{ marginLeft: `${24 + depth * 12}px` }}
+              >
+                {message.text || '(no output)'}
+              </pre>
+            )}
           </motion.div>
         ) : null}
         {hasChildren && expanded ? (
@@ -938,7 +987,7 @@ export function AgentTurnCard({
         {hasActivities && hasResponse ? (
           <motion.div
             key="response"
-            initial={reduceMotion ? false : { opacity: 0 }}
+            initial={reduceMotion || isStreaming ? false : { opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ duration: 0.2, ease: EASE_OUT }}
           >

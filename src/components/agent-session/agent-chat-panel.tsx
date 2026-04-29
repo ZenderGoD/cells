@@ -1755,6 +1755,89 @@ function PendingTurnIndicator({ agent }: { agent: AgentWindowNode['agent'] }) {
   )
 }
 
+function SkeletonBlock({ className }: { className: string }) {
+  return <div className={cn('animate-pulse rounded-[6px] bg-foreground/6', className)} />
+}
+
+function ChatLoadingSkeleton() {
+  return (
+    <div className="space-y-5 px-2 pt-2" aria-hidden>
+      <div className="mt-8 flex w-full justify-end">
+        <div className="flex max-w-[78%] min-w-0 flex-col items-end gap-1.5">
+          <div className="w-[min(420px,62vw)] max-w-full rounded-[12px] bg-foreground/5 px-3.5 py-2 shadow-minimal">
+            <SkeletonBlock className="h-3.5 w-[86%]" />
+            <SkeletonBlock className="mt-2 h-3.5 w-[58%]" />
+          </div>
+        </div>
+      </div>
+
+      <div className="w-full space-y-1">
+        <div className="flex w-full items-center gap-2 overflow-hidden rounded-[8px] py-1.5 pl-2.5 pr-2.5">
+          <SkeletonBlock className="h-[18px] w-5 shrink-0 rounded-[4px]" />
+          <SkeletonBlock className="h-3.5 w-[42%]" />
+          <SkeletonBlock className="ml-auto h-3 w-3 rounded-full" />
+        </div>
+        <div className="relative overflow-hidden rounded-[12px] bg-[var(--elevated-surface)] shadow-minimal">
+          <div className="px-4 py-3">
+            <SkeletonBlock className="h-3.5 w-[82%]" />
+            <SkeletonBlock className="mt-2 h-3.5 w-[70%]" />
+            <SkeletonBlock className="mt-2 h-3.5 w-[92%]" />
+            <SkeletonBlock className="mt-2 h-3.5 w-[46%]" />
+          </div>
+          <div className="border-t border-border/30 px-4 py-2">
+            <SkeletonBlock className="h-3 w-24" />
+          </div>
+        </div>
+      </div>
+
+      <div className="flex w-full justify-end">
+        <div className="flex max-w-[78%] min-w-0 flex-col items-end gap-1.5">
+          <div className="w-[min(340px,54vw)] max-w-full rounded-[12px] bg-foreground/5 px-3.5 py-2 shadow-minimal">
+            <SkeletonBlock className="h-3.5 w-[72%]" />
+          </div>
+        </div>
+      </div>
+
+      <div className="w-full space-y-1">
+        <div className="flex w-full items-center gap-2 overflow-hidden rounded-[8px] py-1.5 pl-2.5 pr-2.5">
+          <SkeletonBlock className="h-[18px] w-5 shrink-0 rounded-[4px]" />
+          <SkeletonBlock className="h-3.5 w-[35%]" />
+          <SkeletonBlock className="ml-auto h-3.5 w-16" />
+          <SkeletonBlock className="h-3 w-3 rounded-full" />
+        </div>
+        <div className="ml-[18px] border-l-2 border-border/40 py-0.5 pl-3">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 rounded-[6px] px-1 py-0.5">
+              <SkeletonBlock className="h-3 w-3 shrink-0 rounded-full" />
+              <SkeletonBlock className="h-3.5 w-[48%]" />
+            </div>
+            <div className="flex items-center gap-2 rounded-[6px] px-1 py-0.5">
+              <SkeletonBlock className="h-3 w-3 shrink-0 rounded-full" />
+              <SkeletonBlock className="h-3.5 w-[38%]" />
+              <SkeletonBlock className="h-4 w-12 rounded-[4px]" />
+            </div>
+          </div>
+        </div>
+        <div className="relative overflow-hidden rounded-[12px] bg-[var(--elevated-surface)] shadow-minimal">
+          <div className="px-4 py-3">
+            <SkeletonBlock className="h-3.5 w-[76%]" />
+            <SkeletonBlock className="mt-2 h-3.5 w-[88%]" />
+            <SkeletonBlock className="mt-2 h-3.5 w-[52%]" />
+          </div>
+          <div className="border-t border-border/30 px-4 py-2">
+            <SkeletonBlock className="h-3 w-32" />
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5 px-2 pt-1 text-[12px] text-muted-foreground/55">
+          <SkeletonBlock className="h-3 w-3 rounded-[3px]" />
+          <SkeletonBlock className="h-3 w-28" />
+          <SkeletonBlock className="h-3 w-14" />
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // Banner shown above the composer while Claude has called ExitPlanMode and
 // is waiting on the user's decision. Mirrors the Claude Code CLI's three
 // prompt options verbatim: auto-accept, manually approve, or keep planning.
@@ -2480,7 +2563,7 @@ const MessageGroupRow = memo(
       <motion.div
         className="min-w-0 p-[1px]"
         style={{ contain: 'layout style paint' }}
-        initial={reduceMotion ? false : { opacity: 0 }}
+        initial={reduceMotion || isStreamingLastTurn ? false : { opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.18, ease: EASE_OUT }}
       >
@@ -3914,15 +3997,17 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     if (!hasNewCompletion) return
     if (snapshot?.status !== 'running') return
     if (afterToolFiredRef.current) return
+    if (editingIndex === 0) return
     if (getQueuedMessagesSnapshot()[0]?.mode !== 'after-tool') return
     afterToolFiredRef.current = true
     void handleStop()
-  }, [getQueuedMessagesSnapshot, snapshot?.messages, snapshot?.status, handleStop])
+  }, [editingIndex, getQueuedMessagesSnapshot, snapshot?.messages, snapshot?.status, handleStop])
   useEffect(() => {
     if (snapshot?.status !== 'idle') return
     if (resumeGated) return
     if (sendingQueuedRef.current) return
     if (awaitingRunningRef.current) return
+    if (editingIndex === 0 && !interruptMessageRef.current) return
     sendingQueuedRef.current = true
     awaitingRunningRef.current = true
     if (interruptMessageRef.current) {
@@ -3948,8 +4033,19 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       awaitingRunningRef.current = false
       return
     }
+    if (editingIndex === 0) {
+      sendingQueuedRef.current = false
+      awaitingRunningRef.current = false
+      return
+    }
+    const sentBeforeEditedQueuedMessage = editingIndex !== null && editingIndex > 0
     const next = queuedMessages[0]
     setQueuedMessages((q) => q.slice(1))
+    if (sentBeforeEditedQueuedMessage) {
+      window.queueMicrotask(() => {
+        setEditingIndex((current) => (current === null ? null : Math.max(0, current - 1)))
+      })
+    }
     window.cells.agentSession.notifyQueuedStart(agentWindow.id)
     void sendToAgent(next.text, next.attachments, {
       model: next.model,
@@ -3960,6 +4056,9 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         console.error('[agent-chat] queued send failed', err)
         // Put it back at the front so the user can retry / see it.
         setQueuedMessages((q) => [next, ...q])
+        if (sentBeforeEditedQueuedMessage) {
+          setEditingIndex((current) => (current === null ? null : current + 1))
+        }
         awaitingRunningRef.current = false
       })
       .finally(() => {
@@ -3967,6 +4066,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       })
   }, [
     agentWindow.id,
+    editingIndex,
     queuedMessages,
     resumeGated,
     sendToAgent,
@@ -4293,16 +4393,6 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     }
     return null
   }, [isRunning, visibleGroups])
-  const streamingTextSignature = useMemo(() => {
-    if (!streamingTurnKey) return ''
-    for (let i = visibleGroups.length - 1; i >= 0; i -= 1) {
-      const group = visibleGroups[i]
-      if (group.kind !== 'turn' || group.key !== streamingTurnKey) continue
-      const response = group.responses[group.responses.length - 1]
-      return response ? `${response.id}:${response.text.length}` : streamingTurnKey
-    }
-    return streamingTurnKey
-  }, [streamingTurnKey, visibleGroups])
   // Show the Craft-style "working" pill whenever the agent is running and the
   // last rendered group isn't a turn (= model hasn't emitted anything yet).
   const showPendingLoader =
@@ -4354,23 +4444,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                   style={{ paddingBottom: composerOverlayHeight + 24 }}
                 >
                   {isLoadingSnapshot ? (
-                    <div className="space-y-3 px-2" aria-hidden>
-                      <div className="flex justify-end">
-                        <div className="h-6 w-[45%] animate-pulse rounded-[10px] bg-foreground/5" />
-                      </div>
-                      <div className="space-y-2">
-                        <div className="h-4 w-[70%] animate-pulse rounded-[8px] bg-foreground/5" />
-                        <div className="h-4 w-[55%] animate-pulse rounded-[8px] bg-foreground/5" />
-                        <div className="h-4 w-[40%] animate-pulse rounded-[8px] bg-foreground/5" />
-                      </div>
-                      <div className="flex justify-end">
-                        <div className="h-6 w-[30%] animate-pulse rounded-[10px] bg-foreground/5" />
-                      </div>
-                      <div className="space-y-2">
-                        <div className="h-4 w-[60%] animate-pulse rounded-[8px] bg-foreground/5" />
-                        <div className="h-4 w-[35%] animate-pulse rounded-[8px] bg-foreground/5" />
-                      </div>
-                    </div>
+                    <ChatLoadingSkeleton />
                   ) : (
                     <div className="flex min-h-[360px] flex-col items-center justify-center gap-4 py-8">
                       <div className="relative flex size-14 items-center justify-center rounded-[16px] border border-border/60 bg-background/85 shadow-middle">
@@ -4486,7 +4560,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                 // depends on which turn is currently streaming, so surface that
                 // as extraData; otherwise an older turn can stay visually stuck
                 // in the "Working..." state after a newer turn becomes active.
-                extraData={streamingTextSignature || streamingTurnKey || ''}
+                extraData={streamingTurnKey || ''}
                 keyExtractor={chatGroupKey}
                 renderItem={({ item }) => (
                   <div className="mx-auto w-[calc(100%-2rem)] min-w-0 max-w-3xl">

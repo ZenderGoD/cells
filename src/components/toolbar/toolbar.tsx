@@ -924,7 +924,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
             they line up with the palette's h-9 variant. */}
         {/* Center — browser controls when a browser is focused */}
         {focusedBrowser ? (
-          <div className="flex-1 flex items-center gap-1 px-2 min-w-0 no-drag">
+          <div className="flex-1 flex items-center gap-1 px-2 min-w-0">
             <button
               className={cn(
                 'p-1 rounded transition-colors shrink-0',
@@ -962,14 +962,18 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
 
             {/* URL bar */}
             <div
-              data-allow-focus
-              className="flex-1 flex items-center gap-1.5 mx-1 px-2 py-1 rounded-md bg-background/60 border border-border/30 min-w-0 cursor-text"
-              onClick={openUrlBar}
+              data-allow-focus={!embedded ? true : undefined}
+              className={cn(
+                'flex-1 flex items-center gap-1.5 mx-1 px-2 py-1 rounded-md bg-background/60 border border-border/30 min-w-0',
+                embedded ? 'cursor-default' : 'cursor-text',
+              )}
+              onClick={embedded ? undefined : openUrlBar}
             >
               <Globe className="w-3 h-3 text-muted-foreground/50 shrink-0" />
-              {urlBarFocused ? (
+              {urlBarFocused && !embedded ? (
                 <input
                   ref={urlInputRef}
+                  data-browser-location-input="true"
                   type="text"
                   value={urlInput}
                   onChange={(e) => setUrlInput(e.target.value)}
@@ -1045,7 +1049,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
               processRunning: ft?.processRunning,
             })
             return (
-              <div className="flex min-w-0 flex-1 items-center gap-2 px-3 no-drag">
+              <div className="flex min-w-0 flex-1 items-center gap-2 px-3">
                 {ftAgent ? (
                   <AgentIcon agent={ftAgent} className="h-3 w-3 shrink-0" size={12} />
                 ) : (
@@ -1079,7 +1083,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
                 ) : (
                   <span
                     className={cn(
-                      'min-w-0 truncate text-[11px] font-medium text-muted-foreground cursor-text',
+                      'min-w-0 truncate text-[11px] font-medium text-muted-foreground cursor-text no-drag',
                       embedded ? 'flex-1' : 'max-w-[36rem] flex-[0_1_auto]',
                     )}
                     onDoubleClick={(event) => {
@@ -1175,7 +1179,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
               hasUnviewedCompletion: aw.hasUnviewedCompletion,
             })
             return (
-              <div className="flex-1 flex items-center gap-2 px-3 min-w-0 no-drag">
+              <div className="flex-1 flex items-center gap-2 px-3 min-w-0">
                 <span className="relative inline-flex shrink-0" title={awStatusPill.label}>
                   <AgentIcon agent={aw.agent} className="h-3 w-3 shrink-0" size={12} />
                   {awStatusPill.dotClass ? (
@@ -1213,7 +1217,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
                 ) : (
                   <span
                     className={cn(
-                      'min-w-0 truncate text-[11px] font-medium text-muted-foreground cursor-text',
+                      'min-w-0 truncate text-[11px] font-medium text-muted-foreground cursor-text no-drag',
                       embedded ? 'flex-1' : 'max-w-[36rem] flex-[0_1_auto]',
                     )}
                     onDoubleClick={(event) => {

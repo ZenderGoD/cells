@@ -1,4 +1,4 @@
-import { cloneElement, isValidElement, memo, useMemo } from 'react'
+import { cloneElement, createContext, isValidElement, memo, useContext, useMemo } from 'react'
 import type { CSSProperties } from 'react'
 import { useReducedMotion } from 'motion/react'
 import ReactMarkdown from 'react-markdown'
@@ -27,6 +27,7 @@ interface AgentMarkdownProps {
 }
 
 const STREAMING_REVEAL_WORDS = 9
+const MarkdownSourceContext = createContext('')
 
 function splitTrailingWords(text: string) {
   const matches = Array.from(text.matchAll(/\S+\s*/g))
@@ -121,10 +122,22 @@ function maybeRevealTail(children: React.ReactNode, enabled: boolean) {
   return enabled ? revealTrailingText(children) : children
 }
 
+function RevealableMarkdownNode({
+  children,
+  enabled,
+  node,
+}: {
+  children: React.ReactNode
+  enabled: boolean
+  node: any
+}) {
+  const source = useContext(MarkdownSourceContext)
+  return <>{maybeRevealTail(children, enabled && isTailMarkdownNode(node, source))}</>
+}
+
 function createComponents(
   streamingReveal: boolean,
   reduceMotion: boolean,
-  source: string,
   onImageClick?: (src: string) => void,
 ) {
   const canReveal = streamingReveal && !reduceMotion
@@ -223,7 +236,9 @@ function createComponents(
         {...props}
         className={cn('leading-relaxed', className?.includes('task-list-item') && 'list-none')}
       >
-        {maybeRevealTail(children, canReveal && isTailMarkdownNode(node, source))}
+        <RevealableMarkdownNode enabled={canReveal} node={node}>
+          {children}
+        </RevealableMarkdownNode>
       </li>
     ),
     input: ({ type, checked, ...rest }: any) => {
@@ -243,28 +258,38 @@ function createComponents(
     // Paragraph: my-2 leading-relaxed (Craft minimal mode).
     p: ({ children, node, ...props }: any) => (
       <p {...props} className="my-2 leading-relaxed">
-        {maybeRevealTail(children, canReveal && isTailMarkdownNode(node, source))}
+        <RevealableMarkdownNode enabled={canReveal} node={node}>
+          {children}
+        </RevealableMarkdownNode>
       </p>
     ),
     // Headings: H1/H2 both 16px, differentiated by weight; H3 is 15px.
     h1: ({ children, node, ...props }: any) => (
       <h1 {...props} className="font-sans text-[16px] font-bold mt-5 mb-3">
-        {maybeRevealTail(children, canReveal && isTailMarkdownNode(node, source))}
+        <RevealableMarkdownNode enabled={canReveal} node={node}>
+          {children}
+        </RevealableMarkdownNode>
       </h1>
     ),
     h2: ({ children, node, ...props }: any) => (
       <h2 {...props} className="font-sans text-[16px] font-semibold mt-4 mb-3">
-        {maybeRevealTail(children, canReveal && isTailMarkdownNode(node, source))}
+        <RevealableMarkdownNode enabled={canReveal} node={node}>
+          {children}
+        </RevealableMarkdownNode>
       </h2>
     ),
     h3: ({ children, node, ...props }: any) => (
       <h3 {...props} className="font-sans text-[15px] font-semibold mt-4 mb-2">
-        {maybeRevealTail(children, canReveal && isTailMarkdownNode(node, source))}
+        <RevealableMarkdownNode enabled={canReveal} node={node}>
+          {children}
+        </RevealableMarkdownNode>
       </h3>
     ),
     h4: ({ children, node, ...props }: any) => (
       <h4 {...props} className="font-sans text-[14px] font-semibold mt-3 mb-2">
-        {maybeRevealTail(children, canReveal && isTailMarkdownNode(node, source))}
+        <RevealableMarkdownNode enabled={canReveal} node={node}>
+          {children}
+        </RevealableMarkdownNode>
       </h4>
     ),
     blockquote: ({ children, node, ...props }: any) => (
@@ -272,7 +297,9 @@ function createComponents(
         {...props}
         className="my-2 border-l-2 border-muted-foreground/30 pl-3 text-muted-foreground italic"
       >
-        {maybeRevealTail(children, canReveal && isTailMarkdownNode(node, source))}
+        <RevealableMarkdownNode enabled={canReveal} node={node}>
+          {children}
+        </RevealableMarkdownNode>
       </blockquote>
     ),
     hr: () => <hr className="my-4 border-border" />,
@@ -304,16 +331,18 @@ export const AgentMarkdown = memo(function AgentMarkdown({
   // `text-sm` and the default foreground color, matching Craft's ResponseCard.
   // Overriding here would disagree with Craft.
   const reduceMotion = useReducedMotion()
-  const plugins = breaks ? [remarkGfm, remarkBreaks] : [remarkGfm]
+  const plugins = useMemo(() => (breaks ? [remarkGfm, remarkBreaks] : [remarkGfm]), [breaks])
   const components = useMemo(
-    () => createComponents(!!streamingReveal, !!reduceMotion, children, onImageClick),
-    [children, onImageClick, reduceMotion, streamingReveal],
+    () => createComponents(!!streamingReveal, !!reduceMotion, onImageClick),
+    [onImageClick, reduceMotion, streamingReveal],
   )
   return (
     <div className={cn('agent-markdown', inline && '[&_p]:m-0 [&_p]:inline', className)}>
-      <ReactMarkdown remarkPlugins={plugins} components={components}>
-        {children}
-      </ReactMarkdown>
+      <MarkdownSourceContext.Provider value={children}>
+        <ReactMarkdown remarkPlugins={plugins} components={components}>
+          {children}
+        </ReactMarkdown>
+      </MarkdownSourceContext.Provider>
     </div>
   )
 })

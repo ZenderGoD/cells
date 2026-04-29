@@ -1909,12 +1909,12 @@ function codexItemToMessage(item: Record<string, unknown>): AgentSessionMessage 
     }
   }
   if (itemType === 'contextCompaction') {
+    const status = codexItemStatus(item.status)
     return {
       id: itemId,
-      role: 'system',
-      title: 'Context compacted',
-      text: 'Codex compacted the thread context.',
-      status: 'completed',
+      role: 'compaction',
+      text: status === 'completed' ? 'Context compacted' : 'Compacting context…',
+      status,
       updatedAt: now(),
     }
   }
@@ -4035,6 +4035,10 @@ export class AgentSessionService extends EventEmitter {
       next.metadata = runtime.currentTurnUnifiedDiff
     }
     if (method === 'item/started') next.status = 'in_progress'
+    if (method === 'item/completed' && next.role === 'compaction') {
+      next.status = 'completed'
+      next.text = 'Context compacted'
+    }
     // Codex emits a first-class `plan` item when it finalizes a proposed plan
     // (this mirrors t3code's `turn.proposed.completed` path — the plan arrives
     // pre-extracted, no tag parsing needed). Use it as the primary trigger for
