@@ -9,12 +9,12 @@ import {
   Globe,
   LayoutGrid,
   Download,
-  Eye,
-  EyeOff,
   Loader2,
   Magnet,
   ArrowUpRight,
   ArrowDownLeft,
+  Pin,
+  PinOff,
   Plus,
   Puzzle,
   RotateCw,
@@ -60,6 +60,7 @@ import {
   type ProjectWindowActivity,
   type WindowActivityKind,
 } from '@/lib/status-indicator'
+import { getTitleBarProjects } from '@/lib/project-title-bar'
 
 function stripeClass(kind: WindowActivityKind): string {
   switch (kind) {
@@ -113,7 +114,7 @@ function ProjectTab({
   isActive,
   projectWindowCount,
   switchProject,
-  setProjectTitleBarHidden,
+  setProjectTitleBarPinned,
   requestCloseProject,
   allWindows,
   titleBarOverviewWidth,
@@ -130,11 +131,11 @@ function ProjectTab({
   attention,
   activities,
 }: {
-  project: { id: string; name: string; hiddenFromTitleBar?: boolean }
+  project: { id: string; name: string; titleBarPinned?: boolean }
   isActive: boolean
   projectWindowCount: number
   switchProject: (id: string) => void
-  setProjectTitleBarHidden: (id: string, hidden: boolean) => void
+  setProjectTitleBarPinned: (id: string, pinned: boolean) => void
   requestCloseProject: (id: string) => Promise<void>
   allWindows: import('@/lib/canvas-navigation').CanvasWindow[]
   titleBarOverviewWidth: number
@@ -264,16 +265,16 @@ function ProjectTab({
               event.stopPropagation()
               setMenuOpen(false)
               hapticNudge()
-              setProjectTitleBarHidden(project.id, !project.hiddenFromTitleBar)
+              setProjectTitleBarPinned(project.id, !project.titleBarPinned)
             }}
             className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-[11px] text-popover-foreground transition-colors hover:bg-muted/60"
           >
-            {project.hiddenFromTitleBar ? (
-              <Eye className="h-3 w-3 text-muted-foreground" />
+            {project.titleBarPinned ? (
+              <PinOff className="h-3 w-3 text-muted-foreground" />
             ) : (
-              <EyeOff className="h-3 w-3 text-muted-foreground" />
+              <Pin className="h-3 w-3 text-muted-foreground" />
             )}
-            <span>{project.hiddenFromTitleBar ? 'Show in title bar' : 'Hide from title bar'}</span>
+            <span>{project.titleBarPinned ? 'Unpin project' : 'Pin to title bar'}</span>
           </button>
           <button
             type="button"
@@ -374,7 +375,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
   const addBrowser = useStore((s) => s.addBrowser)
   const requestCloseWindow = useStore((s) => s.requestCloseWindow)
   const requestCloseProject = useStore((s) => s.requestCloseProject)
-  const setProjectTitleBarHidden = useStore((s) => s.setProjectTitleBarHidden)
+  const setProjectTitleBarPinned = useStore((s) => s.setProjectTitleBarPinned)
   const windowCount = useStore(
     (s) => s.terminals.length + s.browsers.length + s.agentWindows.length,
   )
@@ -511,9 +512,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
     pendingClosedWindows.find((entry) => entry.projectId === activeProjectId) ?? null
   const latestClosedProject = pendingClosedProjects[0] ?? null
   const [undoNow, setUndoNow] = useState(() => Date.now())
-  const visibleProjects = projects.filter(
-    (project) => !project.hiddenFromTitleBar || project.id === activeProjectId,
-  )
+  const visibleProjects = getTitleBarProjects(projects, activeProjectId)
   const undoSecondsLeft = latestClosedWindow
     ? Math.max(0, Math.ceil((latestClosedWindow.expiresAt - undoNow) / 1000))
     : 0
@@ -536,7 +535,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
       const reorderedVisibleIds = reordered.map((project) => project.id)
       let visibleIndex = 0
       const mergedIds = projects.map((project) => {
-        if (project.hiddenFromTitleBar && project.id !== activeProjectId) {
+        if (!visibleProjects.some((visibleProject) => visibleProject.id === project.id)) {
           return project.id
         }
         const reorderedId = reorderedVisibleIds[visibleIndex]
@@ -545,7 +544,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
       })
       reorderProjects(mergedIds)
     },
-    [activeProjectId, projects, reorderProjects],
+    [projects, reorderProjects, visibleProjects],
   )
 
   const openUrlBar = useCallback(() => {
@@ -809,7 +808,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
                   isActive={isActive}
                   projectWindowCount={projectWindowCount}
                   switchProject={switchProject}
-                  setProjectTitleBarHidden={setProjectTitleBarHidden}
+                  setProjectTitleBarPinned={setProjectTitleBarPinned}
                   requestCloseProject={requestCloseProject}
                   allWindows={allWindows}
                   titleBarOverviewWidth={titleBarOverviewWidth}

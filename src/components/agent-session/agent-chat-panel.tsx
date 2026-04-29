@@ -2591,6 +2591,15 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const textareaRef = useRef<HTMLDivElement>(null)
   const sendScrollTargetRef = useRef<number | null>(null)
   const sendScrollFrameRef = useRef<number | null>(null)
+  const focusComposer = useCallback((moveCursorToEnd = false) => {
+    const editor = textareaRef.current
+    if (!editor) return false
+    editor.focus({ preventScroll: true })
+    if (moveCursorToEnd) {
+      setComposerSelectionOffset(editor, serializeComposerElement(editor).length)
+    }
+    return document.activeElement === editor
+  }, [])
   // Returns the DOM scroll container backing the active LegendList so we can
   // read scroll position (to gate auto-scroll on "near bottom") and bypass the
   // list's maintainVisibleContentPosition by setting `scrollTop` directly.
@@ -2657,29 +2666,38 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       if (!hasPrimaryModifier(event) || event.shiftKey || event.altKey) return
       event.preventDefault()
       event.stopPropagation()
-      textareaRef.current?.focus({ preventScroll: true })
+      focusComposer()
     }
 
     window.addEventListener('keydown', onKeyDown, true)
     return () => window.removeEventListener('keydown', onKeyDown, true)
-  }, [agentWindow.id, focusedAgentWindowId])
+  }, [agentWindow.id, focusComposer, focusedAgentWindowId])
 
   // Auto-focus the composer whenever this window becomes the focused one.
-  // Skip when a modal/overlay is open (would steal focus from a dialog) or
-  // when the user is already typing in another field.
+  // Skip when a modal/overlay is open so dialogs keep their own focus.
   useEffect(() => {
     if (focusedAgentWindowId !== agentWindow.id) return
     if (useStore.getState().overlayOpen) return
-    const active = document.activeElement
-    const isEditable =
-      active instanceof HTMLElement &&
-      (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)
-    if (isEditable && active !== textareaRef.current) return
-    const frame = requestAnimationFrame(() => {
-      textareaRef.current?.focus({ preventScroll: true })
-    })
-    return () => cancelAnimationFrame(frame)
-  }, [agentWindow.id, focusedAgentWindowId])
+    let cancelled = false
+    let frame: number | null = null
+
+    const focusAfterLayout = (remainingFrames: number) => {
+      frame = window.requestAnimationFrame(() => {
+        if (cancelled || useStore.getState().overlayOpen) return
+        const moveCursorToEnd = document.activeElement !== textareaRef.current
+        const focused = focusComposer(moveCursorToEnd)
+        if (!focused && remainingFrames > 1) {
+          focusAfterLayout(remainingFrames - 1)
+        }
+      })
+    }
+
+    focusAfterLayout(3)
+    return () => {
+      cancelled = true
+      if (frame !== null) window.cancelAnimationFrame(frame)
+    }
+  }, [agentWindow.id, focusComposer, focusedAgentWindowId])
   // Ctrl+M cycles models, Ctrl+T cycles thinking effort, and holding Shift
   // reverses those cycles. Shift+Tab cycles permission mode. Scoped to textarea
   // focus so we don't steal Shift+Tab from real focus traversal elsewhere.
@@ -2985,9 +3003,13 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   // messages branch; the skeleton/empty branches don't need autoscroll.
 
   useEffect(() => {
-    const id = window.setTimeout(() => textareaRef.current?.focus(), 50)
+    const id = window.setTimeout(() => {
+      if (focusedAgentWindowId === agentWindow.id && !useStore.getState().overlayOpen) {
+        focusComposer()
+      }
+    }, 50)
     return () => window.clearTimeout(id)
-  }, [agentWindow.id])
+  }, [agentWindow.id, focusComposer, focusedAgentWindowId])
 
   const composerPlaceholder = useMemo(
     () => getComposerPlaceholder(agentWindow.agent),
@@ -3466,7 +3488,6 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const startNewSessionFromComposer = useCallback(async () => {
     const currentSnapshot = snapshotRef.current
     const draft = inputRef.current
-    const hasSelection = false
     const rawValue = draft.trim()
     const pinned = [...attachmentsRef.current]
     if (!rawValue && pinned.length === 0) return

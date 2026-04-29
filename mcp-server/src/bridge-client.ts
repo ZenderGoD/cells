@@ -8,7 +8,7 @@
 
 import net from "net";
 
-const REQUEST_TIMEOUT = 10_000;
+const REQUEST_TIMEOUT = 60_000;
 
 export class BridgeClient {
   private socket: net.Socket | null = null;

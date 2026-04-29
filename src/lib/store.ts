@@ -187,6 +187,7 @@ interface StoreState {
   restoreLastClosedProject(): void
   renameProject(id: string, name: string): void
   reorderProjects(ids: string[]): void
+  setProjectTitleBarPinned(id: string, pinned: boolean): void
   setProjectTitleBarHidden(id: string, hidden: boolean): void
   getActiveProject(): Project | undefined
   getActiveProjectPath(): string | undefined
@@ -1689,6 +1690,7 @@ export const useStore = create<StoreState>((set, get) => ({
       id,
       name,
       path,
+      titleBarPinned: false,
       hiddenFromTitleBar: false,
       terminals: [],
       browsers: [],
@@ -2100,7 +2102,28 @@ export const useStore = create<StoreState>((set, get) => ({
   setProjectTitleBarHidden(id, hidden) {
     set((state) => ({
       projects: state.projects.map((project) =>
-        project.id === id ? { ...project, hiddenFromTitleBar: hidden } : project,
+        project.id === id
+          ? {
+              ...project,
+              hiddenFromTitleBar: hidden,
+              titleBarPinned: hidden ? false : project.titleBarPinned,
+            }
+          : project,
+      ),
+    }))
+    get().persist()
+  },
+
+  setProjectTitleBarPinned(id, pinned) {
+    set((state) => ({
+      projects: state.projects.map((project) =>
+        project.id === id
+          ? {
+              ...project,
+              titleBarPinned: pinned,
+              hiddenFromTitleBar: pinned ? false : project.hiddenFromTitleBar,
+            }
+          : project,
       ),
     }))
     get().persist()

@@ -568,6 +568,10 @@ export interface Project {
   id: string
   name: string
   path: string
+  titleBarPinned?: boolean
+  /** Legacy visibility flag. New title-bar project selection uses
+   *  titleBarPinned plus auto-show rules, but this remains to preserve old
+   *  saved-state exclusions when no project has been pinned yet. */
   hiddenFromTitleBar?: boolean
   terminals: TerminalNode[]
   browsers: BrowserNode[]

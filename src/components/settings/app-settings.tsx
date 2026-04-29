@@ -5,9 +5,13 @@ import {
   Circle,
   Download,
   ExternalLink,
+  FolderOpen,
   Github,
+  GripVertical,
   KeyRound,
   Loader2,
+  Pin,
+  PinOff,
   Plus,
   Puzzle,
   RefreshCw,
@@ -17,10 +21,11 @@ import {
   Trash2,
   X,
 } from 'lucide-react'
+import { Reorder } from 'motion/react'
 
 import { AgentIcon } from '@/components/agent-icon'
 
-import type { DaemonStatus, ExtensionMeta, InputPrefix } from '@/types'
+import type { DaemonStatus, ExtensionMeta, InputPrefix, Project } from '@/types'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -34,6 +39,11 @@ import {
 import { Kbd, KbdGroup } from '@/components/ui/kbd'
 import { useStore } from '@/lib/store'
 import { getActiveAppThemeKey, resolveAppColorScheme } from '@/lib/app-themes'
+import {
+  getTitleBarProjects,
+  hasPinnedTitleBarProjects,
+  TITLE_BAR_AUTO_PROJECT_LIMIT,
+} from '@/lib/project-title-bar'
 import { TERMINAL_SESSION_BACKEND_OPTIONS } from '@/lib/terminal-session-backend'
 import {
   MAX_TERMINAL_SCROLLBACK_LINES,
@@ -50,6 +60,7 @@ import { cn } from '@/lib/utils'
 import type { CanvasSnapMode, TitleBarPosition } from '@/types'
 
 import { SETTINGS_SHEET_CLASSNAMES } from './settings-layout'
+import { NewProjectDialog } from '../new-project-dialog'
 import { Dialog, DialogOverlay, DialogPortal } from '../ui/dialog'
 import { ScrollArea } from '../ui/scroll-area'
 
@@ -60,6 +71,7 @@ interface AppSettingsProps {
 
 type SettingsSectionId =
   | 'appearance'
+  | 'projects'
   | 'canvas'
   | 'terminal'
   | 'browser'
@@ -74,6 +86,7 @@ const FONT_SIZES = [11, 12, 13, 14, 15, 16]
 
 const SETTINGS_SECTIONS: Array<{ id: SettingsSectionId; label: string }> = [
   { id: 'appearance', label: 'Appearance' },
+  { id: 'projects', label: 'Projects' },
   { id: 'canvas', label: 'Canvas' },
   { id: 'terminal', label: 'Terminal' },
   { id: 'browser', label: 'Browser' },
@@ -215,6 +228,11 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const setCloseUndoTimeoutMs = useStore((s) => s.setCloseUndoTimeoutMs)
   const setCloseProcessSuppressions = useStore((s) => s.setCloseProcessSuppressions)
   const projects = useStore((s) => s.projects)
+  const switchProject = useStore((s) => s.switchProject)
+  const reorderProjects = useStore((s) => s.reorderProjects)
+  const requestCloseProject = useStore((s) => s.requestCloseProject)
+  const setProjectTitleBarPinned = useStore((s) => s.setProjectTitleBarPinned)
+  const [showNewProject, setShowNewProject] = useState(false)
   const activeAppThemeKey = useMemo(
     () =>
       getActiveAppThemeKey({
@@ -227,6 +245,14 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const resolvedAppColorScheme = useMemo(() => resolveAppColorScheme(colorScheme), [colorScheme])
   const activeProject = useMemo(
     () => projects.find((project) => project.id === activeProjectId) ?? null,
+    [activeProjectId, projects],
+  )
+  const pinnedProjectCount = useMemo(
+    () => projects.filter((project) => project.titleBarPinned === true).length,
+    [projects],
+  )
+  const visibleTitleBarProjects = useMemo(
+    () => getTitleBarProjects(projects, activeProjectId),
     [activeProjectId, projects],
   )
   const [appearanceThemeSchemeTab, setAppearanceThemeSchemeTab] = useState<'dark' | 'light'>(
@@ -301,1201 +327,1234 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
         terminalThemes[activeAppThemeKey]?.scheme ?? resolvedAppColorScheme,
       )
       setTerminalThemeSchemeTab(terminalThemes[terminalTheme]?.scheme ?? 'dark')
+    } else {
+      setShowNewProject(false)
     }
     onOpenChange(nextOpen)
   }
 
   return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogPortal>
-        <DialogOverlay />
+    <>
+      <Dialog open={open} onOpenChange={handleOpenChange}>
+        <DialogPortal>
+          <DialogOverlay />
 
-        <DialogPrimitive.Popup className={SETTINGS_SHEET_CLASSNAMES.contentPanel}>
-          {/* Sidebar nav */}
-          <div className="w-[152px] shrink-0 border-r border-border/20 p-2.5">
-            <div className="px-2 pb-2">
-              <span className="text-xs font-medium text-foreground">Settings</span>
-            </div>
-            <nav className="space-y-0.5">
-              {SETTINGS_SECTIONS.map((section) => (
-                <button
-                  key={section.id}
-                  type="button"
-                  onClick={() => setActiveSection(section.id)}
-                  className={cn(
-                    'w-full rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
-                    activeSection === section.id
-                      ? 'bg-accent text-accent-foreground'
-                      : 'text-muted-foreground/60 hover:bg-muted/30 hover:text-foreground',
-                  )}
-                >
-                  {section.label}
-                </button>
-              ))}
-            </nav>
-          </div>
-
-          {/* Content */}
-          <div className="flex flex-1 flex-col min-w-0 min-h-0">
-            <header className={SETTINGS_SHEET_CLASSNAMES.contentHeader}>
-              <div className="flex items-center justify-between">
-                <h2 className="text-xs font-medium text-foreground">{activeSectionLabel}</h2>
-                <div className="flex items-center gap-1.5">
-                  <div className="inline-flex items-center gap-1.5 rounded-md border border-border/30 bg-background/60 px-2 py-1 text-[10px] text-muted-foreground/70">
-                    {saveBadge.icon}
-                    <span>{saveBadge.label}</span>
-                  </div>
-                  <DialogPrimitive.Close
-                    data-slot="dialog-close"
-                    render={<Button variant="ghost" size="icon-xs" />}
-                  >
-                    <X className="w-2.5 h-2.5" />
-                    <span className="sr-only">Close</span>
-                  </DialogPrimitive.Close>
-                </div>
+          <DialogPrimitive.Popup className={SETTINGS_SHEET_CLASSNAMES.contentPanel}>
+            {/* Sidebar nav */}
+            <div className="w-[152px] shrink-0 border-r border-border/20 p-2.5">
+              <div className="px-2 pb-2">
+                <span className="text-xs font-medium text-foreground">Settings</span>
               </div>
-            </header>
+              <nav className="space-y-0.5">
+                {SETTINGS_SECTIONS.map((section) => (
+                  <button
+                    key={section.id}
+                    type="button"
+                    onClick={() => setActiveSection(section.id)}
+                    className={cn(
+                      'w-full rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
+                      activeSection === section.id
+                        ? 'bg-accent text-accent-foreground'
+                        : 'text-muted-foreground/60 hover:bg-muted/30 hover:text-foreground',
+                    )}
+                  >
+                    {section.label}
+                  </button>
+                ))}
+              </nav>
+            </div>
 
-            <ScrollArea
-              className={SETTINGS_SHEET_CLASSNAMES.contentScroll}
-              viewportClassName="px-4 py-3"
-            >
-              {activeSection === 'appearance' ? (
-                <div className="space-y-3.5">
-                  <SettingsGroup title="Mode">
-                    <div className="space-y-0.5">
-                      {(
-                        [
-                          { value: 'light', label: 'Light' },
-                          { value: 'dark', label: 'Dark' },
-                          { value: 'system', label: 'System' },
-                        ] as const
-                      ).map((opt) => (
-                        <button
-                          key={opt.value}
-                          onClick={() => setColorScheme(opt.value)}
-                          className={cn(
-                            'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
-                            colorScheme === opt.value
-                              ? 'bg-accent text-accent-foreground'
-                              : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
-                          )}
-                        >
-                          <span className="flex-1">{opt.label}</span>
-                          {colorScheme === opt.value && (
-                            <Check className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
-                          )}
-                        </button>
-                      ))}
+            {/* Content */}
+            <div className="flex flex-1 flex-col min-w-0 min-h-0">
+              <header className={SETTINGS_SHEET_CLASSNAMES.contentHeader}>
+                <div className="flex items-center justify-between">
+                  <h2 className="text-xs font-medium text-foreground">{activeSectionLabel}</h2>
+                  <div className="flex items-center gap-1.5">
+                    <div className="inline-flex items-center gap-1.5 rounded-md border border-border/30 bg-background/60 px-2 py-1 text-[10px] text-muted-foreground/70">
+                      {saveBadge.icon}
+                      <span>{saveBadge.label}</span>
                     </div>
-                  </SettingsGroup>
+                    <DialogPrimitive.Close
+                      data-slot="dialog-close"
+                      render={<Button variant="ghost" size="icon-xs" />}
+                    >
+                      <X className="w-2.5 h-2.5" />
+                      <span className="sr-only">Close</span>
+                    </DialogPrimitive.Close>
+                  </div>
+                </div>
+              </header>
 
-                  <SettingsGroup title="Cells Theme">
-                    <div className="space-y-2">
-                      <p className="px-0.5 text-[10px] text-muted-foreground/40">
-                        Changing the Cells theme also updates Terminal. You can override Terminal
-                        separately in Terminal settings afterward.
-                      </p>
-
-                      <div className="inline-flex rounded-md border border-border/20 bg-background/40 p-0.5">
-                        {TERMINAL_THEME_SCHEME_TABS.map((tab) => (
+              <ScrollArea
+                className={SETTINGS_SHEET_CLASSNAMES.contentScroll}
+                viewportClassName="px-4 py-3"
+              >
+                {activeSection === 'appearance' ? (
+                  <div className="space-y-3.5">
+                    <SettingsGroup title="Mode">
+                      <div className="space-y-0.5">
+                        {(
+                          [
+                            { value: 'light', label: 'Light' },
+                            { value: 'dark', label: 'Dark' },
+                            { value: 'system', label: 'System' },
+                          ] as const
+                        ).map((opt) => (
                           <button
-                            key={tab.value}
-                            onClick={() => setAppearanceThemeSchemeTab(tab.value)}
+                            key={opt.value}
+                            onClick={() => setColorScheme(opt.value)}
                             className={cn(
-                              'rounded-[6px] px-2.5 py-1 text-[10px] font-medium transition-colors',
-                              appearanceThemeSchemeTab === tab.value
+                              'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
+                              colorScheme === opt.value
                                 ? 'bg-accent text-accent-foreground'
-                                : 'text-muted-foreground/60 hover:text-foreground',
+                                : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
                             )}
                           >
-                            {tab.label}
+                            <span className="flex-1">{opt.label}</span>
+                            {colorScheme === opt.value && (
+                              <Check className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
+                            )}
                           </button>
                         ))}
                       </div>
+                    </SettingsGroup>
 
-                      <div className="grid grid-cols-2 gap-2">
-                        {appearanceVisibleThemeKeys.map((key) => {
-                          const theme = terminalThemes[key]
-                          const selectedTheme =
-                            appearanceThemeSchemeTab === 'dark' ? appDarkTheme : appLightTheme
+                    <SettingsGroup title="Cells Theme">
+                      <div className="space-y-2">
+                        <p className="px-0.5 text-[10px] text-muted-foreground/40">
+                          Changing the Cells theme also updates Terminal. You can override Terminal
+                          separately in Terminal settings afterward.
+                        </p>
 
-                          return (
-                            <ThemePreviewButton
-                              key={key}
-                              themeKey={key}
-                              selected={key === selectedTheme}
-                              active={key === activeAppThemeKey}
-                              onClick={() => {
-                                setAppearanceThemeSchemeTab(theme.scheme)
-                                setAppTheme(key)
-                              }}
-                            />
-                          )
-                        })}
+                        <div className="inline-flex rounded-md border border-border/20 bg-background/40 p-0.5">
+                          {TERMINAL_THEME_SCHEME_TABS.map((tab) => (
+                            <button
+                              key={tab.value}
+                              onClick={() => setAppearanceThemeSchemeTab(tab.value)}
+                              className={cn(
+                                'rounded-[6px] px-2.5 py-1 text-[10px] font-medium transition-colors',
+                                appearanceThemeSchemeTab === tab.value
+                                  ? 'bg-accent text-accent-foreground'
+                                  : 'text-muted-foreground/60 hover:text-foreground',
+                              )}
+                            >
+                              {tab.label}
+                            </button>
+                          ))}
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2">
+                          {appearanceVisibleThemeKeys.map((key) => {
+                            const theme = terminalThemes[key]
+                            const selectedTheme =
+                              appearanceThemeSchemeTab === 'dark' ? appDarkTheme : appLightTheme
+
+                            return (
+                              <ThemePreviewButton
+                                key={key}
+                                themeKey={key}
+                                selected={key === selectedTheme}
+                                active={key === activeAppThemeKey}
+                                onClick={() => {
+                                  setAppearanceThemeSchemeTab(theme.scheme)
+                                  setAppTheme(key)
+                                }}
+                              />
+                            )
+                          })}
+                        </div>
                       </div>
-                    </div>
-                  </SettingsGroup>
+                    </SettingsGroup>
 
-                  <SettingsGroup title="Window Opacity">
-                    <div className="flex items-center gap-3">
-                      <input
-                        type="range"
-                        min={0}
-                        max={100}
-                        step={1}
-                        value={windowOpacity}
-                        onChange={(event) => setWindowOpacity(Number(event.target.value))}
-                        className="cells-slider flex-1"
-                      />
-                      <span className="text-[10px] tabular-nums text-muted-foreground/50 w-6 text-right">
-                        {windowOpacity}
-                      </span>
-                    </div>
-                  </SettingsGroup>
+                    <SettingsGroup title="Window Opacity">
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="range"
+                          min={0}
+                          max={100}
+                          step={1}
+                          value={windowOpacity}
+                          onChange={(event) => setWindowOpacity(Number(event.target.value))}
+                          className="cells-slider flex-1"
+                        />
+                        <span className="text-[10px] tabular-nums text-muted-foreground/50 w-6 text-right">
+                          {windowOpacity}
+                        </span>
+                      </div>
+                    </SettingsGroup>
 
-                  <SettingsGroup title="Agent Color Opacity">
-                    <div className="flex items-center gap-3">
-                      <input
-                        type="range"
-                        min={20}
-                        max={100}
-                        step={1}
-                        value={agentWindowColorOpacity}
-                        onChange={(event) => setAgentWindowColorOpacity(Number(event.target.value))}
-                        className="cells-slider flex-1"
-                      />
-                      <span className="w-8 text-right text-[10px] tabular-nums text-muted-foreground/50">
-                        {agentWindowColorOpacity}%
-                      </span>
-                    </div>
-                  </SettingsGroup>
+                    <SettingsGroup title="Agent Color Opacity">
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="range"
+                          min={20}
+                          max={100}
+                          step={1}
+                          value={agentWindowColorOpacity}
+                          onChange={(event) =>
+                            setAgentWindowColorOpacity(Number(event.target.value))
+                          }
+                          className="cells-slider flex-1"
+                        />
+                        <span className="w-8 text-right text-[10px] tabular-nums text-muted-foreground/50">
+                          {agentWindowColorOpacity}%
+                        </span>
+                      </div>
+                    </SettingsGroup>
 
-                  <SettingsGroup title="Window Transparency">
-                    <div className="space-y-2">
+                    <SettingsGroup title="Window Transparency">
+                      <div className="space-y-2">
+                        <button
+                          onClick={() => setUseTransparentWindow(!useTransparentWindow)}
+                          className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-[11px] transition-colors hover:bg-muted/40"
+                        >
+                          <div className="flex min-w-0 flex-col items-start gap-0.5 text-left">
+                            <span className="text-foreground">Use translucent Electron window</span>
+                            <span className="text-[10px] text-muted-foreground/40">
+                              Turn this off to reduce WindowServer compositing. Applies after
+                              restart.
+                            </span>
+                          </div>
+                          <div
+                            className={cn(
+                              'relative h-3.5 w-6 rounded-full transition-colors',
+                              useTransparentWindow ? 'bg-primary' : 'bg-muted-foreground/25',
+                            )}
+                          >
+                            <div
+                              className={cn(
+                                'absolute top-0.5 h-2.5 w-2.5 rounded-full bg-background transition-transform',
+                                useTransparentWindow ? 'translate-x-3' : 'translate-x-0.5',
+                              )}
+                            />
+                          </div>
+                        </button>
+                        <div className="flex justify-end px-0.5">
+                          <button
+                            onClick={() => {
+                              persist()
+                              window.setTimeout(() => {
+                                void window.cells.app.relaunch()
+                              }, 150)
+                            }}
+                            className="rounded-md border border-border/20 bg-background/40 px-2.5 py-1 text-[10px] text-muted-foreground/65 transition-colors hover:bg-muted/40 hover:text-foreground"
+                          >
+                            Restart now
+                          </button>
+                        </div>
+                      </div>
+                    </SettingsGroup>
+
+                    <SettingsGroup title="Title Bar">
+                      <div className="space-y-0.5">
+                        {TITLE_BAR_POSITION_OPTIONS.map((option) => (
+                          <button
+                            key={option.value}
+                            onClick={() => setTitleBarPosition(option.value)}
+                            className={cn(
+                              'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
+                              titleBarPosition === option.value
+                                ? 'bg-accent text-accent-foreground'
+                                : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
+                            )}
+                          >
+                            <span className="flex-1">{option.label}</span>
+                            <span className="text-[10px] text-muted-foreground/40">
+                              {option.hint}
+                            </span>
+                            {titleBarPosition === option.value && (
+                              <Check className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    </SettingsGroup>
+
+                    <SettingsGroup title="Dim When Unfocused">
                       <button
-                        onClick={() => setUseTransparentWindow(!useTransparentWindow)}
+                        onClick={() => setDimWhenUnfocused(!dimWhenUnfocused)}
                         className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-[11px] transition-colors hover:bg-muted/40"
                       >
-                        <div className="flex min-w-0 flex-col items-start gap-0.5 text-left">
-                          <span className="text-foreground">Use translucent Electron window</span>
-                          <span className="text-[10px] text-muted-foreground/40">
-                            Turn this off to reduce WindowServer compositing. Applies after restart.
-                          </span>
-                        </div>
+                        <span className="text-foreground">Dim overlay when window loses focus</span>
                         <div
                           className={cn(
                             'relative h-3.5 w-6 rounded-full transition-colors',
-                            useTransparentWindow ? 'bg-primary' : 'bg-muted-foreground/25',
+                            dimWhenUnfocused ? 'bg-primary' : 'bg-muted-foreground/25',
                           )}
                         >
                           <div
                             className={cn(
                               'absolute top-0.5 h-2.5 w-2.5 rounded-full bg-background transition-transform',
-                              useTransparentWindow ? 'translate-x-3' : 'translate-x-0.5',
+                              dimWhenUnfocused ? 'translate-x-3' : 'translate-x-0.5',
                             )}
                           />
                         </div>
                       </button>
-                      <div className="flex justify-end px-0.5">
-                        <button
-                          onClick={() => {
-                            persist()
-                            window.setTimeout(() => {
-                              void window.cells.app.relaunch()
-                            }, 150)
-                          }}
-                          className="rounded-md border border-border/20 bg-background/40 px-2.5 py-1 text-[10px] text-muted-foreground/65 transition-colors hover:bg-muted/40 hover:text-foreground"
-                        >
-                          Restart now
-                        </button>
-                      </div>
-                    </div>
-                  </SettingsGroup>
+                    </SettingsGroup>
+                  </div>
+                ) : null}
 
-                  <SettingsGroup title="Title Bar">
-                    <div className="space-y-0.5">
-                      {TITLE_BAR_POSITION_OPTIONS.map((option) => (
-                        <button
-                          key={option.value}
-                          onClick={() => setTitleBarPosition(option.value)}
-                          className={cn(
-                            'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
-                            titleBarPosition === option.value
-                              ? 'bg-accent text-accent-foreground'
-                              : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
-                          )}
-                        >
-                          <span className="flex-1">{option.label}</span>
-                          <span className="text-[10px] text-muted-foreground/40">
-                            {option.hint}
-                          </span>
-                          {titleBarPosition === option.value && (
-                            <Check className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  </SettingsGroup>
+                {activeSection === 'projects' ? (
+                  <ProjectManagerSection
+                    projects={projects}
+                    activeProjectId={activeProjectId}
+                    visibleTitleBarProjects={visibleTitleBarProjects}
+                    pinnedProjectCount={pinnedProjectCount}
+                    onAddProject={() => setShowNewProject(true)}
+                    onSwitchProject={switchProject}
+                    onReorderProjects={(nextProjects) =>
+                      reorderProjects(nextProjects.map((project) => project.id))
+                    }
+                    onTogglePinned={setProjectTitleBarPinned}
+                    onRequestCloseProject={requestCloseProject}
+                  />
+                ) : null}
 
-                  <SettingsGroup title="Dim When Unfocused">
-                    <button
-                      onClick={() => setDimWhenUnfocused(!dimWhenUnfocused)}
-                      className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-[11px] transition-colors hover:bg-muted/40"
-                    >
-                      <span className="text-foreground">Dim overlay when window loses focus</span>
-                      <div
-                        className={cn(
-                          'relative h-3.5 w-6 rounded-full transition-colors',
-                          dimWhenUnfocused ? 'bg-primary' : 'bg-muted-foreground/25',
-                        )}
+                {activeSection === 'canvas' ? (
+                  <div className="space-y-3.5">
+                    <SettingsGroup title="Snap on Focus">
+                      <button
+                        onClick={() => setSnapOnFocus(!snapOnFocus)}
+                        className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-[11px] transition-colors hover:bg-muted/40"
                       >
+                        <span className="text-foreground">Animate to window on click</span>
                         <div
                           className={cn(
-                            'absolute top-0.5 h-2.5 w-2.5 rounded-full bg-background transition-transform',
-                            dimWhenUnfocused ? 'translate-x-3' : 'translate-x-0.5',
-                          )}
-                        />
-                      </div>
-                    </button>
-                  </SettingsGroup>
-                </div>
-              ) : null}
-
-              {activeSection === 'canvas' ? (
-                <div className="space-y-3.5">
-                  <SettingsGroup title="Snap on Focus">
-                    <button
-                      onClick={() => setSnapOnFocus(!snapOnFocus)}
-                      className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-[11px] transition-colors hover:bg-muted/40"
-                    >
-                      <span className="text-foreground">Animate to window on click</span>
-                      <div
-                        className={cn(
-                          'relative h-3.5 w-6 rounded-full transition-colors',
-                          snapOnFocus ? 'bg-primary' : 'bg-muted-foreground/25',
-                        )}
-                      >
-                        <div
-                          className={cn(
-                            'absolute top-0.5 h-2.5 w-2.5 rounded-full bg-background transition-transform',
-                            snapOnFocus ? 'translate-x-3' : 'translate-x-0.5',
-                          )}
-                        />
-                      </div>
-                    </button>
-                  </SettingsGroup>
-
-                  <SettingsGroup title="Snap Framing">
-                    <div className="space-y-0.5">
-                      {SNAP_MODE_OPTIONS.map((mode) => (
-                        <button
-                          key={mode.value}
-                          onClick={() => setSnapMode(mode.value)}
-                          className={cn(
-                            'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
-                            snapMode === mode.value
-                              ? 'bg-accent text-accent-foreground'
-                              : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
+                            'relative h-3.5 w-6 rounded-full transition-colors',
+                            snapOnFocus ? 'bg-primary' : 'bg-muted-foreground/25',
                           )}
                         >
-                          <span className="flex-1">{mode.label}</span>
-                          <span className="text-[10px] text-muted-foreground/40">{mode.hint}</span>
-                          {snapMode === mode.value && (
-                            <Check className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  </SettingsGroup>
-
-                  <SettingsGroup title="Switcher Order">
-                    <p className="text-[10px] text-muted-foreground/40 mb-3">
-                      Configure how the window and project switchers cycle through items. These
-                      settings control the behavior when you hold Ctrl and press Tab (for windows)
-                      or ` (for projects).
-                    </p>
-                    <div className="space-y-2.5">
-                      <SettingsField label="Ctrl+Tab windows">
-                        <div className="space-y-0.5">
-                          {SWITCH_MODE_OPTIONS.map((mode) => (
-                            <button
-                              key={mode.value}
-                              onClick={() => setTabSwitchMode(mode.value)}
-                              className={cn(
-                                'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
-                                tabSwitchMode === mode.value
-                                  ? 'bg-accent text-accent-foreground'
-                                  : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
-                              )}
-                            >
-                              <span className="flex-1">{mode.label}</span>
-                              <span className="text-[10px] text-muted-foreground/40">
-                                {mode.hint}
-                              </span>
-                              {tabSwitchMode === mode.value && (
-                                <Check className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
-                              )}
-                            </button>
-                          ))}
-                        </div>
-                      </SettingsField>
-
-                      <SettingsField label="Ctrl+` projects">
-                        <div className="space-y-0.5">
-                          {SWITCH_MODE_OPTIONS.map((mode) => (
-                            <button
-                              key={mode.value}
-                              onClick={() => setProjectSwitchMode(mode.value)}
-                              className={cn(
-                                'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
-                                projectSwitchMode === mode.value
-                                  ? 'bg-accent text-accent-foreground'
-                                  : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
-                              )}
-                            >
-                              <span className="flex-1">{mode.label}</span>
-                              <span className="text-[10px] text-muted-foreground/40">
-                                {mode.hint}
-                              </span>
-                              {projectSwitchMode === mode.value && (
-                                <Check className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
-                              )}
-                            </button>
-                          ))}
-                        </div>
-                      </SettingsField>
-                    </div>
-                  </SettingsGroup>
-
-                  <SettingsGroup title="Animations">
-                    <button
-                      onClick={() => setReducedMotion(!reducedMotion)}
-                      className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-[11px] transition-colors hover:bg-muted/40"
-                    >
-                      <span className="text-foreground">Disable switcher animations</span>
-                      <div
-                        className={cn(
-                          'relative h-3.5 w-6 rounded-full transition-colors',
-                          reducedMotion ? 'bg-primary' : 'bg-muted-foreground/25',
-                        )}
-                      >
-                        <div
-                          className={cn(
-                            'absolute top-0.5 h-2.5 w-2.5 rounded-full bg-background transition-transform',
-                            reducedMotion ? 'translate-x-3' : 'translate-x-0.5',
-                          )}
-                        />
-                      </div>
-                    </button>
-                  </SettingsGroup>
-                </div>
-              ) : null}
-
-              {activeSection === 'terminal' ? (
-                <div className="space-y-3.5">
-                  <SettingsGroup title="Theme">
-                    <div className="space-y-2">
-                      <div className="inline-flex rounded-md border border-border/20 bg-background/40 p-0.5">
-                        {TERMINAL_THEME_SCHEME_TABS.map((tab) => (
-                          <button
-                            key={tab.value}
-                            onClick={() => setTerminalThemeSchemeTab(tab.value)}
+                          <div
                             className={cn(
-                              'rounded-[6px] px-2.5 py-1 text-[10px] font-medium transition-colors',
-                              terminalThemeSchemeTab === tab.value
+                              'absolute top-0.5 h-2.5 w-2.5 rounded-full bg-background transition-transform',
+                              snapOnFocus ? 'translate-x-3' : 'translate-x-0.5',
+                            )}
+                          />
+                        </div>
+                      </button>
+                    </SettingsGroup>
+
+                    <SettingsGroup title="Snap Framing">
+                      <div className="space-y-0.5">
+                        {SNAP_MODE_OPTIONS.map((mode) => (
+                          <button
+                            key={mode.value}
+                            onClick={() => setSnapMode(mode.value)}
+                            className={cn(
+                              'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
+                              snapMode === mode.value
                                 ? 'bg-accent text-accent-foreground'
-                                : 'text-muted-foreground/60 hover:text-foreground',
+                                : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
                             )}
                           >
-                            {tab.label}
+                            <span className="flex-1">{mode.label}</span>
+                            <span className="text-[10px] text-muted-foreground/40">
+                              {mode.hint}
+                            </span>
+                            {snapMode === mode.value && (
+                              <Check className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
+                            )}
                           </button>
                         ))}
                       </div>
+                    </SettingsGroup>
 
-                      <div className="grid grid-cols-2 gap-2">
-                        {terminalVisibleThemeKeys.map((key) => {
-                          const theme = terminalThemes[key]
-                          return (
-                            <ThemePreviewButton
-                              key={key}
-                              themeKey={key}
-                              selected={key === terminalTheme}
-                              onClick={() => {
-                                setTerminalThemeSchemeTab(theme.scheme)
-                                setTerminalTheme(key)
-                              }}
-                            />
-                          )
-                        })}
-                      </div>
-                    </div>
-                  </SettingsGroup>
-
-                  <SettingsGroup title="Session Backend">
-                    <div className="space-y-2.5">
-                      <SettingsField
-                        label="Backend"
-                        hint="Applies after relaunch. New installs and existing profiles use Zellij."
-                      >
-                        <div className="space-y-0.5">
-                          {TERMINAL_SESSION_BACKEND_OPTIONS.map((option) => {
-                            const disabled = option.value === 'tmux'
-                            return (
+                    <SettingsGroup title="Switcher Order">
+                      <p className="text-[10px] text-muted-foreground/40 mb-3">
+                        Configure how the window and project switchers cycle through items. These
+                        settings control the behavior when you hold Ctrl and press Tab (for windows)
+                        or ` (for projects).
+                      </p>
+                      <div className="space-y-2.5">
+                        <SettingsField label="Ctrl+Tab windows">
+                          <div className="space-y-0.5">
+                            {SWITCH_MODE_OPTIONS.map((mode) => (
                               <button
-                                key={option.value}
-                                disabled={disabled}
-                                onClick={() => {
-                                  if (!disabled) setTerminalSessionBackend(option.value)
-                                }}
+                                key={mode.value}
+                                onClick={() => setTabSwitchMode(mode.value)}
                                 className={cn(
                                   'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
-                                  terminalSessionBackend === option.value
+                                  tabSwitchMode === mode.value
                                     ? 'bg-accent text-accent-foreground'
                                     : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
-                                  disabled &&
-                                    'cursor-not-allowed opacity-45 hover:bg-transparent hover:text-muted-foreground/70',
+                                )}
+                              >
+                                <span className="flex-1">{mode.label}</span>
+                                <span className="text-[10px] text-muted-foreground/40">
+                                  {mode.hint}
+                                </span>
+                                {tabSwitchMode === mode.value && (
+                                  <Check className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
+                                )}
+                              </button>
+                            ))}
+                          </div>
+                        </SettingsField>
+
+                        <SettingsField label="Ctrl+` projects">
+                          <div className="space-y-0.5">
+                            {SWITCH_MODE_OPTIONS.map((mode) => (
+                              <button
+                                key={mode.value}
+                                onClick={() => setProjectSwitchMode(mode.value)}
+                                className={cn(
+                                  'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
+                                  projectSwitchMode === mode.value
+                                    ? 'bg-accent text-accent-foreground'
+                                    : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
+                                )}
+                              >
+                                <span className="flex-1">{mode.label}</span>
+                                <span className="text-[10px] text-muted-foreground/40">
+                                  {mode.hint}
+                                </span>
+                                {projectSwitchMode === mode.value && (
+                                  <Check className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
+                                )}
+                              </button>
+                            ))}
+                          </div>
+                        </SettingsField>
+                      </div>
+                    </SettingsGroup>
+
+                    <SettingsGroup title="Animations">
+                      <button
+                        onClick={() => setReducedMotion(!reducedMotion)}
+                        className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-[11px] transition-colors hover:bg-muted/40"
+                      >
+                        <span className="text-foreground">Disable switcher animations</span>
+                        <div
+                          className={cn(
+                            'relative h-3.5 w-6 rounded-full transition-colors',
+                            reducedMotion ? 'bg-primary' : 'bg-muted-foreground/25',
+                          )}
+                        >
+                          <div
+                            className={cn(
+                              'absolute top-0.5 h-2.5 w-2.5 rounded-full bg-background transition-transform',
+                              reducedMotion ? 'translate-x-3' : 'translate-x-0.5',
+                            )}
+                          />
+                        </div>
+                      </button>
+                    </SettingsGroup>
+                  </div>
+                ) : null}
+
+                {activeSection === 'terminal' ? (
+                  <div className="space-y-3.5">
+                    <SettingsGroup title="Theme">
+                      <div className="space-y-2">
+                        <div className="inline-flex rounded-md border border-border/20 bg-background/40 p-0.5">
+                          {TERMINAL_THEME_SCHEME_TABS.map((tab) => (
+                            <button
+                              key={tab.value}
+                              onClick={() => setTerminalThemeSchemeTab(tab.value)}
+                              className={cn(
+                                'rounded-[6px] px-2.5 py-1 text-[10px] font-medium transition-colors',
+                                terminalThemeSchemeTab === tab.value
+                                  ? 'bg-accent text-accent-foreground'
+                                  : 'text-muted-foreground/60 hover:text-foreground',
+                              )}
+                            >
+                              {tab.label}
+                            </button>
+                          ))}
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2">
+                          {terminalVisibleThemeKeys.map((key) => {
+                            const theme = terminalThemes[key]
+                            return (
+                              <ThemePreviewButton
+                                key={key}
+                                themeKey={key}
+                                selected={key === terminalTheme}
+                                onClick={() => {
+                                  setTerminalThemeSchemeTab(theme.scheme)
+                                  setTerminalTheme(key)
+                                }}
+                              />
+                            )
+                          })}
+                        </div>
+                      </div>
+                    </SettingsGroup>
+
+                    <SettingsGroup title="Session Backend">
+                      <div className="space-y-2.5">
+                        <SettingsField
+                          label="Backend"
+                          hint="Applies after relaunch. New installs and existing profiles use Zellij."
+                        >
+                          <div className="space-y-0.5">
+                            {TERMINAL_SESSION_BACKEND_OPTIONS.map((option) => {
+                              const disabled = option.value === 'tmux'
+                              return (
+                                <button
+                                  key={option.value}
+                                  disabled={disabled}
+                                  onClick={() => {
+                                    if (!disabled) setTerminalSessionBackend(option.value)
+                                  }}
+                                  className={cn(
+                                    'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
+                                    terminalSessionBackend === option.value
+                                      ? 'bg-accent text-accent-foreground'
+                                      : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
+                                    disabled &&
+                                      'cursor-not-allowed opacity-45 hover:bg-transparent hover:text-muted-foreground/70',
+                                  )}
+                                >
+                                  <span className="flex-1">{option.label}</span>
+                                  <span className="text-[10px] text-muted-foreground/40">
+                                    {option.hint}
+                                  </span>
+                                  {terminalSessionBackend === option.value && (
+                                    <Check className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
+                                  )}
+                                </button>
+                              )
+                            })}
+                          </div>
+                        </SettingsField>
+                      </div>
+                    </SettingsGroup>
+
+                    <SettingsGroup title="Font Size">
+                      <div className="flex gap-0.5">
+                        {FONT_SIZES.map((size) => (
+                          <button
+                            key={size}
+                            onClick={() => setFontSize(size)}
+                            className={cn(
+                              'rounded-md px-2.5 py-1 text-[11px] tabular-nums transition-colors',
+                              size === fontSize
+                                ? 'bg-accent text-accent-foreground'
+                                : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
+                            )}
+                          >
+                            {size}
+                          </button>
+                        ))}
+                      </div>
+                    </SettingsGroup>
+
+                    <SettingsGroup title="Font">
+                      <div className="space-y-0.5">
+                        {TERMINAL_FONT_FAMILIES.map((font) => (
+                          <button
+                            key={font.value}
+                            onClick={() => setFontFamily(font.value)}
+                            className={cn(
+                              'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
+                              fontFamily === font.value
+                                ? 'bg-accent text-accent-foreground'
+                                : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
+                            )}
+                            style={{ fontFamily: font.value }}
+                          >
+                            <span className="flex-1">{font.label}</span>
+                            {fontFamily === font.value && (
+                              <Check className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    </SettingsGroup>
+
+                    <SettingsGroup title="Cursor">
+                      <div className="space-y-2.5">
+                        <SettingsField label="Style">
+                          <div className="space-y-0.5">
+                            {TERMINAL_CURSOR_STYLE_OPTIONS.map((option) => (
+                              <button
+                                key={option.value}
+                                onClick={() => setTerminalCursorStyle(option.value)}
+                                className={cn(
+                                  'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
+                                  terminalCursorStyle === option.value
+                                    ? 'bg-accent text-accent-foreground'
+                                    : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
                                 )}
                               >
                                 <span className="flex-1">{option.label}</span>
                                 <span className="text-[10px] text-muted-foreground/40">
                                   {option.hint}
                                 </span>
-                                {terminalSessionBackend === option.value && (
+                                {terminalCursorStyle === option.value && (
                                   <Check className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
                                 )}
                               </button>
-                            )
-                          })}
-                        </div>
-                      </SettingsField>
-                    </div>
-                  </SettingsGroup>
-
-                  <SettingsGroup title="Font Size">
-                    <div className="flex gap-0.5">
-                      {FONT_SIZES.map((size) => (
-                        <button
-                          key={size}
-                          onClick={() => setFontSize(size)}
-                          className={cn(
-                            'rounded-md px-2.5 py-1 text-[11px] tabular-nums transition-colors',
-                            size === fontSize
-                              ? 'bg-accent text-accent-foreground'
-                              : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
-                          )}
-                        >
-                          {size}
-                        </button>
-                      ))}
-                    </div>
-                  </SettingsGroup>
-
-                  <SettingsGroup title="Font">
-                    <div className="space-y-0.5">
-                      {TERMINAL_FONT_FAMILIES.map((font) => (
-                        <button
-                          key={font.value}
-                          onClick={() => setFontFamily(font.value)}
-                          className={cn(
-                            'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
-                            fontFamily === font.value
-                              ? 'bg-accent text-accent-foreground'
-                              : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
-                          )}
-                          style={{ fontFamily: font.value }}
-                        >
-                          <span className="flex-1">{font.label}</span>
-                          {fontFamily === font.value && (
-                            <Check className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  </SettingsGroup>
-
-                  <SettingsGroup title="Cursor">
-                    <div className="space-y-2.5">
-                      <SettingsField label="Style">
-                        <div className="space-y-0.5">
-                          {TERMINAL_CURSOR_STYLE_OPTIONS.map((option) => (
-                            <button
-                              key={option.value}
-                              onClick={() => setTerminalCursorStyle(option.value)}
-                              className={cn(
-                                'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
-                                terminalCursorStyle === option.value
-                                  ? 'bg-accent text-accent-foreground'
-                                  : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
-                              )}
-                            >
-                              <span className="flex-1">{option.label}</span>
-                              <span className="text-[10px] text-muted-foreground/40">
-                                {option.hint}
-                              </span>
-                              {terminalCursorStyle === option.value && (
-                                <Check className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
-                              )}
-                            </button>
-                          ))}
-                        </div>
-                      </SettingsField>
-
-                      <SettingsField
-                        label="Blink"
-                        hint={terminalCursorBlink ? 'Animated' : 'Steady'}
-                      >
-                        <button
-                          onClick={() => setTerminalCursorBlink(!terminalCursorBlink)}
-                          className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-[11px] transition-colors hover:bg-muted/40"
-                        >
-                          <span className="text-foreground">Blink terminal cursor</span>
-                          <div
-                            className={cn(
-                              'relative h-3.5 w-6 rounded-full transition-colors',
-                              terminalCursorBlink ? 'bg-primary' : 'bg-muted-foreground/25',
-                            )}
-                          >
-                            <div
-                              className={cn(
-                                'absolute top-0.5 h-2.5 w-2.5 rounded-full bg-background transition-transform',
-                                terminalCursorBlink ? 'translate-x-3' : 'translate-x-0.5',
-                              )}
-                            />
-                          </div>
-                        </button>
-                      </SettingsField>
-
-                      <SettingsField
-                        label="Window overlay"
-                        hint={showTerminalHeaderOverlay ? 'Visible' : 'Hidden'}
-                      >
-                        <button
-                          onClick={() => setShowTerminalHeaderOverlay(!showTerminalHeaderOverlay)}
-                          className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-[11px] transition-colors hover:bg-muted/40"
-                        >
-                          <span className="text-foreground">Show terminal top-right controls</span>
-                          <div
-                            className={cn(
-                              'relative h-3.5 w-6 rounded-full transition-colors',
-                              showTerminalHeaderOverlay ? 'bg-primary' : 'bg-muted-foreground/25',
-                            )}
-                          >
-                            <div
-                              className={cn(
-                                'absolute top-0.5 h-2.5 w-2.5 rounded-full bg-background transition-transform',
-                                showTerminalHeaderOverlay ? 'translate-x-3' : 'translate-x-0.5',
-                              )}
-                            />
-                          </div>
-                        </button>
-                      </SettingsField>
-                    </div>
-                  </SettingsGroup>
-
-                  <SettingsGroup title="History">
-                    <SettingsField
-                      label="Scrollback lines"
-                      hint={`${MIN_TERMINAL_SCROLLBACK_LINES.toLocaleString()}-${MAX_TERMINAL_SCROLLBACK_LINES.toLocaleString()}`}
-                    >
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="number"
-                          min={MIN_TERMINAL_SCROLLBACK_LINES}
-                          max={MAX_TERMINAL_SCROLLBACK_LINES}
-                          step={1000}
-                          value={terminalScrollbackLines}
-                          onChange={(event) =>
-                            setTerminalScrollbackLines(Number(event.target.value))
-                          }
-                          className="h-7 w-28 rounded-md border border-border/20 bg-background/40 px-2.5 text-[11px] text-foreground outline-none focus:border-border/40"
-                        />
-                        <span className="text-[10px] text-muted-foreground/40">
-                          Live terminals rebuild when this changes. Search and reconnect replay use
-                          chunked history loads to keep large buffers responsive.
-                        </span>
-                      </div>
-                    </SettingsField>
-                  </SettingsGroup>
-
-                  <SettingsGroup title="Close Behavior">
-                    <div className="space-y-2.5">
-                      <SettingsField
-                        label="Undo timeout"
-                        hint={
-                          closeUndoTimeoutMs > 0
-                            ? `Cmd+Shift+T restores for ${Math.round(closeUndoTimeoutMs / 1000)}s`
-                            : 'Windows delete immediately'
-                        }
-                      >
-                        <SettingsCombobox
-                          value={String(closeUndoTimeoutMs)}
-                          options={CLOSE_UNDO_TIMEOUT_OPTIONS}
-                          onValueChange={(value) => setCloseUndoTimeoutMs(Number(value ?? '15000'))}
-                          placeholder="Choose undo timeout"
-                        />
-                      </SettingsField>
-
-                      <SettingsField
-                        label="Skip confirmation for"
-                        hint={
-                          closeProcessSuppressions.length > 0
-                            ? `${closeProcessSuppressions.length} saved`
-                            : 'Only shells close silently by default'
-                        }
-                      >
-                        {closeProcessSuppressions.length > 0 ? (
-                          <div className="flex flex-wrap gap-1">
-                            {closeProcessSuppressions.map((process) => (
-                              <button
-                                key={process}
-                                onClick={() =>
-                                  setCloseProcessSuppressions(
-                                    closeProcessSuppressions.filter(
-                                      (candidate) => candidate !== process,
-                                    ),
-                                  )
-                                }
-                                className="inline-flex items-center gap-1 rounded-md border border-border/20 bg-background/40 px-2 py-1 text-[10px] text-muted-foreground/70 transition-colors hover:bg-muted/40 hover:text-foreground"
-                              >
-                                <span>{process}</span>
-                                <X className="h-2.5 w-2.5" />
-                              </button>
                             ))}
                           </div>
-                        ) : (
-                          <div className="rounded-md border border-dashed border-border/25 px-2.5 py-2 text-[10px] text-muted-foreground/40">
-                            Use the close dialog checkbox to remember a running process.
-                          </div>
-                        )}
-                      </SettingsField>
-                    </div>
-                  </SettingsGroup>
+                        </SettingsField>
 
-                  <SettingsGroup title="Link Click Behavior">
-                    <div className="space-y-2.5">
-                      <SettingsField label="Default target">
-                        <SettingsCombobox
-                          value={terminalLinkTarget}
-                          options={TERMINAL_LINK_TARGET_OPTIONS}
-                          onValueChange={(value) =>
-                            setTerminalLinkTarget((value as 'system' | 'browser') ?? 'system')
-                          }
-                          placeholder="Choose where links open"
-                        />
-                      </SettingsField>
+                        <SettingsField
+                          label="Blink"
+                          hint={terminalCursorBlink ? 'Animated' : 'Steady'}
+                        >
+                          <button
+                            onClick={() => setTerminalCursorBlink(!terminalCursorBlink)}
+                            className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-[11px] transition-colors hover:bg-muted/40"
+                          >
+                            <span className="text-foreground">Blink terminal cursor</span>
+                            <div
+                              className={cn(
+                                'relative h-3.5 w-6 rounded-full transition-colors',
+                                terminalCursorBlink ? 'bg-primary' : 'bg-muted-foreground/25',
+                              )}
+                            >
+                              <div
+                                className={cn(
+                                  'absolute top-0.5 h-2.5 w-2.5 rounded-full bg-background transition-transform',
+                                  terminalCursorBlink ? 'translate-x-3' : 'translate-x-0.5',
+                                )}
+                              />
+                            </div>
+                          </button>
+                        </SettingsField>
 
+                        <SettingsField
+                          label="Window overlay"
+                          hint={showTerminalHeaderOverlay ? 'Visible' : 'Hidden'}
+                        >
+                          <button
+                            onClick={() => setShowTerminalHeaderOverlay(!showTerminalHeaderOverlay)}
+                            className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-[11px] transition-colors hover:bg-muted/40"
+                          >
+                            <span className="text-foreground">
+                              Show terminal top-right controls
+                            </span>
+                            <div
+                              className={cn(
+                                'relative h-3.5 w-6 rounded-full transition-colors',
+                                showTerminalHeaderOverlay ? 'bg-primary' : 'bg-muted-foreground/25',
+                              )}
+                            >
+                              <div
+                                className={cn(
+                                  'absolute top-0.5 h-2.5 w-2.5 rounded-full bg-background transition-transform',
+                                  showTerminalHeaderOverlay ? 'translate-x-3' : 'translate-x-0.5',
+                                )}
+                              />
+                            </div>
+                          </button>
+                        </SettingsField>
+                      </div>
+                    </SettingsGroup>
+
+                    <SettingsGroup title="History">
                       <SettingsField
-                        label="Built-in browser project"
-                        hint={
-                          terminalLinkProjectId
-                            ? 'Switches to that project before opening the tab'
-                            : 'Uses whichever project is active when the link opens'
-                        }
+                        label="Scrollback lines"
+                        hint={`${MIN_TERMINAL_SCROLLBACK_LINES.toLocaleString()}-${MAX_TERMINAL_SCROLLBACK_LINES.toLocaleString()}`}
                       >
-                        <SettingsCombobox
-                          value={terminalLinkProjectId ?? CURRENT_PROJECT_VALUE}
-                          options={projectOptions}
-                          onValueChange={(value) =>
-                            setTerminalLinkProjectId(
-                              !value || value === CURRENT_PROJECT_VALUE ? null : value,
-                            )
-                          }
-                          placeholder="Choose a project"
-                          emptyText="No matching projects"
-                          disabled={projects.length === 0}
-                        />
-                      </SettingsField>
-
-                      <SettingsField
-                        label="Directory clicks"
-                        hint="Files always open with the system default app"
-                      >
-                        <SettingsCombobox
-                          value={directoryLinkTarget}
-                          options={DIRECTORY_LINK_TARGET_OPTIONS}
-                          onValueChange={(value) =>
-                            setDirectoryLinkTarget((value as 'finder' | 'terminal') ?? 'finder')
-                          }
-                          placeholder="Choose directory link behavior"
-                        />
-                      </SettingsField>
-                    </div>
-                  </SettingsGroup>
-
-                  <SettingsGroup title="Link Rules">
-                    <p className="text-[10px] text-muted-foreground/40 mb-3">
-                      Route specific URLs to different targets. Uses regex patterns. Rules are
-                      matched top to bottom.
-                    </p>
-                    <div className="space-y-2">
-                      {linkRules.map((rule, i) => (
-                        <div key={i} className="flex items-center gap-1.5 group">
+                        <div className="flex items-center gap-2">
                           <input
-                            type="text"
-                            value={rule.pattern}
-                            onChange={(e) => {
-                              const next = [...linkRules]
-                              next[i] = { ...rule, pattern: e.target.value }
-                              setLinkRules(next)
-                            }}
-                            placeholder="e.g. github\.com"
-                            className="flex-1 min-w-0 rounded-md border border-border/20 bg-background/40 px-2 py-1 text-[11px] text-foreground outline-none placeholder:text-muted-foreground/30 focus:border-border/40 font-mono"
+                            type="number"
+                            min={MIN_TERMINAL_SCROLLBACK_LINES}
+                            max={MAX_TERMINAL_SCROLLBACK_LINES}
+                            step={1000}
+                            value={terminalScrollbackLines}
+                            onChange={(event) =>
+                              setTerminalScrollbackLines(Number(event.target.value))
+                            }
+                            className="h-7 w-28 rounded-md border border-border/20 bg-background/40 px-2.5 text-[11px] text-foreground outline-none focus:border-border/40"
                           />
+                          <span className="text-[10px] text-muted-foreground/40">
+                            Live terminals rebuild when this changes. Search and reconnect replay
+                            use chunked history loads to keep large buffers responsive.
+                          </span>
+                        </div>
+                      </SettingsField>
+                    </SettingsGroup>
+
+                    <SettingsGroup title="Close Behavior">
+                      <div className="space-y-2.5">
+                        <SettingsField
+                          label="Undo timeout"
+                          hint={
+                            closeUndoTimeoutMs > 0
+                              ? `Cmd+Shift+T restores for ${Math.round(closeUndoTimeoutMs / 1000)}s`
+                              : 'Windows delete immediately'
+                          }
+                        >
                           <SettingsCombobox
-                            value={rule.target}
-                            options={LINK_RULE_TARGET_OPTIONS}
-                            onValueChange={(value) => {
-                              const nextTarget = (value as 'system' | 'browser') ?? 'system'
-                              const next = [...linkRules]
-                              next[i] = {
-                                ...rule,
-                                target: nextTarget,
-                                projectId: nextTarget === 'system' ? undefined : rule.projectId,
-                              }
-                              setLinkRules(next)
-                            }}
-                            placeholder="Target"
-                            className="w-[112px] shrink-0"
+                            value={String(closeUndoTimeoutMs)}
+                            options={CLOSE_UNDO_TIMEOUT_OPTIONS}
+                            onValueChange={(value) =>
+                              setCloseUndoTimeoutMs(Number(value ?? '15000'))
+                            }
+                            placeholder="Choose undo timeout"
                           />
-                          {rule.target === 'browser' && (
+                        </SettingsField>
+
+                        <SettingsField
+                          label="Skip confirmation for"
+                          hint={
+                            closeProcessSuppressions.length > 0
+                              ? `${closeProcessSuppressions.length} saved`
+                              : 'Only shells close silently by default'
+                          }
+                        >
+                          {closeProcessSuppressions.length > 0 ? (
+                            <div className="flex flex-wrap gap-1">
+                              {closeProcessSuppressions.map((process) => (
+                                <button
+                                  key={process}
+                                  onClick={() =>
+                                    setCloseProcessSuppressions(
+                                      closeProcessSuppressions.filter(
+                                        (candidate) => candidate !== process,
+                                      ),
+                                    )
+                                  }
+                                  className="inline-flex items-center gap-1 rounded-md border border-border/20 bg-background/40 px-2 py-1 text-[10px] text-muted-foreground/70 transition-colors hover:bg-muted/40 hover:text-foreground"
+                                >
+                                  <span>{process}</span>
+                                  <X className="h-2.5 w-2.5" />
+                                </button>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="rounded-md border border-dashed border-border/25 px-2.5 py-2 text-[10px] text-muted-foreground/40">
+                              Use the close dialog checkbox to remember a running process.
+                            </div>
+                          )}
+                        </SettingsField>
+                      </div>
+                    </SettingsGroup>
+
+                    <SettingsGroup title="Link Click Behavior">
+                      <div className="space-y-2.5">
+                        <SettingsField label="Default target">
+                          <SettingsCombobox
+                            value={terminalLinkTarget}
+                            options={TERMINAL_LINK_TARGET_OPTIONS}
+                            onValueChange={(value) =>
+                              setTerminalLinkTarget((value as 'system' | 'browser') ?? 'system')
+                            }
+                            placeholder="Choose where links open"
+                          />
+                        </SettingsField>
+
+                        <SettingsField
+                          label="Built-in browser project"
+                          hint={
+                            terminalLinkProjectId
+                              ? 'Switches to that project before opening the tab'
+                              : 'Uses whichever project is active when the link opens'
+                          }
+                        >
+                          <SettingsCombobox
+                            value={terminalLinkProjectId ?? CURRENT_PROJECT_VALUE}
+                            options={projectOptions}
+                            onValueChange={(value) =>
+                              setTerminalLinkProjectId(
+                                !value || value === CURRENT_PROJECT_VALUE ? null : value,
+                              )
+                            }
+                            placeholder="Choose a project"
+                            emptyText="No matching projects"
+                            disabled={projects.length === 0}
+                          />
+                        </SettingsField>
+
+                        <SettingsField
+                          label="Directory clicks"
+                          hint="Files always open with the system default app"
+                        >
+                          <SettingsCombobox
+                            value={directoryLinkTarget}
+                            options={DIRECTORY_LINK_TARGET_OPTIONS}
+                            onValueChange={(value) =>
+                              setDirectoryLinkTarget((value as 'finder' | 'terminal') ?? 'finder')
+                            }
+                            placeholder="Choose directory link behavior"
+                          />
+                        </SettingsField>
+                      </div>
+                    </SettingsGroup>
+
+                    <SettingsGroup title="Link Rules">
+                      <p className="text-[10px] text-muted-foreground/40 mb-3">
+                        Route specific URLs to different targets. Uses regex patterns. Rules are
+                        matched top to bottom.
+                      </p>
+                      <div className="space-y-2">
+                        {linkRules.map((rule, i) => (
+                          <div key={i} className="flex items-center gap-1.5 group">
+                            <input
+                              type="text"
+                              value={rule.pattern}
+                              onChange={(e) => {
+                                const next = [...linkRules]
+                                next[i] = { ...rule, pattern: e.target.value }
+                                setLinkRules(next)
+                              }}
+                              placeholder="e.g. github\.com"
+                              className="flex-1 min-w-0 rounded-md border border-border/20 bg-background/40 px-2 py-1 text-[11px] text-foreground outline-none placeholder:text-muted-foreground/30 focus:border-border/40 font-mono"
+                            />
                             <SettingsCombobox
-                              value={rule.projectId ?? CURRENT_PROJECT_VALUE}
-                              options={projectOptions}
+                              value={rule.target}
+                              options={LINK_RULE_TARGET_OPTIONS}
                               onValueChange={(value) => {
+                                const nextTarget = (value as 'system' | 'browser') ?? 'system'
                                 const next = [...linkRules]
                                 next[i] = {
                                   ...rule,
-                                  projectId:
-                                    !value || value === CURRENT_PROJECT_VALUE ? undefined : value,
+                                  target: nextTarget,
+                                  projectId: nextTarget === 'system' ? undefined : rule.projectId,
                                 }
                                 setLinkRules(next)
                               }}
-                              placeholder="Project"
-                              emptyText="No matching projects"
-                              className="w-[148px] shrink-0"
+                              placeholder="Target"
+                              className="w-[112px] shrink-0"
                             />
-                          )}
-                          <button
-                            onClick={() => setLinkRules(linkRules.filter((_, j) => j !== i))}
-                            className="text-muted-foreground/30 hover:text-foreground transition-colors p-0.5"
-                          >
-                            <X className="w-2.5 h-2.5" />
-                          </button>
-                        </div>
-                      ))}
-                      <button
-                        onClick={() =>
-                          setLinkRules([
-                            ...linkRules,
-                            {
-                              pattern: '',
-                              target: terminalLinkTarget,
-                              projectId:
-                                terminalLinkTarget === 'browser'
-                                  ? (terminalLinkProjectId ?? undefined)
-                                  : undefined,
-                            },
-                          ])
-                        }
-                        className="text-[10px] text-muted-foreground/50 hover:text-foreground transition-colors"
-                      >
-                        + Add rule
-                      </button>
-                    </div>
-                  </SettingsGroup>
-                </div>
-              ) : null}
-
-              {activeSection === 'browser' ? (
-                <div className="space-y-3.5">
-                  <SettingsGroup title="Search Engine">
-                    <div className="space-y-0.5">
-                      {[
-                        { label: 'Google', value: 'https://www.google.com/search?q=%s' },
-                        { label: 'DuckDuckGo', value: 'https://duckduckgo.com/?q=%s' },
-                        { label: 'Bing', value: 'https://www.bing.com/search?q=%s' },
-                        {
-                          label: 'Brave Search',
-                          value: 'https://search.brave.com/search?q=%s',
-                        },
-                      ].map((engine) => (
-                        <button
-                          key={engine.value}
-                          onClick={() => setSearchEngine(engine.value)}
-                          className={cn(
-                            'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
-                            searchEngine === engine.value
-                              ? 'bg-accent text-accent-foreground'
-                              : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
-                          )}
-                        >
-                          <span className="flex-1">{engine.label}</span>
-                          {searchEngine === engine.value && (
-                            <Check className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  </SettingsGroup>
-
-                  <SettingsGroup title="Home Page">
-                    <input
-                      type="text"
-                      value={homePage}
-                      onChange={(event) => setHomePage(event.target.value)}
-                      placeholder="Leave empty for new tab"
-                      className="w-full rounded-md border border-border/20 bg-background/40 px-2.5 py-1.5 text-[11px] text-foreground outline-none placeholder:text-muted-foreground/30 focus:border-border/40"
-                    />
-                  </SettingsGroup>
-
-                  <ExtensionsSection projectId={activeProjectId} />
-                </div>
-              ) : null}
-
-              {activeSection === 'agents' ? (
-                <div className="space-y-3.5">
-                  <AgentAuthSection />
-                  <SettingsGroup title="Command aliases">
-                    <p className="text-[10px] text-muted-foreground/40 mb-3">
-                      Enable or disable agents and configure custom commands. Aliases are used when
-                      launching agents from the command palette and for auto-detection in terminals.
-                    </p>
-                    <div className="space-y-3">
-                      {(
-                        [
-                          { id: 'claude', label: 'Claude Code', placeholder: 'claude' },
-                          { id: 'codex', label: 'Codex', placeholder: 'codex' },
-                        ] as const
-                      ).map(({ id, label, placeholder }) => {
-                        const override = enabledAgents[id]
-                        const isEnabled =
-                          override === true || override === undefined || override === 'auto'
-                        return (
-                          <div
-                            key={id}
-                            className="rounded-md border border-border/10 p-2.5 space-y-2"
-                          >
+                            {rule.target === 'browser' && (
+                              <SettingsCombobox
+                                value={rule.projectId ?? CURRENT_PROJECT_VALUE}
+                                options={projectOptions}
+                                onValueChange={(value) => {
+                                  const next = [...linkRules]
+                                  next[i] = {
+                                    ...rule,
+                                    projectId:
+                                      !value || value === CURRENT_PROJECT_VALUE ? undefined : value,
+                                  }
+                                  setLinkRules(next)
+                                }}
+                                placeholder="Project"
+                                emptyText="No matching projects"
+                                className="w-[148px] shrink-0"
+                              />
+                            )}
                             <button
-                              onClick={() => {
-                                const current = enabledAgents[id]
-                                // Toggle: enabled (true/auto/undefined) → false, false → true (force on)
-                                const next = current === false ? (true as const) : (false as const)
-                                setEnabledAgents({ ...enabledAgents, [id]: next })
-                              }}
-                              className="flex w-full items-center justify-between text-[11px]"
+                              onClick={() => setLinkRules(linkRules.filter((_, j) => j !== i))}
+                              className="text-muted-foreground/30 hover:text-foreground transition-colors p-0.5"
                             >
-                              <span
-                                className={cn(
-                                  'text-foreground',
-                                  !isEnabled && 'text-muted-foreground/50',
-                                )}
+                              <X className="w-2.5 h-2.5" />
+                            </button>
+                          </div>
+                        ))}
+                        <button
+                          onClick={() =>
+                            setLinkRules([
+                              ...linkRules,
+                              {
+                                pattern: '',
+                                target: terminalLinkTarget,
+                                projectId:
+                                  terminalLinkTarget === 'browser'
+                                    ? (terminalLinkProjectId ?? undefined)
+                                    : undefined,
+                              },
+                            ])
+                          }
+                          className="text-[10px] text-muted-foreground/50 hover:text-foreground transition-colors"
+                        >
+                          + Add rule
+                        </button>
+                      </div>
+                    </SettingsGroup>
+                  </div>
+                ) : null}
+
+                {activeSection === 'browser' ? (
+                  <div className="space-y-3.5">
+                    <SettingsGroup title="Search Engine">
+                      <div className="space-y-0.5">
+                        {[
+                          { label: 'Google', value: 'https://www.google.com/search?q=%s' },
+                          { label: 'DuckDuckGo', value: 'https://duckduckgo.com/?q=%s' },
+                          { label: 'Bing', value: 'https://www.bing.com/search?q=%s' },
+                          {
+                            label: 'Brave Search',
+                            value: 'https://search.brave.com/search?q=%s',
+                          },
+                        ].map((engine) => (
+                          <button
+                            key={engine.value}
+                            onClick={() => setSearchEngine(engine.value)}
+                            className={cn(
+                              'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[11px] transition-colors',
+                              searchEngine === engine.value
+                                ? 'bg-accent text-accent-foreground'
+                                : 'text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground',
+                            )}
+                          >
+                            <span className="flex-1">{engine.label}</span>
+                            {searchEngine === engine.value && (
+                              <Check className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    </SettingsGroup>
+
+                    <SettingsGroup title="Home Page">
+                      <input
+                        type="text"
+                        value={homePage}
+                        onChange={(event) => setHomePage(event.target.value)}
+                        placeholder="Leave empty for new tab"
+                        className="w-full rounded-md border border-border/20 bg-background/40 px-2.5 py-1.5 text-[11px] text-foreground outline-none placeholder:text-muted-foreground/30 focus:border-border/40"
+                      />
+                    </SettingsGroup>
+
+                    <ExtensionsSection projectId={activeProjectId} />
+                  </div>
+                ) : null}
+
+                {activeSection === 'agents' ? (
+                  <div className="space-y-3.5">
+                    <AgentAuthSection />
+                    <SettingsGroup title="Command aliases">
+                      <p className="text-[10px] text-muted-foreground/40 mb-3">
+                        Enable or disable agents and configure custom commands. Aliases are used
+                        when launching agents from the command palette and for auto-detection in
+                        terminals.
+                      </p>
+                      <div className="space-y-3">
+                        {(
+                          [
+                            { id: 'claude', label: 'Claude Code', placeholder: 'claude' },
+                            { id: 'codex', label: 'Codex', placeholder: 'codex' },
+                          ] as const
+                        ).map(({ id, label, placeholder }) => {
+                          const override = enabledAgents[id]
+                          const isEnabled =
+                            override === true || override === undefined || override === 'auto'
+                          return (
+                            <div
+                              key={id}
+                              className="rounded-md border border-border/10 p-2.5 space-y-2"
+                            >
+                              <button
+                                onClick={() => {
+                                  const current = enabledAgents[id]
+                                  // Toggle: enabled (true/auto/undefined) → false, false → true (force on)
+                                  const next =
+                                    current === false ? (true as const) : (false as const)
+                                  setEnabledAgents({ ...enabledAgents, [id]: next })
+                                }}
+                                className="flex w-full items-center justify-between text-[11px]"
                               >
-                                {label}
-                              </span>
-                              <div
-                                className={cn(
-                                  'relative h-3.5 w-6 rounded-full transition-colors',
-                                  isEnabled ? 'bg-primary' : 'bg-muted-foreground/25',
-                                )}
-                              >
+                                <span
+                                  className={cn(
+                                    'text-foreground',
+                                    !isEnabled && 'text-muted-foreground/50',
+                                  )}
+                                >
+                                  {label}
+                                </span>
                                 <div
                                   className={cn(
-                                    'absolute top-0.5 h-2.5 w-2.5 rounded-full bg-background transition-transform',
-                                    isEnabled ? 'translate-x-3' : 'translate-x-0.5',
+                                    'relative h-3.5 w-6 rounded-full transition-colors',
+                                    isEnabled ? 'bg-primary' : 'bg-muted-foreground/25',
                                   )}
-                                />
-                              </div>
-                            </button>
-                            {isEnabled && (
-                              <div className="space-y-2">
-                                <div>
-                                  <label className="text-[10px] text-muted-foreground/40 mb-1 block">
-                                    Command alias
-                                  </label>
-                                  <input
-                                    type="text"
-                                    value={agentAliases[id] ?? ''}
-                                    onChange={(e) =>
-                                      setAgentAliases({ ...agentAliases, [id]: e.target.value })
-                                    }
-                                    placeholder={placeholder}
-                                    className="w-full rounded-md border border-border/20 bg-background/40 px-2.5 py-1.5 text-[11px] text-foreground outline-none placeholder:text-muted-foreground/30 focus:border-border/40 font-mono"
+                                >
+                                  <div
+                                    className={cn(
+                                      'absolute top-0.5 h-2.5 w-2.5 rounded-full bg-background transition-transform',
+                                      isEnabled ? 'translate-x-3' : 'translate-x-0.5',
+                                    )}
                                   />
                                 </div>
-                                <div>
-                                  <label className="text-[10px] text-muted-foreground/40 mb-1 block">
-                                    Custom CLI path
-                                  </label>
-                                  <input
-                                    type="text"
-                                    value={agentPaths[id] ?? ''}
-                                    onChange={(e) =>
-                                      setAgentPaths({ ...agentPaths, [id]: e.target.value })
-                                    }
-                                    placeholder={`/usr/local/bin/${placeholder}`}
-                                    className="w-full rounded-md border border-border/20 bg-background/40 px-2.5 py-1.5 text-[11px] text-foreground outline-none placeholder:text-muted-foreground/30 focus:border-border/40 font-mono"
-                                  />
-                                  <p className="mt-1 text-[10px] text-muted-foreground/30">
-                                    Override auto-detection with an absolute path to the CLI binary.
-                                  </p>
+                              </button>
+                              {isEnabled && (
+                                <div className="space-y-2">
+                                  <div>
+                                    <label className="text-[10px] text-muted-foreground/40 mb-1 block">
+                                      Command alias
+                                    </label>
+                                    <input
+                                      type="text"
+                                      value={agentAliases[id] ?? ''}
+                                      onChange={(e) =>
+                                        setAgentAliases({ ...agentAliases, [id]: e.target.value })
+                                      }
+                                      placeholder={placeholder}
+                                      className="w-full rounded-md border border-border/20 bg-background/40 px-2.5 py-1.5 text-[11px] text-foreground outline-none placeholder:text-muted-foreground/30 focus:border-border/40 font-mono"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="text-[10px] text-muted-foreground/40 mb-1 block">
+                                      Custom CLI path
+                                    </label>
+                                    <input
+                                      type="text"
+                                      value={agentPaths[id] ?? ''}
+                                      onChange={(e) =>
+                                        setAgentPaths({ ...agentPaths, [id]: e.target.value })
+                                      }
+                                      placeholder={`/usr/local/bin/${placeholder}`}
+                                      className="w-full rounded-md border border-border/20 bg-background/40 px-2.5 py-1.5 text-[11px] text-foreground outline-none placeholder:text-muted-foreground/30 focus:border-border/40 font-mono"
+                                    />
+                                    <p className="mt-1 text-[10px] text-muted-foreground/30">
+                                      Override auto-detection with an absolute path to the CLI
+                                      binary.
+                                    </p>
+                                  </div>
                                 </div>
-                              </div>
-                            )}
-                          </div>
-                        )
-                      })}
-                    </div>
-                  </SettingsGroup>
-                </div>
-              ) : null}
-
-              {activeSection === 'notifications' ? (
-                <div className="space-y-3.5">
-                  <SettingsGroup title="Desktop Notifications">
-                    <p className="mb-3 text-[10px] text-muted-foreground/40">
-                      Native macOS notifications for agent sessions. Cells only sends them on
-                      meaningful state changes, not on every streaming update. Smart delivery only
-                      suppresses alerts when the exact agent window is already focused.
-                    </p>
-                    <div className="space-y-2.5">
-                      <SettingsField
-                        label="Agent notifications"
-                        hint={agentNotificationSettings.enabled ? 'Enabled' : 'Disabled'}
-                      >
-                        <SettingsSwitchRow
-                          label="Send system notifications for agent events"
-                          checked={agentNotificationSettings.enabled}
-                          onToggle={() =>
-                            setAgentNotificationSettings({
-                              enabled: !agentNotificationSettings.enabled,
-                            })
-                          }
-                        />
-                      </SettingsField>
-
-                      <SettingsField
-                        label="Play sound"
-                        hint={agentNotificationSettings.playSound ? 'On' : 'Off'}
-                      >
-                        <SettingsSwitchRow
-                          label="Play the system notification sound"
-                          checked={agentNotificationSettings.playSound}
-                          disabled={!agentNotificationSettings.enabled}
-                          onToggle={() =>
-                            setAgentNotificationSettings({
-                              playSound: !agentNotificationSettings.playSound,
-                            })
-                          }
-                        />
-                      </SettingsField>
-
-                      <SettingsField
-                        label="Delivery"
-                        hint={agentNotificationSettings.onlyWhenUnfocused ? 'Smart' : 'Always'}
-                      >
-                        <SettingsSwitchRow
-                          label="Skip notifications when that agent window is already focused"
-                          checked={agentNotificationSettings.onlyWhenUnfocused}
-                          disabled={!agentNotificationSettings.enabled}
-                          onToggle={() =>
-                            setAgentNotificationSettings({
-                              onlyWhenUnfocused: !agentNotificationSettings.onlyWhenUnfocused,
-                            })
-                          }
-                        />
-                      </SettingsField>
-                    </div>
-                  </SettingsGroup>
-
-                  <SettingsGroup title="Notify When">
-                    <div className="space-y-2.5">
-                      <SettingsField
-                        label="Turn complete"
-                        hint={agentNotificationSettings.notifyOnDone ? 'On' : 'Off'}
-                      >
-                        <SettingsSwitchRow
-                          label="An agent finishes a turn"
-                          checked={agentNotificationSettings.notifyOnDone}
-                          disabled={!agentNotificationSettings.enabled}
-                          onToggle={() =>
-                            setAgentNotificationSettings({
-                              notifyOnDone: !agentNotificationSettings.notifyOnDone,
-                            })
-                          }
-                        />
-                      </SettingsField>
-
-                      <SettingsField
-                        label="Needs attention"
-                        hint={agentNotificationSettings.notifyOnAttention ? 'On' : 'Off'}
-                      >
-                        <SettingsSwitchRow
-                          label="An agent asks a question, requests approval, or proposes a plan"
-                          checked={agentNotificationSettings.notifyOnAttention}
-                          disabled={!agentNotificationSettings.enabled}
-                          onToggle={() =>
-                            setAgentNotificationSettings({
-                              notifyOnAttention: !agentNotificationSettings.notifyOnAttention,
-                            })
-                          }
-                        />
-                      </SettingsField>
-
-                      <SettingsField
-                        label="Errors"
-                        hint={agentNotificationSettings.notifyOnError ? 'On' : 'Off'}
-                      >
-                        <SettingsSwitchRow
-                          label="An agent turn fails"
-                          checked={agentNotificationSettings.notifyOnError}
-                          disabled={!agentNotificationSettings.enabled}
-                          onToggle={() =>
-                            setAgentNotificationSettings({
-                              notifyOnError: !agentNotificationSettings.notifyOnError,
-                            })
-                          }
-                        />
-                      </SettingsField>
-
-                      <SettingsField
-                        label="Queued message starts"
-                        hint={agentNotificationSettings.notifyOnQueuedStart ? 'On' : 'Off'}
-                      >
-                        <SettingsSwitchRow
-                          label="A queued message begins running (silent, no sound)"
-                          checked={agentNotificationSettings.notifyOnQueuedStart}
-                          disabled={!agentNotificationSettings.enabled}
-                          onToggle={() =>
-                            setAgentNotificationSettings({
-                              notifyOnQueuedStart: !agentNotificationSettings.notifyOnQueuedStart,
-                            })
-                          }
-                        />
-                      </SettingsField>
-                    </div>
-                  </SettingsGroup>
-
-                  <SettingsGroup title="Preview">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        void window.cells.app.showNotification(
-                          'Cells test notification',
-                          'Agent notifications are configured and working.',
-                          {
-                            playSound: agentNotificationSettings.playSound,
-                          },
-                        )
-                      }
-                      className="flex w-full items-center justify-between rounded-lg bg-muted/20 px-3 py-2.5 text-left transition-colors hover:bg-muted/30"
-                    >
-                      <div>
-                        <div className="text-[11px] text-foreground">Send test notification</div>
-                        <div className="mt-0.5 text-[10px] text-muted-foreground/40">
-                          Uses the current sound setting.
-                        </div>
+                              )}
+                            </div>
+                          )
+                        })}
                       </div>
-                      <ExternalLink className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50" />
-                    </button>
-                  </SettingsGroup>
-                </div>
-              ) : null}
+                    </SettingsGroup>
+                  </div>
+                ) : null}
 
-              {activeSection === 'prefixes' ? (
-                <div className="space-y-3.5">
-                  <SettingsGroup title="Input Prefixes">
-                    <p className="text-[10px] text-muted-foreground/40 mb-3">
-                      Prefixes let you route command palette input directly to a terminal, browser,
-                      or AI agent. For example, typing{' '}
-                      <code className="font-mono text-foreground/60">!ls -la</code> runs the command
-                      in a new terminal.
-                    </p>
-                    <div className="space-y-2">
-                      {inputPrefixes.map((p, i) => (
-                        <div key={i} className="flex items-center gap-2">
-                          <input
-                            type="text"
-                            value={p.prefix}
-                            onChange={(e) => {
-                              const updated = [...inputPrefixes]
-                              updated[i] = { ...updated[i], prefix: e.target.value }
-                              setInputPrefixes(updated)
-                            }}
-                            placeholder="!"
-                            className="w-14 rounded-md border border-border/20 bg-background/40 px-2.5 py-1.5 text-[11px] text-foreground outline-none placeholder:text-muted-foreground/30 focus:border-border/40 font-mono text-center"
+                {activeSection === 'notifications' ? (
+                  <div className="space-y-3.5">
+                    <SettingsGroup title="Desktop Notifications">
+                      <p className="mb-3 text-[10px] text-muted-foreground/40">
+                        Native macOS notifications for agent sessions. Cells only sends them on
+                        meaningful state changes, not on every streaming update. Smart delivery only
+                        suppresses alerts when the exact agent window is already focused.
+                      </p>
+                      <div className="space-y-2.5">
+                        <SettingsField
+                          label="Agent notifications"
+                          hint={agentNotificationSettings.enabled ? 'Enabled' : 'Disabled'}
+                        >
+                          <SettingsSwitchRow
+                            label="Send system notifications for agent events"
+                            checked={agentNotificationSettings.enabled}
+                            onToggle={() =>
+                              setAgentNotificationSettings({
+                                enabled: !agentNotificationSettings.enabled,
+                              })
+                            }
                           />
-                          <select
-                            value={p.target}
-                            onChange={(e) => {
-                              const updated = [...inputPrefixes]
-                              const target = e.target.value as InputPrefix['target']
-                              updated[i] = {
-                                ...updated[i],
-                                target,
-                                agentId: target === 'agent' ? 'claude' : undefined,
-                              }
-                              setInputPrefixes(updated)
-                            }}
-                            className="flex-1 rounded-md border border-border/20 bg-background/40 px-2.5 py-1.5 text-[11px] text-foreground outline-none focus:border-border/40"
-                          >
-                            <option value="terminal">Terminal</option>
-                            <option value="browser">Browser</option>
-                            <option value="agent">Agent</option>
-                          </select>
-                          {p.target === 'agent' && (
-                            <select
-                              value={p.agentId ?? 'claude'}
+                        </SettingsField>
+
+                        <SettingsField
+                          label="Play sound"
+                          hint={agentNotificationSettings.playSound ? 'On' : 'Off'}
+                        >
+                          <SettingsSwitchRow
+                            label="Play the system notification sound"
+                            checked={agentNotificationSettings.playSound}
+                            disabled={!agentNotificationSettings.enabled}
+                            onToggle={() =>
+                              setAgentNotificationSettings({
+                                playSound: !agentNotificationSettings.playSound,
+                              })
+                            }
+                          />
+                        </SettingsField>
+
+                        <SettingsField
+                          label="Delivery"
+                          hint={agentNotificationSettings.onlyWhenUnfocused ? 'Smart' : 'Always'}
+                        >
+                          <SettingsSwitchRow
+                            label="Skip notifications when that agent window is already focused"
+                            checked={agentNotificationSettings.onlyWhenUnfocused}
+                            disabled={!agentNotificationSettings.enabled}
+                            onToggle={() =>
+                              setAgentNotificationSettings({
+                                onlyWhenUnfocused: !agentNotificationSettings.onlyWhenUnfocused,
+                              })
+                            }
+                          />
+                        </SettingsField>
+                      </div>
+                    </SettingsGroup>
+
+                    <SettingsGroup title="Notify When">
+                      <div className="space-y-2.5">
+                        <SettingsField
+                          label="Turn complete"
+                          hint={agentNotificationSettings.notifyOnDone ? 'On' : 'Off'}
+                        >
+                          <SettingsSwitchRow
+                            label="An agent finishes a turn"
+                            checked={agentNotificationSettings.notifyOnDone}
+                            disabled={!agentNotificationSettings.enabled}
+                            onToggle={() =>
+                              setAgentNotificationSettings({
+                                notifyOnDone: !agentNotificationSettings.notifyOnDone,
+                              })
+                            }
+                          />
+                        </SettingsField>
+
+                        <SettingsField
+                          label="Needs attention"
+                          hint={agentNotificationSettings.notifyOnAttention ? 'On' : 'Off'}
+                        >
+                          <SettingsSwitchRow
+                            label="An agent asks a question, requests approval, or proposes a plan"
+                            checked={agentNotificationSettings.notifyOnAttention}
+                            disabled={!agentNotificationSettings.enabled}
+                            onToggle={() =>
+                              setAgentNotificationSettings({
+                                notifyOnAttention: !agentNotificationSettings.notifyOnAttention,
+                              })
+                            }
+                          />
+                        </SettingsField>
+
+                        <SettingsField
+                          label="Errors"
+                          hint={agentNotificationSettings.notifyOnError ? 'On' : 'Off'}
+                        >
+                          <SettingsSwitchRow
+                            label="An agent turn fails"
+                            checked={agentNotificationSettings.notifyOnError}
+                            disabled={!agentNotificationSettings.enabled}
+                            onToggle={() =>
+                              setAgentNotificationSettings({
+                                notifyOnError: !agentNotificationSettings.notifyOnError,
+                              })
+                            }
+                          />
+                        </SettingsField>
+
+                        <SettingsField
+                          label="Queued message starts"
+                          hint={agentNotificationSettings.notifyOnQueuedStart ? 'On' : 'Off'}
+                        >
+                          <SettingsSwitchRow
+                            label="A queued message begins running (silent, no sound)"
+                            checked={agentNotificationSettings.notifyOnQueuedStart}
+                            disabled={!agentNotificationSettings.enabled}
+                            onToggle={() =>
+                              setAgentNotificationSettings({
+                                notifyOnQueuedStart: !agentNotificationSettings.notifyOnQueuedStart,
+                              })
+                            }
+                          />
+                        </SettingsField>
+                      </div>
+                    </SettingsGroup>
+
+                    <SettingsGroup title="Preview">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void window.cells.app.showNotification(
+                            'Cells test notification',
+                            'Agent notifications are configured and working.',
+                            {
+                              playSound: agentNotificationSettings.playSound,
+                            },
+                          )
+                        }
+                        className="flex w-full items-center justify-between rounded-lg bg-muted/20 px-3 py-2.5 text-left transition-colors hover:bg-muted/30"
+                      >
+                        <div>
+                          <div className="text-[11px] text-foreground">Send test notification</div>
+                          <div className="mt-0.5 text-[10px] text-muted-foreground/40">
+                            Uses the current sound setting.
+                          </div>
+                        </div>
+                        <ExternalLink className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50" />
+                      </button>
+                    </SettingsGroup>
+                  </div>
+                ) : null}
+
+                {activeSection === 'prefixes' ? (
+                  <div className="space-y-3.5">
+                    <SettingsGroup title="Input Prefixes">
+                      <p className="text-[10px] text-muted-foreground/40 mb-3">
+                        Prefixes let you route command palette input directly to a terminal,
+                        browser, or AI agent. For example, typing{' '}
+                        <code className="font-mono text-foreground/60">!ls -la</code> runs the
+                        command in a new terminal.
+                      </p>
+                      <div className="space-y-2">
+                        {inputPrefixes.map((p, i) => (
+                          <div key={i} className="flex items-center gap-2">
+                            <input
+                              type="text"
+                              value={p.prefix}
                               onChange={(e) => {
                                 const updated = [...inputPrefixes]
-                                updated[i] = { ...updated[i], agentId: e.target.value }
+                                updated[i] = { ...updated[i], prefix: e.target.value }
                                 setInputPrefixes(updated)
                               }}
-                              className="w-24 rounded-md border border-border/20 bg-background/40 px-2.5 py-1.5 text-[11px] text-foreground outline-none focus:border-border/40"
+                              placeholder="!"
+                              className="w-14 rounded-md border border-border/20 bg-background/40 px-2.5 py-1.5 text-[11px] text-foreground outline-none placeholder:text-muted-foreground/30 focus:border-border/40 font-mono text-center"
+                            />
+                            <select
+                              value={p.target}
+                              onChange={(e) => {
+                                const updated = [...inputPrefixes]
+                                const target = e.target.value as InputPrefix['target']
+                                updated[i] = {
+                                  ...updated[i],
+                                  target,
+                                  agentId: target === 'agent' ? 'claude' : undefined,
+                                }
+                                setInputPrefixes(updated)
+                              }}
+                              className="flex-1 rounded-md border border-border/20 bg-background/40 px-2.5 py-1.5 text-[11px] text-foreground outline-none focus:border-border/40"
                             >
-                              <option value="claude">Claude</option>
-                              <option value="codex">Codex</option>
-                              <option value="opencode">OpenCode</option>
-                              <option value="pi">Pi</option>
+                              <option value="terminal">Terminal</option>
+                              <option value="browser">Browser</option>
+                              <option value="agent">Agent</option>
                             </select>
-                          )}
-                          <button
-                            onClick={() => {
-                              setInputPrefixes(inputPrefixes.filter((_, j) => j !== i))
-                            }}
-                            className="p-1 rounded-md text-muted-foreground/40 hover:text-destructive hover:bg-destructive/10 transition-colors"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      ))}
-                      <button
-                        onClick={() => {
-                          setInputPrefixes([...inputPrefixes, { prefix: '', target: 'terminal' }])
-                        }}
-                        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] text-muted-foreground/50 hover:text-foreground hover:bg-muted/40 transition-colors"
-                      >
-                        <Plus className="w-3 h-3" />
-                        Add prefix
-                      </button>
-                    </div>
-                  </SettingsGroup>
-                </div>
-              ) : null}
+                            {p.target === 'agent' && (
+                              <select
+                                value={p.agentId ?? 'claude'}
+                                onChange={(e) => {
+                                  const updated = [...inputPrefixes]
+                                  updated[i] = { ...updated[i], agentId: e.target.value }
+                                  setInputPrefixes(updated)
+                                }}
+                                className="w-24 rounded-md border border-border/20 bg-background/40 px-2.5 py-1.5 text-[11px] text-foreground outline-none focus:border-border/40"
+                              >
+                                <option value="claude">Claude</option>
+                                <option value="codex">Codex</option>
+                                <option value="opencode">OpenCode</option>
+                                <option value="pi">Pi</option>
+                              </select>
+                            )}
+                            <button
+                              onClick={() => {
+                                setInputPrefixes(inputPrefixes.filter((_, j) => j !== i))
+                              }}
+                              className="p-1 rounded-md text-muted-foreground/40 hover:text-destructive hover:bg-destructive/10 transition-colors"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        ))}
+                        <button
+                          onClick={() => {
+                            setInputPrefixes([...inputPrefixes, { prefix: '', target: 'terminal' }])
+                          }}
+                          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] text-muted-foreground/50 hover:text-foreground hover:bg-muted/40 transition-colors"
+                        >
+                          <Plus className="w-3 h-3" />
+                          Add prefix
+                        </button>
+                      </div>
+                    </SettingsGroup>
+                  </div>
+                ) : null}
 
-              {activeSection === 'help' ? <HelpSection /> : null}
+                {activeSection === 'help' ? <HelpSection /> : null}
 
-              {activeSection === 'about' ? (
-                <div className="space-y-6">
-                  <UpdateSection />
-                  <DaemonSection />
-                </div>
-              ) : null}
-            </ScrollArea>
-          </div>
-        </DialogPrimitive.Popup>
-      </DialogPortal>
-    </Dialog>
+                {activeSection === 'about' ? (
+                  <div className="space-y-6">
+                    <UpdateSection />
+                    <DaemonSection />
+                  </div>
+                ) : null}
+              </ScrollArea>
+            </div>
+          </DialogPrimitive.Popup>
+        </DialogPortal>
+      </Dialog>
+      <NewProjectDialog open={showNewProject} onOpenChange={setShowNewProject} />
+    </>
   )
 }
 
@@ -1508,6 +1567,147 @@ interface SettingsFieldProps {
   label: string
   hint?: string
   children: React.ReactNode
+}
+
+function ProjectManagerSection({
+  projects,
+  activeProjectId,
+  visibleTitleBarProjects,
+  pinnedProjectCount,
+  onAddProject,
+  onSwitchProject,
+  onReorderProjects,
+  onTogglePinned,
+  onRequestCloseProject,
+}: {
+  projects: Project[]
+  activeProjectId: string | null
+  visibleTitleBarProjects: Project[]
+  pinnedProjectCount: number
+  onAddProject: () => void
+  onSwitchProject: (id: string) => void
+  onReorderProjects: (projects: Project[]) => void
+  onTogglePinned: (id: string, pinned: boolean) => void
+  onRequestCloseProject: (id: string) => Promise<void>
+}) {
+  const titleBarMode = hasPinnedTitleBarProjects(projects)
+    ? `${pinnedProjectCount} pinned`
+    : projects.length <= TITLE_BAR_AUTO_PROJECT_LIMIT
+      ? 'Auto: all projects'
+      : 'Auto: active project'
+  const visibleNames = visibleTitleBarProjects.map((project) => project.name).join(', ')
+
+  return (
+    <div className="space-y-3.5">
+      <SettingsGroup title="Project Manager">
+        <div className="space-y-2">
+          <div className="flex items-center justify-between gap-3 rounded-md border border-border/20 bg-background/35 px-2.5 py-2">
+            <div className="min-w-0">
+              <div className="text-[11px] text-foreground">Title bar projects</div>
+              <div className="mt-0.5 truncate text-[10px] text-muted-foreground/40">
+                {visibleNames || 'No projects visible'}
+              </div>
+            </div>
+            <span className="shrink-0 rounded-md bg-muted/40 px-2 py-1 text-[10px] text-muted-foreground/60">
+              {titleBarMode}
+            </span>
+          </div>
+
+          <button
+            type="button"
+            onClick={onAddProject}
+            className="flex h-8 w-full items-center justify-center gap-2 rounded-md border border-border/25 bg-background/40 text-[11px] text-foreground transition-colors hover:bg-muted/40"
+          >
+            <Plus className="h-3 w-3 text-muted-foreground" />
+            Add project
+          </button>
+        </div>
+      </SettingsGroup>
+
+      <SettingsGroup title="Projects">
+        {projects.length > 0 ? (
+          <Reorder.Group
+            axis="y"
+            values={projects}
+            onReorder={onReorderProjects}
+            className="space-y-1"
+          >
+            {projects.map((project) => {
+              const isActive = project.id === activeProjectId
+              const isPinned = project.titleBarPinned === true
+              const windowCount =
+                (project.terminals?.length ?? 0) +
+                (project.browsers?.length ?? 0) +
+                (project.agentWindows?.length ?? 0)
+
+              return (
+                <Reorder.Item
+                  key={project.id}
+                  value={project}
+                  className="group flex items-center gap-2 rounded-md px-2 py-1.5 text-[11px] transition-colors hover:bg-muted/35"
+                >
+                  <GripVertical className="h-3.5 w-3.5 shrink-0 cursor-grab text-muted-foreground/30 group-active:cursor-grabbing" />
+
+                  <button
+                    type="button"
+                    onClick={() => onSwitchProject(project.id)}
+                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                  >
+                    <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted-foreground/35" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-foreground">{project.name}</span>
+                      <span className="block truncate text-[10px] text-muted-foreground/35">
+                        {project.path || 'No folder path'}
+                      </span>
+                    </span>
+                  </button>
+
+                  {isActive ? (
+                    <span className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary/80">
+                      Active
+                    </span>
+                  ) : null}
+
+                  {windowCount > 0 ? (
+                    <span className="w-5 shrink-0 text-right text-[10px] tabular-nums text-muted-foreground/35">
+                      {windowCount}
+                    </span>
+                  ) : null}
+
+                  <button
+                    type="button"
+                    onClick={() => onTogglePinned(project.id, !isPinned)}
+                    className={cn(
+                      'flex size-6 shrink-0 items-center justify-center rounded-md transition-colors',
+                      isPinned
+                        ? 'bg-primary/10 text-primary/80 hover:bg-primary/15'
+                        : 'text-muted-foreground/35 hover:bg-muted/50 hover:text-foreground',
+                    )}
+                    title={isPinned ? 'Unpin from title bar' : 'Pin to title bar'}
+                  >
+                    {isPinned ? <PinOff className="h-3 w-3" /> : <Pin className="h-3 w-3" />}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => void onRequestCloseProject(project.id)}
+                    className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground/35 transition-colors hover:bg-destructive/10 hover:text-destructive"
+                    title="Remove project"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </button>
+                </Reorder.Item>
+              )
+            })}
+          </Reorder.Group>
+        ) : (
+          <p className="px-2 py-1.5 text-[10px] text-muted-foreground/35">
+            Add a project to start using Cells.
+          </p>
+        )}
+      </SettingsGroup>
+    </div>
+  )
 }
 
 function ThemePreviewButton({

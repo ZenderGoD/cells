@@ -2504,6 +2504,13 @@ function listCodexNativeSessions(limit: number): RecentAgentSessionSummary[] {
 export class AgentSessionService extends EventEmitter {
   private runtimes = new Map<string, Runtime>()
 
+  getSnapshot(windowId: string): AgentSessionSnapshot | null {
+    const live = this.runtimes.get(windowId)?.snapshot
+    if (live) return cloneSnapshot(live)
+    const persisted = loadPersistedSnapshot(windowId)
+    return persisted ? cloneSnapshot(persisted) : null
+  }
+
   async listSavedSessions(): Promise<SavedAgentSessionSummary[]> {
     const entries: string[] = await fs.readdir(getPersistDir()).catch(() => [])
     if (!entries.length) {

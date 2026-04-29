@@ -69,7 +69,9 @@ import {
   stopMcpBridge,
   bufferTerminalOutput,
   captureConsoleLog,
+  captureNetworkRequest,
   clearBrowserConsoleLogs,
+  clearBrowserNetworkRequests,
   clearTerminalOutputRing,
 } from './mcp-bridge'
 import type { TerminalExitDetails, TerminalRuntimeStatus } from '../src/types'
@@ -2811,6 +2813,7 @@ const browserViewStates = new Map<string, BrowserViewRuntimeState>()
 // Map browserId → the browserId so overscroll IPC from the preload can be relayed
 const webContentsIdToBrowser = new Map<number, string>()
 const browserIdToProject = new Map<string, string>()
+const mcpNetworkCaptureProjects = new Set<string>()
 
 function getBrowserViewState(browserId: string): BrowserViewRuntimeState {
   const existing = browserViewStates.get(browserId)
@@ -2830,6 +2833,35 @@ function getBrowserViewState(browserId: string): BrowserViewRuntimeState {
 
 function resetBrowserViewFailure(browserId: string) {
   getBrowserViewState(browserId).failure = null
+}
+
+function ensureMcpNetworkCapture(projectId: string, pageSession: Electron.Session) {
+  if (mcpNetworkCaptureProjects.has(projectId)) return
+  mcpNetworkCaptureProjects.add(projectId)
+  try {
+    pageSession.webRequest.onCompleted({ urls: ['<all_urls>'] }, (details) => {
+      const rawDetails = details as any
+      if (typeof details.webContentsId !== 'number') return
+      const browserId = webContentsIdToBrowser.get(details.webContentsId)
+      if (!browserId) return
+      const headers = details.responseHeaders ?? {}
+      const contentType =
+        headers['content-type']?.[0] ?? headers['Content-Type']?.[0] ?? headers['Content-type']?.[0]
+      captureNetworkRequest(browserId, {
+        id: String(rawDetails.id ?? randomUUID()),
+        url: details.url,
+        method: details.method,
+        statusCode: details.statusCode,
+        statusLine: details.statusLine,
+        resourceType: details.resourceType,
+        mimeType: contentType,
+        fromCache: details.fromCache,
+        error: rawDetails.error,
+        timestamp: Date.now(),
+        elapsedMs: typeof details.timestamp === 'number' ? Date.now() - details.timestamp : null,
+      })
+    })
+  } catch {}
 }
 
 function attachBrowserView(browserId: string, view: WebContentsView) {
@@ -2859,6 +2891,7 @@ function setupBrowserView(browserId: string, view: WebContentsView, projectId: s
   if (!mainWindow) return
   webContentsIdToBrowser.set(view.webContents.id, browserId)
   browserIdToProject.set(browserId, projectId)
+  ensureMcpNetworkCapture(projectId, view.webContents.session)
   const browserState = getBrowserViewState(browserId)
 
   // Intercept app shortcuts before the WebContentsView consumes them
@@ -3376,6 +3409,7 @@ ipcMain.handle('browser:destroy', (_event, browserId: string) => {
   savedHistories.delete(browserId)
   browserViewStates.delete(browserId)
   clearBrowserConsoleLogs(browserId)
+  clearBrowserNetworkRequests(browserId)
 })
 
 ipcMain.handle(
@@ -4188,6 +4222,9 @@ app.whenReady().then(async () => {
       getFallbackSessions: () => fallbackSessions,
       getUseDaemon: () => useDaemon,
       getTerminalStatus: (termId: string) => agentSessionTracker?.getStatus(termId) ?? null,
+      getAgentSessionSnapshot: (windowId: string) => agentSessionService.getSnapshot(windowId),
+      sendAgentMessage: (windowId: string, input: string, attachments?: string[]) =>
+        agentSessionService.send(windowId, input, attachments),
       getMainWindow: () => mainWindow,
       stateFile: STATE_FILE,
       subscribedTerminals,
