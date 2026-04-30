@@ -11,6 +11,7 @@ import {
   Download,
   Loader2,
   Magnet,
+  MousePointer2,
   PanelsTopLeft,
   ArrowUpRight,
   ArrowDownLeft,
@@ -22,9 +23,15 @@ import {
   Search,
   Settings,
   TerminalSquare,
+  Trash2,
   X,
 } from 'lucide-react'
-import type { ExtensionMeta, WindowSection } from '@/types'
+import type {
+  AgentWindowNode,
+  BrowserElementSelection,
+  ExtensionMeta,
+  WindowSection,
+} from '@/types'
 import { motion, AnimatePresence, Reorder, useDragControls, useReducedMotion } from 'motion/react'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
@@ -62,6 +69,11 @@ import {
   type WindowActivityKind,
 } from '@/lib/status-indicator'
 import { getTitleBarProjects } from '@/lib/project-title-bar'
+import {
+  appendBrowserElementSelectionToDraft,
+  copyBrowserElementSelectionToClipboard,
+} from '@/lib/browser-element-selection'
+import { showToast } from '@/components/toast'
 
 function stripeClass(kind: WindowActivityKind): string {
   switch (kind) {
@@ -88,6 +100,7 @@ function stripeClass(kind: WindowActivityKind): string {
 
 const EASE_OUT = [0.25, 0.46, 0.45, 0.94] as const
 const EASE_IN_OUT = [0.645, 0.045, 0.355, 1] as const
+const BROWSER_ELEMENT_PICKER_RETRY_DELAYS_MS = [60, 100, 160, 240] as const
 
 const EMPTY_BROWSER_UI = {
   browserId: null as string | null,
@@ -497,6 +510,8 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
   const [urlInput, setUrlInput] = useState('')
   const [urlBarFocused, setUrlBarFocused] = useState(false)
   const [copiedBrowserId, setCopiedBrowserId] = useState<string | null>(null)
+  const [browserElementPickerActive, setBrowserElementPickerActive] = useState(false)
+  const activeBrowserElementPickerRef = useRef<string | null>(null)
   const [editingTitleForTermId, setEditingTitleForTermId] = useState<string | null>(null)
   const [editTitleValue, setEditTitleValue] = useState('')
   const titleInputRef = useRef<HTMLInputElement>(null)
@@ -626,6 +641,86 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
       .catch(() => {})
   }, [focusedBrowser])
 
+  const startBrowserElementPicker = useCallback(async () => {
+    if (!focusedBrowserId) return
+
+    if (browserElementPickerActive) {
+      window.cells.browser.cancelElementPicker(
+        activeBrowserElementPickerRef.current ?? focusedBrowserId,
+      )
+      activeBrowserElementPickerRef.current = null
+      setBrowserElementPickerActive(false)
+      return
+    }
+
+    setBrowserElementPickerActive(true)
+    activeBrowserElementPickerRef.current = focusedBrowserId
+    window.cells.browser.focus(focusedBrowserId)
+
+    let started = false
+    for (const delay of BROWSER_ELEMENT_PICKER_RETRY_DELAYS_MS) {
+      await new Promise((resolve) => window.setTimeout(resolve, delay))
+      try {
+        started = await window.cells.browser.startElementPicker(focusedBrowserId, null)
+      } catch (err) {
+        console.error('[toolbar] start browser element picker failed', err)
+      }
+      if (started) break
+    }
+
+    if (!started) {
+      activeBrowserElementPickerRef.current = null
+      setBrowserElementPickerActive(false)
+      showToast('Browser is still opening. Try again in a moment.', 'error')
+    }
+  }, [browserElementPickerActive, focusedBrowserId])
+
+  const resolveBrowserSelectionAgentWindow = useCallback((): AgentWindowNode => {
+    const state = useStore.getState()
+    const focused = state.focusedAgentWindowId
+      ? state.agentWindows.find((agentWindow) => agentWindow.id === state.focusedAgentWindowId)
+      : null
+    if (focused) return focused
+
+    const recentAgentId = [...state.focusHistory]
+      .reverse()
+      .find((id) => state.agentWindows.some((agentWindow) => agentWindow.id === id))
+    const recent = recentAgentId
+      ? state.agentWindows.find((agentWindow) => agentWindow.id === recentAgentId)
+      : null
+    if (recent) return recent
+
+    const existing = state.agentWindows[0]
+    if (existing) return existing
+
+    return state.addAgentWindow('codex', {
+      title: 'Browser selection',
+      cwd: state.getActiveProjectPath() ?? null,
+    })
+  }, [])
+
+  const stageBrowserElementInAgentDraft = useCallback(
+    async (agentWindow: AgentWindowNode, selection: BrowserElementSelection) => {
+      const state = useStore.getState()
+      const storedAgentWindow =
+        state.agentWindows.find((entry) => entry.id === agentWindow.id) ?? agentWindow
+      let copied = true
+      await copyBrowserElementSelectionToClipboard(selection).catch((err) => {
+        copied = false
+        console.error('[toolbar] copy browser element failed', err)
+      })
+      state.syncAgentWindow(storedAgentWindow.id, {
+        composerDraft: appendBrowserElementSelectionToDraft(
+          storedAgentWindow.composerDraft,
+          selection,
+        ),
+        composerAttachments: storedAgentWindow.composerAttachments ?? [],
+      })
+      showToast(copied ? 'Copied element and added it to chat' : 'Added element to chat', 'info')
+    },
+    [],
+  )
+
   const commitSectionName = useCallback(() => {
     if (!focusedWindowSection) return
     const trimmed = sectionNameDraft.trim()
@@ -674,6 +769,40 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
       }
     }
   }, [])
+
+  useEffect(() => {
+    if (embedded) return
+    const unsubscribeSelected = window.cells.browser.onElementSelected(
+      (browserId, targetAgentWindowId, selection) => {
+        if (targetAgentWindowId !== null) return
+        if (activeBrowserElementPickerRef.current !== browserId) return
+        activeBrowserElementPickerRef.current = null
+        setBrowserElementPickerActive(false)
+
+        const agentWindow = resolveBrowserSelectionAgentWindow()
+        void stageBrowserElementInAgentDraft(agentWindow, selection).finally(() => {
+          useStore.getState().snapToAgentWindow(agentWindow.id)
+        })
+      },
+    )
+    const unsubscribeCancelled = window.cells.browser.onElementPickerCancelled(
+      (browserId, targetAgentWindowId) => {
+        if (targetAgentWindowId !== null) return
+        if (activeBrowserElementPickerRef.current !== browserId) return
+        activeBrowserElementPickerRef.current = null
+        setBrowserElementPickerActive(false)
+      },
+    )
+    return () => {
+      const activeBrowserId = activeBrowserElementPickerRef.current
+      if (activeBrowserId) {
+        window.cells.browser.cancelElementPicker(activeBrowserId)
+        activeBrowserElementPickerRef.current = null
+      }
+      unsubscribeSelected()
+      unsubscribeCancelled()
+    }
+  }, [embedded, resolveBrowserSelectionAgentWindow, stageBrowserElementInAgentDraft])
 
   useEffect(() => {
     if (!latestClosedWindow && !latestClosedProject) return
@@ -1024,6 +1153,21 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
               </button>
             ))}
             <button
+              className={cn(
+                'p-1 rounded text-muted-foreground/50 hover:text-foreground hover:bg-muted/50 transition-colors shrink-0',
+                browserElementPickerActive &&
+                  'bg-cyan-400/14 text-cyan-100 hover:bg-cyan-400/18 hover:text-cyan-50',
+              )}
+              onClick={() => void startBrowserElementPicker()}
+              title={
+                browserElementPickerActive
+                  ? 'Cancel element selection'
+                  : 'Select element and send to chat'
+              }
+            >
+              <MousePointer2 className="w-3 h-3" />
+            </button>
+            <button
               className="p-1 rounded text-muted-foreground/50 hover:text-foreground hover:bg-muted/50 transition-colors shrink-0"
               onClick={() => window.cells.browser.toggleDevTools(focusedBrowser.id)}
               title="Toggle DevTools"
@@ -1355,6 +1499,18 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
                     )}
                     {focusedWindowSection.pinned ? 'Pop section back in' : 'Pop section out'}
                   </button>
+                  <div className="my-1 h-px bg-border/50" />
+                  <button
+                    onClick={() => {
+                      hapticBuzz()
+                      removeWindowSection(focusedWindowSection.id)
+                      setSectionEditorOpen(false)
+                    }}
+                    className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-[11px] text-destructive transition-colors hover:bg-destructive/10"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    Delete section
+                  </button>
                 </PopoverContent>
               </Popover>
             ) : null}
@@ -1611,9 +1767,10 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
                               </button>
                               <button
                                 onClick={() => removeWindowSection(section.id)}
-                                className="rounded p-1 transition-colors hover:bg-muted/70 hover:text-foreground"
+                                className="rounded p-1 transition-colors hover:bg-destructive/10 hover:text-destructive"
+                                title="Delete section"
                               >
-                                <X className="h-3 w-3" />
+                                <Trash2 className="h-3 w-3" />
                               </button>
                             </div>
                           ))}

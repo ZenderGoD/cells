@@ -2,9 +2,11 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type {
   AgentPermissionMode,
   AgentMentionSearchResult,
+  AgentReplyReference,
   AgentSessionRequest,
   AgentSessionSnapshot,
   BrowserCanvasWheelGesture,
+  BrowserElementSelection,
   SavedAgentSessionSummary,
   AgentThinkingLevel,
   CellsAPI,
@@ -124,6 +126,10 @@ const api: CellsAPI = {
     goBack: (browserId: string) => ipcRenderer.send('browser:go-back', browserId),
     goForward: (browserId: string) => ipcRenderer.send('browser:go-forward', browserId),
     reload: (browserId: string) => ipcRenderer.send('browser:reload', browserId),
+    startElementPicker: (browserId: string, targetAgentWindowId?: string | null) =>
+      ipcRenderer.invoke('browser:start-element-picker', browserId, targetAgentWindowId),
+    cancelElementPicker: (browserId: string) =>
+      ipcRenderer.send('browser:cancel-element-picker', browserId),
     updateBounds: (
       browserId: string,
       bounds: { x: number; y: number; width: number; height: number },
@@ -235,6 +241,33 @@ const api: CellsAPI = {
       ipcRenderer.on('browser:project-cycle', handler)
       return () => ipcRenderer.removeListener('browser:project-cycle', handler)
     },
+    onElementSelected: (
+      callback: (
+        browserId: string,
+        targetAgentWindowId: string | null,
+        selection: BrowserElementSelection,
+      ) => void,
+    ) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        browserId: string,
+        targetAgentWindowId: string | null,
+        selection: BrowserElementSelection,
+      ) => callback(browserId, targetAgentWindowId, selection)
+      ipcRenderer.on('browser:element-selected', handler)
+      return () => ipcRenderer.removeListener('browser:element-selected', handler)
+    },
+    onElementPickerCancelled: (
+      callback: (browserId: string, targetAgentWindowId: string | null) => void,
+    ) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        browserId: string,
+        targetAgentWindowId: string | null,
+      ) => callback(browserId, targetAgentWindowId)
+      ipcRenderer.on('browser:element-picker-cancelled', handler)
+      return () => ipcRenderer.removeListener('browser:element-picker-cancelled', handler)
+    },
   },
   state: {
     load: () => ipcRenderer.invoke('state:load'),
@@ -302,6 +335,8 @@ const api: CellsAPI = {
       ipcRenderer.invoke('app:list-recent-files') as Promise<
         Array<{ path: string; name: string; mtime: number; source: string }>
       >,
+    copyRichTextToClipboard: (text: string, html?: string | null) =>
+      ipcRenderer.invoke('app:copy-rich-text-to-clipboard', text, html) as Promise<void>,
     searchAgentMentions: (cwd: string, query: string) =>
       ipcRenderer.invoke('app:search-agent-mentions', cwd, query) as Promise<
         AgentMentionSearchResult[]
@@ -417,7 +452,8 @@ const api: CellsAPI = {
         thinkingLevel?: AgentThinkingLevel | null
         permissionMode?: AgentPermissionMode | null
       },
-    ) => ipcRenderer.invoke('agent-session:send', windowId, input, attachments, overrides),
+      replyTo?: AgentReplyReference | null,
+    ) => ipcRenderer.invoke('agent-session:send', windowId, input, attachments, overrides, replyTo),
     branchFrom: (
       sourceWindowId: string,
       request: AgentSessionRequest,
@@ -429,6 +465,7 @@ const api: CellsAPI = {
         thinkingLevel?: AgentThinkingLevel | null
         permissionMode?: AgentPermissionMode | null
       },
+      replyTo?: AgentReplyReference | null,
     ) =>
       ipcRenderer.invoke(
         'agent-session:branch-from',
@@ -438,6 +475,7 @@ const api: CellsAPI = {
         providerInput,
         attachments,
         overrides,
+        replyTo,
       ) as Promise<void>,
     close: (windowId: string) => ipcRenderer.invoke('agent-session:close', windowId),
     dispose: (windowId: string) => ipcRenderer.invoke('agent-session:dispose', windowId),

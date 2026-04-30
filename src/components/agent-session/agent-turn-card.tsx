@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
+import type { PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import {
   Check,
@@ -8,9 +9,10 @@ import {
   Copy,
   FileText,
   MessageCircleDashed,
+  Reply,
   XCircle,
 } from 'lucide-react'
-import type { AgentSessionMessage, AgentWindowNode } from '@/types'
+import type { AgentReplyReference, AgentSessionMessage, AgentWindowNode } from '@/types'
 import { cn } from '@/lib/utils'
 import { resolveToolIcon } from '@/lib/tool-icons'
 import { getVerticalScrollFadeMask, useVerticalScrollFades } from '@/lib/use-scroll-fades'
@@ -64,6 +66,7 @@ interface AgentTurnCardProps {
   cwd?: string | null
   agent: AgentWindowNode['agent']
   isStreaming: boolean
+  onReply?: (replyTo: AgentReplyReference) => void
 }
 
 function parseToolInput(raw: string | null | undefined): Record<string, any> | null {
@@ -122,6 +125,85 @@ function getMessageDurationMs(message: AgentSessionMessage): number | null {
   if (!startedAt || !updatedAt) return null
   const elapsed = updatedAt - startedAt
   return elapsed >= 1000 ? elapsed : null
+}
+
+function normalizeReplyPreview(value: string | null | undefined): string {
+  return (value ?? '').replace(/\s+/g, ' ').trim().slice(0, 220)
+}
+
+function makeReplyReference(
+  id: string,
+  role: AgentReplyReference['role'],
+  label: string,
+  preview: string | null | undefined,
+  title?: string | null,
+): AgentReplyReference {
+  return {
+    id,
+    role,
+    label,
+    preview: normalizeReplyPreview(preview) || label,
+    title: title ?? null,
+  }
+}
+
+function useReplyGesture(onReply?: () => void) {
+  const pointerStartXRef = useRef<number | null>(null)
+  const pointerStartYRef = useRef<number | null>(null)
+  const swipedRef = useRef(false)
+  const wheelCooldownRef = useRef(0)
+
+  const triggerReply = useCallback(() => {
+    if (!onReply) return
+    swipedRef.current = true
+    onReply()
+  }, [onReply])
+
+  const onWheel = useCallback(
+    (event: ReactWheelEvent<HTMLElement>) => {
+      if (!onReply) return
+      const absX = Math.abs(event.deltaX)
+      const absY = Math.abs(event.deltaY)
+      const now = Date.now()
+      if (absX < 48 || absX < absY * 1.4 || now - wheelCooldownRef.current < 700) return
+      wheelCooldownRef.current = now
+      triggerReply()
+    },
+    [onReply, triggerReply],
+  )
+
+  const onPointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLElement>) => {
+      if (!onReply || event.pointerType === 'mouse') return
+      pointerStartXRef.current = event.clientX
+      pointerStartYRef.current = event.clientY
+      swipedRef.current = false
+    },
+    [onReply],
+  )
+
+  const onPointerUp = useCallback(
+    (event: ReactPointerEvent<HTMLElement>) => {
+      const startX = pointerStartXRef.current
+      const startY = pointerStartYRef.current
+      pointerStartXRef.current = null
+      pointerStartYRef.current = null
+      if (!onReply || startX == null || startY == null) return
+      const deltaX = event.clientX - startX
+      const deltaY = event.clientY - startY
+      if (Math.abs(deltaX) < 64 || Math.abs(deltaX) < Math.abs(deltaY) * 1.4) return
+      triggerReply()
+    },
+    [onReply, triggerReply],
+  )
+
+  const wasReplyGesture = useCallback(() => {
+    const wasSwiped = swipedRef.current
+    swipedRef.current = false
+    return wasSwiped
+  }, [])
+
+  return { onWheel, onPointerDown, onPointerUp, wasReplyGesture }
 }
 
 function getActivitiesDurationMs(activities: AgentSessionMessage[]): number | null {
@@ -384,7 +466,15 @@ function ActivityDiffDetails({
 // Activity row — Craft layout: [status icon] [tool name] [filename pill]
 // [ · description · summary]. Depth controls left indentation so subagent
 // children nest visually.
-function ActivityRow({ node, depth }: { node: ActivityNode; depth: number }) {
+function ActivityRow({
+  node,
+  depth,
+  onReply,
+}: {
+  node: ActivityNode
+  depth: number
+  onReply?: (replyTo: AgentReplyReference) => void
+}) {
   const { message, children } = node
   const hasChildren = children.length > 0
   const isTaskLike =
@@ -438,62 +528,94 @@ function ActivityRow({ node, depth }: { node: ActivityNode; depth: number }) {
   const hasDiffDetails = diffFiles.length > 0
   const durationMs = getMessageDurationMs(message)
   const isSettled = message.status === 'completed' || message.status === 'failed'
+  const replyReference = useMemo(
+    () =>
+      makeReplyReference(
+        message.id,
+        message.role,
+        displayName,
+        row.description || assistantInline || row.summary || message.text || displayName,
+        message.title ?? null,
+      ),
+    [assistantInline, displayName, message.id, message.role, message.text, message.title, row],
+  )
+  const handleReply = useCallback(() => onReply?.(replyReference), [onReply, replyReference])
+  const replyGesture = useReplyGesture(onReply ? handleReply : undefined)
 
   return (
     <div className="group/row">
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        className="flex w-full min-w-0 overflow-hidden items-center gap-2 rounded-[6px] px-1 py-0.5 text-left text-[13px] text-muted-foreground transition-colors hover:bg-foreground/5"
-        style={{ paddingLeft: `${4 + depth * 12}px` }}
-      >
-        <StatusIcon message={message} customIconUrl={resolvedTool?.iconUrl} />
-        <span className="shrink truncate">{displayName}</span>
-        {row.filename ? (
-          <span
-            className="shrink-0 rounded-[4px] bg-background px-1.5 py-0.5 text-[11px] text-foreground/70 shadow-minimal"
-            title={row.summary ?? row.filename}
+      <div className="flex min-w-0 items-center gap-1">
+        <button
+          type="button"
+          onClick={() => {
+            if (replyGesture.wasReplyGesture()) return
+            setExpanded((v) => !v)
+          }}
+          onWheel={replyGesture.onWheel}
+          onPointerDown={replyGesture.onPointerDown}
+          onPointerUp={replyGesture.onPointerUp}
+          className="flex min-w-0 flex-1 overflow-hidden items-center gap-2 rounded-[6px] px-1 py-0.5 text-left text-[13px] text-muted-foreground transition-colors hover:bg-foreground/5"
+          style={{ paddingLeft: `${4 + depth * 12}px` }}
+        >
+          <StatusIcon message={message} customIconUrl={resolvedTool?.iconUrl} />
+          <span className="shrink truncate">{displayName}</span>
+          {row.filename ? (
+            <span
+              className="shrink-0 rounded-[4px] bg-background px-1.5 py-0.5 text-[11px] text-foreground/70 shadow-minimal"
+              title={row.summary ?? row.filename}
+            >
+              {row.filename}
+            </span>
+          ) : null}
+          {rowDiffStats ? <DiffStatsBadge stats={rowDiffStats} /> : null}
+          {isSettled && durationMs ? (
+            <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground/55">
+              {formatDuration(durationMs)}
+            </span>
+          ) : null}
+          {hasTrailing ? (
+            <span className="min-w-0 flex-1 truncate">
+              {row.description ? (
+                <>
+                  <span className="opacity-60"> · </span>
+                  <span>{row.description}</span>
+                </>
+              ) : null}
+              {assistantInline ? (
+                <>
+                  <span className="opacity-60"> · </span>
+                  <span>{assistantInline}</span>
+                </>
+              ) : null}
+              {row.summary ? (
+                <>
+                  <span className="opacity-60"> · </span>
+                  <span className="opacity-60">
+                    {row.summary.length > 200 ? row.summary.slice(0, 200) + '…' : row.summary}
+                  </span>
+                </>
+              ) : null}
+            </span>
+          ) : null}
+          <ChevronRight
+            className={cn(
+              'ml-auto size-3 shrink-0 text-muted-foreground/40 transition-transform',
+              expanded && 'rotate-90',
+            )}
+          />
+        </button>
+        {onReply ? (
+          <button
+            type="button"
+            onClick={handleReply}
+            aria-label={`Reply to ${displayName}`}
+            title="Reply"
+            className="flex size-6 shrink-0 items-center justify-center rounded-[6px] text-muted-foreground/35 opacity-0 transition-colors hover:bg-foreground/8 hover:text-foreground/80 group-hover/row:opacity-100 focus:opacity-100 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring/50"
           >
-            {row.filename}
-          </span>
+            <Reply className="size-3.5" />
+          </button>
         ) : null}
-        {rowDiffStats ? <DiffStatsBadge stats={rowDiffStats} /> : null}
-        {isSettled && durationMs ? (
-          <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground/55">
-            {formatDuration(durationMs)}
-          </span>
-        ) : null}
-        {hasTrailing ? (
-          <span className="min-w-0 flex-1 truncate">
-            {row.description ? (
-              <>
-                <span className="opacity-60"> · </span>
-                <span>{row.description}</span>
-              </>
-            ) : null}
-            {assistantInline ? (
-              <>
-                <span className="opacity-60"> · </span>
-                <span>{assistantInline}</span>
-              </>
-            ) : null}
-            {row.summary ? (
-              <>
-                <span className="opacity-60"> · </span>
-                <span className="opacity-60">
-                  {row.summary.length > 200 ? row.summary.slice(0, 200) + '…' : row.summary}
-                </span>
-              </>
-            ) : null}
-          </span>
-        ) : null}
-        <ChevronRight
-          className={cn(
-            'ml-auto size-3 shrink-0 text-muted-foreground/40 transition-transform',
-            expanded && 'rotate-90',
-          )}
-        />
-      </button>
+      </div>
       {/* Diff-producing leaf rows show a rendered diff when expanded; other
        *  leaf rows show the raw payload. Rows with children render those
        *  children instead. */}
@@ -535,7 +657,12 @@ function ActivityRow({ node, depth }: { node: ActivityNode; depth: number }) {
           >
             <div className="space-y-0.5">
               {children.map((child) => (
-                <ActivityRow key={child.message.id} node={child} depth={depth + 1} />
+                <ActivityRow
+                  key={child.message.id}
+                  node={child}
+                  depth={depth + 1}
+                  onReply={onReply}
+                />
               ))}
             </div>
           </motion.div>
@@ -604,11 +731,13 @@ function ResponseSurface({
   text,
   variant,
   className,
+  onReply,
 }: {
   responses?: AgentSessionMessage[]
   text?: string
   variant: 'boxed' | 'lead'
   className?: string
+  onReply?: (replyTo: AgentReplyReference) => void
 }) {
   const visible = useMemo(() => {
     const responseItems = responses?.filter((r) => r.text.trim().length > 0)
@@ -638,6 +767,17 @@ function ResponseSurface({
     `${viewMode}:${combinedText}`,
   )
   const responseMask = getVerticalScrollFadeMask(responseFade, 16, 16)
+  const replyReference = useMemo(() => {
+    if (!combinedText.trim()) return null
+    const id = visible.length
+      ? visible.map((response) => response.id).join('|')
+      : `reply-${variant}`
+    return makeReplyReference(id, 'assistant', 'Agent response', combinedText, null)
+  }, [combinedText, variant, visible])
+  const handleReply = useCallback(() => {
+    if (replyReference) onReply?.(replyReference)
+  }, [onReply, replyReference])
+  const replyGesture = useReplyGesture(onReply && replyReference ? handleReply : undefined)
 
   const handleCopy = async () => {
     try {
@@ -655,6 +795,9 @@ function ResponseSurface({
   return (
     <motion.div
       layout={reduceMotion ? false : 'position'}
+      onWheel={replyGesture.onWheel}
+      onPointerDown={replyGesture.onPointerDown}
+      onPointerUp={replyGesture.onPointerUp}
       className={cn(
         'group relative overflow-hidden rounded-[12px]',
         !isBoxed && 'agent-response',
@@ -757,16 +900,45 @@ function ResponseSurface({
                   </button>
                 </>
               )}
+              {onReply && replyReference ? (
+                <button
+                  type="button"
+                  onClick={handleReply}
+                  aria-label="Reply to agent response"
+                  title="Reply"
+                  className="ml-auto flex select-none items-center gap-1.5 text-foreground/40 transition-colors hover:text-foreground/80 focus:outline-none focus-visible:underline"
+                >
+                  <Reply className="size-3" />
+                  <span>Reply</span>
+                </button>
+              ) : null}
             </div>
           </motion.div>
         ) : null}
       </AnimatePresence>
+      {!isBoxed && onReply && replyReference ? (
+        <button
+          type="button"
+          onClick={handleReply}
+          aria-label="Reply to agent response"
+          title="Reply"
+          className="absolute right-1 top-1 flex size-7 items-center justify-center rounded-[7px] bg-background/70 text-muted-foreground/45 opacity-0 shadow-minimal backdrop-blur-sm transition-colors hover:bg-background hover:text-foreground/80 group-hover:opacity-100 focus:opacity-100 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring/50"
+        >
+          <Reply className="size-3.5" />
+        </button>
+      ) : null}
     </motion.div>
   )
 }
 
-function ResponseCard({ responses }: { responses: AgentSessionMessage[] }) {
-  return <ResponseSurface responses={responses} variant="boxed" />
+function ResponseCard({
+  responses,
+  onReply,
+}: {
+  responses: AgentSessionMessage[]
+  onReply?: (replyTo: AgentReplyReference) => void
+}) {
+  return <ResponseSurface responses={responses} variant="boxed" onReply={onReply} />
 }
 
 function ChangedFilesSection({
@@ -861,6 +1033,7 @@ export function AgentTurnCard({
   cwd,
   agent,
   isStreaming,
+  onReply,
 }: AgentTurnCardProps) {
   const hasActivities = activities.length > 0
   const hasResponse = responses.some((r) => r.text.trim().length > 0)
@@ -886,6 +1059,7 @@ export function AgentTurnCard({
             text={hasLeadText ? leadText : undefined}
             variant={showStandaloneResponse && !hasLeadText ? 'boxed' : 'lead'}
             className={hasActivities ? 'pb-1' : undefined}
+            onReply={onReply}
           />
         ) : null}
         {hasActivities ? (
@@ -966,7 +1140,7 @@ export function AgentTurnCard({
                     )}
                   >
                     {tree.map((node) => (
-                      <ActivityRow key={node.message.id} node={node} depth={0} />
+                      <ActivityRow key={node.message.id} node={node} depth={0} onReply={onReply} />
                     ))}
                   </div>
                 </motion.div>
@@ -991,7 +1165,7 @@ export function AgentTurnCard({
             animate={{ opacity: 1 }}
             transition={{ duration: 0.2, ease: EASE_OUT }}
           >
-            <ResponseCard responses={responses} />
+            <ResponseCard responses={responses} onReply={onReply} />
           </motion.div>
         ) : null}
         {!isStreaming && changedFilesActivities ? (

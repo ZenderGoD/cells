@@ -28,6 +28,7 @@ import { PerfMonitor, type RendererPerfReport, type TerminalPerfReport } from '.
 import type { TerminalSessionManager } from './terminal-session-manager'
 import type {
   AppShortcutPayload,
+  BrowserElementSelection,
   BrowserViewFailure,
   AgentNotificationContext,
   AgentNotificationSettings,
@@ -1722,6 +1723,16 @@ ipcMain.handle('app:copy-attachment-to-clipboard', async (_event, targetPath: st
   return { kind: 'path' as const }
 })
 
+ipcMain.handle('app:copy-rich-text-to-clipboard', (_event, text: string, html?: string | null) => {
+  const normalizedText = typeof text === 'string' ? text : ''
+  const normalizedHtml = typeof html === 'string' && html.trim().length > 0 ? html : null
+  if (normalizedHtml) {
+    clipboard.write({ text: normalizedText, html: normalizedHtml })
+  } else {
+    clipboard.writeText(normalizedText)
+  }
+})
+
 ipcMain.handle('app:search-agent-mentions', async (_event, cwd: string, query: string) => {
   try {
     return searchAgentMentions(cwd, query)
@@ -2147,8 +2158,9 @@ ipcMain.handle(
     input: string,
     attachments?: string[],
     overrides?: Parameters<typeof agentSessionService.send>[3],
+    replyTo?: Parameters<typeof agentSessionService.send>[4],
   ) => {
-    return agentSessionService.send(windowId, input, attachments, overrides)
+    return agentSessionService.send(windowId, input, attachments, overrides, replyTo)
   },
 )
 
@@ -2162,6 +2174,7 @@ ipcMain.handle(
     providerInput: string,
     attachments?: string[],
     overrides?: Parameters<typeof agentSessionService.send>[3],
+    replyTo?: Parameters<typeof agentSessionService.send>[4],
   ) => {
     return agentSessionService.branchFrom(
       sourceWindowId,
@@ -2170,6 +2183,7 @@ ipcMain.handle(
       providerInput,
       attachments,
       overrides,
+      replyTo,
     )
   },
 )
@@ -2789,6 +2803,7 @@ ipcMain.handle(
 
 const browserViews = new Map<string, WebContentsView>()
 const browserPreloadPath = path.join(__dirname, BROWSER_PRELOAD_FILE)
+const BROWSER_EXTENSION_LOAD_TIMEOUT_MS = 4_000
 
 // Saved history for browsers restored after app restart.
 // Used for software back/forward when native history is empty.
@@ -2814,6 +2829,92 @@ const browserViewStates = new Map<string, BrowserViewRuntimeState>()
 const webContentsIdToBrowser = new Map<number, string>()
 const browserIdToProject = new Map<string, string>()
 const mcpNetworkCaptureProjects = new Set<string>()
+const activeBrowserElementPickers = new Map<
+  string,
+  { requestId: string; targetAgentWindowId: string | null }
+>()
+
+const BROWSER_ELEMENT_TEXT_LIMIT = 4_000
+const BROWSER_ELEMENT_HTML_LIMIT = 8_000
+const BROWSER_ELEMENT_ATTR_LIMIT = 1_000
+
+function limitBrowserElementString(value: unknown, maxLength: number) {
+  if (typeof value !== 'string') return ''
+  return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value
+}
+
+function sanitizeBrowserElementSelection(raw: unknown): BrowserElementSelection | null {
+  if (!raw || typeof raw !== 'object') return null
+  const value = raw as Record<string, unknown>
+  const rawRect = value.rect && typeof value.rect === 'object' ? (value.rect as any) : {}
+  const rawAttributes =
+    value.attributes && typeof value.attributes === 'object'
+      ? (value.attributes as Record<string, unknown>)
+      : {}
+  const attributes: Record<string, string> = {}
+
+  for (const [key, attrValue] of Object.entries(rawAttributes).slice(0, 32)) {
+    if (typeof key !== 'string') continue
+    attributes[limitBrowserElementString(key, 80)] = limitBrowserElementString(
+      attrValue,
+      BROWSER_ELEMENT_ATTR_LIMIT,
+    )
+  }
+
+  return {
+    url: limitBrowserElementString(value.url, 2_000),
+    title: limitBrowserElementString(value.title, 300),
+    tagName: limitBrowserElementString(value.tagName, 80),
+    selector: limitBrowserElementString(value.selector, 2_000),
+    text: limitBrowserElementString(value.text, BROWSER_ELEMENT_TEXT_LIMIT),
+    outerHtml: limitBrowserElementString(value.outerHtml, BROWSER_ELEMENT_HTML_LIMIT),
+    attributes,
+    rect: {
+      x: Number.isFinite(rawRect.x) ? Number(rawRect.x) : 0,
+      y: Number.isFinite(rawRect.y) ? Number(rawRect.y) : 0,
+      width: Number.isFinite(rawRect.width) ? Number(rawRect.width) : 0,
+      height: Number.isFinite(rawRect.height) ? Number(rawRect.height) : 0,
+    },
+    href: typeof value.href === 'string' ? limitBrowserElementString(value.href, 2_000) : null,
+    src: typeof value.src === 'string' ? limitBrowserElementString(value.src, 2_000) : null,
+    alt: typeof value.alt === 'string' ? limitBrowserElementString(value.alt, 1_000) : null,
+    role: typeof value.role === 'string' ? limitBrowserElementString(value.role, 200) : null,
+  }
+}
+
+function cancelBrowserElementPicker(browserId: string, notifyRenderer = false) {
+  const active = activeBrowserElementPickers.get(browserId)
+  activeBrowserElementPickers.delete(browserId)
+  const view = browserViews.get(browserId)
+  try {
+    view?.webContents.send('browser:element-picker-cancel')
+  } catch {}
+  if (notifyRenderer && active && !mainWindow?.isDestroyed()) {
+    mainWindow?.webContents.send(
+      'browser:element-picker-cancelled',
+      browserId,
+      active.targetAgentWindowId,
+    )
+  }
+}
+
+async function prepareBrowserSession(projectId: string) {
+  spoofChromeUA(projectId)
+  let timeout: ReturnType<typeof setTimeout> | null = null
+  await Promise.race([
+    ensureExtensionsLoaded(projectId),
+    new Promise<void>((resolve) => {
+      timeout = setTimeout(() => {
+        console.warn(
+          `[browser] Extension loading timed out for project ${projectId}; opening browser without waiting.`,
+        )
+        resolve()
+      }, BROWSER_EXTENSION_LOAD_TIMEOUT_MS)
+    }),
+  ]).finally(() => {
+    if (timeout) clearTimeout(timeout)
+  })
+}
 
 function getBrowserViewState(browserId: string): BrowserViewRuntimeState {
   const existing = browserViewStates.get(browserId)
@@ -3206,10 +3307,11 @@ ipcMain.handle(
   ) => {
     if (!mainWindow) return
 
-    // Ensure Chrome extensions are loaded into this project's session
-    // Ensure Chrome extensions are loaded and UA is spoofed for CWS compat
-    spoofChromeUA(projectId)
-    await ensureExtensionsLoaded(projectId)
+    // Extension loading can stall during app restore; keep it off the critical
+    // browser-open path so the renderer can attach the native view immediately.
+    void prepareBrowserSession(projectId).catch((error) => {
+      console.warn(`[browser] Failed to prepare session for project ${projectId}`, error)
+    })
 
     // If the view already exists (parked from project switch), just re-add it
     const existing = browserViews.get(browserId)
@@ -3268,8 +3370,82 @@ ipcMain.handle(
     }
 
     setupBrowserView(browserId, view, projectId)
+    return { created: true }
   },
 )
+
+ipcMain.handle(
+  'browser:start-element-picker',
+  (_event, browserId: string, targetAgentWindowId?: string | null) => {
+    const view = browserViews.get(browserId)
+    if (!view || view.webContents.isDestroyed()) return false
+
+    for (const id of activeBrowserElementPickers.keys()) {
+      cancelBrowserElementPicker(id)
+    }
+
+    const request = {
+      requestId: randomUUID(),
+      targetAgentWindowId: targetAgentWindowId ?? null,
+    }
+    activeBrowserElementPickers.set(browserId, request)
+
+    try {
+      attachBrowserView(browserId, view)
+      view.webContents.send('browser:element-picker-start', request)
+      view.webContents.focus()
+      return true
+    } catch {
+      activeBrowserElementPickers.delete(browserId)
+      return false
+    }
+  },
+)
+
+ipcMain.on('browser:cancel-element-picker', (_event, browserId: string) => {
+  cancelBrowserElementPicker(browserId, true)
+})
+
+ipcMain.on(
+  'browser:element-picker-selected',
+  (event, payload: { requestId?: string; selection?: unknown }) => {
+    const browserId = webContentsIdToBrowser.get(event.sender.id)
+    if (!browserId || mainWindow?.isDestroyed()) return
+    const active = activeBrowserElementPickers.get(browserId)
+    if (!active || payload?.requestId !== active.requestId) return
+    activeBrowserElementPickers.delete(browserId)
+
+    const selection = sanitizeBrowserElementSelection(payload.selection)
+    if (!selection) {
+      mainWindow?.webContents.send(
+        'browser:element-picker-cancelled',
+        browserId,
+        active.targetAgentWindowId,
+      )
+      return
+    }
+
+    mainWindow?.webContents.send(
+      'browser:element-selected',
+      browserId,
+      active.targetAgentWindowId,
+      selection,
+    )
+  },
+)
+
+ipcMain.on('browser:element-picker-cancelled', (event, requestId?: string) => {
+  const browserId = webContentsIdToBrowser.get(event.sender.id)
+  if (!browserId || mainWindow?.isDestroyed()) return
+  const active = activeBrowserElementPickers.get(browserId)
+  if (!active || (requestId && requestId !== active.requestId)) return
+  activeBrowserElementPickers.delete(browserId)
+  mainWindow?.webContents.send(
+    'browser:element-picker-cancelled',
+    browserId,
+    active.targetAgentWindowId,
+  )
+})
 
 // ---------- Overscroll gesture relay (browser preload → renderer) ----------
 
@@ -3389,6 +3565,7 @@ ipcMain.handle('browser:get-state', async (_event, browserId: string) => {
 ipcMain.handle('browser:park', (_event, browserId: string) => {
   const view = browserViews.get(browserId)
   if (!view) return
+  cancelBrowserElementPicker(browserId, true)
   const state = getBrowserViewState(browserId)
   state.parked = true
   state.visible = false
@@ -3399,6 +3576,7 @@ ipcMain.handle('browser:park', (_event, browserId: string) => {
 ipcMain.handle('browser:destroy', (_event, browserId: string) => {
   const view = browserViews.get(browserId)
   if (!view) return
+  activeBrowserElementPickers.delete(browserId)
   detachBrowserView(browserId, view)
   try {
     ;(view.webContents as any).close?.()

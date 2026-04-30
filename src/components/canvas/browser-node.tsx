@@ -15,6 +15,7 @@ const STATUS_BAR_H = 40 // must match toolbar height
 const HIBERNATE_DELAY_MS = 15_000
 const MAX_WARM_HIDDEN_BROWSERS = 2
 const BROWSER_CREATE_RETRY_DELAY_MS = 1_200
+const BROWSER_CREATE_TIMEOUT_MS = 8_000
 
 type Edge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
 
@@ -131,6 +132,10 @@ export function BrowserNode({
   const lastZoomRef = useRef(-1)
   const hibernateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const createRetryTimerRef = useRef<number | null>(null)
+  const createRunRef = useRef(0)
+  const createInFlightRef = useRef(false)
+  const mountedRef = useRef(true)
+  const isFocusedRef = useRef(isFocused)
   const [createAttempt, setCreateAttempt] = useState(0)
 
   // Snapshot url/history into refs so the create effect doesn't re-fire on navigation
@@ -142,6 +147,19 @@ export function BrowserNode({
   useEffect(() => {
     initialHistoryRef.current = browser.history
   }, [browser.history])
+
+  useEffect(() => {
+    isFocusedRef.current = isFocused
+  }, [isFocused])
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      createRunRef.current += 1
+      createInFlightRef.current = false
+    }
+  }, [])
 
   const clearHibernateTimer = useCallback(() => {
     if (hibernateTimerRef.current) {
@@ -219,26 +237,37 @@ export function BrowserNode({
 
   // Create or unpark WebContentsView only when the browser is focused.
   useEffect(() => {
-    if (!activeProjectId || !isFocused || createdRef.current) return
+    if (!activeProjectId || !isFocused || createdRef.current || createInFlightRef.current) return
     clearHibernateTimer()
     clearCreateRetryTimer()
     resetNativeViewMetrics()
-    const clearErrorFrame = window.requestAnimationFrame(() => {
+    let resetFrame: number | null = window.requestAnimationFrame(() => {
+      resetFrame = null
       setFailure(null)
       setSuspended(false)
     })
     createdRef.current = true
+    createInFlightRef.current = true
+    const createRun = ++createRunRef.current
     const url = initialUrlRef.current
     const history = initialHistoryRef.current
-    let cancelled = false
+    let createTimeoutTimer: number | null = null
 
-    void window.cells.browser
-      .create(browser.id, activeProjectId, history ?? undefined)
+    const createView = Promise.race([
+      window.cells.browser.create(browser.id, activeProjectId, history ?? undefined),
+      new Promise<never>((_, reject) => {
+        createTimeoutTimer = window.setTimeout(() => {
+          reject(new Error(`Timed out opening browser view ${browser.id}`))
+        }, BROWSER_CREATE_TIMEOUT_MS)
+      }),
+    ])
+
+    void createView
       .then(async (result: any) => {
-        if (cancelled) return
+        if (!mountedRef.current || createRunRef.current !== createRun) return
         setViewReady(true)
         await hydrateBrowserState()
-        window.cells.browser.focus(browser.id)
+        if (isFocusedRef.current) window.cells.browser.focus(browser.id)
         // Only navigate on fresh creation, not when unparking (live page is preserved)
         if (!result?.unparked && url) {
           await window.cells.browser.navigate(browser.id, url, useStore.getState().searchEngine)
@@ -251,9 +280,10 @@ export function BrowserNode({
         trimWarmBrowsers(browser.id)
       })
       .catch((error) => {
-        if (cancelled) return
+        if (!mountedRef.current || createRunRef.current !== createRun) return
         console.error(`Failed to create browser view ${browser.id}`, error)
         createdRef.current = false
+        createInFlightRef.current = false
         setViewReady(false)
         setFailure({
           kind: 'load-failed',
@@ -268,10 +298,18 @@ export function BrowserNode({
           setCreateAttempt((attempt) => attempt + 1)
         }, BROWSER_CREATE_RETRY_DELAY_MS)
       })
+      .finally(() => {
+        if (createRunRef.current === createRun) {
+          createInFlightRef.current = false
+        }
+        if (createTimeoutTimer !== null) {
+          window.clearTimeout(createTimeoutTimer)
+          createTimeoutTimer = null
+        }
+      })
 
     return () => {
-      cancelled = true
-      window.cancelAnimationFrame(clearErrorFrame)
+      if (resetFrame !== null) window.cancelAnimationFrame(resetFrame)
     }
   }, [
     activeProjectId,
@@ -282,6 +320,41 @@ export function BrowserNode({
     hydrateBrowserState,
     isFocused,
     resetNativeViewMetrics,
+  ])
+
+  useEffect(() => {
+    if (!isFocused || viewReady || failure || offline || suspended) return
+    const timer = window.setTimeout(() => {
+      if (!isFocusedRef.current || viewReady) return
+      console.warn(`Browser view ${browser.id} stayed in opening state; recreating it`)
+      createRunRef.current += 1
+      createInFlightRef.current = false
+      createdRef.current = false
+      setViewReady(false)
+      setFailure({
+        kind: 'load-failed',
+        message: 'Browser took too long to open. Retrying…',
+      })
+      setSuspended(false)
+      resetNativeViewMetrics()
+      window.cells.browser.setVisible(browser.id, false)
+      void window.cells.browser.destroy(browser.id).catch(() => {})
+      clearCreateRetryTimer()
+      createRetryTimerRef.current = window.setTimeout(() => {
+        createRetryTimerRef.current = null
+        setCreateAttempt((attempt) => attempt + 1)
+      }, BROWSER_CREATE_RETRY_DELAY_MS)
+    }, BROWSER_CREATE_TIMEOUT_MS)
+    return () => window.clearTimeout(timer)
+  }, [
+    browser.id,
+    clearCreateRetryTimer,
+    failure,
+    isFocused,
+    offline,
+    resetNativeViewMetrics,
+    suspended,
+    viewReady,
   ])
 
   useEffect(() => {

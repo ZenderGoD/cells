@@ -7,7 +7,7 @@ import {
   type MouseEvent,
   type WheelEvent,
 } from 'react'
-import { GripHorizontal, Move } from 'lucide-react'
+import { GripHorizontal, Move, Trash2 } from 'lucide-react'
 import { motion, useMotionValue, useSpring } from 'motion/react'
 import { hasPrimaryModifier, isPrimaryModifierKey } from '@/lib/keyboard-shortcuts'
 import { cn } from '@/lib/utils'
@@ -86,6 +86,7 @@ export function InfiniteCanvas() {
     moveCanvasNodes,
     commitWindowSectionDrag,
     resizeWindowSection,
+    removeWindowSection,
     setCanvasTransform,
     snapToTerminal,
     snapToBrowser,
@@ -117,6 +118,7 @@ export function InfiniteCanvas() {
       moveCanvasNodes: s.moveCanvasNodes,
       commitWindowSectionDrag: s.commitWindowSectionDrag,
       resizeWindowSection: s.resizeWindowSection,
+      removeWindowSection: s.removeWindowSection,
       setCanvasTransform: s.setCanvasTransform,
       snapToTerminal: s.snapToTerminal,
       snapToBrowser: s.snapToBrowser,
@@ -1192,6 +1194,30 @@ export function InfiniteCanvas() {
                     sectionHandleExpanded ? 'h-4 w-4' : 'h-3 w-3',
                   )}
                 />
+              </button>
+              <button
+                type="button"
+                onMouseDown={(event) => {
+                  event.preventDefault()
+                  event.stopPropagation()
+                }}
+                onClick={(event) => {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  removeWindowSection(section.id)
+                }}
+                className={cn(
+                  'pointer-events-auto absolute right-2 top-0 z-20 flex items-center justify-center rounded-md border border-white/18 bg-background/95 text-muted-foreground/70 shadow-[0_8px_24px_rgba(0,0,0,0.28)] backdrop-blur transition-colors hover:bg-destructive/15 hover:text-destructive',
+                  sectionHandleExpanded ? 'size-8' : 'size-6',
+                )}
+                style={{
+                  transform: `translateY(calc(-100% - 8px)) scale(${sectionHandleScale})`,
+                  transformOrigin: 'right bottom',
+                }}
+                title="Delete section"
+                aria-label={`Delete section ${section.name}`}
+              >
+                <Trash2 className={cn(sectionHandleExpanded ? 'h-4 w-4' : 'h-3 w-3')} />
               </button>
               {SECTION_RESIZE_EDGES.map((edge) => (
                 <div

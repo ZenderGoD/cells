@@ -135,6 +135,26 @@ export interface BrowserViewStateSnapshot {
   failure: BrowserViewFailure | null
 }
 
+export interface BrowserElementSelection {
+  url: string
+  title: string
+  tagName: string
+  selector: string
+  text: string
+  outerHtml: string
+  attributes: Record<string, string>
+  rect: {
+    x: number
+    y: number
+    width: number
+    height: number
+  }
+  href?: string | null
+  src?: string | null
+  alt?: string | null
+  role?: string | null
+}
+
 export interface AppShortcutPayload {
   command:
     | 'toggle-command-palette'
@@ -304,6 +324,14 @@ export type AgentPermissionMode = 'plan' | 'ask' | 'bypass'
  */
 export type AgentThinkingLevel = 'off' | 'low' | 'medium' | 'high' | 'max' | 'xhigh'
 
+export interface AgentReplyReference {
+  id: string
+  role: AgentSessionMessageRole
+  label: string
+  preview: string
+  title?: string | null
+}
+
 /** A user message queued while the agent was running. Persisted on the
  *  AgentWindowNode so the queue survives app restart. */
 export interface QueuedAgentMessage {
@@ -325,6 +353,7 @@ export interface QueuedAgentMessage {
   model: string | null
   thinkingLevel: AgentThinkingLevel | null
   permissionMode: AgentPermissionMode | null
+  replyTo?: AgentReplyReference | null
 }
 
 /** Minimap/overview status for an agent window. Richer than the main-process
@@ -368,6 +397,8 @@ export interface AgentWindowNode {
   composerDraft?: string | null
   /** Absolute paths of files/images currently attached in the composer draft. */
   composerAttachments?: string[]
+  /** Structured reply target currently attached to the composer draft. */
+  composerReplyTo?: AgentReplyReference | null
   /** Messages the user queued while a prior turn was in flight. Persisted so
    *  they survive app restart — the chat panel drains them in order on the
    *  next idle. */
@@ -437,6 +468,8 @@ export interface AgentSessionMessage {
    * as thumbnails inline in the bubble; the same paths are forwarded to the
    * agent as proper multimodal content blocks rather than `[path]` strings. */
   attachments?: string[]
+  /** Structured WhatsApp-style reply reference shown separately from text. */
+  replyTo?: AgentReplyReference | null
   /** Only set for role='auth_request' — loginUrl the user needs to open. */
   authLoginUrl?: string | null
   /** Claude Agent SDK tool_use_id of this message's parent Task/Agent tool, if
@@ -833,6 +866,7 @@ export interface CellsAPI {
         thinkingLevel?: AgentThinkingLevel | null
         permissionMode?: AgentPermissionMode | null
       },
+      replyTo?: AgentReplyReference | null,
     ): Promise<void>
     branchFrom(
       sourceWindowId: string,
@@ -845,6 +879,7 @@ export interface CellsAPI {
         thinkingLevel?: AgentThinkingLevel | null
         permissionMode?: AgentPermissionMode | null
       },
+      replyTo?: AgentReplyReference | null,
     ): Promise<void>
     close(windowId: string): Promise<void>
     dispose(windowId: string): Promise<void>
@@ -995,6 +1030,8 @@ export interface CellsAPI {
     goBack(browserId: string): void
     goForward(browserId: string): void
     reload(browserId: string): void
+    startElementPicker(browserId: string, targetAgentWindowId?: string | null): Promise<boolean>
+    cancelElementPicker(browserId: string): void
     updateBounds(
       browserId: string,
       bounds: { x: number; y: number; width: number; height: number },
@@ -1025,6 +1062,16 @@ export interface CellsAPI {
     ): () => void
     onWindowCycle(callback: (direction: 1 | -1) => void): () => void
     onProjectCycle(callback: (direction: 1 | -1) => void): () => void
+    onElementSelected(
+      callback: (
+        browserId: string,
+        targetAgentWindowId: string | null,
+        selection: BrowserElementSelection,
+      ) => void,
+    ): () => void
+    onElementPickerCancelled(
+      callback: (browserId: string, targetAgentWindowId: string | null) => void,
+    ): () => void
   }
   extensions: {
     install(input: string): Promise<ExtensionMeta>
@@ -1071,6 +1118,7 @@ export interface CellsAPI {
     pickFolder(): Promise<string | null>
     pickFiles(): Promise<string[] | null>
     listRecentFiles(): Promise<Array<{ path: string; name: string; mtime: number; source: string }>>
+    copyRichTextToClipboard(text: string, html?: string | null): Promise<void>
     searchAgentMentions(cwd: string, query: string): Promise<AgentMentionSearchResult[]>
     getPathForFile(file: File): string
     saveTempFile(data: Uint8Array, filename: string): Promise<string | null>

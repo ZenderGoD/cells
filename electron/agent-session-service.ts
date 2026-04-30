@@ -14,6 +14,7 @@ import {
 } from '@anthropic-ai/claude-agent-sdk'
 import type {
   AgentContextLength,
+  AgentReplyReference,
   AgentUsageStats,
   AgentSessionMessage,
   AgentSessionRequest,
@@ -261,6 +262,33 @@ function imageMediaType(filePath: string): 'image/png' | 'image/jpeg' | 'image/g
 }
 
 const ATTACHMENTS_ONLY_TEXT = '(attached files)'
+
+function normalizeReplyPreview(value: string | null | undefined): string {
+  return (value ?? '').replace(/\s+/g, ' ').trim().slice(0, 220)
+}
+
+function escapeReplyAttribute(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+}
+
+function buildReplyContext(replyTo: AgentReplyReference | null | undefined): string {
+  if (!replyTo) return ''
+  const label = normalizeReplyPreview(replyTo.label) || 'Referenced message'
+  const preview =
+    normalizeReplyPreview(replyTo.preview).replace(/<\/replying_to>/gi, '<\\/replying_to>') || label
+  const title = normalizeReplyPreview(replyTo.title ?? '')
+  const titleAttribute = title ? ` title="${escapeReplyAttribute(title)}"` : ''
+  return [
+    `<replying_to role="${replyTo.role}" label="${escapeReplyAttribute(label)}"${titleAttribute}>`,
+    preview,
+    '</replying_to>',
+    '',
+  ].join('\n')
+}
 
 function imageAttachmentReference(index: number) {
   return `[Image ${index + 1}]`
@@ -2756,8 +2784,9 @@ export class AgentSessionService extends EventEmitter {
       thinkingLevel?: AgentSessionRequest['thinkingLevel']
       permissionMode?: AgentSessionRequest['permissionMode']
     },
+    replyTo?: AgentReplyReference | null,
   ): Promise<void> {
-    return this.sendInternal(windowId, input, input, attachments, overrides)
+    return this.sendInternal(windowId, input, input, attachments, overrides, replyTo)
   }
 
   async branchFrom(
@@ -2771,6 +2800,7 @@ export class AgentSessionService extends EventEmitter {
       thinkingLevel?: AgentSessionRequest['thinkingLevel']
       permissionMode?: AgentSessionRequest['permissionMode']
     },
+    replyTo?: AgentReplyReference | null,
   ): Promise<void> {
     const sourceSnapshot =
       this.runtimes.get(sourceWindowId)?.snapshot ?? loadPersistedSnapshot(sourceWindowId)
@@ -2867,6 +2897,7 @@ export class AgentSessionService extends EventEmitter {
       nativeProviderInput ? visibleInput : providerInput,
       attachments,
       overrides,
+      replyTo,
     )
   }
 
@@ -2880,6 +2911,7 @@ export class AgentSessionService extends EventEmitter {
       thinkingLevel?: AgentSessionRequest['thinkingLevel']
       permissionMode?: AgentSessionRequest['permissionMode']
     },
+    replyTo?: AgentReplyReference | null,
   ): Promise<void> {
     let runtime = this.runtimes.get(windowId)
     log('send.begin', {
@@ -2890,6 +2922,7 @@ export class AgentSessionService extends EventEmitter {
       inputLength: visibleInput.length,
       providerInputLength: providerInput.length,
       attachmentCount: attachments?.length ?? 0,
+      hasReplyTo: !!replyTo,
       overrides: overrides ?? null,
     })
     if (!runtime) throw new Error(`Missing agent session for ${windowId}`)
@@ -2965,8 +2998,10 @@ export class AgentSessionService extends EventEmitter {
     const rewrittenProviderText =
       rewrittenInput.text.trim() === ATTACHMENTS_ONLY_TEXT ? '' : rewrittenInput.text
     const imageLine = buildImageReferenceLine(imageAttachments, rewrittenProviderText)
+    const replyContext = buildReplyContext(replyTo)
     const providerText =
-      `${nonImageLine}${imageLine}${rewrittenProviderText}`.trim() || rewrittenProviderText
+      `${replyContext}${nonImageLine}${imageLine}${rewrittenProviderText}`.trim() ||
+      rewrittenProviderText
 
     // Real user turn — reset the auto-continue watchdog so a fresh prompt
     // gets its own three-try budget if it also bottoms out on max_turns.
@@ -2984,6 +3019,7 @@ export class AgentSessionService extends EventEmitter {
       role: 'user',
       text: userText,
       attachments: normalizedAttachments.length > 0 ? normalizedAttachments : undefined,
+      replyTo: replyTo ?? null,
       updatedAt: now(),
     })
     runtime.snapshot.status = 'running'

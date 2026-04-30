@@ -20,8 +20,10 @@ import {
   ListTodo,
   Loader2,
   MessageSquare,
+  MousePointer2,
   Paperclip,
   Pencil,
+  Reply,
   RotateCcw,
   ShieldCheck,
   Square,
@@ -31,6 +33,7 @@ import {
 import type {
   AgentContextLength,
   AgentPermissionMode,
+  AgentReplyReference,
   AgentSessionMessage,
   AgentSessionSnapshot,
   AgentThinkingLevel,
@@ -79,6 +82,11 @@ import {
 import { cn } from '@/lib/utils'
 import { computeStableList, createEmptyStableListState } from '@/lib/stable-list'
 import { getVerticalScrollFadeMask, useVerticalScrollFades } from '@/lib/use-scroll-fades'
+import {
+  appendBrowserElementSelectionToDraft,
+  copyBrowserElementSelectionToClipboard,
+  parseBrowserElementSelectionPreview,
+} from '@/lib/browser-element-selection'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Kbd } from '@/components/ui/kbd'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
@@ -108,6 +116,7 @@ const EXPAND_TRANSITION = {
   opacity: { duration: 0.18, ease: EASE_EXPAND },
 } as const
 const BRANCH_IMPORT_MAX_CHARS = 80_000
+const BROWSER_ELEMENT_PICKER_RETRY_DELAYS_MS = [80, 140, 180, 240, 320, 420] as const
 
 function getComposerPlaceholder(agent: AgentWindowNode['agent']) {
   return agent === 'claude' ? 'Message Claude Code…' : 'Message Codex…'
@@ -376,6 +385,8 @@ function sanitizeComposerAttachments(paths: string[] | null | undefined): string
 
 const IMAGE_ATTACHMENT_TOKEN_RE = /\[Image\s+\d+\]\s*/gi
 const IMAGE_ATTACHMENT_TOKEN_CAPTURE_RE = /\[Image\s+(\d+)\]/gi
+const IMAGE_ATTACHMENT_TOKEN_AT_START_RE = /^\s*\[Image\s+\d+\]/i
+const IMAGE_ATTACHMENT_TOKEN_AT_END_RE = /\[Image\s+\d+\]\s*$/i
 const USER_IMAGE_TOKEN_CHIP_CLASS =
   'mx-0.5 inline-flex h-6 max-w-full items-center gap-1.5 rounded-[6px] border border-border/35 bg-background/45 py-0.5 pl-1 text-[12px] font-medium text-foreground/85 shadow-minimal'
 const USER_IMAGE_TOKEN_THUMB_CLASS = 'size-4 shrink-0 rounded-[3px] bg-foreground/10 object-cover'
@@ -386,6 +397,15 @@ function imageAttachmentToken(index: number) {
 
 function stripImageAttachmentTokens(input: string) {
   return input.replace(IMAGE_ATTACHMENT_TOKEN_RE, '')
+}
+
+function getSingleLineImageTokenEdges(input: string) {
+  const trimmed = input.trim()
+  const isSingleLine = trimmed.length > 0 && !/[\r\n]/.test(trimmed)
+  return {
+    startsWithImageToken: isSingleLine && IMAGE_ATTACHMENT_TOKEN_AT_START_RE.test(trimmed),
+    endsWithImageToken: isSingleLine && IMAGE_ATTACHMENT_TOKEN_AT_END_RE.test(trimmed),
+  }
 }
 
 function getImageTokenInsertResult(
@@ -429,14 +449,18 @@ function removeImageTokenForPath(value: string, path: string, currentAttachments
   })
 }
 
-function createImageChipElement(index: number) {
+function createImageChipElement(index: number, thumbnailUrl?: string | null) {
   const chip = document.createElement('span')
   chip.contentEditable = 'false'
   chip.dataset.imageChipIndex = String(index)
   chip.className = `${USER_IMAGE_TOKEN_CHIP_CLASS} pr-1 align-[-0.18em]`
 
-  const thumb = document.createElement('span')
+  const thumb = thumbnailUrl ? document.createElement('img') : document.createElement('span')
   thumb.className = USER_IMAGE_TOKEN_THUMB_CLASS
+  if (thumbnailUrl) {
+    thumb.setAttribute('src', thumbnailUrl)
+    thumb.setAttribute('alt', '')
+  }
   chip.appendChild(thumb)
 
   const label = document.createElement('span')
@@ -456,7 +480,40 @@ function createImageChipElement(index: number) {
   return chip
 }
 
-function renderComposerValueInto(root: HTMLElement, value: string, imageCount: number) {
+function updateImageChipThumbnail(chip: HTMLElement, thumbnailUrl: string | null | undefined) {
+  const currentThumb = chip.firstElementChild
+  if (!thumbnailUrl) return
+  if (currentThumb instanceof HTMLImageElement) {
+    if (currentThumb.src !== thumbnailUrl) currentThumb.src = thumbnailUrl
+    return
+  }
+  if (!currentThumb) return
+  const thumb = document.createElement('img')
+  thumb.className = USER_IMAGE_TOKEN_THUMB_CLASS
+  thumb.src = thumbnailUrl
+  thumb.alt = ''
+  chip.replaceChild(thumb, currentThumb)
+}
+
+function updateComposerImageChipThumbnails(
+  root: HTMLElement | null,
+  imageAttachments: string[],
+  thumbnailUrls: Record<string, string | null>,
+) {
+  if (!root) return
+  root.querySelectorAll<HTMLElement>('[data-image-chip-index]').forEach((chip) => {
+    const index = Number.parseInt(chip.dataset.imageChipIndex ?? '', 10)
+    const path = imageAttachments[index]
+    if (path) updateImageChipThumbnail(chip, thumbnailUrls[path])
+  })
+}
+
+function renderComposerValueInto(
+  root: HTMLElement,
+  value: string,
+  imageAttachments: string[],
+  thumbnailUrls: Record<string, string | null>,
+) {
   root.textContent = ''
   let cursor = 0
   let match: RegExpExecArray | null
@@ -466,8 +523,9 @@ function renderComposerValueInto(root: HTMLElement, value: string, imageCount: n
       root.appendChild(document.createTextNode(value.slice(cursor, match.index)))
     }
     const index = Number.parseInt(match[1] ?? '', 10) - 1
-    if (index >= 0 && index < imageCount) {
-      root.appendChild(createImageChipElement(index))
+    if (index >= 0 && index < imageAttachments.length) {
+      const path = imageAttachments[index]
+      root.appendChild(createImageChipElement(index, thumbnailUrls[path]))
     }
     cursor = match.index + match[0].length
   }
@@ -763,35 +821,90 @@ function UserImageTokenChip({
   )
 }
 
+function BrowserElementSelectionCard({
+  preview,
+}: {
+  preview: NonNullable<ReturnType<typeof parseBrowserElementSelectionPreview>>
+}) {
+  const htmlPreview =
+    preview.html.length > 1800 ? `${preview.html.slice(0, 1800).trimEnd()}\n...` : preview.html
+  const textPreview =
+    preview.text.length > 900 ? `${preview.text.slice(0, 900).trimEnd()}...` : preview.text
+
+  return (
+    <div className="overflow-hidden rounded-[10px] border border-border/35 bg-background/35 shadow-minimal">
+      <div className="flex min-w-0 items-start gap-2 border-b border-border/25 px-3 py-2">
+        <MousePointer2 className="mt-0.5 size-3.5 shrink-0 text-cyan-200/80" />
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className="shrink-0 rounded-[5px] bg-cyan-400/10 px-1.5 py-0.5 font-mono text-[10.5px] text-cyan-100/90">
+              {preview.element || '<element>'}
+            </span>
+            <span className="min-w-0 truncate text-[12px] font-medium text-foreground/90">
+              {preview.title || 'Browser selection'}
+            </span>
+          </div>
+          {preview.url ? (
+            <div className="mt-1 truncate text-[11px] text-muted-foreground/70">{preview.url}</div>
+          ) : null}
+        </div>
+      </div>
+      <div className="space-y-2 px-3 py-2">
+        {preview.selector ? (
+          <div className="rounded-[6px] bg-foreground/5 px-2 py-1 font-mono text-[11px] text-muted-foreground/90">
+            {preview.selector}
+          </div>
+        ) : null}
+        {textPreview ? (
+          <div className="whitespace-pre-wrap rounded-[6px] bg-foreground/[0.035] px-2 py-1.5 text-[12px] leading-[1.45] text-foreground/85">
+            {textPreview}
+          </div>
+        ) : null}
+        {htmlPreview ? (
+          <pre className="scrollbar-hover max-h-44 overflow-auto rounded-[6px] bg-black/20 px-2 py-1.5 font-mono text-[10.5px] leading-[1.45] text-muted-foreground/85">
+            {htmlPreview}
+          </pre>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
 function UserMessageText({
-  text,
   images,
-  renderAsPlainText,
   visiblePlainText,
   onPreview,
 }: {
-  text: string
   images: string[]
-  renderAsPlainText: boolean
   visiblePlainText: string
   onPreview: (path: string) => void
 }) {
-  const displayText = renderAsPlainText ? visiblePlainText : text
+  const displayText = visiblePlainText
+  const browserSelectionPreview = useMemo(
+    () => parseBrowserElementSelectionPreview(displayText),
+    [displayText],
+  )
   const parts = useMemo(() => splitImageTokenText(displayText), [displayText])
   const hasTokenParts = parts.some((part) => typeof part !== 'string')
 
-  if (!hasTokenParts) {
-    if (renderAsPlainText) {
-      return (
-        <pre className="m-0 max-w-full whitespace-pre-wrap break-words font-sans leading-[1.45] [overflow-wrap:anywhere]">
-          {visiblePlainText}
-        </pre>
-      )
-    }
+  if (browserSelectionPreview && !hasTokenParts) {
     return (
-      <AgentMarkdown inline breaks onImageClick={onPreview}>
-        {text}
-      </AgentMarkdown>
+      <div className="space-y-2">
+        {browserSelectionPreview.before ? (
+          <pre className="m-0 max-w-full whitespace-pre-wrap break-words font-sans leading-[1.45] [overflow-wrap:anywhere]">
+            {browserSelectionPreview.before}
+          </pre>
+        ) : null}
+        <BrowserElementSelectionCard preview={browserSelectionPreview} />
+      </div>
+    )
+  }
+
+  if (!hasTokenParts) {
+    return (
+      <pre className="m-0 max-w-full whitespace-pre-wrap break-words font-sans leading-[1.45] [overflow-wrap:anywhere]">
+        {displayText}
+      </pre>
     )
   }
 
@@ -800,13 +913,7 @@ function UserMessageText({
       {parts.map((part, index) => {
         if (typeof part === 'string') {
           if (!part) return null
-          return renderAsPlainText ? (
-            <span key={index}>{part}</span>
-          ) : (
-            <AgentMarkdown key={index} inline breaks className="inline" onImageClick={onPreview}>
-              {part}
-            </AgentMarkdown>
-          )
+          return <span key={index}>{part}</span>
         }
         const path = images[part.imageIndex]
         return (
@@ -1026,22 +1133,52 @@ function ComposerRichEditor({
   onRemoveImage: (path: string) => void
 }) {
   const renderedValueRef = useRef<string | null>(null)
-  const imageCount = imageAttachments.length
-  const empty = stripImageAttachmentTokens(value).length === 0 && imageCount === 0
+  const [thumbnailUrls, setThumbnailUrls] = useState<Record<string, string | null>>({})
+  const empty = stripImageAttachmentTokens(value).length === 0 && imageAttachments.length === 0
+
+  useEffect(() => {
+    const imagePaths = imageAttachments
+    if (imagePaths.length === 0) {
+      const frame = window.requestAnimationFrame(() => {
+        setThumbnailUrls({})
+      })
+      return () => window.cancelAnimationFrame(frame)
+    }
+    let cancelled = false
+    Promise.all(
+      imagePaths.map(async (path) => {
+        try {
+          return [path, await window.cells.app.fileThumbnail(path, 48)] as const
+        } catch {
+          return [path, null] as const
+        }
+      }),
+    ).then((entries) => {
+      if (cancelled) return
+      setThumbnailUrls(Object.fromEntries(entries))
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [imageAttachments])
+
+  useEffect(() => {
+    updateComposerImageChipThumbnails(editorRef.current, imageAttachments, thumbnailUrls)
+  }, [editorRef, imageAttachments, thumbnailUrls])
 
   useEffect(() => {
     const root = editorRef.current
     if (!root) return
     const current = serializeComposerElement(root)
     if (current !== value || renderedValueRef.current !== value) {
-      renderComposerValueInto(root, value, imageCount)
+      renderComposerValueInto(root, value, imageAttachments, thumbnailUrls)
       renderedValueRef.current = value
     }
     if (selectionOffset !== null) {
       setComposerSelectionOffset(root, selectionOffset)
       onSelectionOffsetApplied()
     }
-  }, [editorRef, imageCount, onSelectionOffsetApplied, selectionOffset, value])
+  }, [editorRef, imageAttachments, onSelectionOffsetApplied, selectionOffset, thumbnailUrls, value])
 
   const emitChange = useCallback(() => {
     const root = editorRef.current
@@ -1105,9 +1242,16 @@ function ComposerRichEditor({
             .filter((item) => item.type.startsWith('image/'))
             .map((item) => item.getAsFile())
             .filter((file): file is File => Boolean(file))
-          if (imageFiles.length === 0) return
+          if (imageFiles.length > 0) {
+            event.preventDefault()
+            onPasteImages(imageFiles, getComposerSelectionOffset(editorRef.current))
+            return
+          }
+
+          const plainText = event.clipboardData?.getData('text/plain') ?? ''
+          if (!plainText) return
           event.preventDefault()
-          onPasteImages(imageFiles, getComposerSelectionOffset(editorRef.current))
+          if (insertPlainTextIntoComposer(editorRef.current, plainText)) emitChange()
         }}
         className="scrollbar-hover min-h-[72px] max-h-[min(38vh,260px)] overflow-y-auto overscroll-contain whitespace-pre-wrap break-words text-[14px] leading-6 text-foreground outline-none [overflow-wrap:anywhere] [&_[data-image-chip-index]]:mx-0.5"
       />
@@ -1138,6 +1282,43 @@ function ComposerAttachmentChip({ path, onRemove }: { path: string; onRemove: ()
   )
 }
 
+function ReplyPreview({
+  replyTo,
+  onClear,
+  compact = false,
+}: {
+  replyTo: AgentReplyReference
+  onClear?: () => void
+  compact?: boolean
+}) {
+  return (
+    <div
+      className={cn(
+        'flex min-w-0 items-center gap-2 rounded-[8px] border-l-2 border-cyan-300/60 bg-background/45 text-left shadow-minimal',
+        compact ? 'px-2 py-1' : 'px-2.5 py-1.5',
+      )}
+    >
+      <Reply className="size-3.5 shrink-0 text-cyan-200/80" />
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-[11px] font-medium text-cyan-100/90">{replyTo.label}</div>
+        <div className="truncate text-[11.5px] text-muted-foreground/75">
+          {replyTo.preview || 'No preview'}
+        </div>
+      </div>
+      {onClear ? (
+        <button
+          type="button"
+          onClick={onClear}
+          aria-label="Clear reply"
+          className="rounded p-1 text-muted-foreground/55 transition-colors hover:bg-foreground/10 hover:text-foreground"
+        >
+          <X className="size-3" />
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
 const USER_BUBBLE_MAX_HEIGHT = 540
 const USER_BUBBLE_MARKDOWN_LIMIT = 12000
 const USER_BUBBLE_TEXT_PREVIEW_LIMIT = 24000
@@ -1164,6 +1345,10 @@ const UserBubble = memo(function UserBubble({ message }: { message: AgentSession
   const visiblePlainText = previewingPlainText
     ? `${text.slice(0, USER_BUBBLE_TEXT_PREVIEW_LIMIT)}\n\n...`
     : text
+  const { startsWithImageToken, endsWithImageToken } = useMemo(
+    () => getSingleLineImageTokenEdges(text),
+    [text],
+  )
 
   return (
     <div className="mt-8 flex w-full justify-end">
@@ -1183,9 +1368,18 @@ const UserBubble = memo(function UserBubble({ message }: { message: AgentSession
         ) : null}
         {hasText ? (
           <div className="max-w-full overflow-hidden rounded-[12px] bg-foreground/5 shadow-minimal">
+            {message.replyTo ? (
+              <div className="px-2.5 pt-2">
+                <ReplyPreview replyTo={message.replyTo} compact />
+              </div>
+            ) : null}
             <div
               ref={setUserScrollElement}
-              className="scrollbar-hover max-w-full overflow-x-hidden overflow-y-auto overscroll-contain break-words px-3.5 py-2 text-[13px] leading-[1.45] text-foreground [overflow-wrap:anywhere]"
+              className={cn(
+                'scrollbar-hover max-w-full overflow-x-hidden overflow-y-auto overscroll-contain break-words py-2 text-[13px] leading-[1.45] text-foreground [overflow-wrap:anywhere]',
+                startsWithImageToken ? 'pl-2' : 'pl-3.5',
+                endsWithImageToken ? 'pr-2' : 'pr-3.5',
+              )}
               style={{
                 maxHeight: USER_BUBBLE_MAX_HEIGHT,
                 maskImage: userMask,
@@ -1195,9 +1389,7 @@ const UserBubble = memo(function UserBubble({ message }: { message: AgentSession
               }}
             >
               <UserMessageText
-                text={text}
                 images={images}
-                renderAsPlainText={renderAsPlainText}
                 visiblePlainText={visiblePlainText}
                 onPreview={setPreviewPath}
               />
@@ -1505,6 +1697,21 @@ function areStringArraysEqual(previous: string[] | undefined, next: string[] | u
   return true
 }
 
+function areReplyReferencesEqual(
+  previous: AgentReplyReference | null | undefined,
+  next: AgentReplyReference | null | undefined,
+) {
+  if (previous === next) return true
+  if (!previous || !next) return !previous && !next
+  return (
+    previous.id === next.id &&
+    previous.role === next.role &&
+    previous.label === next.label &&
+    previous.preview === next.preview &&
+    previous.title === next.title
+  )
+}
+
 function isAgentSessionMessageUnchanged(
   previous: AgentSessionMessage,
   next: AgentSessionMessage,
@@ -1521,6 +1728,7 @@ function isAgentSessionMessageUnchanged(
     previous.authLoginUrl === next.authLoginUrl &&
     previous.parentToolUseId === next.parentToolUseId &&
     previous.toolUseId === next.toolUseId &&
+    areReplyReferencesEqual(previous.replyTo, next.replyTo) &&
     areStringArraysEqual(previous.attachments, next.attachments)
   )
 }
@@ -2521,11 +2729,13 @@ function GroupRenderer({
   cwd,
   agent,
   isStreamingLastTurn,
+  onReply,
 }: {
   group: ChatGroup
   cwd?: string | null
   agent: AgentWindowNode['agent']
   isStreamingLastTurn: boolean
+  onReply: (replyTo: AgentReplyReference) => void
 }) {
   switch (group.kind) {
     case 'user':
@@ -2541,6 +2751,7 @@ function GroupRenderer({
           cwd={cwd}
           agent={agent}
           isStreaming={isStreamingLastTurn}
+          onReply={onReply}
         />
       )
     case 'error':
@@ -2562,11 +2773,13 @@ const MessageGroupRow = memo(
     cwd,
     agent,
     isStreamingLastTurn,
+    onReply,
   }: {
     group: ChatGroup
     cwd?: string | null
     agent: AgentWindowNode['agent']
     isStreamingLastTurn: boolean
+    onReply: (replyTo: AgentReplyReference) => void
   }) {
     const reduceMotion = useReducedMotion()
     return (
@@ -2582,6 +2795,7 @@ const MessageGroupRow = memo(
           cwd={cwd}
           agent={agent}
           isStreamingLastTurn={isStreamingLastTurn}
+          onReply={onReply}
         />
       </motion.div>
     )
@@ -2590,7 +2804,8 @@ const MessageGroupRow = memo(
     previous.group === next.group &&
     previous.cwd === next.cwd &&
     previous.agent === next.agent &&
-    previous.isStreamingLastTurn === next.isStreamingLastTurn,
+    previous.isStreamingLastTurn === next.isStreamingLastTurn &&
+    previous.onReply === next.onReply,
 )
 
 export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
@@ -2602,13 +2817,36 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const [attachments, setAttachments] = useState<string[]>(() =>
     sanitizeComposerAttachments(agentWindow.composerAttachments ?? []),
   )
+  const [replyTo, setReplyTo] = useState<AgentReplyReference | null>(
+    () => agentWindow.composerReplyTo ?? null,
+  )
   const [composerPreviewPath, setComposerPreviewPath] = useState<string | null>(null)
   const [composerShortcutMode, setComposerShortcutMode] = useState<
     'branch' | 'interrupt' | 'after-tool' | null
   >(null)
+  const [selectingBrowserElement, setSelectingBrowserElement] = useState(false)
   const activeProjectPath = useStore(
     (state) => state.projects.find((project) => project.id === state.activeProjectId)?.path ?? null,
   )
+  const browserPickTargetId = useStore((state) => {
+    const focusedBrowser = state.focusedBrowserId
+      ? state.browsers.find((browser) => browser.id === state.focusedBrowserId)
+      : null
+    return (
+      focusedBrowser?.id ??
+      [...state.focusHistory]
+        .reverse()
+        .find((id) => state.browsers.some((browser) => browser.id === id)) ??
+      state.browsers[0]?.id ??
+      null
+    )
+  })
+  const browserPickTargetLabel = useStore((state) => {
+    const browser = browserPickTargetId
+      ? state.browsers.find((candidate) => candidate.id === browserPickTargetId)
+      : null
+    return browser?.title || browser?.url || 'Browser'
+  })
   const focusedAgentWindowId = useStore((state) => state.focusedAgentWindowId)
   const worktrees = useStore((state) => state.worktrees)
   const queueModeMeta = useMemo(() => getQueueModeMeta(), [])
@@ -2639,8 +2877,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   )
   const inputRef = useRef(input)
   const attachmentsRef = useRef(attachments)
+  const replyToRef = useRef(replyTo)
   const snapshotRef = useRef(snapshot)
   const windowIdRef = useRef(agentWindow.id)
+  const activeElementPickerBrowserIdRef = useRef<string | null>(null)
   useEffect(() => {
     inputRef.current = input
   }, [input])
@@ -2648,11 +2888,20 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     attachmentsRef.current = attachments
   }, [attachments])
   useEffect(() => {
+    replyToRef.current = replyTo
+  }, [replyTo])
+  useEffect(() => {
     snapshotRef.current = snapshot
   }, [snapshot])
   useEffect(() => {
     windowIdRef.current = agentWindow.id
   }, [agentWindow.id])
+  useEffect(() => {
+    return () => {
+      const browserId = activeElementPickerBrowserIdRef.current
+      if (browserId) window.cells.browser.cancelElementPicker(browserId)
+    }
+  }, [])
   useEffect(() => {
     const raw = agentWindow.queuedMessages ?? []
     const sanitized = sanitizeQueuedMessages(raw)
@@ -2669,14 +2918,31 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       })
     }
     const nextDraft = agentWindow.composerDraft ?? ''
+    let draftFrame: number | null = null
+    let replyFrame: number | null = null
     if (nextDraft !== inputRef.current) {
       inputRef.current = nextDraft
-      const frame = window.requestAnimationFrame(() => {
+      draftFrame = window.requestAnimationFrame(() => {
         setInput(nextDraft)
       })
-      return () => window.cancelAnimationFrame(frame)
     }
-  }, [agentWindow.composerAttachments, agentWindow.composerDraft, agentWindow.id])
+    const nextReplyTo = agentWindow.composerReplyTo ?? null
+    if (!areReplyReferencesEqual(nextReplyTo, replyToRef.current)) {
+      replyToRef.current = nextReplyTo
+      replyFrame = window.requestAnimationFrame(() => {
+        setReplyTo(nextReplyTo)
+      })
+    }
+    return () => {
+      if (draftFrame !== null) window.cancelAnimationFrame(draftFrame)
+      if (replyFrame !== null) window.cancelAnimationFrame(replyFrame)
+    }
+  }, [
+    agentWindow.composerAttachments,
+    agentWindow.composerDraft,
+    agentWindow.composerReplyTo,
+    agentWindow.id,
+  ])
   // Only gate resume when the session was actually reconstructed from the
   // persisted snapshot after Cells restarted. Project/window remounts within
   // the same app session should not show the "Continue" banner.
@@ -3471,10 +3737,37 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     agentWindow.title,
   ])
 
-  const queuedEditRestoreRef = useRef<{ input: string; attachments: string[] } | null>(null)
+  const queuedEditRestoreRef = useRef<{
+    input: string
+    attachments: string[]
+    replyTo: AgentReplyReference | null
+  } | null>(null)
   const [pendingComposerSelectionOffset, setPendingComposerSelectionOffset] = useState<
     number | null
   >(null)
+
+  const setComposerReplyTarget = useCallback(
+    (nextReplyTo: AgentReplyReference | null) => {
+      setReplyTo(nextReplyTo)
+      replyToRef.current = nextReplyTo
+      const storedWindow = useStore
+        .getState()
+        .agentWindows.find((entry) => entry.id === agentWindow.id)
+      if (areReplyReferencesEqual(storedWindow?.composerReplyTo ?? null, nextReplyTo)) return
+      useStore.getState().syncAgentWindow(agentWindow.id, {
+        composerReplyTo: nextReplyTo,
+      })
+    },
+    [agentWindow.id],
+  )
+
+  const beginReply = useCallback(
+    (nextReplyTo: AgentReplyReference) => {
+      setComposerReplyTarget(nextReplyTo)
+      window.setTimeout(() => focusComposer(true), 0)
+    },
+    [focusComposer, setComposerReplyTarget],
+  )
 
   const writeComposer = useCallback(
     (
@@ -3529,6 +3822,46 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     }
   }, [writeComposer])
 
+  const startBrowserElementPicker = useCallback(async () => {
+    if (!browserPickTargetId) {
+      showToast('Open a browser window first', 'error')
+      return
+    }
+
+    if (selectingBrowserElement) {
+      window.cells.browser.cancelElementPicker(
+        activeElementPickerBrowserIdRef.current ?? browserPickTargetId,
+      )
+      activeElementPickerBrowserIdRef.current = null
+      setSelectingBrowserElement(false)
+      return
+    }
+
+    setSelectingBrowserElement(true)
+    useStore.getState().snapToBrowser(browserPickTargetId)
+
+    let started = false
+    for (const delay of BROWSER_ELEMENT_PICKER_RETRY_DELAYS_MS) {
+      await new Promise((resolve) => window.setTimeout(resolve, delay))
+      try {
+        started = await window.cells.browser.startElementPicker(browserPickTargetId, agentWindow.id)
+      } catch (err) {
+        console.error('[agent-chat] start element picker failed', err)
+      }
+      if (started) break
+    }
+
+    if (!started) {
+      activeElementPickerBrowserIdRef.current = null
+      setSelectingBrowserElement(false)
+      showToast('Browser is still opening. Try again in a moment.', 'error')
+      return
+    }
+
+    activeElementPickerBrowserIdRef.current = browserPickTargetId
+    showToast(`Select an element in ${browserPickTargetLabel}`, 'info')
+  }, [agentWindow.id, browserPickTargetId, browserPickTargetLabel, selectingBrowserElement])
+
   const removeAttachment = useCallback(
     (path: string) => {
       setComposerPreviewPath((current) => (current === path ? null : current))
@@ -3557,9 +3890,16 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         thinkingLevel?: AgentThinkingLevel | null
         permissionMode?: AgentPermissionMode | null
       },
+      replyTo?: AgentReplyReference | null,
     ) => {
       const trySend = () =>
-        window.cells.agentSession.send(windowIdRef.current, value, attachments, overrides)
+        window.cells.agentSession.send(
+          windowIdRef.current,
+          value,
+          attachments,
+          overrides,
+          replyTo ?? null,
+        )
       try {
         await trySend()
       } catch (err) {
@@ -3595,6 +3935,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       if (!currentSnapshot || currentSnapshot.windowId !== agentWindow.id) return
       const continuation = inputRef.current.trim()
       const continuationAttachments = [...attachmentsRef.current]
+      const currentReplyTo = replyToRef.current
       if (!continuation && continuationAttachments.length === 0) return
       const visibleValue = continuation || ATTACHMENTS_ONLY_TEXT
       const providerInput = buildBranchImportPrompt({
@@ -3643,8 +3984,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
             thinkingLevel: agentWindow.thinkingLevel ?? null,
             permissionMode: agentWindow.permissionMode ?? null,
           },
+          currentReplyTo,
         )
         writeComposer('', [])
+        setComposerReplyTarget(null)
         showToast(`Branched into ${getAgentDisplayName(targetAgent)}`, 'info')
         window.setTimeout(() => {
           store.snapToAgentWindow(targetWindow.id)
@@ -3655,7 +3998,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         showToast('Failed to branch session', 'error')
       }
     },
-    [agentWindow, writeComposer],
+    [agentWindow, setComposerReplyTarget, writeComposer],
   )
 
   const applyInlineMentionSelection = useCallback(
@@ -3675,6 +4018,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     async (intent: 'after-turn' | 'after-tool' | 'stop' = 'after-turn') => {
       const rawValue = inputRef.current.trim()
       const pinned = attachmentsRef.current
+      const currentReplyTo = replyToRef.current
       if (!rawValue && pinned.length === 0) return
       // Attachments travel in a separate array — images become proper
       // multimodal content blocks downstream, non-image paths get `[path]`
@@ -3684,6 +4028,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
 
       // Drain the input optimistically so typing feels instant.
       writeComposer('', [])
+      setComposerReplyTarget(null)
       inlineMention.close()
 
       const settings = {
@@ -3702,6 +4047,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
           text: value,
           attachments: pinned,
           mode: 'stop',
+          replyTo: currentReplyTo,
           ...settings,
         }
         interruptMessageRef.current = entry
@@ -3719,6 +4065,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
           text: value,
           attachments: pinned,
           mode: intent,
+          replyTo: currentReplyTo,
           ...settings,
         }
         const currentQueue = getQueuedMessagesSnapshot()
@@ -3740,9 +4087,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       }
 
       try {
-        await sendToAgent(value, pinned)
+        await sendToAgent(value, pinned, undefined, currentReplyTo)
       } catch (err) {
         writeComposer(value, pinned)
+        setComposerReplyTarget(currentReplyTo)
         console.error('[agent-chat] send failed', err)
       }
     },
@@ -3753,6 +4101,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       inlineMention,
       setQueuedMessages,
       writeComposer,
+      setComposerReplyTarget,
       agentWindow.model,
       agentWindow.thinkingLevel,
       agentWindow.permissionMode,
@@ -3762,11 +4111,46 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     ],
   )
 
+  useEffect(() => {
+    const unsubscribeSelected = window.cells.browser.onElementSelected(
+      (_browserId, targetAgentWindowId, selection) => {
+        if (targetAgentWindowId !== agentWindow.id) return
+        activeElementPickerBrowserIdRef.current = null
+        setSelectingBrowserElement(false)
+        void copyBrowserElementSelectionToClipboard(selection)
+          .then(() => showToast('Copied element and added it to chat', 'info'))
+          .catch((err) => {
+            console.error('[agent-chat] copy browser element failed', err)
+            showToast('Added element to chat', 'info')
+          })
+        const nextValue = appendBrowserElementSelectionToDraft(inputRef.current, selection)
+        writeComposer(nextValue, attachmentsRef.current)
+        setPendingComposerSelectionOffset(nextValue.length)
+        window.setTimeout(() => {
+          useStore.getState().snapToAgentWindow(agentWindow.id)
+          focusComposer(true)
+        }, 0)
+      },
+    )
+    const unsubscribeCancelled = window.cells.browser.onElementPickerCancelled(
+      (_browserId, targetAgentWindowId) => {
+        if (targetAgentWindowId !== agentWindow.id) return
+        activeElementPickerBrowserIdRef.current = null
+        setSelectingBrowserElement(false)
+      },
+    )
+    return () => {
+      unsubscribeSelected()
+      unsubscribeCancelled()
+    }
+  }, [agentWindow.id, focusComposer, writeComposer])
+
   const startNewSessionFromComposer = useCallback(async () => {
     const currentSnapshot = snapshotRef.current
     const draft = inputRef.current
     const rawValue = draft.trim()
     const pinned = [...attachmentsRef.current]
+    const currentReplyTo = replyToRef.current
     if (!rawValue && pinned.length === 0) return
 
     const value = rawValue || ATTACHMENTS_ONLY_TEXT
@@ -3813,8 +4197,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
             thinkingLevel: agentWindow.thinkingLevel ?? null,
             permissionMode: agentWindow.permissionMode ?? null,
           },
+          currentReplyTo,
         )
         writeComposer(nextDraft, [])
+        setComposerReplyTarget(null)
         showToast('Branched current session', 'info')
         window.setTimeout(() => {
           store.snapToAgentWindow(nextWindow.id)
@@ -3844,6 +4230,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
             id: createQueuedMessageId(),
             text: value,
             attachments: pinned,
+            replyTo: currentReplyTo,
             mode: 'after-turn',
             model: agentWindow.model ?? null,
             thinkingLevel: agentWindow.thinkingLevel ?? null,
@@ -3853,10 +4240,11 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       })
     }
     writeComposer(nextDraft, [])
+    setComposerReplyTarget(null)
     window.setTimeout(() => {
       store.snapToAgentWindow(nextWindow.id)
     }, 0)
-  }, [agentWindow, visibleSnapshot?.cwd, writeComposer])
+  }, [agentWindow, setComposerReplyTarget, visibleSnapshot?.cwd, writeComposer])
 
   const unqueueMessage = useCallback(
     (index: number) => {
@@ -3866,11 +4254,12 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         setEditingIndex(null)
         setQueuedEditSettings(null)
         writeComposer(restore?.input ?? '', restore?.attachments ?? [])
+        setComposerReplyTarget(restore?.replyTo ?? null)
       }
       setQueuedMessages((q) => q.filter((_, i) => i !== index))
       setEditingIndex((current) => (current !== null && current > index ? current - 1 : current))
     },
-    [editingIndex, setQueuedMessages, writeComposer],
+    [editingIndex, setComposerReplyTarget, setQueuedMessages, writeComposer],
   )
 
   const beginEditQueued = useCallback(
@@ -3881,6 +4270,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         queuedEditRestoreRef.current = {
           input: inputRef.current,
           attachments: [...attachmentsRef.current],
+          replyTo: replyToRef.current,
         }
       }
       setEditingIndex(index)
@@ -3890,10 +4280,11 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         permissionMode: entry.permissionMode ?? null,
       })
       writeComposer(getQueuedComposerText(entry), [...entry.attachments])
+      setComposerReplyTarget(entry.replyTo ?? null)
       setQueueCollapsed(false)
       window.setTimeout(() => textareaRef.current?.focus(), 0)
     },
-    [editingIndex, queuedMessages, writeComposer],
+    [editingIndex, queuedMessages, setComposerReplyTarget, writeComposer],
   )
 
   const commitEditQueued = useCallback(() => {
@@ -3909,6 +4300,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
               ...m,
               text: nextText,
               attachments: nextAttachments,
+              replyTo: replyToRef.current,
               model: nextSettings?.model ?? null,
               thinkingLevel: nextSettings?.thinkingLevel ?? null,
               permissionMode: nextSettings?.permissionMode ?? null,
@@ -3921,7 +4313,8 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     setEditingIndex(null)
     setQueuedEditSettings(null)
     writeComposer(restore?.input ?? '', restore?.attachments ?? [])
-  }, [editingIndex, queuedEditSettings, setQueuedMessages, writeComposer])
+    setComposerReplyTarget(restore?.replyTo ?? null)
+  }, [editingIndex, queuedEditSettings, setQueuedMessages, setComposerReplyTarget, writeComposer])
 
   const cancelEditQueued = useCallback(() => {
     const restore = queuedEditRestoreRef.current
@@ -3929,7 +4322,8 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     setEditingIndex(null)
     setQueuedEditSettings(null)
     writeComposer(restore?.input ?? '', restore?.attachments ?? [])
-  }, [writeComposer])
+    setComposerReplyTarget(restore?.replyTo ?? null)
+  }, [setComposerReplyTarget, writeComposer])
 
   const sendQueuedImmediately = useCallback(
     (index: number) => {
@@ -3941,6 +4335,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         setEditingIndex(null)
         setQueuedEditSettings(null)
         writeComposer(restore?.input ?? '', restore?.attachments ?? [])
+        setComposerReplyTarget(restore?.replyTo ?? null)
       }
       interruptMessageRef.current = { ...entry, mode: 'stop' }
       setQueuedMessages((q) => q.filter((_, i) => i !== index))
@@ -3948,7 +4343,14 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       setMidTurnDetected(false)
       if (snapshotRef.current?.status === 'running') void handleStop()
     },
-    [editingIndex, handleStop, queuedMessages, setQueuedMessages, writeComposer],
+    [
+      editingIndex,
+      handleStop,
+      queuedMessages,
+      setComposerReplyTarget,
+      setQueuedMessages,
+      writeComposer,
+    ],
   )
 
   // Drain the queue whenever the agent flips back to idle. Pop the front
@@ -4023,11 +4425,16 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     if (interruptMessageRef.current) {
       const next = interruptMessageRef.current
       interruptMessageRef.current = null
-      void sendToAgent(next.text, next.attachments, {
-        model: next.model,
-        thinkingLevel: next.thinkingLevel,
-        permissionMode: next.permissionMode,
-      })
+      void sendToAgent(
+        next.text,
+        next.attachments,
+        {
+          model: next.model,
+          thinkingLevel: next.thinkingLevel,
+          permissionMode: next.permissionMode,
+        },
+        next.replyTo ?? null,
+      )
         .catch((err) => {
           console.error('[agent-chat] interrupt send failed', err)
           interruptMessageRef.current = next
@@ -4057,11 +4464,16 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       })
     }
     window.cells.agentSession.notifyQueuedStart(agentWindow.id)
-    void sendToAgent(next.text, next.attachments, {
-      model: next.model,
-      thinkingLevel: next.thinkingLevel,
-      permissionMode: next.permissionMode,
-    })
+    void sendToAgent(
+      next.text,
+      next.attachments,
+      {
+        model: next.model,
+        thinkingLevel: next.thinkingLevel,
+        permissionMode: next.permissionMode,
+      },
+      next.replyTo ?? null,
+    )
       .catch((err) => {
         console.error('[agent-chat] queued send failed', err)
         // Put it back at the front so the user can retry / see it.
@@ -4580,6 +4992,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                         cwd={activeProjectPath ?? visibleSnapshot?.cwd ?? agentWindow.cwd ?? null}
                         agent={agentWindow.agent}
                         isStreamingLastTurn={item.kind === 'turn' && item.key === streamingTurnKey}
+                        onReply={beginReply}
                       />
                     </div>
                   </div>
@@ -4662,6 +5075,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                               thinkingLevel: agentWindow.thinkingLevel ?? null,
                               permissionMode: agentWindow.permissionMode ?? null,
                             },
+                            lastUserMessage.replyTo ?? null,
                           )
                       : null
                   }
@@ -4889,7 +5303,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                                   }}
                                   className={cn(
                                     'group/queued flex gap-2 rounded-[10px] bg-foreground/5 px-2.5 py-1.5 text-[12px] text-foreground/85 transition-colors backdrop-blur-sm',
-                                    'items-center',
+                                    entry.replyTo ? 'items-start' : 'items-center',
                                     isEditing && 'bg-cyan-500/10',
                                     isDragging && 'opacity-50',
                                     isDropTarget && 'bg-foreground/10',
@@ -4919,31 +5333,40 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                                   >
                                     <meta.Icon className={cn('size-3.5 shrink-0', meta.tint)} />
                                   </button>
-                                  <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                                    <button
-                                      type="button"
-                                      onClick={() => beginEditQueued(i)}
-                                      className={cn(
-                                        'min-w-0 flex-1 truncate text-left text-muted-foreground/90 hover:text-foreground',
-                                        isEditing && 'text-cyan-100',
-                                      )}
-                                      title={isEditing ? 'Editing in composer' : 'Edit in composer'}
-                                    >
-                                      {entry.text.replace(/\n/g, ' ') ||
-                                        (entry.attachments.length > 0 ? ATTACHMENTS_ONLY_TEXT : '')}
-                                    </button>
-                                    {entry.attachments.length > 0 ? (
-                                      <div className="flex shrink-0 items-center gap-1">
-                                        {entry.attachments.slice(0, 4).map((p) => (
-                                          <QueueAttachmentThumb key={p} path={p} />
-                                        ))}
-                                        {entry.attachments.length > 4 ? (
-                                          <span className="text-[10px] tabular-nums text-muted-foreground/70">
-                                            +{entry.attachments.length - 4}
-                                          </span>
-                                        ) : null}
-                                      </div>
+                                  <div className="flex min-w-0 flex-1 flex-col gap-1">
+                                    {entry.replyTo ? (
+                                      <ReplyPreview replyTo={entry.replyTo} compact />
                                     ) : null}
+                                    <div className="flex min-w-0 items-center gap-1.5">
+                                      <button
+                                        type="button"
+                                        onClick={() => beginEditQueued(i)}
+                                        className={cn(
+                                          'min-w-0 flex-1 truncate text-left text-muted-foreground/90 hover:text-foreground',
+                                          isEditing && 'text-cyan-100',
+                                        )}
+                                        title={
+                                          isEditing ? 'Editing in composer' : 'Edit in composer'
+                                        }
+                                      >
+                                        {entry.text.replace(/\n/g, ' ') ||
+                                          (entry.attachments.length > 0
+                                            ? ATTACHMENTS_ONLY_TEXT
+                                            : '')}
+                                      </button>
+                                      {entry.attachments.length > 0 ? (
+                                        <div className="flex shrink-0 items-center gap-1">
+                                          {entry.attachments.slice(0, 4).map((p) => (
+                                            <QueueAttachmentThumb key={p} path={p} />
+                                          ))}
+                                          {entry.attachments.length > 4 ? (
+                                            <span className="text-[10px] tabular-nums text-muted-foreground/70">
+                                              +{entry.attachments.length - 4}
+                                            </span>
+                                          ) : null}
+                                        </div>
+                                      ) : null}
+                                    </div>
                                   </div>
                                   <div className="flex shrink-0 items-center gap-1 text-[10.5px] text-muted-foreground/80">
                                     {modelLabel ? (
@@ -5066,8 +5489,13 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                     applyInlineMentionSelection(inlineMention.selectItem(item))
                   }}
                 />
+                {replyTo ? (
+                  <div className="px-3 pt-3">
+                    <ReplyPreview replyTo={replyTo} onClear={() => setComposerReplyTarget(null)} />
+                  </div>
+                ) : null}
                 {attachments.length > 0 ? (
-                  <div className="space-y-2 px-3 pb-1 pt-3">
+                  <div className={cn('space-y-2 px-3 pb-1', replyTo ? 'pt-2' : 'pt-3')}>
                     {composerImageAttachments.length > 0 ? (
                       <div className="flex flex-wrap gap-2.5">
                         {composerImageAttachments.map((path) => (
@@ -5152,6 +5580,29 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                     title="Attach files"
                   >
                     <Paperclip className="size-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void startBrowserElementPicker()}
+                    aria-label={
+                      selectingBrowserElement
+                        ? 'Cancel browser element selection'
+                        : 'Select browser element'
+                    }
+                    className={cn(
+                      'inline-flex h-7 shrink-0 items-center justify-center rounded-[8px] bg-foreground/5 px-2 text-muted-foreground/85 transition-colors hover:bg-foreground/10 hover:text-foreground',
+                      selectingBrowserElement &&
+                        'bg-cyan-400/14 text-cyan-100 ring-1 ring-cyan-300/20 hover:bg-cyan-400/18',
+                    )}
+                    title={
+                      browserPickTargetId
+                        ? selectingBrowserElement
+                          ? 'Cancel browser element selection'
+                          : `Select element from ${browserPickTargetLabel}`
+                        : 'Open a browser window first'
+                    }
+                  >
+                    <MousePointer2 className="size-3.5" />
                   </button>
                   <PermissionPicker
                     value={composerPermissionMode ?? getDefaultPermissionMode()}

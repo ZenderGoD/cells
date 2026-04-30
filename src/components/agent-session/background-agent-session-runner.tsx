@@ -121,6 +121,7 @@ function BackgroundAgentSessionRunner({ agentWindow }: { agentWindow: AgentWindo
           message.text,
           message.attachments,
           overrides,
+          message.replyTo ?? null,
         )
       try {
         await trySend()

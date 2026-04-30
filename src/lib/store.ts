@@ -266,6 +266,7 @@ interface StoreState {
       initialPrompt?: string | null
       composerDraft?: string | null
       composerAttachments?: string[]
+      composerReplyTo?: import('../types').AgentReplyReference | null
       claudeSessionId?: string | null
       codexThreadId?: string | null
       model?: string | null
@@ -1596,6 +1597,7 @@ function projectToWorkingState(project: Project, preserveRuntime = false) {
     error: agentWindow.error ?? null,
     composerDraft: agentWindow.composerDraft ?? null,
     composerAttachments: agentWindow.composerAttachments ?? [],
+    composerReplyTo: agentWindow.composerReplyTo ?? null,
   }))
   const focused = getValidFocusedWindowIds(
     terminals,
@@ -4067,6 +4069,10 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   removeWindowSection(id) {
+    const section = get().windowSections.find((entry) => entry.id === id)
+    if (section?.pinned) {
+      void window.cells.app.unpinWindow(id)
+    }
     set((state) => ({
       windowSections: state.windowSections.filter((section) => section.id !== id),
       focusedWindowSectionId:
@@ -5220,6 +5226,7 @@ export const useStore = create<StoreState>((set, get) => ({
       initialPrompt: options?.initialPrompt ?? null,
       composerDraft: options?.composerDraft ?? null,
       composerAttachments: options?.composerAttachments ?? [],
+      composerReplyTo: options?.composerReplyTo ?? null,
       claudeSessionId: options?.claudeSessionId ?? null,
       codexThreadId: options?.codexThreadId ?? null,
       model: options?.model ?? savedDefaults.model ?? null,
