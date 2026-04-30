@@ -7,7 +7,8 @@ export const PTY_DAEMON_PROTOCOL_VERSION = 2
 // ownership / replay semantics compatibility contract.
 // v9: terminal data switched from JSON lines to binary frames (0x02 marker)
 // v10: tmux sessions moved to project-owned window groups with per-terminal viewers
-export const PTY_DAEMON_COMPAT_VERSION = 10
+// v11: terminal sessions clamp TERM away from inherited TERM=dumb
+export const PTY_DAEMON_COMPAT_VERSION = 11
 
 export interface PtyDaemonVersionInfo {
   protocolVersion: number

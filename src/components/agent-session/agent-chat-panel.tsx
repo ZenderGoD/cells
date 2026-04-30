@@ -86,6 +86,7 @@ import {
   appendBrowserElementSelectionToDraft,
   copyBrowserElementSelectionToClipboard,
   parseBrowserElementSelectionPreview,
+  splitBrowserElementSelectionDraft,
 } from '@/lib/browser-element-selection'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Kbd } from '@/components/ui/kbd'
@@ -390,6 +391,8 @@ const IMAGE_ATTACHMENT_TOKEN_AT_END_RE = /\[Image\s+\d+\]\s*$/i
 const USER_IMAGE_TOKEN_CHIP_CLASS =
   'mx-0.5 inline-flex h-6 max-w-full items-center gap-1.5 rounded-[6px] border border-border/35 bg-background/45 py-0.5 pl-1 text-[12px] font-medium text-foreground/85 shadow-minimal'
 const USER_IMAGE_TOKEN_THUMB_CLASS = 'size-4 shrink-0 rounded-[3px] bg-foreground/10 object-cover'
+const BROWSER_SELECTION_TOKEN_CHIP_CLASS =
+  'my-1 inline-flex max-w-full items-center gap-2 rounded-[7px] border border-cyan-300/20 bg-cyan-400/10 px-2.5 py-1.5 text-[12px] text-cyan-50/90 shadow-minimal'
 
 function imageAttachmentToken(index: number) {
   return `[Image ${index + 1}]`
@@ -480,6 +483,38 @@ function createImageChipElement(index: number, thumbnailUrl?: string | null) {
   return chip
 }
 
+function createBrowserSelectionChipElement(raw: string) {
+  const preview = parseBrowserElementSelectionPreview(raw)
+  const chip = document.createElement('span')
+  chip.contentEditable = 'false'
+  chip.dataset.browserSelectionValue = raw
+  chip.className = BROWSER_SELECTION_TOKEN_CHIP_CLASS
+  chip.title = preview?.selector || preview?.url || 'Browser selection'
+
+  const icon = document.createElement('span')
+  icon.className = 'shrink-0 text-cyan-100/80'
+  icon.innerHTML =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 3 7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/><path d="m13 13 6 6"/></svg>'
+  chip.appendChild(icon)
+
+  const text = document.createElement('span')
+  text.className = 'flex min-w-0 items-center gap-1.5'
+
+  const element = document.createElement('span')
+  element.className =
+    'shrink-0 rounded-[5px] bg-cyan-200/12 px-1.5 py-0.5 font-mono text-[10.5px] text-cyan-50/90'
+  element.textContent = preview?.element || '<element>'
+  text.appendChild(element)
+
+  const label = document.createElement('span')
+  label.className = 'min-w-0 truncate font-medium'
+  label.textContent = preview?.title || 'Browser selection'
+  text.appendChild(label)
+
+  chip.appendChild(text)
+  return chip
+}
+
 function updateImageChipThumbnail(chip: HTMLElement, thumbnailUrl: string | null | undefined) {
   const currentThumb = chip.firstElementChild
   if (!thumbnailUrl) return
@@ -515,22 +550,32 @@ function renderComposerValueInto(
   thumbnailUrls: Record<string, string | null>,
 ) {
   root.textContent = ''
-  let cursor = 0
-  let match: RegExpExecArray | null
-  IMAGE_ATTACHMENT_TOKEN_CAPTURE_RE.lastIndex = 0
-  while ((match = IMAGE_ATTACHMENT_TOKEN_CAPTURE_RE.exec(value))) {
-    if (match.index > cursor) {
-      root.appendChild(document.createTextNode(value.slice(cursor, match.index)))
+  const appendTextWithImageChips = (text: string) => {
+    let cursor = 0
+    let match: RegExpExecArray | null
+    IMAGE_ATTACHMENT_TOKEN_CAPTURE_RE.lastIndex = 0
+    while ((match = IMAGE_ATTACHMENT_TOKEN_CAPTURE_RE.exec(text))) {
+      if (match.index > cursor) {
+        root.appendChild(document.createTextNode(text.slice(cursor, match.index)))
+      }
+      const index = Number.parseInt(match[1] ?? '', 10) - 1
+      if (index >= 0 && index < imageAttachments.length) {
+        const path = imageAttachments[index]
+        root.appendChild(createImageChipElement(index, thumbnailUrls[path]))
+      }
+      cursor = match.index + match[0].length
     }
-    const index = Number.parseInt(match[1] ?? '', 10) - 1
-    if (index >= 0 && index < imageAttachments.length) {
-      const path = imageAttachments[index]
-      root.appendChild(createImageChipElement(index, thumbnailUrls[path]))
+    if (cursor < text.length) {
+      root.appendChild(document.createTextNode(text.slice(cursor)))
     }
-    cursor = match.index + match[0].length
   }
-  if (cursor < value.length) {
-    root.appendChild(document.createTextNode(value.slice(cursor)))
+
+  for (const part of splitBrowserElementSelectionDraft(value)) {
+    if (typeof part === 'string') {
+      appendTextWithImageChips(part)
+    } else {
+      root.appendChild(createBrowserSelectionChipElement(part.raw))
+    }
   }
 }
 
@@ -542,6 +587,8 @@ function serializeComposerNode(node: Node): string {
     const index = Number.parseInt(rawIndex, 10)
     return Number.isFinite(index) ? imageAttachmentToken(index) : ''
   }
+  const browserSelectionValue = node.dataset.browserSelectionValue
+  if (browserSelectionValue !== undefined) return browserSelectionValue
   if (node.tagName === 'BR') return '\n'
   let text = ''
   node.childNodes.forEach((child) => {
@@ -587,7 +634,9 @@ function getComposerSelectionOffset(root: HTMLElement | null) {
     }
     if (
       node.nodeType === Node.TEXT_NODE ||
-      (node instanceof HTMLElement && node.dataset.imageChipIndex !== undefined)
+      (node instanceof HTMLElement &&
+        (node.dataset.imageChipIndex !== undefined ||
+          node.dataset.browserSelectionValue !== undefined))
     ) {
       offset += getSerializedLength(node)
       return
@@ -620,7 +669,11 @@ function setComposerSelectionOffset(root: HTMLElement | null, targetOffset: numb
       remaining -= length
       return
     }
-    if (node instanceof HTMLElement && node.dataset.imageChipIndex !== undefined) {
+    if (
+      node instanceof HTMLElement &&
+      (node.dataset.imageChipIndex !== undefined ||
+        node.dataset.browserSelectionValue !== undefined)
+    ) {
       const length = getSerializedLength(node)
       if (remaining <= length) {
         const parent = node.parentNode ?? root
@@ -821,50 +874,29 @@ function UserImageTokenChip({
   )
 }
 
-function BrowserElementSelectionCard({
+function BrowserElementSelectionChip({
   preview,
 }: {
   preview: NonNullable<ReturnType<typeof parseBrowserElementSelectionPreview>>
 }) {
-  const htmlPreview =
-    preview.html.length > 1800 ? `${preview.html.slice(0, 1800).trimEnd()}\n...` : preview.html
-  const textPreview =
-    preview.text.length > 900 ? `${preview.text.slice(0, 900).trimEnd()}...` : preview.text
+  const title = preview.title || 'Browser selection'
+  const detail = preview.selector || preview.text || preview.url || 'Selected browser element'
 
   return (
-    <div className="overflow-hidden rounded-[10px] border border-border/35 bg-background/35 shadow-minimal">
-      <div className="flex min-w-0 items-start gap-2 border-b border-border/25 px-3 py-2">
-        <MousePointer2 className="mt-0.5 size-3.5 shrink-0 text-cyan-200/80" />
-        <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 items-center gap-1.5">
-            <span className="shrink-0 rounded-[5px] bg-cyan-400/10 px-1.5 py-0.5 font-mono text-[10.5px] text-cyan-100/90">
-              {preview.element || '<element>'}
-            </span>
-            <span className="min-w-0 truncate text-[12px] font-medium text-foreground/90">
-              {preview.title || 'Browser selection'}
-            </span>
-          </div>
-          {preview.url ? (
-            <div className="mt-1 truncate text-[11px] text-muted-foreground/70">{preview.url}</div>
-          ) : null}
+    <div
+      className="inline-flex max-w-full items-center gap-2 rounded-[7px] border border-cyan-300/20 bg-cyan-400/10 px-2.5 py-1.5 text-[12px] leading-none text-cyan-50/90 shadow-minimal"
+      title={detail}
+      aria-label={`Browser selection: ${title}`}
+    >
+      <MousePointer2 className="size-3.5 shrink-0 text-cyan-100/80" />
+      <span className="shrink-0 rounded-[5px] bg-cyan-200/12 px-1.5 py-0.5 font-mono text-[10.5px] text-cyan-50/90">
+        {preview.element || '<element>'}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="truncate font-medium text-foreground/90">{title}</div>
+        <div className="mt-1 truncate font-mono text-[10.5px] leading-3 text-muted-foreground/70">
+          {detail}
         </div>
-      </div>
-      <div className="space-y-2 px-3 py-2">
-        {preview.selector ? (
-          <div className="rounded-[6px] bg-foreground/5 px-2 py-1 font-mono text-[11px] text-muted-foreground/90">
-            {preview.selector}
-          </div>
-        ) : null}
-        {textPreview ? (
-          <div className="whitespace-pre-wrap rounded-[6px] bg-foreground/[0.035] px-2 py-1.5 text-[12px] leading-[1.45] text-foreground/85">
-            {textPreview}
-          </div>
-        ) : null}
-        {htmlPreview ? (
-          <pre className="scrollbar-hover max-h-44 overflow-auto rounded-[6px] bg-black/20 px-2 py-1.5 font-mono text-[10.5px] leading-[1.45] text-muted-foreground/85">
-            {htmlPreview}
-          </pre>
-        ) : null}
       </div>
     </div>
   )
@@ -895,7 +927,7 @@ function UserMessageText({
             {browserSelectionPreview.before}
           </pre>
         ) : null}
-        <BrowserElementSelectionCard preview={browserSelectionPreview} />
+        <BrowserElementSelectionChip preview={browserSelectionPreview} />
       </div>
     )
   }
@@ -1294,7 +1326,7 @@ function ReplyPreview({
   return (
     <div
       className={cn(
-        'flex min-w-0 items-center gap-2 rounded-[8px] border-l-2 border-cyan-300/60 bg-background/45 text-left shadow-minimal',
+        'flex min-w-0 items-center gap-2 rounded-[8px] bg-background/45 text-left shadow-minimal',
         compact ? 'px-2 py-1' : 'px-2.5 py-1.5',
       )}
     >
@@ -2785,7 +2817,7 @@ const MessageGroupRow = memo(
     return (
       <motion.div
         className="min-w-0 p-[1px]"
-        style={{ contain: 'layout style paint' }}
+        style={{ contain: 'layout style' }}
         initial={reduceMotion || isStreamingLastTurn ? false : { opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.18, ease: EASE_OUT }}
@@ -3496,7 +3528,21 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
           }, 500)
         })
 
-    void callEnsure(0)
+    let subscribed = false
+    void window.cells.agentSession
+      .subscribeUpdates(agentWindow.id)
+      .then(() => {
+        subscribed = true
+        if (cancelled) {
+          void window.cells.agentSession.unsubscribeUpdates(agentWindow.id).catch(() => {})
+          return
+        }
+        void callEnsure(0)
+      })
+      .catch((error) => {
+        console.error('[agent-chat] subscribeUpdates failed', error)
+        if (!cancelled) void callEnsure(0)
+      })
 
     return () => {
       cancelled = true
@@ -3506,6 +3552,11 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         pendingFrameRef.current = null
       }
       unsubscribe()
+      if (subscribed) {
+        void window.cells.agentSession
+          .unsubscribeUpdates(agentWindow.id)
+          .catch((error) => console.error('[agent-chat] unsubscribeUpdates failed', error))
+      }
     }
   }, [
     agentWindow.agent,

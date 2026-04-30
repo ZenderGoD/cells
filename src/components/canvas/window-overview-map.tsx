@@ -1,5 +1,5 @@
 import { useCallback, useRef } from 'react'
-import { Globe, TerminalSquare } from 'lucide-react'
+import { FileText, Globe, TerminalSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { getCanvasBounds, type CanvasRect, type CanvasWindow } from '@/lib/canvas-navigation'
 import { AgentIcon } from '@/components/agent-icon'
@@ -34,6 +34,15 @@ function WindowIcon({ window, iconSize }: { window: CanvasWindow; iconSize: numb
     }
     return (
       <Globe
+        className="pointer-events-none opacity-80"
+        style={{ width: iconSize, height: iconSize }}
+      />
+    )
+  }
+
+  if (window.type === 'editor') {
+    return (
+      <FileText
         className="pointer-events-none opacity-80"
         style={{ width: iconSize, height: iconSize }}
       />
@@ -258,7 +267,11 @@ export function WindowOverviewMap({
             : runtimeStatus.ringClass
           // Agent windows use a dock-style bottom pill instead of a corner dot;
           // terminal/browser windows keep the classic corner dot.
-          const indicatorDotClass = isAgent ? '' : runtimeStatus.dotClass
+          const indicatorDotClass = isAgent
+            ? ''
+            : window.type === 'editor' && window.isDirty
+              ? 'bg-primary/80'
+              : runtimeStatus.dotClass
           const agentPillClass = isAgent ? (agentWindowStatus?.dotClass ?? '') : ''
           const statusTitle = agentWindowStatus?.label || runtimeStatus.detail
           const statusDotClass = minDim >= 14 ? 'size-2' : 'size-1.5'
@@ -287,7 +300,9 @@ export function WindowOverviewMap({
             canDrag && 'cursor-grab active:cursor-grabbing',
             window.type === 'browser'
               ? 'rounded-none border-white/24 bg-white/14 text-foreground/55'
-              : 'rounded-none border-white/16 bg-white/8 text-foreground/45',
+              : window.type === 'editor'
+                ? 'rounded-none border-primary/26 bg-primary/12 text-foreground/55'
+                : 'rounded-none border-white/16 bg-white/8 text-foreground/45',
             isCurrent
               ? 'z-10 border-foreground bg-foreground text-background shadow-[0_0_0_2px_rgba(255,255,255,0.3),0_10px_22px_rgba(0,0,0,0.24)]'
               : isFocused
@@ -316,7 +331,7 @@ export function WindowOverviewMap({
                 onPointerDown={canDrag ? (e) => handlePointerDown(e, window) : undefined}
                 onPointerMove={canDrag ? (e) => handlePointerMove(e, window) : undefined}
                 onPointerUp={canDrag ? (e) => handlePointerUp(e, window) : undefined}
-                title={`${window.type === 'browser' ? 'Browser' : window.agent ? `Agent (${window.agent})` : 'Terminal'}: ${window.title}${hasAgentColor ? ` · ${agentColor.label}` : ''}${statusTitle ? ` — ${statusTitle}` : ''}`}
+                title={`${window.type === 'browser' ? 'Browser' : window.type === 'editor' ? 'Editor' : window.agent ? `Agent (${window.agent})` : 'Terminal'}: ${window.title}${hasAgentColor ? ` · ${agentColor.label}` : ''}${statusTitle ? ` — ${statusTitle}` : ''}`}
               >
                 {canShowIcon && <WindowIcon window={window} iconSize={iconSize} />}
                 {colorBar}

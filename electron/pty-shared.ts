@@ -136,6 +136,9 @@ export function cleanEnv(): Record<string, string> {
   env.XDG_DATA_HOME = realXdgDataHome || path.join(HOME_DIR, '.local', 'share')
   env.XDG_CACHE_HOME = realXdgCacheHome || path.join(HOME_DIR, '.cache')
   env.XDG_STATE_HOME = realXdgStateHome || path.join(HOME_DIR, '.local', 'state')
+  // Electron/dev launchers can inherit TERM=dumb, which makes shells and prompt
+  // tools disable terminal features even though the PTY is xterm-compatible.
+  env.TERM = 'xterm-256color'
   // Ensure full color support
   env.COLORTERM = 'truecolor'
   // Expose a stable modern terminal identity so TUIs can avoid falling back

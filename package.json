@@ -100,6 +100,53 @@
         "to": "vendor/fonts"
       }
     ],
+    "fileAssociations": [
+      {
+        "ext": [
+          "txt",
+          "text",
+          "md",
+          "markdown",
+          "json",
+          "jsonc",
+          "js",
+          "jsx",
+          "ts",
+          "tsx",
+          "css",
+          "scss",
+          "html",
+          "xml",
+          "yml",
+          "yaml",
+          "toml",
+          "ini",
+          "env",
+          "sh",
+          "bash",
+          "zsh",
+          "py",
+          "rb",
+          "go",
+          "rs",
+          "java",
+          "c",
+          "h",
+          "cpp",
+          "hpp",
+          "cs",
+          "swift",
+          "kt",
+          "kts",
+          "sql",
+          "graphql",
+          "gql"
+        ],
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      }
+    ],
     "mac": {
       "target": [
         {
@@ -163,6 +210,8 @@
     "execa": "^9.6.1",
     "ghostty-web": "^0.4.0",
     "lucide-react": "^0.460.0",
+    "monaco-editor": "^0.55.1",
+    "monaco-vim": "^0.4.4",
     "motion": "^12.38.0",
     "nanoid": "^5.0.0",
     "node-pty": "^1.0.0",
@@ -210,9 +259,6 @@
       "esbuild",
       "node-pty"
     ],
-    "patchedDependencies": {
-      "ghostty-web@0.4.0": "patches/ghostty-web@0.4.0.patch"
-    },
     "supportedArchitectures": {
       "os": [
         "darwin"

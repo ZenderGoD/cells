@@ -438,6 +438,7 @@ export function CommandPalette() {
   }, [cmdkValue])
   const terminals = useStore((s) => s.terminals)
   const browsers = useStore((s) => s.browsers)
+  const textEditors = useStore((s) => s.textEditors)
   const agentWindows = useStore((s) => s.agentWindows)
   const terminalTheme = useStore((s) => s.terminalTheme)
   const projects = useStore((s) => s.projects)
@@ -452,9 +453,16 @@ export function CommandPalette() {
   const isGitRepo = useStore((s) => s.isGitRepo)
   const worktrees = useStore((s) => s.worktrees)
   const focusedTerminalId = useStore((s) => s.focusedTerminalId)
+  const focusedTextEditorId = useStore((s) => s.focusedTextEditorId)
   const focusedAgentWindowId = useStore((s) => s.focusedAgentWindowId)
   const hasFocusedWindow = useStore(
-    (s) => !!(s.focusedTerminalId || s.focusedBrowserId || s.focusedAgentWindowId),
+    (s) =>
+      !!(
+        s.focusedTerminalId ||
+        s.focusedBrowserId ||
+        s.focusedTextEditorId ||
+        s.focusedAgentWindowId
+      ),
   )
   const selectionMode = useStore((s) => s.selectionMode)
   const selectedNodeIds = useStore((s) => s.selectedNodeIds)
@@ -528,6 +536,7 @@ export function CommandPalette() {
     const candidates: string[] = [
       ...terminals.map((t) => t.customTitle || t.title || ''),
       ...browsers.map((b) => `${b.title ?? ''} ${b.url ?? ''}`),
+      ...textEditors.map((editor) => `${editor.title ?? ''} ${editor.filePath ?? ''}`),
       ...agentWindows.map((a) => a.customTitle || a.title || ''),
       ...savedSessions.map(
         (session) => `${session.title ?? ''} ${session.cwd ?? ''} ${session.lastMessageText ?? ''}`,
@@ -539,6 +548,8 @@ export function CommandPalette() {
       'Quit Cells',
       'Kill All Processes',
       'New Project',
+      'New Text Editor',
+      'Open File in Editor',
       'Install MCP Server',
       'Manage Extensions',
       'Settings',
@@ -1168,6 +1179,34 @@ export function CommandPalette() {
               </>
             )}
 
+            {textEditors.length > 0 && (
+              <>
+                <CommandSeparator />
+                <CommandGroup heading="Editors">
+                  {textEditors.map((editor) => (
+                    <CommandItem
+                      key={editor.id}
+                      value={`editor ${editor.title ?? ''} ${editor.filePath ?? ''}`}
+                      data-checked={editor.id === focusedTextEditorId ? 'true' : undefined}
+                      onSelect={() =>
+                        runAction(() => useStore.getState().snapToTextEditor(editor.id))
+                      }
+                    >
+                      <FileText className="text-muted-foreground" />
+                      <span className="min-w-0 flex-1 truncate">
+                        {editor.title || editor.filePath || 'Untitled'}
+                      </span>
+                      {editor.isDirty ? (
+                        <span className="ml-auto text-[10px] text-muted-foreground/40">
+                          modified
+                        </span>
+                      ) : null}
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              </>
+            )}
+
             {terminals.length > 0 && (
               <>
                 <CommandSeparator />
@@ -1600,6 +1639,32 @@ export function CommandPalette() {
                       >
                         <Paperclip className="text-muted-foreground" />
                         Attach File...
+                      </CommandItem>
+                      <CommandItem
+                        value="open-file-in-editor"
+                        onSelect={async () => {
+                          const paths = await window.cells.app.pickFiles(
+                            useStore.getState().getActiveProjectPath(),
+                          )
+                          if (paths && paths.length > 0) {
+                            runAction(() => {
+                              const state = useStore.getState()
+                              for (const filePath of paths) {
+                                state.openTextEditorForPath(filePath, state.activeProjectId)
+                              }
+                            })
+                          }
+                        }}
+                      >
+                        <FileText className="text-muted-foreground" />
+                        Open File in Editor...
+                      </CommandItem>
+                      <CommandItem
+                        value="new-text-editor"
+                        onSelect={() => runAction(() => useStore.getState().addTextEditor())}
+                      >
+                        <FileText className="text-muted-foreground" />
+                        New Text Editor
                       </CommandItem>
                       <CommandItem
                         onSelect={() => runAction(() => useStore.getState().addBrowser())}

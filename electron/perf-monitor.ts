@@ -24,9 +24,13 @@ export interface RendererPerfReport {
   cachedTerminalCount: number
   totalTerminalCount: number
   totalBrowserCount: number
+  totalTextEditorCount: number
+  totalAgentWindowCount: number
   projectCount: number
   focusedTerminalId: string | null
   focusedBrowserId: string | null
+  focusedTextEditorId: string | null
+  focusedAgentWindowId: string | null
   useTransparentWindow: boolean
   windowOpacity: number
   overlayOpen: boolean

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowDownLeft } from 'lucide-react'
 import { CellTerminal } from './terminal/cell-terminal'
 import { AgentChatPanel } from './agent-session/agent-chat-panel'
+import { TextEditorSurface } from './editor/text-editor-surface'
 import { useStore } from '@/lib/store'
 import { getTerminalTheme } from '@/lib/terminal-themes'
 import { hapticBuzz } from '@/lib/haptics'
@@ -9,13 +10,14 @@ import { getStatusPresentation } from '@/lib/status-indicator'
 import { inferAgentFromTitle } from '@/lib/agent-command'
 import { hasPrimaryModifier } from '@/lib/keyboard-shortcuts'
 import { cn } from '@/lib/utils'
-import type { AgentWindowNode, BrowserNode, TerminalNode } from '@/types'
+import type { AgentWindowNode, BrowserNode, TerminalNode, TextEditorNode } from '@/types'
 
 const TITLE_BAR_HEIGHT = 38
 
 type PinnedSectionNode =
   | { kind: 'terminal'; node: TerminalNode }
   | { kind: 'agent'; node: AgentWindowNode }
+  | { kind: 'editor'; node: TextEditorNode }
   | { kind: 'browser'; node: BrowserNode }
 
 export function PinnedWindow({
@@ -23,7 +25,7 @@ export function PinnedWindow({
   type,
 }: {
   termId: string
-  type: 'terminal' | 'browser' | 'agent' | 'section'
+  type: 'terminal' | 'browser' | 'agent' | 'editor' | 'section'
 }) {
   const init = useStore((s) => s.init)
   const initialized = useStore((s) => s.initialized)
@@ -47,12 +49,16 @@ export function PinnedWindow({
   const agentWindow = useStore((s) =>
     type === 'agent' ? (s.agentWindows.find((a) => a.id === termId) ?? null) : null,
   )
+  const textEditor = useStore((s) =>
+    type === 'editor' ? (s.textEditors.find((editor) => editor.id === termId) ?? null) : null,
+  )
   const section = useStore((s) =>
     type === 'section' ? (s.windowSections.find((entry) => entry.id === termId) ?? null) : null,
   )
   const [inferredTitle, setInferredTitle] = useState(type === 'agent' ? 'Agent' : 'Terminal')
   const [agentReloadKey, setAgentReloadKey] = useState(0)
-  const title = section?.name || customTitle || agentWindow?.title || inferredTitle
+  const title =
+    section?.name || customTitle || agentWindow?.title || textEditor?.title || inferredTitle
   const status = getStatusPresentation(terminal?.runtimeStatus, {
     agent: terminal?.agent ?? inferAgentFromTitle(title),
     agentStatus: terminal?.agentStatus,
@@ -120,7 +126,7 @@ export function PinnedWindow({
       : null
 
   // Browser pop-outs are handled by the main process (loads URL directly),
-  // so this component only renders for terminal and agent pop-outs.
+  // so this component only renders for terminal, editor, agent, and section pop-outs.
   if (type === 'browser') return null
 
   return (
@@ -199,6 +205,10 @@ export function PinnedWindow({
               <AgentChatPanel key={agentReloadKey} agentWindow={agentWindow} />
             </div>
           ) : null
+        ) : type === 'editor' ? (
+          textEditor ? (
+            <TextEditorSurface editor={textEditor} className="h-full" />
+          ) : null
         ) : type === 'section' ? (
           section ? (
             <PinnedSectionContent sectionId={section.id} size={size} />
@@ -233,6 +243,7 @@ function PinnedSectionContent({
   const section = useStore((s) => s.windowSections.find((entry) => entry.id === sectionId) ?? null)
   const terminals = useStore((s) => s.terminals)
   const browsers = useStore((s) => s.browsers)
+  const textEditors = useStore((s) => s.textEditors)
   const agentWindows = useStore((s) => s.agentWindows)
   const projects = useStore((s) => s.projects)
   const focusedTerminalId = useStore((s) => s.focusedTerminalId)
@@ -245,13 +256,15 @@ function PinnedSectionContent({
         if (terminal) return { kind: 'terminal' as const, node: terminal }
         const agentWindow = agentWindows.find((entry) => entry.id === id)
         if (agentWindow) return { kind: 'agent' as const, node: agentWindow }
+        const textEditor = textEditors.find((entry) => entry.id === id)
+        if (textEditor) return { kind: 'editor' as const, node: textEditor }
         const browser = browsers.find((entry) => entry.id === id)
         if (browser) return { kind: 'browser' as const, node: browser }
         return null
       })
       .filter((entry): entry is PinnedSectionNode => Boolean(entry))
       .sort((left, right) => (left.node.zIndex ?? 0) - (right.node.zIndex ?? 0))
-  }, [agentWindows, browsers, section, terminals])
+  }, [agentWindows, browsers, section, terminals, textEditors])
 
   if (!section) return null
 
@@ -305,6 +318,15 @@ function PinnedSectionContent({
               style={style}
             >
               <AgentChatPanel agentWindow={agentNode} />
+            </div>
+          )
+        }
+
+        if (entry.kind === 'editor') {
+          const editorNode = entry.node
+          return (
+            <div key={editorNode.id} className="absolute overflow-hidden rounded-md" style={style}>
+              <TextEditorSurface editor={editorNode} className="h-full" />
             </div>
           )
         }

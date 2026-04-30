@@ -11,6 +11,8 @@ const shouldFilterStartupNoise = process.platform === 'darwin'
 const env = {
   ...process.env,
   CELLS_DEV_ROOT: process.env.CELLS_DEV_ROOT ?? path.join(os.homedir(), '.cells-dev'),
+  TERM: process.env.TERM && process.env.TERM !== 'dumb' ? process.env.TERM : 'xterm-256color',
+  COLORTERM: process.env.COLORTERM ?? 'truecolor',
 }
 
 function shouldDropLine(line) {

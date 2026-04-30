@@ -330,7 +330,8 @@ const api: CellsAPI = {
     resizeToFit: (width: number, height: number) =>
       ipcRenderer.invoke('app:resize-to-fit', width, height),
     pickFolder: () => ipcRenderer.invoke('app:pick-folder'),
-    pickFiles: () => ipcRenderer.invoke('app:pick-files') as Promise<string[] | null>,
+    pickFiles: (defaultDirectory?: string | null) =>
+      ipcRenderer.invoke('app:pick-files', defaultDirectory) as Promise<string[] | null>,
     listRecentFiles: () =>
       ipcRenderer.invoke('app:list-recent-files') as Promise<
         Array<{ path: string; name: string; mtime: number; source: string }>
@@ -417,8 +418,20 @@ const api: CellsAPI = {
     },
     getPinnedType: () => {
       const params = new URLSearchParams(window.location.search)
-      return params.get('type') as 'terminal' | 'browser' | 'agent' | 'section' | null
+      return params.get('type') as 'terminal' | 'browser' | 'agent' | 'editor' | 'section' | null
     },
+    onOpenFiles: (callback: (paths: string[]) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, paths: string[]) => callback(paths)
+      ipcRenderer.on('app:open-files', handler)
+      return () => ipcRenderer.removeListener('app:open-files', handler)
+    },
+  },
+  editor: {
+    readFile: (filePath: string) => ipcRenderer.invoke('editor:read-file', filePath),
+    writeFile: (filePath: string, content: string) =>
+      ipcRenderer.invoke('editor:write-file', filePath, content),
+    saveFileAs: (content: string, defaultPath?: string | null, defaultDirectory?: string | null) =>
+      ipcRenderer.invoke('editor:save-file-as', content, defaultPath, defaultDirectory),
   },
   git: {
     isRepo: (cwd: string) => ipcRenderer.invoke('git:is-repo', cwd),
@@ -443,6 +456,10 @@ const api: CellsAPI = {
   agentSession: {
     ensure: (request: AgentSessionRequest) =>
       ipcRenderer.invoke('agent-session:ensure', request) as Promise<AgentSessionSnapshot>,
+    subscribeUpdates: (windowId: string) =>
+      ipcRenderer.invoke('agent-session:subscribe-updates', windowId) as Promise<void>,
+    unsubscribeUpdates: (windowId: string) =>
+      ipcRenderer.invoke('agent-session:unsubscribe-updates', windowId) as Promise<void>,
     send: (
       windowId: string,
       input: string,

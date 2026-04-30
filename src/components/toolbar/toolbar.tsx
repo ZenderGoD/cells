@@ -1,4 +1,11 @@
-import { useRef, useState, useEffect, useCallback, type KeyboardEvent } from 'react'
+import {
+  useRef,
+  useState,
+  useEffect,
+  useCallback,
+  type KeyboardEvent,
+  type MouseEvent,
+} from 'react'
 import {
   ArrowLeft,
   ArrowRight,
@@ -6,6 +13,8 @@ import {
   ChevronDown,
   ChevronUp,
   Code,
+  FileText,
+  FolderOpen,
   Globe,
   LayoutGrid,
   Download,
@@ -20,6 +29,7 @@ import {
   Plus,
   Puzzle,
   RotateCw,
+  Save,
   Search,
   Settings,
   TerminalSquare,
@@ -74,6 +84,7 @@ import {
   copyBrowserElementSelectionToClipboard,
 } from '@/lib/browser-element-selection'
 import { showToast } from '@/components/toast'
+import { TEXT_EDITOR_SAVE_EVENT } from '@/lib/text-editor-events'
 
 function stripeClass(kind: WindowActivityKind): string {
   switch (kind) {
@@ -166,9 +177,11 @@ function ProjectTab({
   viewportRect,
   snapToTerminal,
   snapToBrowser,
+  snapToTextEditor,
   snapToAgentWindow,
   moveTerminal,
   moveBrowser,
+  moveTextEditor,
   moveAgentWindow,
   attention,
   activities,
@@ -188,9 +201,11 @@ function ProjectTab({
   viewportRect: import('@/lib/canvas-navigation').CanvasRect | undefined
   snapToTerminal: (id: string) => void
   snapToBrowser: (id: string) => void
+  snapToTextEditor: (id: string) => void
   snapToAgentWindow: (id: string) => void
   moveTerminal: (id: string, x: number, y: number) => void
   moveBrowser: (id: string, x: number, y: number) => void
+  moveTextEditor: (id: string, x: number, y: number) => void
   moveAgentWindow: (id: string, x: number, y: number) => void
   attention: ProjectAttention
   activities: ProjectWindowActivity[]
@@ -375,6 +390,10 @@ function ProjectTab({
                   snapToAgentWindow(window.id)
                   return
                 }
+                if (window.type === 'editor') {
+                  snapToTextEditor(window.id)
+                  return
+                }
                 snapToTerminal(window.id)
               }}
               onMove={(window, x, y) => {
@@ -382,6 +401,8 @@ function ProjectTab({
                   moveBrowser(window.id, x, y)
                 } else if (window.type === 'agent') {
                   moveAgentWindow(window.id, x, y)
+                } else if (window.type === 'editor') {
+                  moveTextEditor(window.id, x, y)
                 } else {
                   moveTerminal(window.id, x, y)
                 }
@@ -417,18 +438,27 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
   const titleBarHidden = useStore((s) => s.titleBarHidden)
   const addTerminal = useStore((s) => s.addTerminal)
   const addBrowser = useStore((s) => s.addBrowser)
+  const addTextEditor = useStore((s) => s.addTextEditor)
+  const openTextEditorForPath = useStore((s) => s.openTextEditorForPath)
   const requestCloseWindow = useStore((s) => s.requestCloseWindow)
   const requestCloseProject = useStore((s) => s.requestCloseProject)
   const setProjectTitleBarPinned = useStore((s) => s.setProjectTitleBarPinned)
   const windowCount = useStore(
-    (s) => s.terminals.length + s.browsers.length + s.agentWindows.length,
+    (s) => s.terminals.length + s.browsers.length + s.textEditors.length + s.agentWindows.length,
   )
   const terminals = useStore((s) => s.terminals)
   const browsers = useStore((s) => s.browsers)
+  const textEditors = useStore((s) => s.textEditors)
   const agentWindows = useStore((s) => s.agentWindows)
   const canvas = useStore((s) => s.canvas)
   const focusedTerminalId = useStore((s) => s.focusedTerminalId)
+  const focusedTextEditorId = useStore((s) => s.focusedTextEditorId)
   const focusedAgentWindowId = useStore((s) => s.focusedAgentWindowId)
+  const focusedTextEditor = useStore((s) =>
+    s.focusedTextEditorId
+      ? s.textEditors.find((editor) => editor.id === s.focusedTextEditorId)
+      : undefined,
+  )
   const focusedBrowser = useStore((s) =>
     s.focusedBrowserId ? s.browsers.find((b) => b.id === s.focusedBrowserId) : undefined,
   )
@@ -449,10 +479,20 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
       return s.terminals.find((t) => t.id === s.focusedTerminalId)?.pinned ?? false
     if (s.focusedBrowserId)
       return s.browsers.find((b) => b.id === s.focusedBrowserId)?.pinned ?? false
+    if (s.focusedTextEditorId)
+      return s.textEditors.find((editor) => editor.id === s.focusedTextEditorId)?.pinned ?? false
+    if (s.focusedAgentWindowId)
+      return s.agentWindows.find((entry) => entry.id === s.focusedAgentWindowId)?.pinned ?? false
     return false
   })
   const hasFocusedWindow = useStore(
-    (s) => !!(s.focusedTerminalId || s.focusedBrowserId || s.focusedAgentWindowId),
+    (s) =>
+      !!(
+        s.focusedTerminalId ||
+        s.focusedBrowserId ||
+        s.focusedTextEditorId ||
+        s.focusedAgentWindowId
+      ),
   )
   const syncAgentWindow = useStore((s) => s.syncAgentWindow)
   const [editingTitleForAgentId, setEditingTitleForAgentId] = useState<string | null>(null)
@@ -472,9 +512,11 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
   const togglePinSection = useStore((s) => s.togglePinSection)
   const snapToTerminal = useStore((s) => s.snapToTerminal)
   const snapToBrowser = useStore((s) => s.snapToBrowser)
+  const snapToTextEditor = useStore((s) => s.snapToTextEditor)
   const snapToAgentWindow = useStore((s) => s.snapToAgentWindow)
   const moveTerminal = useStore((s) => s.moveTerminal)
   const moveBrowser = useStore((s) => s.moveBrowser)
+  const moveTextEditor = useStore((s) => s.moveTextEditor)
   const moveAgentWindow = useStore((s) => s.moveAgentWindow)
   const focusedBrowserId = useStore((s) => s.focusedBrowserId)
   const closeUndoTimeoutMs = useStore((s) => s.closeUndoTimeoutMs)
@@ -552,7 +594,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
   }, [refreshExtensions])
   const copyResetRef = useRef<number | null>(null)
   const showCopied = !!focusedBrowser?.url && copiedBrowserId === focusedBrowser.id
-  const allWindows = getCanvasWindows(terminals, browsers, agentWindows)
+  const allWindows = getCanvasWindows(terminals, browsers, textEditors, agentWindows)
   const viewportSize = getCanvasViewportSize({ titleBarHidden })
   const viewportRect = getViewportRect(canvas, viewportSize.width, viewportSize.height)
   const focusedWindowSection = focusedWindowSectionId
@@ -578,7 +620,9 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
       ? allWindows.find((window) => window.id === focusedTerminalId)
       : focusedBrowserId
         ? allWindows.find((window) => window.id === focusedBrowserId)
-        : allWindows.find((window) => window.id === focusedAgentWindowId)) ?? null
+        : focusedTextEditorId
+          ? allWindows.find((window) => window.id === focusedTextEditorId)
+          : allWindows.find((window) => window.id === focusedAgentWindowId)) ?? null
   const overviewAnchor = focusedWindow ?? getClosestWindow(allWindows, viewportCenter) ?? null
   const latestClosedWindow =
     pendingClosedWindows.find((entry) => entry.projectId === activeProjectId) ?? null
@@ -938,6 +982,42 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
     requestAnimationFrame(() => window.dispatchEvent(new Event('terminal-refocus')))
   }, [closeTerminalFind])
 
+  const toggleMaximizeFromTitleBar = useCallback((event: MouseEvent<HTMLElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    void window.cells.app.toggleMaximize()
+  }, [])
+
+  const handleTitleBarDoubleClick = useCallback(
+    (event: MouseEvent<HTMLElement>) => {
+      const target = event.target as HTMLElement
+      if (
+        target.closest(
+          [
+            'button',
+            'input',
+            '[data-allow-focus]',
+            '[data-slot="popover-trigger"]',
+            '.no-drag:not([data-titlebar-empty-space])',
+          ].join(','),
+        )
+      ) {
+        return
+      }
+      toggleMaximizeFromTitleBar(event)
+    },
+    [toggleMaximizeFromTitleBar],
+  )
+
+  const openPickedFilesInEditor = useCallback(async () => {
+    const projectPath = useStore.getState().getActiveProjectPath()
+    const picked = await window.cells.app.pickFiles(projectPath)
+    if (!picked?.length) return
+    for (const filePath of picked) {
+      openTextEditorForPath(filePath, activeProjectId)
+    }
+  }, [activeProjectId, openTextEditorForPath])
+
   return (
     <>
       <div
@@ -959,7 +1039,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
               ? `color-mix(in oklch, ${themeColor} 15%, var(--background))`
               : undefined,
         }}
-        onDoubleClick={() => window.cells.app.toggleMaximize()}
+        onDoubleClick={handleTitleBarDoubleClick}
         onMouseDown={(e) => {
           // Prevent toolbar clicks from stealing focus from the terminal,
           // but allow the URL input to be focused normally.
@@ -999,6 +1079,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
                 ? windowCount + windowSections.length
                 : (project.terminals?.length ?? 0) +
                   (project.browsers?.length ?? 0) +
+                  (project.textEditors?.length ?? 0) +
                   (project.agentWindows?.length ?? 0) +
                   (project.windowSections?.length ?? 0)
 
@@ -1028,9 +1109,11 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
                   viewportRect={viewportRect}
                   snapToTerminal={snapToTerminal}
                   snapToBrowser={snapToBrowser}
+                  snapToTextEditor={snapToTextEditor}
                   snapToAgentWindow={snapToAgentWindow}
                   moveTerminal={moveTerminal}
                   moveBrowser={moveBrowser}
+                  moveTextEditor={moveTextEditor}
                   moveAgentWindow={moveAgentWindow}
                   attention={attention}
                   activities={activities}
@@ -1178,6 +1261,51 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
               className="p-1 rounded text-muted-foreground/40 hover:text-foreground hover:bg-muted/40 transition-colors shrink-0"
               onClick={() => void requestCloseWindow({ id: focusedBrowser.id, type: 'browser' })}
               title="Close Browser"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+        ) : focusedTextEditor ? (
+          <div className="flex min-w-0 flex-1 items-center gap-2 px-3">
+            <FileText className="h-3 w-3 shrink-0 text-primary/70" />
+            {focusedTextEditor.isDirty ? (
+              <span className="size-1.5 shrink-0 rounded-full bg-primary" />
+            ) : null}
+            <span
+              className={cn(
+                'min-w-0 truncate text-[11px] font-medium text-muted-foreground',
+                embedded ? 'flex-1' : 'max-w-[36rem] flex-[0_1_auto]',
+              )}
+              title={focusedTextEditor.filePath ?? focusedTextEditor.title}
+            >
+              {focusedTextEditor.title || focusedTextEditor.filePath || 'Untitled'}
+            </span>
+            {focusedTextEditor.filePath ? (
+              <button
+                className="p-1 rounded text-muted-foreground/40 hover:text-foreground hover:bg-muted/40 transition-colors shrink-0"
+                onClick={() => void window.cells.app.revealPath(focusedTextEditor.filePath!)}
+                title="Reveal in Finder"
+              >
+                <FolderOpen className="w-3 h-3" />
+              </button>
+            ) : null}
+            <button
+              className="p-1 rounded text-muted-foreground/40 hover:text-foreground hover:bg-muted/40 transition-colors shrink-0"
+              onClick={() =>
+                window.dispatchEvent(
+                  new CustomEvent(TEXT_EDITOR_SAVE_EVENT, {
+                    detail: { editorId: focusedTextEditor.id },
+                  }),
+                )
+              }
+              title="Save"
+            >
+              <Save className="w-3 h-3" />
+            </button>
+            <button
+              className="p-1 rounded text-muted-foreground/40 hover:text-foreground hover:bg-muted/40 transition-colors shrink-0"
+              onClick={() => void requestCloseWindow({ id: focusedTextEditor.id, type: 'editor' })}
+              title="Close Editor"
             >
               <X className="w-3 h-3" />
             </button>
@@ -1403,8 +1531,14 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
           <div className="flex-1" />
         )}
 
-        {/* Draggable spacer - allows dragging from the title bar */}
-        {!embedded && <div className="flex-1" />}
+        {/* Empty title bar spacer - keeps double-click maximize responsive. */}
+        {!embedded && (
+          <div
+            className="flex-1 no-drag"
+            data-titlebar-empty-space="true"
+            onDoubleClick={toggleMaximizeFromTitleBar}
+          />
+        )}
 
         {/* Right side controls */}
         {!embedded && (
@@ -1590,6 +1724,28 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
                 >
                   <TerminalSquare className="w-3.5 h-3.5 text-muted-foreground" />
                   Terminal
+                </button>
+                <button
+                  onClick={() => {
+                    hapticSuccess()
+                    addTextEditor()
+                    setPlusOpen(false)
+                  }}
+                  className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-md text-[11px] text-foreground hover:bg-muted/60 transition-colors"
+                >
+                  <FileText className="w-3.5 h-3.5 text-muted-foreground" />
+                  Text editor
+                </button>
+                <button
+                  onClick={() => {
+                    hapticSuccess()
+                    void openPickedFilesInEditor()
+                    setPlusOpen(false)
+                  }}
+                  className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-md text-[11px] text-foreground hover:bg-muted/60 transition-colors"
+                >
+                  <FolderOpen className="w-3.5 h-3.5 text-muted-foreground" />
+                  Open file
                 </button>
                 <button
                   onClick={() => {

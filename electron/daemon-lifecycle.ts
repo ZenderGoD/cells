@@ -78,6 +78,8 @@ export async function ensureDaemon(
         CELLS_APP_VERSION: appVersion,
         CELLS_HOME_DIR: stateDir,
         CELLS_TERMINAL_BACKEND: backend,
+        TERM: 'xterm-256color',
+        COLORTERM: 'truecolor',
       },
     })
     child.unref()

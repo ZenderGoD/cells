@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback, useLayoutEffect } from 'react'
-import { Globe } from 'lucide-react'
+import { FileText, Globe } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
 import { inferAgentFromTitle } from '@/lib/agent-command'
@@ -20,26 +20,30 @@ import type { AgentWindowStatus, TerminalRuntimeStatus } from '@/types'
 interface SwitcherItem {
   id: string
   title: string
-  type: 'terminal' | 'browser' | 'agent'
+  type: 'terminal' | 'browser' | 'agent' | 'editor'
   agent?: 'claude' | 'codex' | 'opencode' | 'pi' | null
   runtimeStatus?: TerminalRuntimeStatus | null
   agentStatus?: AgentWindowStatus | null
   url?: string
   isCurrent: boolean
   faviconUrl?: string
+  isDirty?: boolean
 }
 
 export function TerminalSwitcher() {
   const terminals = useStore((s) => s.terminals)
   const browsers = useStore((s) => s.browsers)
+  const textEditors = useStore((s) => s.textEditors)
   const agentWindows = useStore((s) => s.agentWindows)
   const windowSections = useStore((s) => s.windowSections)
   const focusedTerminalId = useStore((s) => s.focusedTerminalId)
   const focusedBrowserId = useStore((s) => s.focusedBrowserId)
+  const focusedTextEditorId = useStore((s) => s.focusedTextEditorId)
   const focusedAgentWindowId = useStore((s) => s.focusedAgentWindowId)
   const canvas = useStore((s) => s.canvas)
   const snapToTerminal = useStore((s) => s.snapToTerminal)
   const snapToBrowser = useStore((s) => s.snapToBrowser)
+  const snapToTextEditor = useStore((s) => s.snapToTextEditor)
   const snapToAgentWindow = useStore((s) => s.snapToAgentWindow)
   const setOverlayOpen = useStore((s) => s.setOverlayOpen)
   const tabSwitchMode = useStore((s) => s.tabSwitchMode)
@@ -89,6 +93,13 @@ export function TerminalSwitcher() {
       isCurrent: b.id === focusedBrowserId,
       faviconUrl: b.faviconUrl,
     })),
+    ...textEditors.map((editor) => ({
+      id: editor.id,
+      title: editor.title || editor.filePath || 'Untitled',
+      type: 'editor' as const,
+      isCurrent: editor.id === focusedTextEditorId,
+      isDirty: editor.isDirty ?? false,
+    })),
     ...agentWindows.map((a) => ({
       id: a.id,
       title: a.customTitle || a.title || (a.agent === 'claude' ? 'Claude Code' : 'Codex'),
@@ -99,8 +110,9 @@ export function TerminalSwitcher() {
     })),
   ]
 
-  const currentId = focusedTerminalId || focusedBrowserId || focusedAgentWindowId
-  const canvasWindows = getCanvasWindows(terminals, browsers, agentWindows)
+  const currentId =
+    focusedTerminalId || focusedBrowserId || focusedTextEditorId || focusedAgentWindowId
+  const canvasWindows = getCanvasWindows(terminals, browsers, textEditors, agentWindows)
   const viewportSize = getCanvasViewportSize({ titleBarHidden })
   const viewportRect = getViewportRect(canvas, viewportSize.width, viewportSize.height)
   const items = (
@@ -136,12 +148,16 @@ export function TerminalSwitcher() {
       const chronologicalItems = [
         ...state.terminals.map((t) => ({ id: t.id, type: 'terminal' as const })),
         ...state.browsers.map((b) => ({ id: b.id, type: 'browser' as const })),
+        ...state.textEditors.map((editor) => ({ id: editor.id, type: 'editor' as const })),
         ...state.agentWindows.map((a) => ({ id: a.id, type: 'agent' as const })),
       ]
       if (chronologicalItems.length < 2) return
 
       const currentId =
-        state.focusedTerminalId || state.focusedBrowserId || state.focusedAgentWindowId
+        state.focusedTerminalId ||
+        state.focusedBrowserId ||
+        state.focusedTextEditorId ||
+        state.focusedAgentWindowId
       const allItems = (
         state.tabSwitchMode === 'recent' && state.focusHistory.length > 0
           ? orderByRecent(chronologicalItems, currentId, state.focusHistory)
@@ -187,11 +203,14 @@ export function TerminalSwitcher() {
       const targetId = selectedIdRef.current
       const isTerminal = state.terminals.some((t) => t.id === targetId)
       const isBrowser = state.browsers.some((b) => b.id === targetId)
+      const isEditor = state.textEditors.some((editor) => editor.id === targetId)
       const isAgent = state.agentWindows.some((a) => a.id === targetId)
       if (isTerminal) {
         snapToTerminal(targetId)
       } else if (isBrowser) {
         snapToBrowser(targetId)
+      } else if (isEditor) {
+        snapToTextEditor(targetId)
       } else if (isAgent) {
         snapToAgentWindow(targetId)
       }
@@ -199,7 +218,7 @@ export function TerminalSwitcher() {
     }
     setOpen(false)
     updateSelected(0, null)
-  }, [setOpen, snapToAgentWindow, snapToBrowser, snapToTerminal, updateSelected])
+  }, [setOpen, snapToAgentWindow, snapToBrowser, snapToTerminal, snapToTextEditor, updateSelected])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -324,6 +343,13 @@ export function TerminalSwitcher() {
                             )}
                           />
                         )
+                      ) : item.type === 'editor' ? (
+                        <FileText
+                          className={cn(
+                            'h-6 w-6',
+                            i === selectedIndex ? 'text-primary/60' : 'text-muted-foreground/20',
+                          )}
+                        />
                       ) : item.faviconUrl ? (
                         <img
                           src={item.faviconUrl}
@@ -353,6 +379,8 @@ export function TerminalSwitcher() {
                         ) : (
                           <Logo className="h-3 w-3 shrink-0 text-muted-foreground/50" />
                         )
+                      ) : item.type === 'editor' ? (
+                        <FileText className="h-3 w-3 shrink-0 text-muted-foreground/50" />
                       ) : item.faviconUrl ? (
                         <img
                           src={item.faviconUrl}
@@ -373,6 +401,17 @@ export function TerminalSwitcher() {
                                 className={`w-1.5 h-1.5 rounded-full shrink-0 ${presentation.dotClass}`}
                                 title={presentation.label}
                               />
+                            )
+                          if (item.isCurrent)
+                            return (
+                              <div className="w-1.5 h-1.5 rounded-full bg-primary/60 shrink-0" />
+                            )
+                          return null
+                        }
+                        if (item.type === 'editor') {
+                          if (item.isDirty)
+                            return (
+                              <div className="w-1.5 h-1.5 rounded-full bg-primary/70 shrink-0" />
                             )
                           if (item.isCurrent)
                             return (

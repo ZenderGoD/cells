@@ -1446,6 +1446,11 @@ interface ClaudeRuntime extends RuntimeBase {
   /** True once the current turn has emitted a context-window-accurate live
    *  usage snapshot (task_progress/task_notification/compact_boundary). */
   liveContextUsageUpdatedThisTurn: boolean
+  claudeStreamState: {
+    messageIdByScope: Map<string, string>
+    textMessageIdByBlock: Map<string, string>
+    toolUseIdByBlock: Map<string, string>
+  }
   /** Set while the agent has called `ExitPlanMode` and we're blocking the
    *  `canUseTool` return until the user picks approve / reject from the UI. */
   pendingPlanApproval: {
@@ -2019,6 +2024,49 @@ function getPersistPath(windowId: string): string {
   return path.join(getPersistDir(), `${windowId}.json`)
 }
 
+function getPersistMetaPath(windowId: string): string {
+  return path.join(getPersistDir(), `${windowId}.meta.json`)
+}
+
+function buildSavedSessionSummary(snapshot: AgentSessionSnapshot): SavedAgentSessionSummary {
+  let lastMessageText: string | null = null
+  for (let i = snapshot.messages.length - 1; i >= 0; i -= 1) {
+    const text = snapshot.messages[i]?.text?.trim()
+    if (text) {
+      lastMessageText = text
+      break
+    }
+  }
+  return {
+    windowId: snapshot.windowId,
+    agent: snapshot.agent,
+    title: snapshot.title,
+    cwd: snapshot.cwd ?? null,
+    claudeSessionId: snapshot.claudeSessionId ?? null,
+    codexThreadId: snapshot.codexThreadId ?? null,
+    model: snapshot.usage?.model ?? null,
+    updatedAt: snapshot.updatedAt,
+    messageCount: snapshot.messages.length,
+    lastMessageText,
+  }
+}
+
+function loadPersistedSummary(windowId: string): SavedAgentSessionSummary | null {
+  const file = getPersistMetaPath(windowId)
+  if (!existsSync(file)) return null
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf8'))
+    if (!parsed || typeof parsed !== 'object') return null
+    if (parsed.windowId !== windowId) return null
+    if (parsed.agent !== 'claude' && parsed.agent !== 'codex') return null
+    if (typeof parsed.title !== 'string' || typeof parsed.updatedAt !== 'number') return null
+    if (typeof parsed.messageCount !== 'number') return null
+    return parsed as SavedAgentSessionSummary
+  } catch {
+    return null
+  }
+}
+
 function loadPersistedSnapshot(windowId: string): AgentSessionSnapshot | null {
   const file = getPersistPath(windowId)
   if (!existsSync(file)) return null
@@ -2071,9 +2119,10 @@ function getPersistDebounceMs(snapshot: AgentSessionSnapshot) {
   // Cells still writes full snapshots, so back off aggressively once a live
   // session transcript gets large.
   const messageCount = snapshot.messages.length
-  if (messageCount >= 1000) return 1000
-  if (messageCount >= 400) return 500
-  return 150
+  if (messageCount >= 1000) return 10_000
+  if (messageCount >= 400) return 5_000
+  if (messageCount >= 100) return 1_000
+  return 250
 }
 
 async function persistSnapshotNow(snapshot: AgentSessionSnapshot) {
@@ -2082,6 +2131,15 @@ async function persistSnapshotNow(snapshot: AgentSessionSnapshot) {
   const serialized = JSON.stringify(snapshot)
   await fs.writeFile(tmp, serialized, 'utf8')
   await fs.rename(tmp, file)
+  await persistSummaryNow(buildSavedSessionSummary(snapshot))
+}
+
+async function persistSummaryNow(summary: SavedAgentSessionSummary) {
+  const metaFile = getPersistMetaPath(summary.windowId)
+  const metaTmp = `${metaFile}.tmp`
+  const serializedSummary = JSON.stringify(summary)
+  await fs.writeFile(metaTmp, serializedSummary, 'utf8')
+  await fs.rename(metaTmp, metaFile)
 }
 
 function schedulePersist(snapshot: AgentSessionSnapshot) {
@@ -2546,30 +2604,22 @@ export class AgentSessionService extends EventEmitter {
     }
 
     return entries
-      .filter((entry) => entry.endsWith('.json'))
-      .map((entry) => loadPersistedSnapshot(path.basename(entry, '.json')))
-      .filter((snapshot): snapshot is AgentSessionSnapshot => snapshot !== null)
-      .filter(
-        (snapshot) =>
-          snapshot.messages.length > 0 || !!snapshot.claudeSessionId || !!snapshot.codexThreadId,
-      )
-      .map((snapshot) => {
-        const lastMessage = [...snapshot.messages]
-          .reverse()
-          .find((message) => typeof message.text === 'string' && message.text.trim().length > 0)
-        return {
-          windowId: snapshot.windowId,
-          agent: snapshot.agent,
-          title: snapshot.title,
-          cwd: snapshot.cwd ?? null,
-          claudeSessionId: snapshot.claudeSessionId ?? null,
-          codexThreadId: snapshot.codexThreadId ?? null,
-          model: snapshot.usage?.model ?? null,
-          updatedAt: snapshot.updatedAt,
-          messageCount: snapshot.messages.length,
-          lastMessageText: lastMessage?.text?.trim() ?? null,
-        }
+      .filter((entry) => entry.endsWith('.json') && !entry.endsWith('.meta.json'))
+      .map((entry) => {
+        const windowId = path.basename(entry, '.json')
+        const summary = loadPersistedSummary(windowId)
+        if (summary) return summary
+        const snapshot = loadPersistedSnapshot(windowId)
+        if (!snapshot) return null
+        const fallbackSummary = buildSavedSessionSummary(snapshot)
+        persistSummaryNow(fallbackSummary).catch(() => {})
+        return fallbackSummary
       })
+      .filter((summary): summary is SavedAgentSessionSummary => summary !== null)
+      .filter(
+        (summary) =>
+          summary.messageCount > 0 || !!summary.claudeSessionId || !!summary.codexThreadId,
+      )
       .sort((a, b) => b.updatedAt - a.updatedAt)
   }
 
@@ -2716,6 +2766,7 @@ export class AgentSessionService extends EventEmitter {
         model: request.model || DEFAULT_CLAUDE_MODEL,
         cwd: request.cwd ?? undefined,
         permissionMode: claudePermission,
+        includePartialMessages: true,
         env: buildAgentEnv({
           CLAUDE_AGENT_SDK_CLIENT_APP: 'cells',
           ...(request.cwd ? { PWD: request.cwd } : {}),
@@ -2750,6 +2801,11 @@ export class AgentSessionService extends EventEmitter {
         autoContinueCount: 0,
         postCompactUsedTokens: null,
         liveContextUsageUpdatedThisTurn: false,
+        claudeStreamState: {
+          messageIdByScope: new Map(),
+          textMessageIdByBlock: new Map(),
+          toolUseIdByBlock: new Map(),
+        },
         pendingPlanApproval: null,
         pendingQuestion: null,
       }
@@ -4312,11 +4368,46 @@ export class AgentSessionService extends EventEmitter {
       const evt = event as any
       const streamed = evt.event
       const parentToolUseId: string | null = evt.parent_tool_use_id ?? null
+      const scopeKey = `${evt.session_id ?? runtime.snapshot.claudeSessionId ?? runtime.snapshot.windowId}:${
+        parentToolUseId ?? 'root'
+      }`
+      const blockKey = (index: unknown) => `${scopeKey}:${String(index ?? 0)}`
+      if (streamed?.type === 'message_start') {
+        const messageId = streamed.message?.id
+        if (typeof messageId === 'string' && messageId.length > 0) {
+          runtime.claudeStreamState.messageIdByScope.set(scopeKey, messageId)
+        }
+        return
+      }
+      if (streamed?.type === 'message_stop') {
+        runtime.claudeStreamState.messageIdByScope.delete(scopeKey)
+        for (const key of Array.from(runtime.claudeStreamState.textMessageIdByBlock.keys())) {
+          if (key.startsWith(`${scopeKey}:`))
+            runtime.claudeStreamState.textMessageIdByBlock.delete(key)
+        }
+        for (const key of Array.from(runtime.claudeStreamState.toolUseIdByBlock.keys())) {
+          if (key.startsWith(`${scopeKey}:`)) runtime.claudeStreamState.toolUseIdByBlock.delete(key)
+        }
+        return
+      }
+      if (streamed?.type === 'content_block_start' && streamed?.content_block?.type === 'text') {
+        const messageId =
+          runtime.claudeStreamState.messageIdByScope.get(scopeKey) ??
+          (typeof evt.uuid === 'string' ? evt.uuid : `${runtime.snapshot.windowId}-${now()}`)
+        runtime.claudeStreamState.textMessageIdByBlock.set(
+          blockKey(streamed.index),
+          `stream-${messageId}-${streamed.index ?? 0}`,
+        )
+        return
+      }
       if (
         streamed?.type === 'content_block_start' &&
         streamed?.content_block?.type === 'tool_use'
       ) {
         const tool = streamed.content_block
+        if (tool.id) {
+          runtime.claudeStreamState.toolUseIdByBlock.set(blockKey(streamed.index), tool.id)
+        }
         log('claude.tool.start', {
           windowId: runtime.snapshot.windowId,
           toolName: tool.name,
@@ -4342,7 +4433,11 @@ export class AgentSessionService extends EventEmitter {
       if (streamed?.type === 'content_block_delta' && streamed?.delta?.type === 'text_delta') {
         const delta: string = streamed.delta.text ?? ''
         if (!delta) return
-        const parentId = `stream-${evt.uuid}`
+        const parentId =
+          runtime.claudeStreamState.textMessageIdByBlock.get(blockKey(streamed.index)) ??
+          `stream-${runtime.claudeStreamState.messageIdByScope.get(scopeKey) ?? evt.uuid}-${
+            streamed.index ?? 0
+          }`
         const existing = runtime.snapshot.messages.find((m) => m.id === parentId)
         if (existing && existing.role === 'assistant') {
           existing.text = (existing.text || '') + delta
@@ -4366,7 +4461,9 @@ export class AgentSessionService extends EventEmitter {
         streamed?.delta?.type === 'input_json_delta'
       ) {
         // Tool input streaming — stitch into the tool message.
-        const toolUseId = streamed.tool_use_id || streamed.index
+        const toolUseId =
+          streamed.tool_use_id ??
+          runtime.claudeStreamState.toolUseIdByBlock.get(blockKey(streamed.index))
         if (toolUseId) {
           const existing = runtime.snapshot.messages.find((m) => m.id === `tool-${toolUseId}`)
           if (existing) {
@@ -4599,11 +4696,20 @@ export class AgentSessionService extends EventEmitter {
         toolBlocks: content.filter((c: any) => c?.type === 'tool_use').length,
       })
       const text = flattenClaudeText(msg)
-      // If we've already been streaming text under stream-<uuid>, overwrite it
-      // with the authoritative text and mark it completed. Avoids double-
-      // rendering and ensures the final text matches the model's output.
-      const streamingId = `stream-${uuid}`
-      const streamed = runtime.snapshot.messages.find((m) => m.id === streamingId)
+      // If we've already been streaming text, overwrite it with the
+      // authoritative final text and mark it completed. Partial stream events
+      // are keyed by the raw API message/content-block id; older builds used
+      // the SDK wrapper uuid, so keep that as a fallback while sessions are
+      // running across reloads.
+      const messageId = typeof msg?.id === 'string' && msg.id ? msg.id : uuid
+      const firstTextIndex = content.findIndex((c: any) => c?.type === 'text')
+      const streamingIds = [
+        messageId ? `stream-${messageId}-${firstTextIndex >= 0 ? firstTextIndex : 0}` : null,
+        uuid ? `stream-${uuid}` : null,
+      ].filter((id): id is string => typeof id === 'string')
+      const streamed = runtime.snapshot.messages.find(
+        (m) => m.role === 'assistant' && streamingIds.includes(m.id),
+      )
       if (streamed && streamed.role === 'assistant' && text.trim()) {
         streamed.text = text
         streamed.status = 'completed'

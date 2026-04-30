@@ -6,13 +6,14 @@ import type {
   CanvasTransform,
   TerminalNode,
   TerminalRuntimeStatus,
+  TextEditorNode,
 } from '../types'
 
 export type CanvasDirection = 'left' | 'right' | 'up' | 'down'
 
 export interface CanvasWindow {
   id: string
-  type: 'terminal' | 'browser' | 'agent'
+  type: 'terminal' | 'browser' | 'agent' | 'editor'
   title: string
   x: number
   y: number
@@ -25,6 +26,8 @@ export interface CanvasWindow {
   hasUnviewedCompletion?: boolean
   color?: import('./agent-window-colors').AgentWindowColorId | null
   faviconUrl?: string
+  filePath?: string | null
+  isDirty?: boolean
 }
 
 export interface CanvasRect {
@@ -50,6 +53,7 @@ export function getCanvasSnapPadding(mode: CanvasSnapMode, basePadding: number) 
 export function getCanvasWindows(
   terminals: TerminalNode[],
   browsers: BrowserNode[],
+  textEditors: TextEditorNode[] = [],
   agentWindows: AgentWindowNode[] = [],
 ): CanvasWindow[] {
   return [
@@ -80,6 +84,20 @@ export function getCanvasWindows(
         height: browser.height,
         zIndex: browser.zIndex ?? index + 1,
         faviconUrl: browser.faviconUrl,
+      })),
+    ...textEditors
+      .filter((textEditor) => !textEditor.pinned)
+      .map((textEditor, index) => ({
+        id: textEditor.id,
+        type: 'editor' as const,
+        title: textEditor.title || textEditor.filePath || 'Untitled',
+        x: textEditor.x,
+        y: textEditor.y,
+        width: textEditor.width,
+        height: textEditor.height,
+        zIndex: textEditor.zIndex ?? index + 1,
+        filePath: textEditor.filePath ?? null,
+        isDirty: textEditor.isDirty ?? false,
       })),
     ...agentWindows.map((agentWindow, index) => ({
       id: agentWindow.id,

@@ -10,6 +10,7 @@ import { OnboardingGuide } from './components/onboarding-guide'
 import { ProjectSwitcher } from './components/project-switcher'
 import { CloseWindowDialog } from './components/close-window-dialog'
 import { CloseProjectDialog } from './components/close-project-dialog'
+import { OpenFileProjectDialog } from './components/open-file-project-dialog'
 import { Toaster, showToast } from './components/toast'
 import { PinnedWindow } from './components/pinned-window'
 import { BackgroundAgentSessionHosts } from './components/agent-session/background-agent-session-runner'
@@ -34,6 +35,8 @@ import {
   matchRendererShortcut,
 } from './lib/cells-shortcuts'
 import { buildWindowAppearanceStyle } from './lib/window-appearance'
+import { findProjectForFilePath } from './lib/project-paths'
+import { TEXT_EDITOR_SAVE_EVENT } from './lib/text-editor-events'
 import { useShallow } from 'zustand/react/shallow'
 
 const pinnedId = window.cells.app.getPinnedId()
@@ -133,8 +136,69 @@ function MainApp() {
   const suppressWindowFocusTerminalRefocusTimerRef = useRef<number | null>(null)
   const pendingNotificationFocusFrameRef = useRef<number | null>(null)
   const keyboardNavigationActiveRef = useRef(false)
+  const queuedOpenFilesRef = useRef<string[]>([])
 
   const [windowFocused, setWindowFocused] = useState(true)
+  const [pendingExternalFilePaths, setPendingExternalFilePaths] = useState<string[]>([])
+
+  const routeOpenFiles = useCallback((paths: string[]) => {
+    const uniquePaths = [...new Set(paths.filter(Boolean))]
+    if (uniquePaths.length === 0) return
+
+    const state = useStore.getState()
+    const unmatched: string[] = []
+    for (const filePath of uniquePaths) {
+      const project = findProjectForFilePath(filePath, state.projects)
+      if (project) {
+        state.openTextEditorForPath(filePath, project.id)
+      } else {
+        unmatched.push(filePath)
+      }
+    }
+
+    if (unmatched.length > 0) {
+      setPendingExternalFilePaths((current) => [...new Set([...current, ...unmatched])])
+    }
+  }, [])
+
+  const handleSelectOpenFileProject = useCallback((projectId: string) => {
+    setPendingExternalFilePaths((paths) => {
+      const state = useStore.getState()
+      for (const filePath of paths) {
+        state.openTextEditorForPath(filePath, projectId)
+      }
+      return []
+    })
+  }, [])
+
+  const handleCancelOpenFiles = useCallback(() => {
+    setPendingExternalFilePaths([])
+  }, [])
+
+  useEffect(() => {
+    const unsubscribe = window.cells.app.onOpenFiles((paths) => {
+      const state = useStore.getState()
+      if (!state.initialized) {
+        queuedOpenFilesRef.current = [...new Set([...queuedOpenFilesRef.current, ...paths])]
+        return
+      }
+      routeOpenFiles(paths)
+    })
+    return unsubscribe
+  }, [routeOpenFiles])
+
+  useEffect(() => {
+    if (!initialized || queuedOpenFilesRef.current.length === 0) return
+    const queued = queuedOpenFilesRef.current
+    queuedOpenFilesRef.current = []
+    routeOpenFiles(queued)
+  }, [initialized, routeOpenFiles])
+
+  useEffect(() => {
+    const open = pendingExternalFilePaths.length > 0
+    setOverlayOpen('open-file-project-dialog', open)
+    return () => setOverlayOpen('open-file-project-dialog', false)
+  }, [pendingExternalFilePaths.length, setOverlayOpen])
   useEffect(() => {
     const clearSuppressedWindowFocusRefocus = () => {
       suppressWindowFocusTerminalRefocusRef.current = false
@@ -276,9 +340,11 @@ function MainApp() {
       const id =
         state.focusedTerminalId ||
         state.focusedBrowserId ||
+        state.focusedTextEditorId ||
         state.focusedAgentWindowId ||
         state.terminals[0]?.id ||
         state.browsers[0]?.id ||
+        state.textEditors[0]?.id ||
         state.agentWindows[0]?.id
       if (id) state.zoomToFit(id)
       return
@@ -380,6 +446,14 @@ function MainApp() {
           window.dispatchEvent(new Event(CELLS_COPY_BROWSER_URL_EVENT))
           return true
         case 'toggle-title-bar-hidden':
+          if (state.focusedTextEditorId) {
+            window.dispatchEvent(
+              new CustomEvent(TEXT_EDITOR_SAVE_EVENT, {
+                detail: { editorId: state.focusedTextEditorId },
+              }),
+            )
+            return true
+          }
           toggleTitleBarHidden()
           return true
         case 'toggle-title-bar-position':
@@ -403,6 +477,10 @@ function MainApp() {
             state.snapToBrowser(state.focusedBrowserId)
             return true
           }
+          if (state.focusedTextEditorId) {
+            state.snapToTextEditor(state.focusedTextEditorId)
+            return true
+          }
           if (state.focusedAgentWindowId) {
             state.snapToAgentWindow(state.focusedAgentWindowId)
             return true
@@ -413,9 +491,11 @@ function MainApp() {
           const id =
             state.focusedTerminalId ||
             state.focusedBrowserId ||
+            state.focusedTextEditorId ||
             state.focusedAgentWindowId ||
             state.terminals[0]?.id ||
             state.browsers[0]?.id ||
+            state.textEditors[0]?.id ||
             state.agentWindows[0]?.id
           if (!id) return false
           state.zoomToFit(id)
@@ -469,6 +549,7 @@ function MainApp() {
       const state = useStore.getState()
       if (state.focusedTerminalId) state.snapToTerminal(state.focusedTerminalId)
       else if (state.focusedBrowserId) state.snapToBrowser(state.focusedBrowserId)
+      else if (state.focusedTextEditorId) state.snapToTextEditor(state.focusedTextEditorId)
       else if (state.focusedAgentWindowId) state.snapToAgentWindow(state.focusedAgentWindowId)
     }
     // Match the 220ms slide animation below so the snap lands on the final
@@ -587,6 +668,7 @@ function MainApp() {
         !event.shiftKey &&
         !state.focusedTerminalId &&
         !state.focusedBrowserId &&
+        !state.focusedTextEditorId &&
         !state.focusedAgentWindowId
       ) {
         event.preventDefault()
@@ -710,10 +792,12 @@ function MainApp() {
         cachedTerminalCount: getCachedTerminalCount(),
         totalTerminalCount: state.terminals.length,
         totalBrowserCount: state.browsers.length,
+        totalTextEditorCount: state.textEditors.length,
         totalAgentWindowCount: state.agentWindows.length,
         projectCount: state.projects.length,
         focusedTerminalId: state.focusedTerminalId,
         focusedBrowserId: state.focusedBrowserId,
+        focusedTextEditorId: state.focusedTextEditorId,
         focusedAgentWindowId: state.focusedAgentWindowId,
         useTransparentWindow: state.useTransparentWindow,
         windowOpacity: state.windowOpacity,
@@ -762,6 +846,13 @@ function MainApp() {
         style={shellStyle}
       >
         <Onboarding />
+        <OpenFileProjectDialog
+          open={pendingExternalFilePaths.length > 0}
+          paths={pendingExternalFilePaths}
+          projects={projects}
+          onSelectProject={handleSelectOpenFileProject}
+          onCancel={handleCancelOpenFiles}
+        />
         <Toaster />
         {showDimOverlay && <UnfocusedOverlay onDismiss={() => setWindowFocused(true)} />}
       </div>
@@ -783,6 +874,13 @@ function MainApp() {
       <CommandPalette />
       <TerminalSwitcher />
       <ProjectSwitcher />
+      <OpenFileProjectDialog
+        open={pendingExternalFilePaths.length > 0}
+        paths={pendingExternalFilePaths}
+        projects={projects}
+        onSelectProject={handleSelectOpenFileProject}
+        onCancel={handleCancelOpenFiles}
+      />
       <CloseWindowDialog
         open={!!pendingCloseDialog}
         windowTitle={pendingCloseDialog?.title ?? 'Window'}

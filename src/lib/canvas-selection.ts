@@ -6,7 +6,7 @@ export interface CanvasSelectableWindow {
   y: number
   width: number
   height: number
-  kind?: 'terminal' | 'browser' | 'agent'
+  kind?: 'terminal' | 'browser' | 'agent' | 'editor'
 }
 
 export interface CanvasSelectionRect {
@@ -19,7 +19,7 @@ export interface CanvasSelectionRect {
 export interface SelectionOrigin {
   x: number
   y: number
-  kind: 'terminal' | 'browser' | 'agent'
+  kind: 'terminal' | 'browser' | 'agent' | 'editor'
 }
 
 export function screenPointsToCanvasRect(

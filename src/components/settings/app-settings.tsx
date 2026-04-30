@@ -29,6 +29,7 @@ import { AgentIcon } from '@/components/agent-icon'
 import type { DaemonStatus, ExtensionMeta, InputPrefix, Project } from '@/types'
 
 import { Button } from '@/components/ui/button'
+import { Textarea } from '@/components/ui/textarea'
 import {
   Combobox,
   ComboboxContent,
@@ -79,6 +80,7 @@ type SettingsSectionId =
   | 'appearance'
   | 'projects'
   | 'canvas'
+  | 'editor'
   | 'terminal'
   | 'browser'
   | 'agents'
@@ -94,6 +96,7 @@ const SETTINGS_SECTIONS: Array<{ id: SettingsSectionId; label: string }> = [
   { id: 'appearance', label: 'Appearance' },
   { id: 'projects', label: 'Projects' },
   { id: 'canvas', label: 'Canvas' },
+  { id: 'editor', label: 'Editor' },
   { id: 'terminal', label: 'Terminal' },
   { id: 'browser', label: 'Browser' },
   { id: 'agents', label: 'Agents' },
@@ -189,6 +192,8 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const terminalSessionBackend = useStore((s) => s.terminalSessionBackend)
   const fontSize = useStore((s) => s.fontSize)
   const fontFamily = useStore((s) => s.fontFamily)
+  const editorVimMode = useStore((s) => s.editorVimMode)
+  const editorVimConfig = useStore((s) => s.editorVimConfig)
   const terminalScrollbackLines = useStore((s) => s.terminalScrollbackLines)
   const terminalCursorStyle = useStore((s) => s.terminalCursorStyle)
   const terminalCursorBlink = useStore((s) => s.terminalCursorBlink)
@@ -214,6 +219,8 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
   const setTerminalSessionBackend = useStore((s) => s.setTerminalSessionBackend)
   const setFontSize = useStore((s) => s.setFontSize)
   const setFontFamily = useStore((s) => s.setFontFamily)
+  const setEditorVimMode = useStore((s) => s.setEditorVimMode)
+  const setEditorVimConfig = useStore((s) => s.setEditorVimConfig)
   const setTerminalScrollbackLines = useStore((s) => s.setTerminalScrollbackLines)
   const setTerminalCursorStyle = useStore((s) => s.setTerminalCursorStyle)
   const setTerminalCursorBlink = useStore((s) => s.setTerminalCursorBlink)
@@ -937,6 +944,35 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                           />
                         </div>
                       </button>
+                    </SettingsGroup>
+                  </div>
+                ) : null}
+
+                {activeSection === 'editor' ? (
+                  <div className="space-y-3.5">
+                    <SettingsGroup title="Vim">
+                      <div className="space-y-2.5">
+                        <SettingsField label="Mode" hint={editorVimMode ? 'Enabled' : 'Disabled'}>
+                          <SettingsSwitchRow
+                            label="Use Vim keybindings"
+                            checked={editorVimMode}
+                            onToggle={() => setEditorVimMode(!editorVimMode)}
+                          />
+                        </SettingsField>
+
+                        <SettingsField label="Config" hint="vimrc mappings">
+                          <Textarea
+                            value={editorVimConfig}
+                            onChange={(event) => setEditorVimConfig(event.target.value)}
+                            disabled={!editorVimMode}
+                            spellCheck={false}
+                            placeholder={
+                              'let mapleader = " "\nnmap <leader>w :w<CR>\nimap jj <Esc>'
+                            }
+                            className="min-h-32 resize-y rounded-md border-border/20 bg-background/40 font-mono text-[11px] leading-5 text-foreground placeholder:text-muted-foreground/30 disabled:opacity-45"
+                          />
+                        </SettingsField>
+                      </div>
                     </SettingsGroup>
                   </div>
                 ) : null}

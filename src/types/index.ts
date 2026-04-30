@@ -300,6 +300,25 @@ export interface BrowserNode {
   }
 }
 
+export interface TextEditorNode {
+  id: string
+  x: number
+  y: number
+  width: number
+  height: number
+  title: string
+  filePath?: string | null
+  language?: string | null
+  content?: string | null
+  isDirty?: boolean
+  loaded?: boolean
+  error?: string | null
+  mtimeMs?: number | null
+  size?: number | null
+  zIndex?: number
+  pinned?: boolean
+}
+
 export type AgentModel = string
 
 /**
@@ -647,10 +666,12 @@ export interface Project {
   hiddenFromTitleBar?: boolean
   terminals: TerminalNode[]
   browsers: BrowserNode[]
+  textEditors?: TextEditorNode[]
   agentWindows?: AgentWindowNode[]
   canvas: CanvasTransform
   focusedTerminalId?: string | null
   focusedBrowserId?: string | null
+  focusedTextEditorId?: string | null
   focusedAgentWindowId?: string | null
   lastOpenedAt: number
   worktreesDir?: string
@@ -682,6 +703,8 @@ export interface ProjectsState {
   terminalTheme?: string
   fontSize?: number
   fontFamily?: string
+  editorVimMode?: boolean
+  editorVimConfig?: string
   terminalScrollbackLines?: number
   terminalCursorStyle?: TerminalCursorStyle
   terminalCursorBlink?: boolean
@@ -743,10 +766,12 @@ export interface RendererPerfSample {
   cachedTerminalCount: number
   totalTerminalCount: number
   totalBrowserCount: number
+  totalTextEditorCount: number
   totalAgentWindowCount: number
   projectCount: number
   focusedTerminalId: string | null
   focusedBrowserId: string | null
+  focusedTextEditorId: string | null
   focusedAgentWindowId: string | null
   useTransparentWindow: boolean
   windowOpacity: number
@@ -857,6 +882,8 @@ export interface CellsAPI {
   }
   agentSession: {
     ensure(request: AgentSessionRequest): Promise<AgentSessionSnapshot>
+    subscribeUpdates(windowId: string): Promise<void>
+    unsubscribeUpdates(windowId: string): Promise<void>
     send(
       windowId: string,
       input: string,
@@ -1073,6 +1100,34 @@ export interface CellsAPI {
       callback: (browserId: string, targetAgentWindowId: string | null) => void,
     ): () => void
   }
+  editor: {
+    readFile(filePath: string): Promise<{
+      path: string
+      name: string
+      content: string
+      mtimeMs: number
+      size: number
+    }>
+    writeFile(
+      filePath: string,
+      content: string,
+    ): Promise<{
+      path: string
+      name: string
+      mtimeMs: number
+      size: number
+    }>
+    saveFileAs(
+      content: string,
+      defaultPath?: string | null,
+      defaultDirectory?: string | null,
+    ): Promise<{
+      path: string
+      name: string
+      mtimeMs: number
+      size: number
+    } | null>
+  }
   extensions: {
     install(input: string): Promise<ExtensionMeta>
     uninstall(extensionId: string): Promise<void>
@@ -1114,9 +1169,10 @@ export interface CellsAPI {
       callback: (id: string, type: string, width: number, height: number) => void,
     ): () => void
     getPinnedId(): string | null
-    getPinnedType(): 'terminal' | 'browser' | 'agent' | 'section' | null
+    getPinnedType(): 'terminal' | 'browser' | 'agent' | 'editor' | 'section' | null
+    onOpenFiles(callback: (paths: string[]) => void): () => void
     pickFolder(): Promise<string | null>
-    pickFiles(): Promise<string[] | null>
+    pickFiles(defaultDirectory?: string | null): Promise<string[] | null>
     listRecentFiles(): Promise<Array<{ path: string; name: string; mtime: number; source: string }>>
     copyRichTextToClipboard(text: string, html?: string | null): Promise<void>
     searchAgentMentions(cwd: string, query: string): Promise<AgentMentionSearchResult[]>

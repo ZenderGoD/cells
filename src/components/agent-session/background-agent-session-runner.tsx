@@ -215,22 +215,45 @@ function BackgroundAgentSessionRunner({ agentWindow }: { agentWindow: AgentWindo
       })
     }
 
+    const ensureArgs = {
+      windowId: agentWindow.id,
+      agent: agentWindow.agent,
+      title: agentWindow.customTitle || agentWindow.title,
+      cwd: agentWindow.cwd ?? null,
+      initialPrompt: agentWindow.initialPrompt ?? null,
+      claudeSessionId: agentWindow.claudeSessionId ?? null,
+      codexThreadId: agentWindow.codexThreadId ?? null,
+      model: agentWindow.model ?? null,
+      permissionMode: agentWindow.permissionMode ?? null,
+      thinkingLevel: agentWindow.thinkingLevel ?? null,
+      contextLength: agentWindow.contextLength ?? null,
+    }
+
+    let subscribed = false
     void window.cells.agentSession
-      .ensure({
-        windowId: agentWindow.id,
-        agent: agentWindow.agent,
-        title: agentWindow.customTitle || agentWindow.title,
-        cwd: agentWindow.cwd ?? null,
-        initialPrompt: agentWindow.initialPrompt ?? null,
-        claudeSessionId: agentWindow.claudeSessionId ?? null,
-        codexThreadId: agentWindow.codexThreadId ?? null,
-        model: agentWindow.model ?? null,
-        permissionMode: agentWindow.permissionMode ?? null,
-        thinkingLevel: agentWindow.thinkingLevel ?? null,
-        contextLength: agentWindow.contextLength ?? null,
+      .subscribeUpdates(agentWindow.id)
+      .then(() => {
+        subscribed = true
+        if (cancelled) {
+          void window.cells.agentSession.unsubscribeUpdates(agentWindow.id).catch(() => {})
+          return
+        }
+        void window.cells.agentSession
+          .ensure(ensureArgs)
+          .then(sync)
+          .catch((err) => console.error('[background-agent-session] ensure failed', err))
       })
-      .then(sync)
-      .catch((err) => console.error('[background-agent-session] ensure failed', err))
+      .catch((err) => {
+        console.error('[background-agent-session] subscribeUpdates failed', err)
+        if (!cancelled) {
+          void window.cells.agentSession
+            .ensure(ensureArgs)
+            .then(sync)
+            .catch((ensureErr) =>
+              console.error('[background-agent-session] ensure failed', ensureErr),
+            )
+        }
+      })
 
     const unsubscribe = window.cells.agentSession.onUpdate(sync)
     return () => {
@@ -241,6 +264,11 @@ function BackgroundAgentSessionRunner({ agentWindow }: { agentWindow: AgentWindo
         pendingFrameRef.current = null
       }
       unsubscribe()
+      if (subscribed) {
+        void window.cells.agentSession
+          .unsubscribeUpdates(agentWindow.id)
+          .catch((err) => console.error('[background-agent-session] unsubscribe failed', err))
+      }
     }
   }, [
     agentWindow.agent,

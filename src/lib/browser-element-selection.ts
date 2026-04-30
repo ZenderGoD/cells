@@ -1,6 +1,6 @@
 import type { BrowserElementSelection } from '@/types'
 
-const BROWSER_SELECTION_INTRO = 'I selected this element in the browser. Use it as context.'
+export const BROWSER_SELECTION_INTRO = 'I selected this element in the browser. Use it as context.'
 
 function compactMultiline(value: string) {
   return value
@@ -116,6 +116,14 @@ export interface BrowserElementSelectionPreview {
   html: string
 }
 
+export type BrowserElementSelectionDraftPart =
+  | string
+  | {
+      kind: 'browser-selection'
+      raw: string
+      preview: BrowserElementSelectionPreview
+    }
+
 function readSelectionField(block: string, label: string) {
   const match = block.match(new RegExp(`^${label}:\\s*(.*)$`, 'm'))
   return match?.[1]?.trim() ?? ''
@@ -144,4 +152,51 @@ export function parseBrowserElementSelectionPreview(
     text: readSelectionFence(block, 'Text', 'text'),
     html: readSelectionFence(block, 'HTML', 'html'),
   }
+}
+
+function findFenceEnd(block: string, label: string) {
+  const match = block.match(new RegExp(`${label}:\\n(\`\`\`|~~~~)[a-z]*\\n[\\s\\S]*?\\n\\1`, 'm'))
+  return match ? match.index! + match[0].length : -1
+}
+
+function findSelectionBlockEnd(value: string, start: number) {
+  const nextSelection = value.indexOf(
+    BROWSER_SELECTION_INTRO,
+    start + BROWSER_SELECTION_INTRO.length,
+  )
+  const hardEnd = nextSelection >= 0 ? nextSelection : value.length
+  const block = value.slice(start, hardEnd)
+  const fenceEnd = Math.max(
+    findFenceEnd(block, 'HTML'),
+    findFenceEnd(block, 'Attributes'),
+    findFenceEnd(block, 'Text'),
+  )
+  if (fenceEnd >= 0) return start + fenceEnd
+  return hardEnd
+}
+
+export function splitBrowserElementSelectionDraft(
+  value: string,
+): BrowserElementSelectionDraftPart[] {
+  const parts: BrowserElementSelectionDraftPart[] = []
+  let cursor = 0
+
+  while (cursor < value.length) {
+    const start = value.indexOf(BROWSER_SELECTION_INTRO, cursor)
+    if (start < 0) break
+    if (start > cursor) parts.push(value.slice(cursor, start))
+
+    const end = findSelectionBlockEnd(value, start)
+    const raw = value.slice(start, end)
+    const preview = parseBrowserElementSelectionPreview(raw)
+    if (preview) {
+      parts.push({ kind: 'browser-selection', raw, preview })
+    } else {
+      parts.push(raw)
+    }
+    cursor = end
+  }
+
+  if (cursor < value.length) parts.push(value.slice(cursor))
+  return parts.length > 0 ? parts : [value]
 }

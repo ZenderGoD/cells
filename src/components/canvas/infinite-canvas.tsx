@@ -23,6 +23,7 @@ import {
 import { TerminalNode } from './terminal-node'
 import { BrowserNode } from './browser-node'
 import { AgentWindowNode } from './agent-window-node'
+import { TextEditorNode } from './text-editor-node'
 import { useShallow } from 'zustand/react/shallow'
 import type { WindowSection } from '@/types'
 
@@ -81,6 +82,7 @@ export function InfiniteCanvas() {
   const {
     terminals,
     browsers,
+    textEditors,
     agentWindows,
     canvas,
     moveCanvasNodes,
@@ -90,6 +92,7 @@ export function InfiniteCanvas() {
     setCanvasTransform,
     snapToTerminal,
     snapToBrowser,
+    snapToTextEditor,
     snapToAgentWindow,
     snapToWindowSection,
     snapToClosest,
@@ -106,6 +109,7 @@ export function InfiniteCanvas() {
     setSelectedNodeIds,
     focusedTerminalId,
     focusedBrowserId,
+    focusedTextEditorId,
     focusedAgentWindowId,
     focusTerminal,
     activeProjectId,
@@ -113,6 +117,7 @@ export function InfiniteCanvas() {
     useShallow((s) => ({
       terminals: s.terminals,
       browsers: s.browsers,
+      textEditors: s.textEditors,
       agentWindows: s.agentWindows,
       canvas: s.canvas,
       moveCanvasNodes: s.moveCanvasNodes,
@@ -122,6 +127,7 @@ export function InfiniteCanvas() {
       setCanvasTransform: s.setCanvasTransform,
       snapToTerminal: s.snapToTerminal,
       snapToBrowser: s.snapToBrowser,
+      snapToTextEditor: s.snapToTextEditor,
       snapToAgentWindow: s.snapToAgentWindow,
       snapToWindowSection: s.snapToWindowSection,
       snapToClosest: s.snapToClosest,
@@ -138,6 +144,7 @@ export function InfiniteCanvas() {
       setSelectedNodeIds: s.setSelectedNodeIds,
       focusedTerminalId: s.focusedTerminalId,
       focusedBrowserId: s.focusedBrowserId,
+      focusedTextEditorId: s.focusedTextEditorId,
       focusedAgentWindowId: s.focusedAgentWindowId,
       focusTerminal: s.focusTerminal,
       activeProjectId: s.activeProjectId,
@@ -196,9 +203,10 @@ export function InfiniteCanvas() {
     () => [
       ...terminals.map((terminal) => ({ ...terminal, kind: 'terminal' as const })),
       ...browsers.map((browser) => ({ ...browser, kind: 'browser' as const })),
+      ...textEditors.map((editor) => ({ ...editor, kind: 'editor' as const })),
       ...agentWindows.map((agentWindow) => ({ ...agentWindow, kind: 'agent' as const })),
     ],
-    [terminals, browsers, agentWindows],
+    [terminals, browsers, textEditors, agentWindows],
   )
 
   // Animated motion values — these drive the visual transform
@@ -240,20 +248,23 @@ export function InfiniteCanvas() {
   const visibleWindowCount = useMemo(
     () =>
       viewportArea > 0
-        ? getCanvasWindows(terminals, browsers, agentWindows).reduce((count, window) => {
-            const overlapW = Math.max(
-              0,
-              Math.min(window.x + window.width, viewportRect.x + viewportRect.width) -
-                Math.max(window.x, viewportRect.x),
-            )
-            const overlapH = Math.max(
-              0,
-              Math.min(window.y + window.height, viewportRect.y + viewportRect.height) -
-                Math.max(window.y, viewportRect.y),
-            )
-            const coverage = (overlapW * overlapH) / viewportArea
-            return coverage >= 0.08 ? count + 1 : count
-          }, 0)
+        ? getCanvasWindows(terminals, browsers, textEditors, agentWindows).reduce(
+            (count, window) => {
+              const overlapW = Math.max(
+                0,
+                Math.min(window.x + window.width, viewportRect.x + viewportRect.width) -
+                  Math.max(window.x, viewportRect.x),
+              )
+              const overlapH = Math.max(
+                0,
+                Math.min(window.y + window.height, viewportRect.y + viewportRect.height) -
+                  Math.max(window.y, viewportRect.y),
+              )
+              const coverage = (overlapW * overlapH) / viewportArea
+              return coverage >= 0.08 ? count + 1 : count
+            },
+            0,
+          )
         : 0,
     [
       viewportArea,
@@ -263,6 +274,7 @@ export function InfiniteCanvas() {
       viewportRect.height,
       terminals,
       browsers,
+      textEditors,
       agentWindows,
     ],
   )
@@ -313,6 +325,24 @@ export function InfiniteCanvas() {
         )
       }),
     [browsers, focusedBrowserId, pinnedSectionWindowIds, selectedNodeIds, terminalViewportRect],
+  )
+  const renderedTextEditors = useMemo(
+    () =>
+      textEditors.filter((editor) => {
+        if (pinnedSectionWindowIds.has(editor.id)) return false
+        return (
+          editor.id === focusedTextEditorId ||
+          selectedNodeIds.includes(editor.id) ||
+          rectsIntersect(editor, terminalViewportRect)
+        )
+      }),
+    [
+      focusedTextEditorId,
+      pinnedSectionWindowIds,
+      selectedNodeIds,
+      terminalViewportRect,
+      textEditors,
+    ],
   )
   const renderedAgentWindows = useMemo(
     () =>
@@ -456,6 +486,7 @@ export function InfiniteCanvas() {
       canvas,
       terminals: terms,
       browsers,
+      textEditors: editors,
       agentWindows: agents,
       windowSections: sections,
       titleBarHidden: scheduledTitleBarHidden,
@@ -466,7 +497,7 @@ export function InfiniteCanvas() {
       return
     }
     setSnapPaused(false)
-    const windows = getCanvasWindows(terms, browsers, agents)
+    const windows = getCanvasWindows(terms, browsers, editors, agents)
 
     // Find the window with the most overlap with the viewport
     const { width: viewW, height: viewH } = getCanvasViewportSize({
@@ -528,6 +559,8 @@ export function InfiniteCanvas() {
         snapToWindowSection(bestTarget.id)
       } else if (bestTarget.type === 'terminal') {
         snapToTerminal(bestTarget.id)
+      } else if (bestTarget.type === 'editor') {
+        snapToTextEditor(bestTarget.id)
       } else if (bestTarget.type === 'agent') {
         snapToAgentWindow(bestTarget.id)
       } else {
@@ -537,6 +570,7 @@ export function InfiniteCanvas() {
   }, [
     snapToAgentWindow,
     snapToBrowser,
+    snapToTextEditor,
     snapToClosest,
     snapToTerminal,
     snapToWindowSection,
@@ -650,6 +684,7 @@ export function InfiniteCanvas() {
       if (
         (terminals.length > 0 ||
           browsers.length > 0 ||
+          textEditors.length > 0 ||
           agentWindows.length > 0 ||
           windowSections.length > 0) &&
         snapEnabled
@@ -663,6 +698,7 @@ export function InfiniteCanvas() {
       scheduleSnap,
       terminals.length,
       browsers.length,
+      textEditors.length,
       agentWindows.length,
       windowSections.length,
       snapEnabled,
@@ -674,8 +710,9 @@ export function InfiniteCanvas() {
     (e: MouseEvent) => {
       const termNode = (e.target as HTMLElement).closest('.terminal-node')
       const browserNode = (e.target as HTMLElement).closest('.browser-node')
+      const editorNode = (e.target as HTMLElement).closest('.text-editor-node')
       const agentNode = (e.target as HTMLElement).closest('.agent-window-node')
-      const clickedNode = termNode || browserNode || agentNode
+      const clickedNode = termNode || browserNode || editorNode || agentNode
 
       if (selectionMode) {
         if (!clickedNode && e.button === 0) {
@@ -697,6 +734,7 @@ export function InfiniteCanvas() {
       const isInsideContent =
         (e.target as HTMLElement).closest('.cell-terminal') ||
         (e.target as HTMLElement).closest('.browser-node > div') ||
+        (e.target as HTMLElement).closest('.text-editor-content') ||
         (e.target as HTMLElement).closest('.agent-chat-panel')
       if (clickedNode && (!primaryModifier || isInsideContent)) return
 
@@ -842,6 +880,7 @@ export function InfiniteCanvas() {
       wasPanning &&
       (terminals.length > 0 ||
         browsers.length > 0 ||
+        textEditors.length > 0 ||
         agentWindows.length > 0 ||
         windowSections.length > 0) &&
       snapEnabled
@@ -855,6 +894,7 @@ export function InfiniteCanvas() {
     setSelectedNodeIds,
     terminals.length,
     browsers.length,
+    textEditors.length,
     agentWindows.length,
     windowSections.length,
     scheduleSnap,
@@ -899,12 +939,14 @@ export function InfiniteCanvas() {
     (e: WheelEvent) => {
       const termNode = (e.target as HTMLElement).closest('.terminal-node')
       const browserNode = (e.target as HTMLElement).closest('.browser-node')
+      const editorNode = (e.target as HTMLElement).closest('.text-editor-node')
       const agentNode = (e.target as HTMLElement).closest('.agent-window-node')
       const zoomModifier = e.ctrlKey || e.metaKey
       const forceCanvasPan = e.shiftKey && !zoomModifier
       // Let node content own plain scroll, but reserve Cmd/Ctrl+scroll for
       // zoom and Shift+scroll/swipe as an explicit canvas-pan override.
-      if ((termNode || browserNode || agentNode) && !zoomModifier && !forceCanvasPan) return
+      if ((termNode || browserNode || editorNode || agentNode) && !zoomModifier && !forceCanvasPan)
+        return
 
       e.preventDefault()
       e.stopPropagation()
@@ -967,7 +1009,12 @@ export function InfiniteCanvas() {
   )
 
   const handleNodeDragStart = useCallback(
-    (nodeId: string, kind: 'terminal' | 'browser' | 'agent', startX: number, startY: number) => {
+    (
+      nodeId: string,
+      kind: 'terminal' | 'browser' | 'agent' | 'editor',
+      startX: number,
+      startY: number,
+    ) => {
       const { selectionMode: sm, selectedNodeIds: sel } = useStore.getState()
       if (!sm) {
         setSelectedNodeIds([nodeId])
@@ -1119,6 +1166,20 @@ export function InfiniteCanvas() {
               isSelected={selectedNodeIds.includes(browser.id)}
               isFocused={focusedBrowserId === browser.id}
               showFocusRing={focusedBrowserId === browser.id && showFocusedWindowRing}
+              onDragStart={handleNodeDragStart}
+            />
+          ))}
+        {renderedTextEditors
+          .filter((editor) => !editor.pinned)
+          .map((editor) => (
+            <TextEditorNode
+              key={editor.id}
+              editor={editor}
+              scale={transform.scale}
+              selectionMode={selectionMode}
+              isSelected={selectedNodeIds.includes(editor.id)}
+              isFocused={focusedTextEditorId === editor.id}
+              showFocusRing={focusedTextEditorId === editor.id && showFocusedWindowRing}
               onDragStart={handleNodeDragStart}
             />
           ))}
@@ -1291,13 +1352,16 @@ export function InfiniteCanvas() {
       )}
 
       {/* Empty state */}
-      {terminals.length === 0 && browsers.length === 0 && agentWindows.length === 0 && (
-        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-          <div className="text-center">
-            <p className="text-muted-foreground/40 text-sm">Press ⌘T to get started</p>
+      {terminals.length === 0 &&
+        browsers.length === 0 &&
+        textEditors.length === 0 &&
+        agentWindows.length === 0 && (
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <div className="text-center">
+              <p className="text-muted-foreground/40 text-sm">Press ⌘T to get started</p>
+            </div>
           </div>
-        </div>
-      )}
+        )}
     </div>
   )
 }

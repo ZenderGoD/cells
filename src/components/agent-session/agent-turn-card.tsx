@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent } from 'react'
-import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
+import { AnimatePresence, animate, motion, useMotionValue, useReducedMotion } from 'motion/react'
 import {
   Check,
   CheckCircle2,
@@ -53,6 +53,9 @@ const EXPAND_TRANSITION = {
 const RESPONSE_TEXT_INSET_CLASS = 'pl-4'
 const TOOL_GROUP_COUNT_TEXT_INSET_CLASS = 'pl-2.5'
 const TOOL_GROUP_ACTIVITY_RAIL_CLASS = 'ml-[18px]'
+const REPLY_SWIPE_TRIGGER_X = 34
+const REPLY_WHEEL_RESET_MS = 280
+const REPLY_WHEEL_COOLDOWN_MS = 700
 
 interface AgentTurnCardProps {
   activities: AgentSessionMessage[]
@@ -148,28 +151,68 @@ function makeReplyReference(
 }
 
 function useReplyGesture(onReply?: () => void) {
+  const reduceMotion = useReducedMotion()
+  const x = useMotionValue(0)
   const pointerStartXRef = useRef<number | null>(null)
   const pointerStartYRef = useRef<number | null>(null)
+  const pointerActiveRef = useRef(false)
   const swipedRef = useRef(false)
   const wheelCooldownRef = useRef(0)
+  const wheelResetTimerRef = useRef<number | null>(null)
+
+  const animateBack = useCallback(() => {
+    if (wheelResetTimerRef.current !== null) {
+      window.clearTimeout(wheelResetTimerRef.current)
+      wheelResetTimerRef.current = null
+    }
+    if (reduceMotion) {
+      x.set(0)
+      return
+    }
+    void animate(x, 0, { type: 'spring', stiffness: 520, damping: 34, mass: 0.55 })
+  }, [reduceMotion, x])
+
+  const setSwipeOffset = useCallback(
+    (offset: number) => {
+      if (reduceMotion) return
+      x.set(Math.max(0, offset))
+    },
+    [reduceMotion, x],
+  )
 
   const triggerReply = useCallback(() => {
     if (!onReply) return
     swipedRef.current = true
     onReply()
-  }, [onReply])
+    animateBack()
+  }, [animateBack, onReply])
 
   const onWheel = useCallback(
     (event: ReactWheelEvent<HTMLElement>) => {
       if (!onReply) return
       const absX = Math.abs(event.deltaX)
       const absY = Math.abs(event.deltaY)
+      if (absX < 4 || absX < absY * 1.15) return
       const now = Date.now()
-      if (absX < 48 || absX < absY * 1.4 || now - wheelCooldownRef.current < 700) return
+      if (now - wheelCooldownRef.current < REPLY_WHEEL_COOLDOWN_MS) return
+      const swipeDelta = -event.deltaX
+      if (swipeDelta <= 0) {
+        animateBack()
+        return
+      }
+      const nextOffset = Math.max(0, x.get() + swipeDelta)
+      setSwipeOffset(nextOffset)
+      if (nextOffset < REPLY_SWIPE_TRIGGER_X || absX < absY * 1.4) {
+        if (wheelResetTimerRef.current !== null) {
+          window.clearTimeout(wheelResetTimerRef.current)
+        }
+        wheelResetTimerRef.current = window.setTimeout(animateBack, REPLY_WHEEL_RESET_MS)
+        return
+      }
       wheelCooldownRef.current = now
       triggerReply()
     },
-    [onReply, triggerReply],
+    [animateBack, onReply, setSwipeOffset, triggerReply, x],
   )
 
   const onPointerDown = useCallback(
@@ -177,9 +220,28 @@ function useReplyGesture(onReply?: () => void) {
       if (!onReply || event.pointerType === 'mouse') return
       pointerStartXRef.current = event.clientX
       pointerStartYRef.current = event.clientY
+      pointerActiveRef.current = true
       swipedRef.current = false
+      event.currentTarget.setPointerCapture(event.pointerId)
     },
     [onReply],
+  )
+
+  const onPointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLElement>) => {
+      const startX = pointerStartXRef.current
+      const startY = pointerStartYRef.current
+      if (!onReply || startX == null || startY == null) return
+      const deltaX = event.clientX - startX
+      const deltaY = event.clientY - startY
+      if (Math.abs(deltaX) < Math.abs(deltaY) * 1.2) return
+      if (deltaX <= 0) {
+        setSwipeOffset(0)
+        return
+      }
+      setSwipeOffset(deltaX)
+    },
+    [onReply, setSwipeOffset],
   )
 
   const onPointerUp = useCallback(
@@ -188,14 +250,39 @@ function useReplyGesture(onReply?: () => void) {
       const startY = pointerStartYRef.current
       pointerStartXRef.current = null
       pointerStartYRef.current = null
+      pointerActiveRef.current = false
       if (!onReply || startX == null || startY == null) return
       const deltaX = event.clientX - startX
       const deltaY = event.clientY - startY
-      if (Math.abs(deltaX) < 64 || Math.abs(deltaX) < Math.abs(deltaY) * 1.4) return
+      if (deltaX < 64 || deltaX < Math.abs(deltaY) * 1.4) {
+        animateBack()
+        return
+      }
       triggerReply()
     },
-    [onReply, triggerReply],
+    [animateBack, onReply, triggerReply],
   )
+
+  const onPointerCancel = useCallback(() => {
+    pointerStartXRef.current = null
+    pointerStartYRef.current = null
+    pointerActiveRef.current = false
+    animateBack()
+  }, [animateBack])
+
+  const onPointerLeave = useCallback(() => {
+    // Pointer capture keeps delivering move/up events even when the translated
+    // card slides out from under the cursor. Resetting here makes long swipes
+    // snap back before release.
+  }, [])
+
+  const onLostPointerCapture = useCallback(() => {
+    if (!pointerActiveRef.current) return
+    pointerStartXRef.current = null
+    pointerStartYRef.current = null
+    pointerActiveRef.current = false
+    animateBack()
+  }, [animateBack])
 
   const wasReplyGesture = useCallback(() => {
     const wasSwiped = swipedRef.current
@@ -203,7 +290,17 @@ function useReplyGesture(onReply?: () => void) {
     return wasSwiped
   }, [])
 
-  return { onWheel, onPointerDown, onPointerUp, wasReplyGesture }
+  return {
+    x,
+    onWheel,
+    onPointerDown,
+    onPointerMove,
+    onPointerUp,
+    onPointerCancel,
+    onPointerLeave,
+    onLostPointerCapture,
+    wasReplyGesture,
+  }
 }
 
 function getActivitiesDurationMs(activities: AgentSessionMessage[]): number | null {
@@ -545,7 +642,7 @@ function ActivityRow({
   return (
     <div className="group/row">
       <div className="flex min-w-0 items-center gap-1">
-        <button
+        <motion.button
           type="button"
           onClick={() => {
             if (replyGesture.wasReplyGesture()) return
@@ -553,9 +650,13 @@ function ActivityRow({
           }}
           onWheel={replyGesture.onWheel}
           onPointerDown={replyGesture.onPointerDown}
+          onPointerMove={replyGesture.onPointerMove}
           onPointerUp={replyGesture.onPointerUp}
+          onPointerCancel={replyGesture.onPointerCancel}
+          onPointerLeave={replyGesture.onPointerLeave}
+          onLostPointerCapture={replyGesture.onLostPointerCapture}
           className="flex min-w-0 flex-1 overflow-hidden items-center gap-2 rounded-[6px] px-1 py-0.5 text-left text-[13px] text-muted-foreground transition-colors hover:bg-foreground/5"
-          style={{ paddingLeft: `${4 + depth * 12}px` }}
+          style={{ x: replyGesture.x, paddingLeft: `${4 + depth * 12}px` }}
         >
           <StatusIcon message={message} customIconUrl={resolvedTool?.iconUrl} />
           <span className="shrink truncate">{displayName}</span>
@@ -603,7 +704,7 @@ function ActivityRow({
               expanded && 'rotate-90',
             )}
           />
-        </button>
+        </motion.button>
         {onReply ? (
           <button
             type="button"
@@ -739,6 +840,7 @@ function ResponseSurface({
   className?: string
   onReply?: (replyTo: AgentReplyReference) => void
 }) {
+  const reduceMotion = useReducedMotion()
   const visible = useMemo(() => {
     const responseItems = responses?.filter((r) => r.text.trim().length > 0)
     if (responseItems?.length) return responseItems
@@ -755,7 +857,6 @@ function ResponseSurface({
       : []
   }, [responses, text])
   const isBoxed = variant === 'boxed'
-  const reduceMotion = useReducedMotion()
   const [copied, setCopied] = useState(false)
   // Craft's "Markdown" button toggles a raw-source view of the message (so
   // you can read/copy the underlying .md). Same behaviour here.
@@ -794,16 +895,20 @@ function ResponseSurface({
   // Craft's visual. See --elevated-surface in globals.css.
   return (
     <motion.div
-      layout={reduceMotion ? false : 'position'}
+      layout={false}
       onWheel={replyGesture.onWheel}
       onPointerDown={replyGesture.onPointerDown}
+      onPointerMove={replyGesture.onPointerMove}
       onPointerUp={replyGesture.onPointerUp}
+      onPointerCancel={replyGesture.onPointerCancel}
+      onPointerLeave={replyGesture.onPointerLeave}
+      onLostPointerCapture={replyGesture.onLostPointerCapture}
       className={cn(
-        'group relative overflow-hidden rounded-[12px]',
+        'group relative overflow-visible rounded-[12px]',
         !isBoxed && 'agent-response',
         className,
       )}
-      style={{ overflowAnchor: 'none' }}
+      style={{ x: replyGesture.x, overflowAnchor: 'none' }}
       transition={{ duration: 0.2, ease: EASE_OUT }}
     >
       <motion.div
@@ -916,17 +1021,6 @@ function ResponseSurface({
           </motion.div>
         ) : null}
       </AnimatePresence>
-      {!isBoxed && onReply && replyReference ? (
-        <button
-          type="button"
-          onClick={handleReply}
-          aria-label="Reply to agent response"
-          title="Reply"
-          className="absolute right-1 top-1 flex size-7 items-center justify-center rounded-[7px] bg-background/70 text-muted-foreground/45 opacity-0 shadow-minimal backdrop-blur-sm transition-colors hover:bg-background hover:text-foreground/80 group-hover:opacity-100 focus:opacity-100 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring/50"
-        >
-          <Reply className="size-3.5" />
-        </button>
-      ) : null}
     </motion.div>
   )
 }

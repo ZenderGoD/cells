@@ -14,7 +14,7 @@ const SHORTCUTS = [
         <Kbd>T</Kbd>
       </KbdGroup>
     ),
-    description: 'Command palette - create terminals, run commands, search, launch agents',
+    description: 'Command palette - open files, create editors, terminals, and browsers.',
   },
   {
     title: 'See all terminals at once',

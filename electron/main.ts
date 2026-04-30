@@ -291,6 +291,8 @@ let agentSessionTracker: EnhancedSessionTracker | null = null
 const agentSessionService = new AgentSessionService()
 const pendingAgentSessionSnapshots = new Map<string, AgentSessionSnapshot>()
 const previousAgentSessionSnapshots = new Map<string, AgentSessionSnapshot>()
+const agentSessionUpdateSubscriptions = new Map<number, Set<string>>()
+const agentSessionSubscriberCleanupIds = new Set<number>()
 let pendingAgentSessionFlushTimer: NodeJS.Timeout | null = null
 let cachedAgentNotificationSettings: AgentNotificationSettings | null = null
 const cachedAgentWindowProjectIds = new Map<string, string>()
@@ -308,14 +310,21 @@ let cachedAgentNotificationContext: AgentNotificationContext = {
   focusedAgentWindowId: null,
 }
 
-app.on('second-instance', () => {
+app.on('second-instance', (_event, argv) => {
+  queueOpenFiles(argv)
   if (mainWindow && !mainWindow.isDestroyed()) {
     if (mainWindow.isMinimized()) mainWindow.restore()
     if (!mainWindow.isVisible()) mainWindow.show()
     mainWindow.focus()
+    flushPendingOpenFiles()
     return
   }
   createWindow()
+})
+
+app.on('open-file', (event, filePath) => {
+  event.preventDefault()
+  queueOpenFiles([filePath])
 })
 
 function flushAgentSessionSnapshots() {
@@ -326,16 +335,19 @@ function flushAgentSessionSnapshots() {
   for (const window of BrowserWindow.getAllWindows()) {
     if (window.isDestroyed()) continue
     const contents = window.webContents
+    const subscriptions = agentSessionUpdateSubscriptions.get(contents.id)
+    if (!subscriptions || subscriptions.size === 0) continue
     // During Vite HMR / navigation the render frame is briefly torn down;
     // sending would throw "Render frame was disposed before WebFrameMain
     // could be accessed". Guard with isDestroyed + try/catch.
     if (contents.isDestroyed() || contents.isCrashed()) continue
-    try {
-      for (const snapshot of snapshots) {
+    for (const snapshot of snapshots) {
+      if (!subscriptions.has(snapshot.windowId)) continue
+      try {
         contents.send('agent-session:update', snapshot)
+      } catch {
+        // swallow — frame was disposed between the check and the send
       }
-    } catch {
-      // swallow — frame was disposed between the check and the send
     }
   }
 }
@@ -349,6 +361,42 @@ agentSessionService.on('update', (snapshot) => {
   pendingAgentSessionFlushTimer = setTimeout(flushAgentSessionSnapshots, 32)
 })
 
+function subscribeWebContentsToAgentSession(contents: Electron.WebContents, windowId: string) {
+  if (!windowId) return
+  let subscriptions = agentSessionUpdateSubscriptions.get(contents.id)
+  if (!subscriptions) {
+    subscriptions = new Set()
+    agentSessionUpdateSubscriptions.set(contents.id, subscriptions)
+  }
+  subscriptions.add(windowId)
+  if (!agentSessionSubscriberCleanupIds.has(contents.id)) {
+    agentSessionSubscriberCleanupIds.add(contents.id)
+    contents.once('destroyed', () => {
+      agentSessionSubscriberCleanupIds.delete(contents.id)
+      agentSessionUpdateSubscriptions.delete(contents.id)
+    })
+  }
+  const snapshot =
+    pendingAgentSessionSnapshots.get(windowId) ?? agentSessionService.getSnapshot(windowId)
+  if (snapshot && !contents.isDestroyed() && !contents.isCrashed()) {
+    try {
+      contents.send('agent-session:update', snapshot)
+    } catch {
+      // The renderer also calls ensure() after subscribing; this replay is a
+      // best-effort catch-up for resubscribe gaps during active sessions.
+    }
+  }
+}
+
+function unsubscribeWebContentsFromAgentSession(contents: Electron.WebContents, windowId: string) {
+  const subscriptions = agentSessionUpdateSubscriptions.get(contents.id)
+  if (!subscriptions) return
+  subscriptions.delete(windowId)
+  if (subscriptions.size === 0) {
+    agentSessionUpdateSubscriptions.delete(contents.id)
+  }
+}
+
 // Per-terminal session isolation:
 // - "subscribed" = renderer component mounted → data forwarded live via IPC
 // - "unsubscribed" = session keeps running server-side while Cells stops
@@ -360,7 +408,9 @@ const terminalSubscriptionCounts = new Map<string, number>()
 const subscribedTerminals = new Set<string>()
 const pendingTerminalExitDetails = new Map<string, TerminalExitDetails>()
 const pinnedWindows = new Map<string, BrowserWindow>()
-const pinnedWindowTypes = new Map<string, 'terminal' | 'browser' | 'agent' | 'section'>()
+const pinnedWindowTypes = new Map<string, 'terminal' | 'browser' | 'agent' | 'editor' | 'section'>()
+const pendingOpenFilePaths: string[] = []
+let mainRendererReady = false
 
 // MessagePort per BrowserWindow for high-throughput terminal data.
 // Bypasses Electron's main IPC event loop — structured clone over a direct
@@ -374,6 +424,7 @@ const LEGACY_STATE_FILE = path.join(LEGACY_STATE_DIR, 'state.json')
 const MCP_BRIDGE_SOCKET = path.join(STATE_DIR, 'mcp-bridge.sock')
 const AUTO_UPDATE_CHECK_DELAY = 15_000
 const AUTO_UPDATE_CHECK_INTERVAL = 5 * 60_000
+const MAX_EDITOR_FILE_BYTES = 10 * 1024 * 1024
 const PRELOAD_FILE = 'preload.mjs'
 const BROWSER_PRELOAD_FILE = 'browser-preload.cjs'
 let quitConfirmed = false
@@ -389,6 +440,65 @@ function sendCanvasZoomCommand(command: 'fit' | 'in' | 'out') {
 function sendShortcutToRenderer(payload: AppShortcutPayload) {
   if (mainWindow?.isDestroyed()) return
   mainWindow?.webContents.send('app:shortcut', payload)
+}
+
+function resolveOpenFilePath(candidate: string) {
+  const trimmed = candidate.trim()
+  if (!trimmed || trimmed.startsWith('-')) return null
+
+  try {
+    if (trimmed.startsWith('file://')) {
+      return path.resolve(fileURLToPath(trimmed))
+    }
+  } catch {
+    return null
+  }
+
+  return path.resolve(trimmed)
+}
+
+function extractOpenFilePaths(argv: string[]) {
+  const files: string[] = []
+  for (const candidate of argv) {
+    const resolved = resolveOpenFilePath(candidate)
+    if (!resolved) continue
+    if (resolved === path.resolve(process.execPath)) continue
+    try {
+      if (fs.statSync(resolved).isFile()) files.push(resolved)
+    } catch {}
+  }
+  return [...new Set(files)]
+}
+
+function queueOpenFiles(paths: string[]) {
+  const files = extractOpenFilePaths(paths)
+  if (files.length === 0) return
+
+  for (const filePath of files) {
+    if (!pendingOpenFilePaths.includes(filePath)) pendingOpenFilePaths.push(filePath)
+  }
+
+  if (app.isReady() && (!mainWindow || mainWindow.isDestroyed())) {
+    createWindow()
+  }
+  flushPendingOpenFiles()
+}
+
+function flushPendingOpenFiles() {
+  if (
+    pendingOpenFilePaths.length === 0 ||
+    !mainWindow ||
+    mainWindow.isDestroyed() ||
+    !mainRendererReady
+  ) {
+    return
+  }
+
+  const paths = pendingOpenFilePaths.splice(0, pendingOpenFilePaths.length)
+  mainWindow.webContents.send('app:open-files', paths)
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  if (!mainWindow.isVisible()) mainWindow.show()
+  mainWindow.focus()
 }
 
 function getDefaultAgentSessionTitle(agent: AgentSessionSnapshot['agent']) {
@@ -785,6 +895,7 @@ function isTransparentWindowModeEnabled() {
 }
 
 function createWindow() {
+  mainRendererReady = false
   const transparentWindow = isTransparentWindowModeEnabled()
   const needsWarmReload = !process.env.VITE_DEV_SERVER_URL
   let warmReloadDone = !needsWarmReload
@@ -820,6 +931,7 @@ function createWindow() {
     if (!mainWindow || mainWindow.isDestroyed()) return
     if (!warmReloadDone) {
       warmReloadDone = true
+      detachBrowserViewsForRendererReload('warm reload')
       mainWindow.webContents.reload()
       return
     }
@@ -827,6 +939,12 @@ function createWindow() {
     if (!mainWindow.isVisible()) {
       mainWindow.show()
     }
+    mainRendererReady = true
+    flushPendingOpenFiles()
+  })
+
+  mainWindow.webContents.on('did-start-loading', () => {
+    detachBrowserViewsForRendererReload('renderer loading')
   })
 
   mainWindow.webContents.on('before-input-event', (event, input) => {
@@ -865,6 +983,11 @@ function createWindow() {
   })
   mainWindow.on('blur', () => {
     if (!mainWindow?.isDestroyed()) mainWindow?.webContents.send('app:window-focus', false)
+  })
+
+  mainWindow.on('closed', () => {
+    mainRendererReady = false
+    mainWindow = null
   })
 
   if (process.env.VITE_DEV_SERVER_URL) {
@@ -938,6 +1061,38 @@ function ensureStateDir() {
 
 function readStateFile(filePath: string) {
   return JSON.parse(fs.readFileSync(filePath, 'utf-8'))
+}
+
+function assertReadableEditorFile(filePath: string) {
+  const resolved = resolveOpenFilePath(filePath)
+  if (!resolved) throw new Error('Invalid file path')
+  const stat = fs.statSync(resolved)
+  if (!stat.isFile()) throw new Error('Only files can be opened in the editor')
+  if (stat.size > MAX_EDITOR_FILE_BYTES) {
+    throw new Error('File is too large for the built-in editor')
+  }
+  return { resolved, stat }
+}
+
+function editorFileSnapshot(resolved: string, stat: fs.Stats) {
+  return {
+    path: resolved,
+    name: path.basename(resolved),
+    mtimeMs: stat.mtimeMs,
+    size: stat.size,
+  }
+}
+
+function bufferLooksBinary(buffer: Buffer) {
+  const sample = buffer.subarray(0, Math.min(buffer.length, 4096))
+  return sample.includes(0)
+}
+
+function getSaveDefaultPath(defaultPath?: string | null, defaultDirectory?: string | null) {
+  if (defaultPath && path.isAbsolute(defaultPath)) return path.resolve(defaultPath)
+  const fileName = defaultPath ? path.basename(defaultPath) : 'Untitled.txt'
+  const directory = defaultDirectory ? path.resolve(defaultDirectory) : app.getPath('documents')
+  return path.join(directory, fileName || 'Untitled.txt')
 }
 
 ipcMain.handle('state:load', () => {
@@ -2150,16 +2305,25 @@ ipcMain.handle('agent-session:ensure', (_event, request) => {
   return agentSessionService.ensure(request)
 })
 
+ipcMain.handle('agent-session:subscribe-updates', (event, windowId: string) => {
+  subscribeWebContentsToAgentSession(event.sender, windowId)
+})
+
+ipcMain.handle('agent-session:unsubscribe-updates', (event, windowId: string) => {
+  unsubscribeWebContentsFromAgentSession(event.sender, windowId)
+})
+
 ipcMain.handle(
   'agent-session:send',
   (
-    _event,
+    event,
     windowId: string,
     input: string,
     attachments?: string[],
     overrides?: Parameters<typeof agentSessionService.send>[3],
     replyTo?: Parameters<typeof agentSessionService.send>[4],
   ) => {
+    subscribeWebContentsToAgentSession(event.sender, windowId)
     return agentSessionService.send(windowId, input, attachments, overrides, replyTo)
   },
 )
@@ -2519,7 +2683,7 @@ ipcMain.handle(
     })
 
     pinnedWindows.set(id, win)
-    pinnedWindowTypes.set(id, type as 'terminal' | 'browser' | 'agent' | 'section')
+    pinnedWindowTypes.set(id, type as 'terminal' | 'browser' | 'agent' | 'editor' | 'section')
     let unpinNotified = false
 
     const notifyUnpinned = () => {
@@ -2618,13 +2782,69 @@ ipcMain.handle('app:pick-folder', async () => {
   return result.canceled ? null : result.filePaths[0]
 })
 
-ipcMain.handle('app:pick-files', async () => {
+ipcMain.handle('app:pick-files', async (_event, defaultDirectory?: string | null) => {
   if (!mainWindow) return null
+  const defaultPath =
+    defaultDirectory &&
+    fs.existsSync(defaultDirectory) &&
+    fs.statSync(defaultDirectory).isDirectory()
+      ? path.resolve(defaultDirectory)
+      : undefined
   const result = await dialog.showOpenDialog(mainWindow, {
+    defaultPath,
     properties: ['openFile', 'multiSelections'],
   })
   return result.canceled ? null : result.filePaths
 })
+
+ipcMain.handle('editor:read-file', async (_event, filePath: string) => {
+  const { resolved } = assertReadableEditorFile(filePath)
+  const buffer = await fs.promises.readFile(resolved)
+  if (bufferLooksBinary(buffer)) {
+    throw new Error('Binary files cannot be opened in the built-in editor')
+  }
+  const currentStat = fs.statSync(resolved)
+  return {
+    ...editorFileSnapshot(resolved, currentStat),
+    content: buffer.toString('utf-8'),
+  }
+})
+
+ipcMain.handle('editor:write-file', async (_event, filePath: string, content: string) => {
+  const resolved = resolveOpenFilePath(filePath)
+  if (!resolved) throw new Error('Invalid file path')
+  try {
+    const current = fs.statSync(resolved)
+    if (current.isDirectory()) throw new Error('Cannot save over a folder')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  await fs.promises.writeFile(resolved, content, 'utf-8')
+  const stat = fs.statSync(resolved)
+  return editorFileSnapshot(resolved, stat)
+})
+
+ipcMain.handle(
+  'editor:save-file-as',
+  async (
+    _event,
+    content: string,
+    defaultPath?: string | null,
+    defaultDirectory?: string | null,
+  ) => {
+    const options: Electron.SaveDialogOptions = {
+      defaultPath: getSaveDefaultPath(defaultPath, defaultDirectory),
+      properties: ['showOverwriteConfirmation'],
+    }
+    const result = mainWindow
+      ? await dialog.showSaveDialog(mainWindow, options)
+      : await dialog.showSaveDialog(options)
+    if (result.canceled || !result.filePath) return null
+    await fs.promises.writeFile(result.filePath, content, 'utf-8')
+    const stat = fs.statSync(result.filePath)
+    return editorFileSnapshot(result.filePath, stat)
+  },
+)
 
 ipcMain.handle('app:list-recent-files', async () => {
   const dirs = [
@@ -2822,6 +3042,7 @@ interface BrowserViewRuntimeState {
   attachedToMainWindow: boolean
   parked: boolean
   visible: boolean
+  bounds: { x: number; y: number; width: number; height: number } | null
 }
 const browserViewStates = new Map<string, BrowserViewRuntimeState>()
 
@@ -2927,6 +3148,7 @@ function getBrowserViewState(browserId: string): BrowserViewRuntimeState {
     attachedToMainWindow: false,
     parked: false,
     visible: false,
+    bounds: null,
   }
   browserViewStates.set(browserId, created)
   return created
@@ -2965,14 +3187,26 @@ function ensureMcpNetworkCapture(projectId: string, pageSession: Electron.Sessio
   } catch {}
 }
 
-function attachBrowserView(browserId: string, view: WebContentsView) {
+function attachBrowserView(
+  browserId: string,
+  view: WebContentsView,
+  options?: { force?: boolean },
+) {
   if (!mainWindow || mainWindow.isDestroyed()) return
   const state = getBrowserViewState(browserId)
-  if (state.attachedToMainWindow) return
+  if (state.attachedToMainWindow && !options?.force) return
   try {
+    if (options?.force) {
+      try {
+        mainWindow.contentView.removeChildView(view)
+      } catch {}
+    }
     mainWindow.contentView.addChildView(view)
-  } catch {}
-  state.attachedToMainWindow = true
+    state.attachedToMainWindow = true
+  } catch (error) {
+    state.attachedToMainWindow = false
+    console.warn(`[browser] Failed to attach view ${browserId}`, error)
+  }
 }
 
 function detachBrowserView(browserId: string, view: WebContentsView) {
@@ -2981,11 +3215,88 @@ function detachBrowserView(browserId: string, view: WebContentsView) {
     state.attachedToMainWindow = false
     return
   }
-  if (!state.attachedToMainWindow) return
   try {
     mainWindow.contentView.removeChildView(view)
   } catch {}
   state.attachedToMainWindow = false
+}
+
+function createBrowserWebContentsView(projectId: string) {
+  const partition = `persist:browser-${projectId}`
+  const view = new WebContentsView({
+    webPreferences: {
+      partition,
+      preload: browserPreloadPath,
+      contextIsolation: true,
+      sandbox: true,
+      scrollBounce: true,
+    },
+  })
+  view.setBorderRadius(5)
+  return view
+}
+
+function snapshotBrowserViewHistory(browserId: string, view: WebContentsView) {
+  try {
+    const nav = view.webContents.navigationHistory
+    const count = nav.length()
+    const entries: Array<{ url: string; title: string }> = []
+    for (let i = 0; i < count; i++) {
+      const entry = nav.getEntryAtIndex(i)
+      if (entry) entries.push({ url: entry.url, title: entry.title })
+    }
+    if (entries.length > 0) {
+      savedHistories.set(browserId, {
+        entries,
+        activeIndex: nav.getActiveIndex(),
+        navigatingFromSaved: true,
+      })
+    }
+  } catch {}
+}
+
+function recreateBrowserView(browserId: string, reason: string) {
+  const existing = browserViews.get(browserId)
+  const projectId = browserIdToProject.get(browserId)
+  if (!existing || !projectId || !mainWindow || mainWindow.isDestroyed()) return false
+
+  let reloadUrl = ''
+  try {
+    reloadUrl = existing.webContents.getURL()
+  } catch {}
+  snapshotBrowserViewHistory(browserId, existing)
+
+  const state = getBrowserViewState(browserId)
+  const oldWebContentsId = existing.webContents.id
+  console.warn(`[browser] Recreating view ${browserId}: ${reason}`)
+  activeBrowserElementPickers.delete(browserId)
+  detachBrowserView(browserId, existing)
+  try {
+    ;(existing.webContents as any).close?.()
+  } catch {}
+  webContentsIdToBrowser.delete(oldWebContentsId)
+
+  const replacement = createBrowserWebContentsView(projectId)
+  browserViews.set(browserId, replacement)
+  state.attachedToMainWindow = false
+  state.parked = false
+  state.visible = true
+  state.loading = false
+  state.failure = null
+  setupBrowserView(browserId, replacement, projectId)
+  attachBrowserView(browserId, replacement, { force: true })
+  replacement.setBounds(state.bounds ?? { x: 0, y: 0, width: 0, height: 0 })
+  if (reloadUrl) {
+    try {
+      replacement.webContents.loadURL(reloadUrl)
+    } catch (error) {
+      console.warn(`[browser] Failed to reload recreated view ${browserId}`, error)
+    }
+  }
+  try {
+    replacement.webContents.focus()
+  } catch {}
+  return true
 }
 
 function setupBrowserView(browserId: string, view: WebContentsView, projectId: string) {
@@ -3201,7 +3512,7 @@ function setupBrowserView(browserId: string, view: WebContentsView, projectId: s
     template.push(
       { label: 'Back', enabled: canBack, click: () => browserGoBack(browserId) },
       { label: 'Forward', enabled: canFwd, click: () => browserGoForward(browserId) },
-      { label: 'Reload', click: () => view.webContents.reload() },
+      { label: 'Reload', click: () => browserReload(browserId) },
       { type: 'separator' },
     )
 
@@ -3338,23 +3649,13 @@ ipcMain.handle(
       return { unparked: true }
     }
 
-    const partition = `persist:browser-${projectId}`
-    const view = new WebContentsView({
-      webPreferences: {
-        partition,
-        preload: browserPreloadPath,
-        contextIsolation: true,
-        sandbox: true,
-        scrollBounce: true,
-      },
-    })
+    const view = createBrowserWebContentsView(projectId)
 
     const browserState = getBrowserViewState(browserId)
     browserState.parked = false
     browserState.visible = false
     attachBrowserView(browserId, view)
     view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
-    view.setBorderRadius(5)
     browserViews.set(browserId, view)
 
     // Store saved history for software back/forward after app restart
@@ -3653,6 +3954,19 @@ function browserGoForward(browserId: string) {
   }
 }
 
+function browserReload(browserId: string) {
+  const view = browserViews.get(browserId)
+  if (!view) return
+  const state = getBrowserViewState(browserId)
+  if (state.visible && !state.parked) {
+    // A visible-but-blank WebContentsView does not recover from a normal
+    // reload. Recreate the native view in-place so the toolbar reload button
+    // is also a reliable recovery action.
+    if (recreateBrowserView(browserId, 'reload requested for visible browser')) return
+  }
+  view.webContents.reload()
+}
+
 ipcMain.on('browser:go-back', (_event, browserId: string) => {
   browserGoBack(browserId)
 })
@@ -3662,11 +3976,18 @@ ipcMain.on('browser:go-forward', (_event, browserId: string) => {
 })
 
 ipcMain.on('browser:reload', (_event, browserId: string) => {
-  browserViews.get(browserId)?.webContents.reload()
+  browserReload(browserId)
 })
 
 ipcMain.on('browser:focus', (_event, browserId: string) => {
-  browserViews.get(browserId)?.webContents.focus()
+  const view = browserViews.get(browserId)
+  if (!view) return
+  const state = getBrowserViewState(browserId)
+  if (state.visible && !state.parked) {
+    attachBrowserView(browserId, view, { force: true })
+    if (state.bounds) view.setBounds(state.bounds)
+  }
+  view.webContents.focus()
 })
 
 ipcMain.on('browser:set-zoom-factor', (_event, browserId: string, factor: number) => {
@@ -3680,6 +4001,7 @@ ipcMain.on(
   (_event, browserId: string, bounds: { x: number; y: number; width: number; height: number }) => {
     const view = browserViews.get(browserId)
     if (!view || !mainWindow) return
+    const state = getBrowserViewState(browserId)
     const contentBounds = mainWindow.getContentBounds()
     const rawX = Number.isFinite(bounds.x) ? bounds.x : 0
     const rawY = Number.isFinite(bounds.y) ? bounds.y : 0
@@ -3689,12 +4011,14 @@ ipcMain.on(
     const top = Math.max(0, Math.min(contentBounds.height, rawY))
     const right = Math.max(left, Math.min(contentBounds.width, rawX + rawWidth))
     const bottom = Math.max(top, Math.min(contentBounds.height, rawY + rawHeight))
-    view.setBounds({
+    const nextBounds = {
       x: Math.round(left),
       y: Math.round(top),
       width: Math.round(right - left),
       height: Math.round(bottom - top),
-    })
+    }
+    state.bounds = nextBounds
+    view.setBounds(nextBounds)
   },
 )
 
@@ -3707,8 +4031,15 @@ ipcMain.on('browser:set-visible', (_event, browserId: string, visible: boolean) 
     if (!visible) detachBrowserView(browserId, view)
     return
   }
-  if (visible) attachBrowserView(browserId, view)
-  else detachBrowserView(browserId, view)
+  if (visible) {
+    attachBrowserView(browserId, view, { force: true })
+    if (state.bounds) view.setBounds(state.bounds)
+    try {
+      view.webContents.focus()
+    } catch {}
+  } else {
+    detachBrowserView(browserId, view)
+  }
 })
 
 ipcMain.on('browser:toggle-devtools', (_event, browserId: string) => {
@@ -3832,6 +4163,20 @@ function cleanupBrowserViews() {
     } catch {}
   }
   browserViews.clear()
+}
+
+function detachBrowserViewsForRendererReload(reason: string) {
+  for (const [browserId, view] of browserViews) {
+    const state = getBrowserViewState(browserId)
+    state.visible = false
+    state.parked = true
+    cancelBrowserElementPicker(browserId, true)
+    try {
+      detachBrowserView(browserId, view)
+    } catch (error) {
+      console.warn(`[browser] Failed to detach view ${browserId} during ${reason}`, error)
+    }
+  }
 }
 
 // ---------- Auto-updater ----------
@@ -4231,6 +4576,7 @@ ipcMain.handle('daemon:restart', async () => {
     setTimeout(() => {
       try {
         if (mainWindow && !mainWindow.isDestroyed()) {
+          detachBrowserViewsForRendererReload('app reload')
           mainWindow.webContents.reload()
         }
         for (const win of pinnedWindows.values()) {
@@ -4394,6 +4740,7 @@ app.whenReady().then(async () => {
   }
 
   createWindow()
+  queueOpenFiles(process.argv.slice(1))
   if (!terminalBackendSupport.ok) {
     setTimeout(() => {
       void showTerminalBackendRequirementDialog()

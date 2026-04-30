@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Eye, EyeOff, FolderOpen, Globe, TerminalSquare } from 'lucide-react'
+import { Eye, EyeOff, FileText, FolderOpen, Globe, TerminalSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
 import { getCanvasWindows } from '@/lib/canvas-navigation'
@@ -17,6 +17,7 @@ interface ProjectSwitcherItem {
   hiddenFromTitleBar: boolean
   terminals: number
   browsers: number
+  editors: number
   windows: ReturnType<typeof getCanvasWindows>
   sections: Project['windowSections']
   isCurrent: boolean
@@ -48,6 +49,7 @@ export function ProjectSwitcher() {
   const activeProjectId = useStore((s) => s.activeProjectId)
   const terminals = useStore((s) => s.terminals)
   const browsers = useStore((s) => s.browsers)
+  const textEditors = useStore((s) => s.textEditors)
   const agentWindows = useStore((s) => s.agentWindows)
   const windowSections = useStore((s) => s.windowSections)
   const switchProject = useStore((s) => s.switchProject)
@@ -86,6 +88,7 @@ export function ProjectSwitcher() {
       const isCurrent = project.id === activeProjectId
       const projectTerminals = isCurrent ? terminals : project.terminals
       const projectBrowsers = isCurrent ? browsers : project.browsers
+      const projectEditors = isCurrent ? textEditors : (project.textEditors ?? [])
       const projectAgents = isCurrent ? agentWindows : (project.agentWindows ?? [])
       const projectSections = isCurrent ? windowSections : (project.windowSections ?? [])
 
@@ -98,7 +101,8 @@ export function ProjectSwitcher() {
         hiddenFromTitleBar: project.hiddenFromTitleBar === true,
         terminals: projectTerminals.length,
         browsers: projectBrowsers.length,
-        windows: getCanvasWindows(projectTerminals, projectBrowsers, projectAgents),
+        editors: projectEditors.length,
+        windows: getCanvasWindows(projectTerminals, projectBrowsers, projectEditors, projectAgents),
         sections: projectSections,
         isCurrent,
         attention,
@@ -111,6 +115,7 @@ export function ProjectSwitcher() {
     projectSwitchMode,
     projects,
     terminals,
+    textEditors,
     windowSections,
   ])
 
@@ -388,6 +393,12 @@ export function ProjectSwitcher() {
                             <span className="flex items-center gap-1">
                               <Globe className="h-2.5 w-2.5" />
                               {item.browsers}
+                            </span>
+                          ) : null}
+                          {item.editors > 0 ? (
+                            <span className="flex items-center gap-1">
+                              <FileText className="h-2.5 w-2.5" />
+                              {item.editors}
                             </span>
                           ) : null}
                         </div>
