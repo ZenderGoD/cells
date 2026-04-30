@@ -2880,6 +2880,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     return browser?.title || browser?.url || 'Browser'
   })
   const focusedAgentWindowId = useStore((state) => state.focusedAgentWindowId)
+  const appWindowFocused = useStore((state) => state.appWindowFocused)
   const worktrees = useStore((state) => state.worktrees)
   const queueModeMeta = useMemo(() => getQueueModeMeta(), [])
   // Queue is persisted on the AgentWindowNode so it survives app restart.
@@ -3345,10 +3346,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   // Clear the "done-unviewed" flag the moment the user focuses this window —
   // they've now "checked on" the completed turn.
   useEffect(() => {
-    if (focusedAgentWindowId !== agentWindow.id) return
+    if (!appWindowFocused || focusedAgentWindowId !== agentWindow.id) return
     if (!agentWindow.hasUnviewedCompletion) return
     useStore.getState().syncAgentWindow(agentWindow.id, { hasUnviewedCompletion: false })
-  }, [agentWindow.id, focusedAgentWindowId, agentWindow.hasUnviewedCompletion])
+  }, [agentWindow.id, appWindowFocused, focusedAgentWindowId, agentWindow.hasUnviewedCompletion])
   // The composer overlays the bottom of the list so messages can scroll
   // "behind" it — we track its live height via ResizeObserver so the list's
   // bottom fade mask and footer spacer always line up with the composer's
@@ -3461,7 +3462,8 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       // is cleared by a focus effect below.
       const justCompleted = prevStatus !== null && prevStatus !== 'idle' && derivedStatus === 'idle'
       const storeState = useStore.getState()
-      const isFocused = storeState.focusedAgentWindowId === agentWindow.id
+      const isViewed =
+        storeState.appWindowFocused && storeState.focusedAgentWindowId === agentWindow.id
       const patch: Partial<AgentWindowNode> = {
         title: next.title,
         cwd: next.cwd ?? agentWindow.cwd ?? null,
@@ -3471,7 +3473,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         codexThreadId: next.codexThreadId ?? null,
         initialPrompt: shouldClearInitialPrompt ? null : (agentWindow.initialPrompt ?? null),
       }
-      if (justCompleted && !isFocused) {
+      if (justCompleted && !isViewed) {
         patch.hasUnviewedCompletion = true
       }
       storeState.syncAgentWindow(agentWindow.id, patch)

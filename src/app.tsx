@@ -213,6 +213,7 @@ function MainApp() {
     // (browser panel) takes keyboard focus, which is a false positive.
     const unsubscribe = window.cells.app.onWindowFocus((focused) => {
       setWindowFocused(focused)
+      useStore.setState({ appWindowFocused: focused })
       if (!focused) return
       requestAnimationFrame(() => {
         if (suppressWindowFocusTerminalRefocusRef.current) {

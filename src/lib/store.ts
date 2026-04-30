@@ -102,6 +102,7 @@ interface StoreState {
   agentWindows: AgentWindowNode[]
   canvas: CanvasTransform
   initialized: boolean
+  appWindowFocused: boolean
   terminalTheme: string
   terminalSessionBackend: TerminalSessionBackend
   terminalSessionBackendExplicitlySet: boolean
@@ -1744,6 +1745,7 @@ export const useStore = create<StoreState>((set, get) => ({
   agentWindows: [],
   canvas: DEFAULT_CANVAS,
   initialized: false,
+  appWindowFocused: true,
   focusedTerminalId: null,
   focusedBrowserId: null,
   focusedTextEditorId: null,

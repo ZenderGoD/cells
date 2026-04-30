@@ -380,6 +380,16 @@ export function WindowOverviewMap({
                   )}
                 />
               ) : null}
+              {agentPillClass ? (
+                <span
+                  className={cn(
+                    'pointer-events-none absolute bottom-[2px] left-1/2 -translate-x-1/2 rounded-full',
+                    agentPillHeight,
+                    agentPillWidth,
+                    agentPillClass,
+                  )}
+                />
+              ) : null}
               {isFocused && !isCurrent && (
                 <span className="pointer-events-none absolute bottom-0.5 right-0.5 size-1 rounded-full bg-white/90" />
               )}

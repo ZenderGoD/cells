@@ -187,7 +187,8 @@ function BackgroundAgentSessionRunner({ agentWindow }: { agentWindow: AgentWindo
       prevDerivedStatusRef.current = derivedStatus
       const justCompleted = prevStatus !== null && prevStatus !== 'idle' && derivedStatus === 'idle'
       const storeState = useStore.getState()
-      const isFocused = storeState.focusedAgentWindowId === agentWindow.id
+      const isViewed =
+        storeState.appWindowFocused && storeState.focusedAgentWindowId === agentWindow.id
       const patch: Partial<AgentWindowNode> = {
         title: next.title,
         cwd: next.cwd ?? agentWindow.cwd ?? null,
@@ -197,7 +198,7 @@ function BackgroundAgentSessionRunner({ agentWindow }: { agentWindow: AgentWindo
         codexThreadId: next.codexThreadId ?? null,
         initialPrompt: shouldClearInitialPrompt ? null : (agentWindow.initialPrompt ?? null),
       }
-      if (justCompleted && !isFocused) {
+      if (justCompleted && !isViewed) {
         patch.hasUnviewedCompletion = true
       }
       storeState.syncAgentWindow(agentWindow.id, patch)
