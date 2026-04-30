@@ -408,8 +408,17 @@ const THRESHOLD = 150 // px of accumulated delta to trigger navigation
 window.addEventListener(
   'wheel',
   function (e) {
-    const canvasZoomGesture = e.ctrlKey || e.metaKey
-    const canvasPanGesture = e.shiftKey && !canvasZoomGesture
+    // Trackpad pinch arrives as Ctrl+wheel in Chromium. Let the page handle it
+    // so embedded browsers can use native page zoom instead of canvas zoom.
+    const pageZoomGesture = e.ctrlKey && !e.metaKey
+    const canvasZoomGesture = e.metaKey
+    const canvasPanGesture = e.shiftKey && !canvasZoomGesture && !pageZoomGesture
+    if (pageZoomGesture) {
+      if (resetTimer) clearTimeout(resetTimer)
+      if (gesturePhase === 'overscrolling') resetGesture()
+      return
+    }
+
     if (canvasZoomGesture || canvasPanGesture) {
       if (resetTimer) clearTimeout(resetTimer)
       if (gesturePhase === 'overscrolling') resetGesture()
