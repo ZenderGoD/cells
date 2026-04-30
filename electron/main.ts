@@ -3024,6 +3024,9 @@ ipcMain.handle(
 const browserViews = new Map<string, WebContentsView>()
 const browserPreloadPath = path.join(__dirname, BROWSER_PRELOAD_FILE)
 const BROWSER_EXTENSION_LOAD_TIMEOUT_MS = 4_000
+const MIN_BROWSER_PAGE_ZOOM = 0.25
+const MAX_BROWSER_PAGE_ZOOM = 5
+const BROWSER_PAGE_ZOOM_INTENSITY = 0.002
 
 // Saved history for browsers restored after app restart.
 // Used for software back/forward when native history is empty.
@@ -3045,6 +3048,8 @@ interface BrowserViewRuntimeState {
   bounds: { x: number; y: number; width: number; height: number } | null
 }
 const browserViewStates = new Map<string, BrowserViewRuntimeState>()
+const browserCanvasZoomFactors = new Map<string, number>()
+const browserPageZoomFactors = new Map<string, number>()
 
 // Map browserId → the browserId so overscroll IPC from the preload can be relayed
 const webContentsIdToBrowser = new Map<number, string>()
@@ -3058,6 +3063,21 @@ const activeBrowserElementPickers = new Map<
 const BROWSER_ELEMENT_TEXT_LIMIT = 4_000
 const BROWSER_ELEMENT_HTML_LIMIT = 8_000
 const BROWSER_ELEMENT_ATTR_LIMIT = 1_000
+
+function clampBrowserPageZoom(factor: number) {
+  if (!Number.isFinite(factor)) return 1
+  return Math.max(MIN_BROWSER_PAGE_ZOOM, Math.min(MAX_BROWSER_PAGE_ZOOM, factor))
+}
+
+function applyBrowserZoomFactor(browserId: string) {
+  const view = browserViews.get(browserId)
+  if (!view || view.webContents.isDestroyed()) return
+
+  const canvasZoom = browserCanvasZoomFactors.get(browserId) ?? 1
+  const pageZoom = browserPageZoomFactors.get(browserId) ?? 1
+  const effectiveZoom = Math.max(0.01, Math.min(10, canvasZoom * pageZoom))
+  view.webContents.setZoomFactor(effectiveZoom)
+}
 
 function limitBrowserElementString(value: unknown, maxLength: number) {
   if (typeof value !== 'string') return ''
@@ -3286,6 +3306,7 @@ function recreateBrowserView(browserId: string, reason: string) {
   setupBrowserView(browserId, replacement, projectId)
   attachBrowserView(browserId, replacement, { force: true })
   replacement.setBounds(state.bounds ?? { x: 0, y: 0, width: 0, height: 0 })
+  applyBrowserZoomFactor(browserId)
   if (reloadUrl) {
     try {
       replacement.webContents.loadURL(reloadUrl)
@@ -3885,6 +3906,8 @@ ipcMain.handle('browser:destroy', (_event, browserId: string) => {
   webContentsIdToBrowser.delete(view.webContents.id)
   browserViews.delete(browserId)
   browserIdToProject.delete(browserId)
+  browserCanvasZoomFactors.delete(browserId)
+  browserPageZoomFactors.delete(browserId)
   savedHistories.delete(browserId)
   browserViewStates.delete(browserId)
   clearBrowserConsoleLogs(browserId)
@@ -3991,9 +4014,24 @@ ipcMain.on('browser:focus', (_event, browserId: string) => {
 })
 
 ipcMain.on('browser:set-zoom-factor', (_event, browserId: string, factor: number) => {
-  const view = browserViews.get(browserId)
-  if (!view) return
-  view.webContents.setZoomFactor(factor)
+  if (!Number.isFinite(factor) || factor <= 0) return
+  browserCanvasZoomFactors.set(browserId, factor)
+  applyBrowserZoomFactor(browserId)
+})
+
+ipcMain.on('browser:page-zoom-wheel', (event, gesture: { deltaY: number }) => {
+  const browserId = webContentsIdToBrowser.get(event.sender.id)
+  if (!browserId) return
+
+  const deltaY = Number.isFinite(gesture.deltaY) ? gesture.deltaY : 0
+  if (deltaY === 0) return
+
+  const current = browserPageZoomFactors.get(browserId) ?? 1
+  const next = clampBrowserPageZoom(current * Math.exp(-deltaY * BROWSER_PAGE_ZOOM_INTENSITY))
+  if (Math.abs(next - current) < 0.001) return
+
+  browserPageZoomFactors.set(browserId, next)
+  applyBrowserZoomFactor(browserId)
 })
 
 ipcMain.on(

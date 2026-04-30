@@ -32,14 +32,20 @@ const THRESHOLD = 220 // px of accumulated delta to trigger navigation
 window.addEventListener(
   'wheel',
   (e) => {
-    // Trackpad pinch arrives as Ctrl+wheel in Chromium. Let the page handle it
-    // so embedded browsers can use native page zoom instead of canvas zoom.
+    // Trackpad pinch arrives as Ctrl+wheel in Chromium. Electron's embedded
+    // WebContentsView does not apply Chrome-style page zoom for us here, so
+    // forward the gesture to main where the browser's page zoom multiplier is
+    // kept separate from the canvas zoom multiplier.
     const pageZoomGesture = e.ctrlKey && !e.metaKey
     const canvasZoomGesture = e.metaKey
     const canvasPanGesture = e.shiftKey && !canvasZoomGesture && !pageZoomGesture
     if (pageZoomGesture) {
       if (resetTimer) clearTimeout(resetTimer)
       if (gesturePhase === 'overscrolling') resetGesture()
+      e.preventDefault()
+      ipcRenderer.send('browser:page-zoom-wheel', {
+        deltaY: e.deltaY,
+      })
       return
     }
 
