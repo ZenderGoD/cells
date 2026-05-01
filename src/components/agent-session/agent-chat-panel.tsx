@@ -3443,8 +3443,8 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   // When the overlay grows meaningfully (queue row, plan banner, diff pill
   // appearing), re-anchor the transcript to the bottom so the composer
   // doesn't visually cover the last message. A non-animated scroll avoids
-  // fighting the smooth maintainScrollAtEnd behavior during streaming; the
-  // 8px gate keeps stream-induced micro-growth from triggering scrolls at all.
+  // fighting the list's own bottom anchoring during streaming; the 8px gate
+  // keeps stream-induced micro-growth from triggering scrolls at all.
   useEffect(() => {
     const prev = prevComposerOverlayHeightRef.current
     prevComposerOverlayHeightRef.current = composerOverlayHeight
@@ -5163,12 +5163,15 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                 estimatedItemSize={120}
                 initialScrollAtEnd
                 maintainScrollAtEnd={
-                  streamingTurnKey && !reduceMotion
-                    ? { animated: true, on: { dataChange: true, itemLayout: true, layout: true } }
+                  streamingTurnKey
+                    ? {
+                        animated: false,
+                        on: { dataChange: true, itemLayout: true, layout: true },
+                      }
                     : true
                 }
                 maintainScrollAtEndThreshold={0.1}
-                maintainVisibleContentPosition
+                maintainVisibleContentPosition={!streamingTurnKey}
                 className="h-full overscroll-y-contain"
                 ListHeaderComponent={<div className="h-6" />}
                 ListFooterComponent={
