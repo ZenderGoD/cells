@@ -24,6 +24,7 @@ import { TerminalNode } from './terminal-node'
 import { BrowserNode } from './browser-node'
 import { AgentWindowNode } from './agent-window-node'
 import { TextEditorNode } from './text-editor-node'
+import { CANVAS_GESTURE_LOCKED_EVENT } from '@/components/ui/popover'
 import { useShallow } from 'zustand/react/shallow'
 import type { WindowSection } from '@/types'
 
@@ -937,6 +938,13 @@ export function InfiniteCanvas() {
   // events never read a stale closure value (multiple events can fire per frame).
   const handleWheel = useCallback(
     (e: WheelEvent) => {
+      if (
+        Reflect.get(e.nativeEvent, CANVAS_GESTURE_LOCKED_EVENT) === true ||
+        (e.target as HTMLElement).closest('[data-canvas-gesture-lock="true"]')
+      ) {
+        return
+      }
+
       const termNode = (e.target as HTMLElement).closest('.terminal-node')
       const browserNode = (e.target as HTMLElement).closest('.browser-node')
       const editorNode = (e.target as HTMLElement).closest('.text-editor-node')

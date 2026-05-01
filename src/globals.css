@@ -404,6 +404,11 @@ textarea[data-ghostty] {
   -webkit-app-region: no-drag;
 }
 
+[data-canvas-gesture-lock='true'],
+[data-canvas-gesture-lock='true'] * {
+  -webkit-app-region: no-drag;
+}
+
 .worktree-manager-popover input,
 .worktree-manager-popover select,
 .worktree-manager-popover button,
