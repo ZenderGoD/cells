@@ -170,7 +170,7 @@
       ],
       "icon": "resources/icon.icns",
       "category": "public.app-category.developer-tools",
-      "x64ArchFiles": "Contents/Resources/{app.asar.unpacked/node_modules/{node-pty/prebuilds/darwin-{arm64,x64}/{pty.node,spawn-helper},@anthropic-ai/claude-agent-sdk/vendor/{audio-capture/{arm64,x64}-darwin/audio-capture.node,ripgrep/{arm64,x64}-darwin/rg},koffi/build/koffi/darwin_{arm64,x64}/koffi.node,@openai/codex-darwin-{arm64,x64}/vendor/{aarch64,x86_64}-apple-darwin/**/*,@cursor/sdk-darwin-{arm64,x64}/bin/{cursorsandbox,rg},@github/copilot/prebuilds/darwin-{arm64,x64}/{pty.node,keytar.node,spawn-helper,computer.node},@github/copilot-darwin-{arm64,x64}/copilot,sqlite3/**/*.node},vendor/zellij/darwin-{arm64,x64}/zellij,vendor/tmux/darwin-{arm64,x64}/tmux}",
+      "x64ArchFiles": "Contents/Resources/{app.asar.unpacked/node_modules/{node-pty/prebuilds/darwin-{arm64,x64}/{pty.node,spawn-helper},@anthropic-ai/claude-agent-sdk/vendor/{audio-capture/{arm64,x64}-darwin/audio-capture.node,ripgrep/{arm64,x64}-darwin/rg},koffi/build/koffi/darwin_{arm64,x64}/koffi.node,@openai/codex-darwin-{arm64,x64}/vendor/{aarch64,x86_64}-apple-darwin/**/*,@cursor/sdk-darwin-{arm64,x64}/bin/{cursorsandbox,rg},@github/copilot/prebuilds/darwin-{arm64,x64}/{pty.node,keytar.node,spawn-helper,computer.node},@github/copilot/ripgrep/bin/darwin-{arm64,x64}/rg,@github/copilot-darwin-{arm64,x64}/copilot,sqlite3/**/*.node},vendor/zellij/darwin-{arm64,x64}/zellij,vendor/tmux/darwin-{arm64,x64}/tmux}",
       "darkModeSupport": true,
       "hardenedRuntime": true,
       "gatekeeperAssess": false
