@@ -1,6 +1,11 @@
 import { Bot, Sparkles } from 'lucide-react'
 
-import { ClaudeCodeIcon, OpenAIAvatarIcon } from '@/components/brand-icons'
+import {
+  ClaudeCodeIcon,
+  CursorBrandIcon,
+  GitHubCopilotIcon,
+  OpenAIAvatarIcon,
+} from '@/components/brand-icons'
 import { getAgentBrand, type AgentName } from '@/lib/agent-brand'
 import { cn } from '@/lib/utils'
 
@@ -20,6 +25,14 @@ export function AgentIcon({ agent, className, size = 14 }: AgentIconProps) {
 
   if (brand === 'openai') {
     return <OpenAIAvatarIcon className={cn('shrink-0', className)} size={numericSize} />
+  }
+
+  if (brand === 'cursor') {
+    return <CursorBrandIcon className={cn('shrink-0', className)} size={size} />
+  }
+
+  if (brand === 'github-copilot') {
+    return <GitHubCopilotIcon className={cn('shrink-0', className)} size={size} />
   }
 
   if (brand === 'opencode') {

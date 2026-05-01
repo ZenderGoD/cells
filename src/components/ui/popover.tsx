@@ -17,9 +17,19 @@ function PopoverContent({
   alignOffset = 0,
   side = 'bottom',
   sideOffset = 4,
+  onPointerDownCapture,
+  onPointerMoveCapture,
+  onTouchMoveCapture,
+  onWheel,
+  onWheelCapture,
   ...props
 }: PopoverPrimitive.Popup.Props &
   Pick<PopoverPrimitive.Positioner.Props, 'align' | 'alignOffset' | 'side' | 'sideOffset'>) {
+  const stopCanvasGesture = (event: React.SyntheticEvent) => {
+    event.stopPropagation()
+    event.nativeEvent.stopImmediatePropagation?.()
+  }
+
   return (
     <PopoverPrimitive.Portal>
       <PopoverPrimitive.Positioner
@@ -37,7 +47,26 @@ function PopoverContent({
             className,
           )}
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-          onWheel={(e) => e.stopPropagation()}
+          onPointerDownCapture={(event) => {
+            stopCanvasGesture(event)
+            onPointerDownCapture?.(event)
+          }}
+          onPointerMoveCapture={(event) => {
+            stopCanvasGesture(event)
+            onPointerMoveCapture?.(event)
+          }}
+          onTouchMoveCapture={(event) => {
+            stopCanvasGesture(event)
+            onTouchMoveCapture?.(event)
+          }}
+          onWheelCapture={(event) => {
+            stopCanvasGesture(event)
+            onWheelCapture?.(event)
+          }}
+          onWheel={(event) => {
+            stopCanvasGesture(event)
+            onWheel?.(event)
+          }}
           {...props}
         />
       </PopoverPrimitive.Positioner>

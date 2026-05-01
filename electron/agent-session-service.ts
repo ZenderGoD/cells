@@ -1,6 +1,15 @@
 import { EventEmitter } from 'node:events'
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { promises as fs, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import {
+  promises as fs,
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { userInfo } from 'node:os'
 import * as path from 'node:path'
 import { app, shell } from 'electron'
@@ -12,14 +21,25 @@ import {
   type SDKMessage,
   type SDKSession,
 } from '@anthropic-ai/claude-agent-sdk'
+import { Cursor, type SDKModel as CursorSDKModel } from '@cursor/sdk'
+import {
+  CopilotClient,
+  type CopilotSession,
+  type ModelInfo as CopilotSDKModelInfo,
+  type PermissionRequest as CopilotPermissionRequest,
+  type PermissionRequestResult as CopilotPermissionRequestResult,
+  type SessionEvent as CopilotSessionEvent,
+} from '@github/copilot-sdk'
 import type {
   AgentContextLength,
+  AgentSessionName,
   AgentReplyReference,
   AgentUsageStats,
   AgentSessionMessage,
   AgentSessionRequest,
   AgentSessionSnapshot,
   AgentThinkingLevel,
+  PendingAgentApproval,
   RecentAgentSessionSummary,
   SavedAgentSessionSummary,
 } from '../src/types'
@@ -96,6 +116,11 @@ function codexThinkingEffort(
 // Matches Craft's authoritative model list — ../craft-agents-oss/packages/shared/src/config/models.ts
 const DEFAULT_CLAUDE_MODEL = process.env.CELLS_CLAUDE_MODEL || 'claude-sonnet-4-6'
 const DEFAULT_CODEX_MODEL = process.env.CELLS_CODEX_MODEL || 'gpt-5-codex'
+const DEFAULT_CURSOR_MODEL = process.env.CELLS_CURSOR_MODEL || 'auto'
+const DEFAULT_COPILOT_MODEL = process.env.CELLS_COPILOT_MODEL || 'auto'
+const DEFAULT_OPENCODE_MODEL = process.env.CELLS_OPENCODE_MODEL || 'opencode/gpt-5-nano'
+const ANSI_ESCAPE_CHAR = String.fromCharCode(27)
+const ANSI_COLOR_RE = new RegExp(`${ANSI_ESCAPE_CHAR}\\[[0-9;]*m`, 'g')
 
 // Claude Agent SDK beta flag that opts the prompt into the 1M-token context
 // window. Documented in `@anthropic-ai/claude-agent-sdk` as `SdkBeta =
@@ -124,7 +149,14 @@ function normalizePermissionMode(
   return (mode ?? null) as AgentSessionRequest['permissionMode']
 }
 
-const AGENT_MENTION_ROOT_PREFIXES = ['.agents', '.claude', '.codex'] as const
+const AGENT_MENTION_ROOT_PREFIXES = [
+  '.agents',
+  '.claude',
+  '.codex',
+  '.cursor',
+  '.github',
+  '.opencode',
+] as const
 
 function resolveAgentComposerPath(
   cwd: string | null | undefined,
@@ -370,6 +402,12 @@ function resolveSystemBinary(name: string): string | null {
 
 let cachedClaudePath: string | null | undefined
 let cachedCodexPath: string | null | undefined
+let cachedCursorAgentPath: string | null | undefined
+let cachedCopilotPath: string | null | undefined
+let cachedOpencodePath: string | null | undefined
+let cachedBundledCopilotLoaderPath: string | null | undefined
+let cachedCopilotNodePath: string | null | undefined
+let cachedCopilotWrapperPath: string | null | undefined
 
 export function setCustomAgentPaths(paths: Record<string, string>) {
   if (paths.claude !== undefined) {
@@ -377,6 +415,15 @@ export function setCustomAgentPaths(paths: Record<string, string>) {
   }
   if (paths.codex !== undefined) {
     cachedCodexPath = paths.codex?.trim() || undefined
+  }
+  if (paths.cursor !== undefined) {
+    cachedCursorAgentPath = paths.cursor?.trim() || undefined
+  }
+  if (paths.copilot !== undefined) {
+    cachedCopilotPath = paths.copilot?.trim() || undefined
+  }
+  if (paths.opencode !== undefined) {
+    cachedOpencodePath = paths.opencode?.trim() || undefined
   }
 }
 
@@ -390,8 +437,149 @@ function getSystemCodexPath(): string | null {
   return cachedCodexPath
 }
 
+function getSystemCursorAgentPath(): string | null {
+  if (cachedCursorAgentPath === undefined) {
+    cachedCursorAgentPath = resolveSystemBinary('cursor-agent')
+  }
+  return cachedCursorAgentPath
+}
+
+function getSystemCopilotPath(): string | null {
+  if (cachedCopilotPath === undefined) cachedCopilotPath = resolveSystemBinary('copilot')
+  return cachedCopilotPath
+}
+
+function getSystemOpencodePath(): string | null {
+  if (cachedOpencodePath === undefined) cachedOpencodePath = resolveSystemBinary('opencode')
+  return cachedOpencodePath
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`
+}
+
+function getCopilotNodePath(): string | null {
+  if (cachedCopilotNodePath !== undefined) return cachedCopilotNodePath
+  const candidates = [
+    process.env.CELLS_COPILOT_NODE,
+    process.env.npm_node_execpath,
+    resolveSystemBinary('node'),
+  ].filter((candidate): candidate is string => Boolean(candidate && existsSync(candidate)))
+
+  for (const candidate of candidates) {
+    try {
+      execFileSync(candidate, ['-e', 'import("node:sqlite").then(()=>process.exit(0))'], {
+        stdio: 'ignore',
+        timeout: 2500,
+      })
+      cachedCopilotNodePath = candidate
+      return candidate
+    } catch {
+      // The bundled Copilot CLI currently imports node:sqlite, so Electron's
+      // embedded Node and older system Node builds cannot run it.
+    }
+  }
+
+  cachedCopilotNodePath = null
+  return null
+}
+
+function getBundledCopilotLoaderPath(): string | null {
+  if (cachedBundledCopilotLoaderPath !== undefined) return cachedBundledCopilotLoaderPath
+  const candidates: string[] = []
+  const roots = [
+    process.cwd(),
+    app.getAppPath(),
+    path.dirname(app.getAppPath()),
+    process.resourcesPath,
+    path.join(process.resourcesPath, 'app.asar.unpacked'),
+  ]
+
+  for (const root of roots) {
+    candidates.push(path.join(root, 'node_modules', '@github', 'copilot', 'npm-loader.js'))
+    const pnpmDir = path.join(root, 'node_modules', '.pnpm')
+    try {
+      for (const entry of readdirSync(pnpmDir)) {
+        if (entry.startsWith('@github+copilot@')) {
+          candidates.push(
+            path.join(pnpmDir, entry, 'node_modules', '@github', 'copilot', 'npm-loader.js'),
+          )
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      cachedBundledCopilotLoaderPath = candidate
+      return candidate
+    }
+  }
+  cachedBundledCopilotLoaderPath = null
+  return null
+}
+
+function getCopilotCliPath(): string | null {
+  const system = getSystemCopilotPath()
+  if (system) return system
+
+  const nodePath = getCopilotNodePath()
+  const loaderPath = getBundledCopilotLoaderPath()
+  if (!nodePath || !loaderPath) return null
+
+  if (cachedCopilotWrapperPath && existsSync(cachedCopilotWrapperPath))
+    return cachedCopilotWrapperPath
+  try {
+    const dir = path.join(app.getPath('userData'), 'agent-bin')
+    mkdirSync(dir, { recursive: true })
+    const wrapperPath = path.join(dir, 'copilot-bundled')
+    writeFileSync(
+      wrapperPath,
+      `#!/bin/sh\nexec ${shellQuote(nodePath)} ${shellQuote(loaderPath)} "$@"\n`,
+      'utf8',
+    )
+    chmodSync(wrapperPath, 0o755)
+    cachedCopilotWrapperPath = wrapperPath
+    return wrapperPath
+  } catch (err) {
+    log('copilot.wrapper.error', { error: err instanceof Error ? err.message : String(err) })
+    return null
+  }
+}
+
+function getCopilotLoginCommandParts(): {
+  command: string
+  argsPrefix: string[]
+  displayPath: string
+} | null {
+  const system = getSystemCopilotPath()
+  if (system) return { command: system, argsPrefix: [], displayPath: system }
+  const bundled = getBundledCopilotLoaderPath()
+  const nodePath = getCopilotNodePath()
+  if (bundled && nodePath) return { command: nodePath, argsPrefix: [bundled], displayPath: bundled }
+  return null
+}
+
+function buildCopilotClient(cwd?: string | null): CopilotClient {
+  const cliPath = getCopilotCliPath()
+  if (!cliPath) {
+    throw new Error(
+      'GitHub Copilot CLI is unavailable. Install the copilot CLI, or install Node.js 22+ so Cells can run the bundled CLI.',
+    )
+  }
+  return new CopilotClient({
+    cliPath,
+    cwd: cwd ?? undefined,
+    logLevel: AGENT_SESSION_DEBUG ? 'debug' : 'error',
+    env: buildAgentEnv(cwd ? { PWD: cwd } : {}),
+    useLoggedInUser: true,
+  })
+}
+
 export interface AgentAuthStatus {
-  agent: 'claude' | 'codex'
+  agent: AgentSessionName
   binaryPath: string | null
   authenticated: boolean | 'unknown'
   account?: string | null
@@ -399,6 +587,20 @@ export interface AgentAuthStatus {
 
 const AGENT_STATUS_TIMEOUT_MS = 5_000
 const CODEX_APP_SERVER_TIMEOUT_MS = 8_000
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
 
 type CapturedCommandResult = {
   stdout: string
@@ -667,6 +869,259 @@ function codexQuestionResponse(answers: Record<string, string[]>): {
     result[key] = { answers: value }
   }
   return { answers: result }
+}
+
+function isCursorAuthError(text: string): boolean {
+  const t = text.toLowerCase()
+  return (
+    t.includes('not authenticated') ||
+    t.includes('authentication') ||
+    t.includes('api key') ||
+    t.includes('unauthorized') ||
+    t.includes('forbidden') ||
+    t.includes('login')
+  )
+}
+
+function isCopilotAuthError(text: string): boolean {
+  const t = text.toLowerCase()
+  return (
+    t.includes('not authenticated') ||
+    t.includes('authentication') ||
+    t.includes('unauthorized') ||
+    t.includes('forbidden') ||
+    t.includes('login') ||
+    t.includes('copilot subscription')
+  )
+}
+
+function isOpencodeAuthError(text: string): boolean {
+  const t = text.toLowerCase()
+  return (
+    t.includes('not authenticated') ||
+    t.includes('no credentials') ||
+    t.includes('auth login') ||
+    t.includes('authentication') ||
+    t.includes('unauthorized') ||
+    t.includes('forbidden') ||
+    t.includes('login')
+  )
+}
+
+function copilotThinkingEffort(
+  level: AgentThinkingLevel | null | undefined,
+): 'low' | 'medium' | 'high' | 'xhigh' | undefined {
+  switch (level) {
+    case 'low':
+      return 'low'
+    case 'high':
+      return 'high'
+    case 'max':
+    case 'xhigh':
+      return 'xhigh'
+    case 'medium':
+      return 'medium'
+    default:
+      return undefined
+  }
+}
+
+function opencodeThinkingVariant(
+  level: AgentThinkingLevel | null | undefined,
+): 'minimal' | 'low' | 'medium' | 'high' | 'max' | undefined {
+  switch (level) {
+    case 'off':
+      return 'minimal'
+    case 'low':
+      return 'low'
+    case 'high':
+      return 'high'
+    case 'max':
+    case 'xhigh':
+      return 'max'
+    case 'medium':
+      return 'medium'
+    default:
+      return undefined
+  }
+}
+
+function buildCopilotSystemMessage(mode: AgentSessionRequest['permissionMode']) {
+  const lines = [
+    'Cells runtime guidance:',
+    '- Prefer the current workspace and explicitly referenced files over scanning broad home-directory locations.',
+    '- If you need to search outside the workspace, keep paths narrow and explain why.',
+  ]
+  if (mode === 'plan') {
+    lines.push(
+      'Cells is running this GitHub Copilot session in Plan mode.',
+      'Do not edit files or run shell commands. Inspect and reason only.',
+      'When the plan is ready, present it inside <proposed_plan>...</proposed_plan> tags and wait for approval before implementation.',
+    )
+  }
+  return lines.join('\n')
+}
+
+function buildOpenCodeProviderText(mode: AgentSessionRequest['permissionMode'], text: string) {
+  const lines = [
+    'Cells runtime guidance:',
+    '- Prefer the current workspace and explicitly referenced files over broad home-directory scans.',
+    '- If you need files outside the workspace, use exact paths or narrow directories first.',
+  ]
+  if (mode === 'plan') {
+    lines.push(
+      'Cells is running this OpenCode session in Plan mode.',
+      'Do not edit files or run mutating commands. Inspect and reason only.',
+      'When the plan is ready, present it inside <proposed_plan>...</proposed_plan> tags and wait for approval before implementation.',
+    )
+  }
+  return [...lines, '', text].join('\n')
+}
+
+function copilotToolTitle(rawName: string | null | undefined): string {
+  const name = (rawName || '').trim()
+  if (!name) return 'Tool'
+  const normalized = name.replace(/[_-]/g, '').toLowerCase()
+  if (normalized === 'shell' || normalized === 'bash' || normalized === 'terminal') return 'Bash'
+  if (normalized === 'read' || normalized === 'view' || normalized === 'fileread') return 'Read'
+  if (normalized === 'write' || normalized === 'edit' || normalized === 'fileedit') return 'Edit'
+  if (normalized === 'grep' || normalized === 'search') return 'Grep'
+  if (normalized === 'glob') return 'Glob'
+  return name.charAt(0).toUpperCase() + name.slice(1)
+}
+
+function buildCopilotPendingApproval(request: CopilotPermissionRequest): PendingAgentApproval {
+  const payload = request as CopilotPermissionRequest & Record<string, unknown>
+  const kind: 'command' | 'file-change' =
+    request.kind === 'write' || typeof payload.fileName === 'string' ? 'file-change' : 'command'
+  const command = asNonEmptyString(payload.fullCommandText)
+  const fileName = asNonEmptyString(payload.fileName)
+  const mcpToolTitle = asNonEmptyString(payload.toolTitle)
+  const mcpToolName = asNonEmptyString(payload.toolName)
+  const url = asNonEmptyString(payload.url)
+  const pathValue = asNonEmptyString(payload.path)
+  const intention = asNonEmptyString(payload.intention)
+  const detail = command || fileName || mcpToolTitle || mcpToolName || url || pathValue || intention
+  return {
+    kind,
+    title: kind === 'file-change' ? 'Approve file changes' : 'Approve tool',
+    detail: detail ?? null,
+    reason: intention ?? null,
+    command: command ?? null,
+    grantRoot: fileName ?? pathValue ?? null,
+    canApproveForSession: Boolean(
+      (payload as Record<string, unknown>).canOfferSessionApproval ?? true,
+    ),
+    createdAt: now(),
+  }
+}
+
+function compactCopilotToolResult(data: Record<string, unknown>): string {
+  const error = asRecord(data.error)
+  if (error) return asNonEmptyString(error.message) || compactText(error)
+  const result = asRecord(data.result)
+  const detailed = asNonEmptyString(result?.detailedContent)
+  const content = asNonEmptyString(result?.content)
+  return detailed || content || compactText(result ?? data)
+}
+
+function buildCursorProviderText(mode: AgentSessionRequest['permissionMode'], text: string) {
+  const guardrails = [
+    'Cells runtime guidance:',
+    '- Avoid broad recursive glob/search/read operations from /Users, ~, $HOME, /Users/raj, /Applications, ~/Library, ~/Desktop, ~/Documents, ~/Downloads, and other macOS privacy-protected roots.',
+    '- Never call the glob tool with targetDirectory set to /Users, ~, $HOME, /Users/raj, /Applications, ~/Library, ~/Desktop, ~/Documents, or ~/Downloads. Use an exact file read or a narrow workspace subdirectory instead.',
+    '- For dotfiles or config files in the home directory, check direct standard paths first with exact file reads or shell tests, for example ~/.tmux.conf, ~/.config/tmux/tmux.conf, and ~/.tmux/tmux.conf.',
+    '- If a broad search hits macOS permission prompts or permission-denied paths, do not retry the same broad search. Narrow the path or ask the user for the exact file.',
+    '- Prefer the current workspace and explicitly referenced files over scanning the whole home directory.',
+  ]
+  if (mode === 'plan') {
+    guardrails.push(
+      'Cells is running this Cursor agent in Plan mode.',
+      'Do not edit files or run mutating commands. Inspect and reason only.',
+      'When the plan is ready, present it inside <proposed_plan>...</proposed_plan> tags and wait for approval before implementation.',
+    )
+  }
+  return [...guardrails, '', text].join('\n')
+}
+
+function buildCursorCliPrompt(text: string, imageAttachments: string[]): string {
+  if (imageAttachments.length === 0) return text
+  const refs = imageAttachments.map((filePath) => `[${filePath}]`).join(' ')
+  return text ? `${refs}\n\n${text}` : refs
+}
+
+function cursorToolTitle(rawName: string): string {
+  const normalized = rawName
+    .replace(/ToolCall$/i, '')
+    .replace(/[_-]/g, '')
+    .toLowerCase()
+  if (normalized === 'shell' || normalized === 'bash' || normalized === 'terminal') return 'Bash'
+  if (normalized === 'read' || normalized === 'fileread') return 'Read'
+  if (normalized === 'edit' || normalized === 'fileedit') return 'Edit'
+  if (normalized === 'write' || normalized === 'filewrite') return 'Write'
+  if (normalized === 'glob') return 'Glob'
+  if (normalized === 'grep' || normalized === 'search') return 'Grep'
+  if (normalized === 'ls' || normalized === 'list' || normalized === 'listdir') return 'LS'
+  if (normalized === 'webfetch') return 'WebFetch'
+  if (normalized === 'websearch') return 'WebSearch'
+  if (normalized === 'todowrite') return 'TodoWrite'
+  const cleaned = rawName.replace(/ToolCall$/i, '').trim()
+  return cleaned ? cleaned.charAt(0).toUpperCase() + cleaned.slice(1) : 'Tool'
+}
+
+function normalizeCursorToolArgs(title: string, rawArgs: Record<string, unknown>) {
+  const args = { ...rawArgs }
+  if (title === 'Glob') {
+    const pattern = asNonEmptyString(args.pattern) ?? asNonEmptyString(args.globPattern)
+    const searchPath =
+      asNonEmptyString(args.path) ??
+      asNonEmptyString(args.targetDirectory) ??
+      asNonEmptyString(args.directory)
+    if (pattern) args.pattern = pattern
+    if (searchPath) args.path = searchPath
+  } else if (title === 'Grep') {
+    const pattern =
+      asNonEmptyString(args.pattern) ??
+      asNonEmptyString(args.query) ??
+      asNonEmptyString(args.searchPattern)
+    const searchPath =
+      asNonEmptyString(args.path) ??
+      asNonEmptyString(args.targetDirectory) ??
+      asNonEmptyString(args.directory)
+    if (pattern) args.pattern = pattern
+    if (searchPath) args.path = searchPath
+  } else if (title === 'LS') {
+    const searchPath =
+      asNonEmptyString(args.path) ??
+      asNonEmptyString(args.targetDirectory) ??
+      asNonEmptyString(args.directory)
+    if (searchPath) args.path = searchPath
+  }
+  delete args.globPattern
+  delete args.targetDirectory
+  return args
+}
+
+function isCursorBroadProtectedGlob(title: string, args: Record<string, unknown>) {
+  if (title !== 'Glob') return false
+  const searchPath = asNonEmptyString(args.path)
+  const pattern = asNonEmptyString(args.pattern)
+  if (!searchPath || !pattern) return false
+  const homeDir = userInfo().homedir
+  const resolvedPath = path.resolve(searchPath.replace(/^~(?=$|\/)/, homeDir))
+  const protectedRoots = [
+    path.resolve(homeDir, 'Library'),
+    path.resolve(homeDir, 'Desktop'),
+    path.resolve(homeDir, 'Documents'),
+    path.resolve(homeDir, 'Downloads'),
+    path.resolve('/Applications'),
+  ]
+  const isProtectedRoot = protectedRoots.some(
+    (root) => resolvedPath === root || resolvedPath.startsWith(`${root}${path.sep}`),
+  )
+  if (isProtectedRoot) return true
+  const isHomeRoot = resolvedPath === path.resolve(homeDir)
+  return isHomeRoot && pattern.includes('**')
 }
 
 function buildCodexPendingApproval(
@@ -973,12 +1428,134 @@ async function probeCodexAuthStatus(binaryPath: string): Promise<AgentAuthStatus
   }
 }
 
-export async function getAgentAuthStatus(agent: 'claude' | 'codex'): Promise<AgentAuthStatus> {
+async function probeCursorAuthStatus(): Promise<AgentAuthStatus> {
+  const binaryPath = getSystemCursorAgentPath()
+  if (binaryPath) {
+    try {
+      const result = await runCapturedCommand(binaryPath, ['status', '--format', 'json'])
+      const payload = parseJsonRecord(`${result.stdout}\n${result.stderr}`)
+      const userInfo = payload ? asRecord(payload.userInfo) : null
+      const email = userInfo ? asNonEmptyString(userInfo.email) : null
+      const status = payload ? asNonEmptyString(payload.status) : null
+      const isAuthenticated =
+        payload && typeof payload.isAuthenticated === 'boolean'
+          ? payload.isAuthenticated
+          : status === 'authenticated'
+            ? true
+            : status === 'unauthenticated'
+              ? false
+              : null
+      if (isAuthenticated !== null) {
+        return {
+          agent: 'cursor',
+          binaryPath,
+          authenticated: isAuthenticated,
+          account: email,
+        }
+      }
+    } catch {
+      // Fall through to the SDK/API-key probe.
+    }
+  }
+
+  try {
+    const user = await Cursor.me()
+    const name = [user.userFirstName, user.userLastName].filter(Boolean).join(' ').trim()
+    return {
+      agent: 'cursor',
+      binaryPath,
+      authenticated: true,
+      account: user.userEmail || name || user.apiKeyName || null,
+    }
+  } catch {
+    return {
+      agent: 'cursor',
+      binaryPath,
+      authenticated: process.env.CURSOR_API_KEY ? 'unknown' : false,
+      account: null,
+    }
+  }
+}
+
+async function probeCopilotAuthStatus(): Promise<AgentAuthStatus> {
+  const command = getCopilotLoginCommandParts()
+  const client = buildCopilotClient()
+  try {
+    await withTimeout(client.start(), AGENT_STATUS_TIMEOUT_MS, 'copilot auth start')
+    const status = await withTimeout(
+      client.getAuthStatus(),
+      AGENT_STATUS_TIMEOUT_MS,
+      'copilot auth status',
+    )
+    return {
+      agent: 'copilot',
+      binaryPath: getCopilotCliPath() ?? command?.displayPath ?? null,
+      authenticated: status.isAuthenticated,
+      account: status.login ?? status.statusMessage ?? null,
+    }
+  } finally {
+    const errors = await client
+      .stop()
+      .catch((err) => [err instanceof Error ? err : new Error(String(err))])
+    if (errors.length > 0) {
+      log('copilot.auth.stop.error', {
+        error: errors.map((err) => err.message).join('\n'),
+      })
+    }
+  }
+}
+
+async function probeOpencodeAuthStatus(binaryPath: string): Promise<AgentAuthStatus> {
+  const result = await runCapturedCommand(binaryPath, ['auth', 'list'])
+  const output = `${result.stdout}\n${result.stderr}`.replace(ANSI_COLOR_RE, '')
+  const authenticated =
+    /\bcredentials?\b/i.test(output) && !/\b0 credentials?\b/i.test(output)
+      ? true
+      : /not logged in|no credentials|login/i.test(output)
+        ? false
+        : 'unknown'
+  const account = output
+    .split(/\r?\n/)
+    .map((line) => line.replace(/[│●┌└~]/g, ' ').trim())
+    .find((line) => line && !/^credentials\b/i.test(line) && !/auth\.json/i.test(line))
+  return {
+    agent: 'opencode',
+    binaryPath,
+    authenticated,
+    account: account || null,
+  }
+}
+
+export async function getAgentAuthStatus(agent: AgentSessionName): Promise<AgentAuthStatus> {
   if (agent === 'claude') {
     const binaryPath = getSystemClaudePath()
     if (!binaryPath) return { agent, binaryPath: null, authenticated: false }
     try {
       return await probeClaudeAuthStatus(binaryPath)
+    } catch {
+      return { agent, binaryPath, authenticated: 'unknown' }
+    }
+  }
+  if (agent === 'cursor') {
+    return await probeCursorAuthStatus()
+  }
+  if (agent === 'copilot') {
+    try {
+      return await probeCopilotAuthStatus()
+    } catch {
+      return {
+        agent,
+        binaryPath: getCopilotCliPath(),
+        authenticated: false,
+        account: null,
+      }
+    }
+  }
+  if (agent === 'opencode') {
+    const binaryPath = getSystemOpencodePath()
+    if (!binaryPath) return { agent, binaryPath: null, authenticated: false }
+    try {
+      return await probeOpencodeAuthStatus(binaryPath)
     } catch {
       return { agent, binaryPath, authenticated: 'unknown' }
     }
@@ -996,9 +1573,22 @@ export async function getAgentAuthStatus(agent: 'claude' | 'codex'): Promise<Age
  * Shell command users would run to sign in. Resolved through the detected
  * system binary when available so we don't rely on PATH at execution time.
  */
-export function getAgentLoginCommand(agent: 'claude' | 'codex'): string {
+export function getAgentLoginCommand(agent: AgentSessionName): string {
   if (agent === 'claude') {
     const bin = getSystemClaudePath() || 'claude'
+    return `${bin} auth login`
+  }
+  if (agent === 'cursor') {
+    const bin = getSystemCursorAgentPath() || 'cursor-agent'
+    return `${bin} login`
+  }
+  if (agent === 'copilot') {
+    const command = getCopilotLoginCommandParts()
+    if (!command) return 'copilot login'
+    return [command.command, ...command.argsPrefix, 'login'].join(' ')
+  }
+  if (agent === 'opencode') {
+    const bin = getSystemOpencodePath() || 'opencode'
     return `${bin} auth login`
   }
   const bin = getSystemCodexPath() || 'codex'
@@ -1097,6 +1687,215 @@ export interface ClaudeModelInfo {
 let cachedClaudeModels: { at: number; list: ClaudeModelInfo[] } | null = null
 let cachedClaudeCliVersion: { at: number; version: string | null } | null = null
 
+export interface CursorModelInfo {
+  id: string
+  displayName: string
+  description: string
+  parameters?: Array<{
+    id: string
+    displayName?: string
+    values: Array<{ value: string; displayName?: string }>
+  }>
+  variants?: Array<{
+    params: Array<{ id: string; value: string }>
+    displayName: string
+    description?: string
+    isDefault?: boolean
+  }>
+}
+
+let cachedCursorModels: { at: number; list: CursorModelInfo[] } | null = null
+
+export interface CopilotModelInfo {
+  id: string
+  displayName: string
+  description: string
+  isDefault: boolean
+  hidden: boolean
+  supportedReasoningEfforts: string[]
+  defaultReasoningEffort: string
+  contextWindow: number | null
+}
+
+let cachedCopilotModels: { at: number; list: CopilotModelInfo[] } | null = null
+
+export interface OpencodeModelInfo {
+  id: string
+  displayName: string
+  description: string
+  isDefault: boolean
+  hidden: boolean
+  supportedReasoningEfforts: string[]
+  defaultReasoningEffort: string
+  contextWindow: number | null
+}
+
+let cachedOpencodeModels: { at: number; list: OpencodeModelInfo[] } | null = null
+
+function mapCursorModel(model: CursorSDKModel): CursorModelInfo {
+  return {
+    id: model.id,
+    displayName: model.displayName || model.id,
+    description: model.description || '',
+    parameters: model.parameters,
+    variants: model.variants,
+  }
+}
+
+function parseCursorCliModels(output: string): CursorModelInfo[] {
+  const models: CursorModelInfo[] = []
+  for (const rawLine of output.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line || line === 'Available models' || line.startsWith('Tip:')) continue
+    const match = line.match(/^([^\s]+)\s+-\s+(.+)$/)
+    if (!match) continue
+    const id = match[1]?.trim()
+    const labelAndMeta = match[2]?.trim()
+    if (!id || !labelAndMeta) continue
+    const displayName = labelAndMeta.replace(/\s+\([^)]*\)\s*$/, '').trim() || id
+    const meta = labelAndMeta.match(/\(([^)]*)\)\s*$/)?.[1]?.trim()
+    models.push({
+      id,
+      displayName,
+      description: meta || '',
+      variants: meta?.includes('default')
+        ? [{ params: [], displayName, description: meta, isDefault: true }]
+        : undefined,
+    })
+  }
+  return models
+}
+
+async function listCursorCliModels(): Promise<CursorModelInfo[]> {
+  const binaryPath = getSystemCursorAgentPath()
+  if (!binaryPath) return []
+  const result = await runCapturedCommand(binaryPath, ['models'], { timeoutMs: 15_000 })
+  if (result.code !== 0) return []
+  return parseCursorCliModels(`${result.stdout}\n${result.stderr}`)
+}
+
+export async function listCursorModels(): Promise<CursorModelInfo[]> {
+  if (cachedCursorModels && Date.now() - cachedCursorModels.at < 5 * 60_000) {
+    return cachedCursorModels.list
+  }
+  let list: CursorModelInfo[]
+  try {
+    const raw = await Cursor.models.list()
+    list = raw.map(mapCursorModel).filter((model) => model.id.trim().length > 0)
+  } catch {
+    list = await listCursorCliModels()
+  }
+  if (list.length > 0) {
+    cachedCursorModels = { at: Date.now(), list }
+  }
+  return list
+}
+
+function mapCopilotModel(model: CopilotSDKModelInfo): CopilotModelInfo {
+  return {
+    id: model.id,
+    displayName: model.name || model.id,
+    description: '',
+    isDefault: false,
+    hidden: model.policy?.state === 'disabled' || model.policy?.state === 'unconfigured',
+    supportedReasoningEfforts: model.supportedReasoningEfforts ?? [],
+    defaultReasoningEffort: model.defaultReasoningEffort ?? 'medium',
+    contextWindow: model.capabilities?.limits?.max_context_window_tokens ?? null,
+  }
+}
+
+export async function listCopilotModels(): Promise<CopilotModelInfo[]> {
+  if (cachedCopilotModels && Date.now() - cachedCopilotModels.at < 5 * 60_000) {
+    return cachedCopilotModels.list
+  }
+  const client = buildCopilotClient()
+  try {
+    await withTimeout(client.start(), AGENT_STATUS_TIMEOUT_MS, 'copilot model start')
+    const raw = await withTimeout(
+      client.listModels(),
+      AGENT_STATUS_TIMEOUT_MS,
+      'copilot model list',
+    )
+    const live = raw.map(mapCopilotModel).filter((model) => model.id.trim().length > 0)
+    const hasAuto = live.some((model) => model.id === 'auto')
+    const list = [
+      ...(hasAuto
+        ? []
+        : [
+            {
+              id: 'auto',
+              displayName: 'Auto',
+              description: 'GitHub Copilot account default',
+              isDefault: true,
+              hidden: false,
+              supportedReasoningEfforts: [],
+              defaultReasoningEffort: 'off',
+              contextWindow: null,
+            } satisfies CopilotModelInfo,
+          ]),
+      ...live,
+    ]
+    cachedCopilotModels = { at: Date.now(), list }
+    return list
+  } finally {
+    const errors = await client
+      .stop()
+      .catch((err) => [err instanceof Error ? err : new Error(String(err))])
+    if (errors.length > 0) {
+      log('copilot.models.stop.error', {
+        error: errors.map((err) => err.message).join('\n'),
+      })
+    }
+  }
+}
+
+function prettifyOpencodeModelName(id: string): string {
+  const providerless = id.includes('/') ? id.split('/').slice(1).join('/') : id
+  return providerless
+    .replace(/^gpt-/i, 'GPT-')
+    .replace(/-codex/gi, ' Codex')
+    .replace(/-mini\b/gi, ' Mini')
+    .replace(/-max\b/gi, ' Max')
+    .replace(/-spark\b/gi, ' Spark')
+    .replace(/-/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+    .replace(/^GPT /, 'GPT-')
+    .trim()
+}
+
+export async function listOpencodeModels(): Promise<OpencodeModelInfo[]> {
+  if (cachedOpencodeModels && Date.now() - cachedOpencodeModels.at < 5 * 60_000) {
+    return cachedOpencodeModels.list
+  }
+  const binary = getSystemOpencodePath()
+  if (!binary) return []
+  const result = await runCapturedCommand(binary, ['models'], { timeoutMs: 15_000 })
+  if (result.code !== 0) return []
+  const seen = new Set<string>()
+  const models: OpencodeModelInfo[] = []
+  for (const rawLine of `${result.stdout}\n${result.stderr}`.split(/\r?\n/)) {
+    const id = rawLine.replace(ANSI_COLOR_RE, '').trim()
+    if (!id || !id.includes('/') || seen.has(id)) continue
+    seen.add(id)
+    models.push({
+      id,
+      displayName: prettifyOpencodeModelName(id),
+      description: id.startsWith('opencode/')
+        ? 'OpenCode account default provider'
+        : `${id.split('/')[0]} provider`,
+      isDefault: id === DEFAULT_OPENCODE_MODEL,
+      hidden: false,
+      supportedReasoningEfforts: ['minimal', 'low', 'medium', 'high', 'max'],
+      defaultReasoningEffort: 'medium',
+      contextWindow: null,
+    })
+  }
+  const hasDefault = models.some((model) => model.isDefault)
+  if (!hasDefault && models.length > 0) models[0].isDefault = true
+  cachedOpencodeModels = { at: Date.now(), list: models }
+  return models
+}
+
 function bufferToString(value: unknown): string {
   if (typeof value === 'string') return value
   if (Buffer.isBuffer(value)) return value.toString('utf8')
@@ -1130,7 +1929,7 @@ function getClaudeCliVersion(): string | null {
 }
 
 async function resolveSessionModelId(
-  agent: 'claude' | 'codex',
+  agent: AgentSessionName,
   requested: string | null | undefined,
 ): Promise<string> {
   try {
@@ -1138,10 +1937,33 @@ async function resolveSessionModelId(
       const models = await listCodexModels()
       return resolveAgentModelId(agent, requested, models, DEFAULT_CODEX_MODEL)
     }
+    if (agent === 'cursor') {
+      const models = await listCursorModels()
+      return resolveAgentModelId(agent, requested, models, DEFAULT_CURSOR_MODEL)
+    }
+    if (agent === 'copilot') {
+      const models = await listCopilotModels()
+      return resolveAgentModelId(agent, requested, models, DEFAULT_COPILOT_MODEL)
+    }
+    if (agent === 'opencode') {
+      const models = await listOpencodeModels()
+      return resolveAgentModelId(agent, requested, models, DEFAULT_OPENCODE_MODEL)
+    }
     const models = await listClaudeModels()
     return resolveAgentModelId(agent, requested, models, DEFAULT_CLAUDE_MODEL)
   } catch {
-    return requested || (agent === 'codex' ? DEFAULT_CODEX_MODEL : DEFAULT_CLAUDE_MODEL)
+    return (
+      requested ||
+      (agent === 'codex'
+        ? DEFAULT_CODEX_MODEL
+        : agent === 'cursor'
+          ? DEFAULT_CURSOR_MODEL
+          : agent === 'copilot'
+            ? DEFAULT_COPILOT_MODEL
+            : agent === 'opencode'
+              ? DEFAULT_OPENCODE_MODEL
+              : DEFAULT_CLAUDE_MODEL)
+    )
   }
 }
 
@@ -1237,7 +2059,7 @@ export async function listClaudeModels(): Promise<ClaudeModelInfo[]> {
 export type LoginPhase = 'starting' | 'awaiting_browser' | 'success' | 'failed' | 'cancelled'
 
 export interface LoginEvent {
-  agent: 'claude' | 'codex'
+  agent: AgentSessionName
   phase: LoginPhase
   url?: string | null
   message?: string | null
@@ -1264,13 +2086,13 @@ interface ActiveLogin {
  * need our own — we just need to stay out of its way and expose progress.
  */
 export class AgentLoginManager extends EventEmitter {
-  private active = new Map<'claude' | 'codex', ActiveLogin>()
+  private active = new Map<AgentSessionName, ActiveLogin>()
 
-  isActive(agent: 'claude' | 'codex'): boolean {
+  isActive(agent: AgentSessionName): boolean {
     return this.active.has(agent)
   }
 
-  cancel(agent: 'claude' | 'codex') {
+  cancel(agent: AgentSessionName) {
     const running = this.active.get(agent)
     if (!running) return
     try {
@@ -1280,15 +2102,33 @@ export class AgentLoginManager extends EventEmitter {
     }
   }
 
-  async start(agent: 'claude' | 'codex'): Promise<void> {
-    if (this.active.has(agent)) return
+  async start(agent: AgentSessionName): Promise<void> {
+    const existing = this.active.get(agent)
+    if (existing) {
+      this.emit('event', {
+        agent,
+        phase: existing.phase,
+        url: existing.url,
+      } satisfies LoginEvent)
+      return
+    }
 
-    const binary = agent === 'claude' ? getSystemClaudePath() : getSystemCodexPath()
+    const binary =
+      agent === 'claude'
+        ? getSystemClaudePath()
+        : agent === 'cursor'
+          ? getSystemCursorAgentPath()
+          : agent === 'copilot'
+            ? getCopilotLoginCommandParts()?.command
+            : agent === 'opencode'
+              ? getSystemOpencodePath()
+              : getSystemCodexPath()
+    const copilotCommand = agent === 'copilot' ? getCopilotLoginCommandParts() : null
     if (!binary) {
       this.emit('event', {
         agent,
         phase: 'failed',
-        message: `${agent === 'claude' ? 'Claude Code' : 'Codex'} CLI not found on PATH.`,
+        message: `${agent === 'claude' ? 'Claude Code' : agent === 'cursor' ? 'Cursor Agent' : agent === 'copilot' ? 'GitHub Copilot' : agent === 'opencode' ? 'OpenCode' : 'Codex'} CLI not found on PATH.`,
       } satisfies LoginEvent)
       return
     }
@@ -1297,7 +2137,14 @@ export class AgentLoginManager extends EventEmitter {
     // packaged Electron app can fail (no $DISPLAY or no xdg-open). We
     // disable that behaviour when we can and open the URL ourselves so
     // the user always lands in their default browser.
-    const args = agent === 'claude' ? ['auth', 'login'] : ['login']
+    const args =
+      agent === 'claude'
+        ? ['auth', 'login']
+        : agent === 'copilot'
+          ? [...(copilotCommand?.argsPrefix ?? []), 'login']
+          : agent === 'opencode'
+            ? ['auth', 'login']
+            : ['login']
 
     const env = buildAgentEnv({
       // Force non-TTY output; the claude CLI uses a different prompt when
@@ -1306,6 +2153,9 @@ export class AgentLoginManager extends EventEmitter {
       NO_COLOR: '1',
       FORCE_COLOR: '0',
       CLAUDE_AGENT_SDK_CLIENT_APP: 'cells',
+      // Cursor opens the browser by default. Disable that and let Cells open
+      // the captured URL so the user gets one tab and the UI can track it.
+      ...(agent === 'cursor' ? { NO_OPEN_BROWSER: '1' } : {}),
     })
 
     let child: ChildProcessWithoutNullStreams
@@ -1387,7 +2237,7 @@ export class AgentLoginManager extends EventEmitter {
 
 export const agentLoginManager = new AgentLoginManager()
 
-type Runtime = ClaudeRuntime | CodexRuntime
+type Runtime = ClaudeRuntime | CodexRuntime | CursorRuntime | CopilotRuntime | OpencodeRuntime
 
 interface RuntimeBase {
   request: AgentSessionRequest
@@ -1419,6 +2269,10 @@ type CodexQuestionApprovalResolver = (result: {
 type CodexApprovalResolver = (result: {
   decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel'
 }) => void
+
+type CopilotQuestionApprovalResolver = (result: CopilotUserInputResponse) => void
+type CopilotUserInputResponse = { answer: string; wasFreeform: boolean }
+type CopilotApprovalResolver = (result: CopilotPermissionRequestResult) => void
 
 interface ClaudeRuntime extends RuntimeBase {
   kind: 'claude'
@@ -1507,6 +2361,49 @@ interface CodexRuntime extends RuntimeBase {
    *  `item_0`, `item_1`, … across turns, so we prefix item ids with this
    *  counter to keep each turn's items distinct in our message list. */
   turnCounter: number
+}
+
+interface CursorRuntime extends RuntimeBase {
+  kind: 'cursor'
+  activeRun: ChildProcessWithoutNullStreams | null
+  runPromise: Promise<void> | null
+  resolveRun: (() => void) | null
+  rejectRun: ((error: Error) => void) | null
+  streamGeneration: number
+}
+
+interface CopilotRuntime extends RuntimeBase {
+  kind: 'copilot'
+  client: CopilotClient
+  session: CopilotSession
+  turnPromise: Promise<void> | null
+  resolveTurn: (() => void) | null
+  rejectTurn: ((error: Error) => void) | null
+  pendingQuestion: {
+    questions: Array<{
+      id: string
+      question: string
+      header: string
+      options: Array<{ label: string; description: string }>
+      multiSelect: boolean
+    }>
+    resolve: CopilotQuestionApprovalResolver
+  } | null
+  pendingApproval: {
+    kind: 'command' | 'file-change'
+    resolve: CopilotApprovalResolver
+  } | null
+  textByMessageId: Map<string, string>
+  reasoningById: Map<string, string>
+}
+
+interface OpencodeRuntime extends RuntimeBase {
+  kind: 'opencode'
+  activeRun: ChildProcessWithoutNullStreams | null
+  runPromise: Promise<void> | null
+  resolveRun: (() => void) | null
+  rejectRun: ((error: Error) => void) | null
+  streamGeneration: number
 }
 
 function now() {
@@ -2044,6 +2941,10 @@ function buildSavedSessionSummary(snapshot: AgentSessionSnapshot): SavedAgentSes
     cwd: snapshot.cwd ?? null,
     claudeSessionId: snapshot.claudeSessionId ?? null,
     codexThreadId: snapshot.codexThreadId ?? null,
+    cursorAgentId: snapshot.cursorAgentId ?? null,
+    cursorRunId: snapshot.cursorRunId ?? null,
+    copilotSessionId: snapshot.copilotSessionId ?? null,
+    opencodeSessionId: snapshot.opencodeSessionId ?? null,
     model: snapshot.usage?.model ?? null,
     updatedAt: snapshot.updatedAt,
     messageCount: snapshot.messages.length,
@@ -2058,7 +2959,15 @@ function loadPersistedSummary(windowId: string): SavedAgentSessionSummary | null
     const parsed = JSON.parse(readFileSync(file, 'utf8'))
     if (!parsed || typeof parsed !== 'object') return null
     if (parsed.windowId !== windowId) return null
-    if (parsed.agent !== 'claude' && parsed.agent !== 'codex') return null
+    if (
+      parsed.agent !== 'claude' &&
+      parsed.agent !== 'codex' &&
+      parsed.agent !== 'cursor' &&
+      parsed.agent !== 'copilot' &&
+      parsed.agent !== 'opencode'
+    ) {
+      return null
+    }
     if (typeof parsed.title !== 'string' || typeof parsed.updatedAt !== 'number') return null
     if (typeof parsed.messageCount !== 'number') return null
     return parsed as SavedAgentSessionSummary
@@ -2618,13 +3527,18 @@ export class AgentSessionService extends EventEmitter {
       .filter((summary): summary is SavedAgentSessionSummary => summary !== null)
       .filter(
         (summary) =>
-          summary.messageCount > 0 || !!summary.claudeSessionId || !!summary.codexThreadId,
+          summary.messageCount > 0 ||
+          !!summary.claudeSessionId ||
+          !!summary.codexThreadId ||
+          !!summary.cursorAgentId ||
+          !!summary.copilotSessionId ||
+          !!summary.opencodeSessionId,
       )
       .sort((a, b) => b.updatedAt - a.updatedAt)
   }
 
   async listRecentSessions(
-    agent: 'claude' | 'codex',
+    agent: AgentSessionName,
     limit = DEFAULT_RECENT_SESSION_LIMIT,
   ): Promise<RecentAgentSessionSummary[]> {
     const normalizedLimit = Math.max(1, Math.min(limit, 24))
@@ -2639,6 +3553,10 @@ export class AgentSessionService extends EventEmitter {
         cwd: session.cwd ?? null,
         claudeSessionId: session.claudeSessionId ?? null,
         codexThreadId: session.codexThreadId ?? null,
+        cursorAgentId: session.cursorAgentId ?? null,
+        cursorRunId: session.cursorRunId ?? null,
+        copilotSessionId: session.copilotSessionId ?? null,
+        opencodeSessionId: session.opencodeSessionId ?? null,
         model: session.model ?? null,
         updatedAt: session.updatedAt,
         messageCount: session.messageCount,
@@ -2651,7 +3569,9 @@ export class AgentSessionService extends EventEmitter {
         ? collectClaudeNativeSessionFiles(CLAUDE_NATIVE_PROJECTS_DIR)
             .map((entry) => readClaudeNativeSessionSummary(entry.filePath))
             .filter((session): session is RecentAgentSessionSummary => session !== null)
-        : listCodexNativeSessions(normalizedLimit * 2)
+        : agent === 'codex'
+          ? listCodexNativeSessions(normalizedLimit * 2)
+          : []
 
     const seen = new Set<string>()
     return [...cellsSessions, ...nativeSessions]
@@ -2660,6 +3580,9 @@ export class AgentSessionService extends EventEmitter {
         const dedupeKey =
           session.claudeSessionId ||
           session.codexThreadId ||
+          session.cursorAgentId ||
+          session.copilotSessionId ||
+          session.opencodeSessionId ||
           session.nativeId ||
           session.windowId ||
           session.title
@@ -2720,13 +3643,25 @@ export class AgentSessionService extends EventEmitter {
       title:
         requestTitleOverride ||
         persisted?.title ||
-        (request.agent === 'claude' ? 'Claude Code' : 'Codex'),
+        (request.agent === 'claude'
+          ? 'Claude Code'
+          : request.agent === 'cursor'
+            ? 'Cursor'
+            : request.agent === 'copilot'
+              ? 'GitHub Copilot'
+              : request.agent === 'opencode'
+                ? 'OpenCode'
+                : 'Codex'),
       cwd: request.cwd ?? persisted?.cwd ?? null,
       restoredFromPersist: Boolean(persisted),
       status: 'idle',
       error: null,
       claudeSessionId: request.claudeSessionId ?? persisted?.claudeSessionId ?? null,
       codexThreadId: request.codexThreadId ?? persisted?.codexThreadId ?? null,
+      cursorAgentId: request.cursorAgentId ?? persisted?.cursorAgentId ?? null,
+      cursorRunId: request.cursorRunId ?? persisted?.cursorRunId ?? null,
+      copilotSessionId: request.copilotSessionId ?? persisted?.copilotSessionId ?? null,
+      opencodeSessionId: request.opencodeSessionId ?? persisted?.opencodeSessionId ?? null,
       updatedAt: now(),
       messages: persisted?.messages ?? [],
       // Keep the last known token accounting so the % indicator stays populated
@@ -2813,6 +3748,40 @@ export class AgentSessionService extends EventEmitter {
       this.runtimes.set(request.windowId, runtime)
       if (!isResumedSession && request.initialPrompt?.trim()) {
         log('claude.initialPrompt', { windowId: request.windowId })
+        void this.send(request.windowId, request.initialPrompt)
+      }
+      const cloned = cloneSnapshot(snapshot)
+      snapshot.restoredFromPersist = false
+      return cloned
+    }
+
+    if (request.agent === 'cursor') {
+      const runtime = await this.createCursorRuntime(request, snapshot)
+      this.runtimes.set(request.windowId, runtime)
+      if (!request.cursorAgentId && request.initialPrompt?.trim()) {
+        void this.send(request.windowId, request.initialPrompt)
+      }
+      const cloned = cloneSnapshot(snapshot)
+      snapshot.restoredFromPersist = false
+      return cloned
+    }
+
+    if (request.agent === 'copilot') {
+      const isResumedSession = Boolean(request.copilotSessionId)
+      const runtime = await this.createCopilotRuntime(request, snapshot)
+      this.runtimes.set(request.windowId, runtime)
+      if (!isResumedSession && request.initialPrompt?.trim()) {
+        void this.send(request.windowId, request.initialPrompt)
+      }
+      const cloned = cloneSnapshot(snapshot)
+      snapshot.restoredFromPersist = false
+      return cloned
+    }
+
+    if (request.agent === 'opencode') {
+      const runtime = await this.createOpencodeRuntime(request, snapshot)
+      this.runtimes.set(request.windowId, runtime)
+      if (!request.opencodeSessionId && request.initialPrompt?.trim()) {
         void this.send(request.windowId, request.initialPrompt)
       }
       const cloned = cloneSnapshot(snapshot)
@@ -2917,6 +3886,10 @@ export class AgentSessionService extends EventEmitter {
       initialPrompt: null,
       claudeSessionId: forkedClaudeSessionId,
       codexThreadId: forkedCodexThreadId,
+      cursorAgentId: null,
+      cursorRunId: null,
+      copilotSessionId: null,
+      opencodeSessionId: null,
       permissionMode: normalizePermissionMode(request.permissionMode),
       model: await resolveSessionModelId(request.agent, request.model),
     }
@@ -2933,6 +3906,10 @@ export class AgentSessionService extends EventEmitter {
       error: null,
       claudeSessionId: request.claudeSessionId ?? null,
       codexThreadId: request.codexThreadId ?? null,
+      cursorAgentId: request.cursorAgentId ?? null,
+      cursorRunId: request.cursorRunId ?? null,
+      copilotSessionId: request.copilotSessionId ?? null,
+      opencodeSessionId: request.opencodeSessionId ?? null,
       updatedAt: timestamp,
       pendingApproval: null,
       pendingPlanApproval: null,
@@ -3109,6 +4086,145 @@ export class AgentSessionService extends EventEmitter {
       return
     }
 
+    if (runtime.kind === 'cursor') {
+      if (runtime.runPromise) {
+        throw new Error('Cursor is still processing the previous turn')
+      }
+      log('send.cursor.dispatch', { windowId, agentId: runtime.snapshot.cursorAgentId })
+      runtime.runPromise = new Promise<void>((resolve, reject) => {
+        runtime.resolveRun = resolve
+        runtime.rejectRun = reject
+      }).finally(() => {
+        runtime.runPromise = null
+        runtime.resolveRun = null
+        runtime.rejectRun = null
+      })
+      runtime.runPromise.catch(() => {})
+      try {
+        const cursorText = buildCursorProviderText(runtime.request.permissionMode, providerText)
+        const message = buildCursorCliPrompt(cursorText, imageAttachments)
+        this.startCursorCliTurn(runtime, message, ++runtime.streamGeneration)
+        log('send.cursor.dispatched', {
+          windowId,
+          sessionId: runtime.snapshot.cursorAgentId,
+        })
+      } catch (err) {
+        runtime.rejectRun?.(err instanceof Error ? err : new Error(String(err)))
+        const message = err instanceof Error ? err.message : String(err)
+        runtime.snapshot.status = isCursorAuthError(message) ? 'idle' : 'error'
+        runtime.snapshot.error = isCursorAuthError(message) ? null : message
+        if (isCursorAuthError(message)) {
+          appendMessage(runtime.snapshot, {
+            id: `${runtime.snapshot.windowId}-cursor-auth-${now()}`,
+            role: 'auth_request',
+            title: 'Sign in to Cursor',
+            text: 'Cursor is not authenticated. Sign in with Cursor Agent or set CURSOR_API_KEY, then retry your last message.',
+            status: 'in_progress',
+            authLoginUrl: null,
+          })
+        }
+        this.emitUpdate(runtime.snapshot)
+        throw err
+      }
+      return
+    }
+
+    if (runtime.kind === 'copilot') {
+      if (runtime.turnPromise) {
+        throw new Error('GitHub Copilot is still processing the previous turn')
+      }
+      log('send.copilot.dispatch', { windowId, sessionId: runtime.snapshot.copilotSessionId })
+      runtime.turnPromise = new Promise<void>((resolve, reject) => {
+        runtime.resolveTurn = resolve
+        runtime.rejectTurn = reject
+      }).finally(() => {
+        runtime.turnPromise = null
+        runtime.resolveTurn = null
+        runtime.rejectTurn = null
+      })
+      runtime.turnPromise.catch(() => {})
+      try {
+        await runtime.session.send({
+          prompt: providerText,
+          mode: 'immediate',
+          attachments: imageAttachments.map((filePath) => ({
+            type: 'file' as const,
+            path: filePath,
+            displayName: path.basename(filePath),
+          })),
+        })
+        log('send.copilot.dispatched', {
+          windowId,
+          sessionId: runtime.snapshot.copilotSessionId,
+        })
+      } catch (err) {
+        runtime.rejectTurn?.(err instanceof Error ? err : new Error(String(err)))
+        const message = err instanceof Error ? err.message : String(err)
+        runtime.snapshot.status = isCopilotAuthError(message) ? 'idle' : 'error'
+        runtime.snapshot.error = isCopilotAuthError(message) ? null : message
+        if (isCopilotAuthError(message)) {
+          appendMessage(runtime.snapshot, {
+            id: `${runtime.snapshot.windowId}-copilot-auth-${now()}`,
+            role: 'auth_request',
+            title: 'Sign in to GitHub Copilot',
+            text: "GitHub Copilot isn't signed in on this machine yet. Sign in with Copilot CLI, then retry your last message.",
+            status: 'in_progress',
+            authLoginUrl: null,
+          })
+        }
+        this.emitUpdate(runtime.snapshot)
+        throw err
+      }
+      return
+    }
+
+    if (runtime.kind === 'opencode') {
+      if (runtime.runPromise) {
+        throw new Error('OpenCode is still processing the previous turn')
+      }
+      log('send.opencode.dispatch', { windowId, sessionId: runtime.snapshot.opencodeSessionId })
+      runtime.runPromise = new Promise<void>((resolve, reject) => {
+        runtime.resolveRun = resolve
+        runtime.rejectRun = reject
+      }).finally(() => {
+        runtime.runPromise = null
+        runtime.resolveRun = null
+        runtime.rejectRun = null
+      })
+      runtime.runPromise.catch(() => {})
+      try {
+        const opencodeText = buildOpenCodeProviderText(runtime.request.permissionMode, providerText)
+        this.startOpencodeCliTurn(
+          runtime,
+          opencodeText,
+          ++runtime.streamGeneration,
+          imageAttachments,
+        )
+        log('send.opencode.dispatched', {
+          windowId,
+          sessionId: runtime.snapshot.opencodeSessionId,
+        })
+      } catch (err) {
+        runtime.rejectRun?.(err instanceof Error ? err : new Error(String(err)))
+        const message = err instanceof Error ? err.message : String(err)
+        runtime.snapshot.status = isOpencodeAuthError(message) ? 'idle' : 'error'
+        runtime.snapshot.error = isOpencodeAuthError(message) ? null : message
+        if (isOpencodeAuthError(message)) {
+          appendMessage(runtime.snapshot, {
+            id: `${runtime.snapshot.windowId}-opencode-auth-${now()}`,
+            role: 'auth_request',
+            title: 'Sign in to OpenCode',
+            text: "OpenCode isn't signed in on this machine yet. Sign in with OpenCode CLI, then retry your last message.",
+            status: 'in_progress',
+            authLoginUrl: null,
+          })
+        }
+        this.emitUpdate(runtime.snapshot)
+        throw err
+      }
+      return
+    }
+
     if (runtime.turnPromise) {
       throw new Error('Codex is still processing the previous turn')
     }
@@ -3164,6 +4280,53 @@ export class AgentSessionService extends EventEmitter {
       if (runtime.pendingQuestion) {
         runtime.pendingQuestion = null
         runtime.snapshot.pendingQuestion = null
+      }
+    } else if (runtime.kind === 'cursor' || runtime.kind === 'opencode') {
+      const interruptedRun = runtime.runPromise
+      try {
+        runtime.activeRun?.kill('SIGINT')
+      } catch (err) {
+        log(`${runtime.kind}.run.cancel.error`, {
+          windowId,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+      runtime.activeRun = null
+      runtime.resolveRun?.()
+      runtime.closed = true
+      if (interruptedRun) {
+        await Promise.race([
+          interruptedRun.catch(() => {}),
+          new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
+        ])
+      }
+    } else if (runtime.kind === 'copilot') {
+      runtime.pendingApproval?.resolve({ kind: 'reject' })
+      runtime.pendingApproval = null
+      runtime.snapshot.pendingApproval = null
+      runtime.pendingQuestion?.resolve({ answer: '', wasFreeform: true })
+      runtime.pendingQuestion = null
+      runtime.snapshot.pendingQuestion = null
+      const interruptedTurn = runtime.turnPromise
+      try {
+        await runtime.session.abort()
+      } catch (err) {
+        log('copilot.abort.error', {
+          windowId,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+      runtime.resolveTurn?.()
+      runtime.closed = true
+      try {
+        await runtime.session.disconnect()
+      } catch {}
+      await runtime.client.stop().catch(() => [])
+      if (interruptedTurn) {
+        await Promise.race([
+          interruptedTurn.catch(() => {}),
+          new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
+        ])
       }
     } else {
       runtime.pendingApproval?.resolve({ decision: 'cancel' })
@@ -3251,6 +4414,25 @@ export class AgentSessionService extends EventEmitter {
         } catch {
           /* ignore */
         }
+      } else if (runtime.kind === 'cursor' || runtime.kind === 'opencode') {
+        try {
+          runtime.activeRun?.kill('SIGINT')
+        } catch {
+          /* ignore */
+        }
+        runtime.resolveRun?.()
+      } else if (runtime.kind === 'copilot') {
+        runtime.pendingApproval?.resolve({ kind: 'reject' })
+        runtime.pendingApproval = null
+        runtime.snapshot.pendingApproval = null
+        runtime.pendingQuestion?.resolve({ answer: '', wasFreeform: true })
+        runtime.pendingQuestion = null
+        runtime.snapshot.pendingQuestion = null
+        runtime.resolveTurn?.()
+        try {
+          await runtime.session.disconnect()
+        } catch {}
+        await runtime.client.stop().catch(() => [])
       } else {
         runtime.pendingApproval?.resolve({ decision: 'cancel' })
         runtime.pendingApproval = null
@@ -3320,6 +4502,20 @@ export class AgentSessionService extends EventEmitter {
           error: err instanceof Error ? err.message : String(err),
         })
       }
+      return
+    }
+    if (runtime.kind === 'cursor' || runtime.kind === 'opencode') {
+      log(`${runtime.kind}.permissionMode.update`, {
+        windowId,
+        mode: runtime.request.permissionMode ?? null,
+      })
+      return
+    }
+    if (runtime.kind === 'copilot') {
+      log('copilot.permissionMode.update', {
+        windowId,
+        mode: runtime.request.permissionMode ?? null,
+      })
       return
     }
     log('codex.permissionMode.update', {
@@ -3463,6 +4659,64 @@ export class AgentSessionService extends EventEmitter {
       await this.updatePermissionMode(windowId, nextMode)
       this.emitUpdate(runtime.snapshot)
       pending.resolve({ behavior: 'allow', updatedInput: pending.originalInput })
+      return
+    }
+
+    if (runtime.kind === 'cursor' || runtime.kind === 'opencode') {
+      const pending = runtime.snapshot.pendingPlanApproval
+      if (!pending) return
+
+      runtime.snapshot.pendingPlanApproval = null
+      runtime.snapshot.updatedAt = now()
+
+      if (decision === 'reject') {
+        const trimmed = feedback?.trim()
+        log(`${runtime.kind}.proposedPlan.reject`, { windowId, hasFeedback: Boolean(trimmed) })
+        this.emitUpdate(runtime.snapshot)
+        if (trimmed) await this.send(windowId, trimmed)
+        return
+      }
+
+      const nextMode: AgentSessionRequest['permissionMode'] =
+        decision === 'auto-accept' ? 'bypass' : 'ask'
+      log(`${runtime.kind}.proposedPlan.approve`, { windowId, nextMode })
+      await this.updatePermissionMode(windowId, nextMode)
+      this.emitUpdate(runtime.snapshot)
+      const trimmed = feedback?.trim()
+      const base = `PLEASE IMPLEMENT THIS PLAN:\n${pending.plan.trim()}`
+      await this.send(
+        windowId,
+        trimmed ? `${base}\n\nAdditional guidance from the user: ${trimmed}` : base,
+      )
+      return
+    }
+
+    if (runtime.kind === 'copilot') {
+      const pending = runtime.snapshot.pendingPlanApproval
+      if (!pending) return
+
+      runtime.snapshot.pendingPlanApproval = null
+      runtime.snapshot.updatedAt = now()
+
+      if (decision === 'reject') {
+        const trimmed = feedback?.trim()
+        log('copilot.proposedPlan.reject', { windowId, hasFeedback: Boolean(trimmed) })
+        this.emitUpdate(runtime.snapshot)
+        if (trimmed) await this.send(windowId, trimmed)
+        return
+      }
+
+      const nextMode: AgentSessionRequest['permissionMode'] =
+        decision === 'auto-accept' ? 'bypass' : 'ask'
+      log('copilot.proposedPlan.approve', { windowId, nextMode })
+      await this.updatePermissionMode(windowId, nextMode)
+      this.emitUpdate(runtime.snapshot)
+      const trimmed = feedback?.trim()
+      const base = `PLEASE IMPLEMENT THIS PLAN:\n${pending.plan.trim()}`
+      await this.send(
+        windowId,
+        trimmed ? `${base}\n\nAdditional guidance from the user: ${trimmed}` : base,
+      )
       return
     }
 
@@ -3621,6 +4875,36 @@ export class AgentSessionService extends EventEmitter {
       return
     }
 
+    if (runtime.kind === 'cursor' || runtime.kind === 'opencode') return
+
+    if (runtime.kind === 'copilot') {
+      const pending = runtime.pendingQuestion
+      if (!pending) return
+
+      runtime.pendingQuestion = null
+      runtime.snapshot.pendingQuestion = null
+      runtime.snapshot.updatedAt = now()
+
+      const question = pending.questions[0]
+      const picked = question
+        ? (answers?.[question.id] ?? answers?.[question.question] ?? []).filter(
+            (value): value is string => typeof value === 'string' && value.trim().length > 0,
+          )
+        : []
+      const answer = picked[0] ?? trimmedNote
+      appendQuestionAnswerMessage(
+        runtime.snapshot,
+        windowId,
+        pending.questions,
+        question ? [{ question: question.question, picked }] : [],
+        trimmedNote,
+        !answer,
+      )
+      this.emitUpdate(runtime.snapshot)
+      pending.resolve({ answer, wasFreeform: picked.length === 0 })
+      return
+    }
+
     const pending = runtime.pendingQuestion
     if (!pending) return
 
@@ -3685,7 +4969,28 @@ export class AgentSessionService extends EventEmitter {
     decision: 'accept' | 'acceptForSession' | 'decline',
   ): Promise<void> {
     const runtime = this.runtimes.get(windowId)
-    if (!runtime || runtime.kind !== 'codex') return
+    if (!runtime) return
+
+    if (runtime.kind === 'copilot') {
+      const pending = runtime.pendingApproval
+      if (!pending) return
+      runtime.pendingApproval = null
+      runtime.snapshot.pendingApproval = null
+      runtime.snapshot.updatedAt = now()
+      this.emitUpdate(runtime.snapshot)
+      pending.resolve(
+        decision === 'decline'
+          ? { kind: 'reject' }
+          : decision === 'acceptForSession'
+            ? pending.kind === 'file-change'
+              ? { kind: 'approve-for-session', approval: { kind: 'write' } }
+              : { kind: 'approve-once' }
+            : { kind: 'approve-once' },
+      )
+      return
+    }
+
+    if (runtime.kind !== 'codex') return
     const pending = runtime.pendingApproval
     if (!pending) return
 
@@ -3764,6 +5069,103 @@ export class AgentSessionService extends EventEmitter {
     return runtime
   }
 
+  private async createCursorRuntime(
+    request: AgentSessionRequest,
+    snapshot: AgentSessionSnapshot,
+  ): Promise<CursorRuntime> {
+    snapshot.error = null
+    snapshot.status = 'idle'
+    return {
+      kind: 'cursor',
+      request,
+      snapshot,
+      activeRun: null,
+      runPromise: null,
+      resolveRun: null,
+      rejectRun: null,
+      streamGeneration: 0,
+      closed: false,
+    }
+  }
+
+  private async createOpencodeRuntime(
+    request: AgentSessionRequest,
+    snapshot: AgentSessionSnapshot,
+  ): Promise<OpencodeRuntime> {
+    snapshot.error = null
+    snapshot.status = 'idle'
+    return {
+      kind: 'opencode',
+      request,
+      snapshot,
+      activeRun: null,
+      runPromise: null,
+      resolveRun: null,
+      rejectRun: null,
+      streamGeneration: 0,
+      closed: false,
+    }
+  }
+
+  private async createCopilotRuntime(
+    request: AgentSessionRequest,
+    snapshot: AgentSessionSnapshot,
+  ): Promise<CopilotRuntime> {
+    snapshot.error = null
+    snapshot.status = 'idle'
+    const client = buildCopilotClient(request.cwd)
+    const runtime = {
+      kind: 'copilot',
+      request,
+      snapshot,
+      client,
+      session: null as unknown as CopilotSession,
+      turnPromise: null,
+      resolveTurn: null,
+      rejectTurn: null,
+      pendingQuestion: null,
+      pendingApproval: null,
+      textByMessageId: new Map<string, string>(),
+      reasoningById: new Map<string, string>(),
+      closed: false,
+    } satisfies CopilotRuntime
+    await client.start()
+    const config = this.buildCopilotSessionConfig(runtime)
+    const sessionId = snapshot.copilotSessionId ?? request.copilotSessionId ?? null
+    runtime.session = sessionId
+      ? await client.resumeSession(sessionId, config)
+      : await client.createSession(config)
+    runtime.snapshot.copilotSessionId = runtime.session.sessionId
+    return runtime
+  }
+
+  private buildCopilotSessionConfig(runtime: CopilotRuntime) {
+    const model = runtime.request.model || DEFAULT_COPILOT_MODEL
+    const effort = copilotThinkingEffort(runtime.request.thinkingLevel)
+    return {
+      clientName: 'cells',
+      ...(model && model !== 'auto' ? { model } : {}),
+      ...(effort ? { reasoningEffort: effort } : {}),
+      workingDirectory: runtime.request.cwd ?? undefined,
+      streaming: true,
+      includeSubAgentStreamingEvents: true,
+      enableConfigDiscovery: true,
+      infiniteSessions: { enabled: true },
+      systemMessage: { content: buildCopilotSystemMessage(runtime.request.permissionMode) },
+      onPermissionRequest: (request: CopilotPermissionRequest) =>
+        this.handleCopilotPermissionRequest(runtime, request),
+      onUserInputRequest: (request: {
+        question: string
+        choices?: string[]
+        allowFreeform?: boolean
+      }) => this.handleCopilotUserInputRequest(runtime, request),
+      onEvent: (event: CopilotSessionEvent) => {
+        this.handleCopilotEvent(runtime, event)
+        this.emitUpdate(runtime.snapshot)
+      },
+    }
+  }
+
   private async openCodexThread(runtime: CodexRuntime): Promise<void> {
     const params = buildCodexThreadStartParams(runtime.request)
     const resumeThreadId = runtime.snapshot.codexThreadId
@@ -3826,6 +5228,70 @@ export class AgentSessionService extends EventEmitter {
       runtime.snapshot.error = error.message
     }
     this.emitUpdate(runtime.snapshot)
+  }
+
+  private handleCopilotPermissionRequest(
+    runtime: CopilotRuntime,
+    request: CopilotPermissionRequest,
+  ): Promise<CopilotPermissionRequestResult> | CopilotPermissionRequestResult {
+    if (runtime.request.permissionMode === 'bypass') return { kind: 'approve-once' }
+
+    const payload = request as CopilotPermissionRequest & Record<string, unknown>
+    const readOnly =
+      request.kind === 'read' ||
+      (request.kind === 'mcp' && payload.readOnly === true) ||
+      (request.kind === 'shell' &&
+        Array.isArray(payload.commands) &&
+        payload.commands.every((command) => asRecord(command)?.readOnly === true))
+
+    if (runtime.request.permissionMode === 'plan') {
+      return readOnly
+        ? { kind: 'approve-once' }
+        : {
+            kind: 'reject',
+            feedback: 'Cells is in Plan mode, so write tools and shell commands are blocked.',
+          }
+    }
+
+    if (readOnly) return { kind: 'approve-once' }
+
+    const approval = buildCopilotPendingApproval(request)
+    log('copilot.permission.pending', {
+      windowId: runtime.snapshot.windowId,
+      kind: approval.kind,
+      detail: approval.detail ?? null,
+    })
+    return new Promise((resolve) => {
+      runtime.pendingApproval?.resolve({ kind: 'reject' })
+      runtime.pendingApproval = { kind: approval.kind, resolve }
+      runtime.snapshot.pendingApproval = approval
+      runtime.snapshot.updatedAt = now()
+      this.emitUpdate(runtime.snapshot)
+    })
+  }
+
+  private handleCopilotUserInputRequest(
+    runtime: CopilotRuntime,
+    request: { question: string; choices?: string[]; allowFreeform?: boolean },
+  ): Promise<CopilotUserInputResponse> {
+    const question = {
+      id: `copilot-question-${now()}`,
+      question: request.question,
+      header: 'Question',
+      options: (request.choices ?? []).map((choice) => ({ label: choice, description: '' })),
+      multiSelect: false,
+    }
+    log('copilot.userInput.pending', {
+      windowId: runtime.snapshot.windowId,
+      hasChoices: question.options.length > 0,
+    })
+    return new Promise((resolve) => {
+      runtime.pendingQuestion?.resolve({ answer: '', wasFreeform: true })
+      runtime.pendingQuestion = { questions: [question], resolve }
+      runtime.snapshot.pendingQuestion = { questions: [question], createdAt: now() }
+      runtime.snapshot.updatedAt = now()
+      this.emitUpdate(runtime.snapshot)
+    })
   }
 
   private async handleCodexServerRequest(
@@ -4180,6 +5646,697 @@ export class AgentSessionService extends EventEmitter {
     appendMessage(runtime.snapshot, next)
   }
 
+  private handleCopilotEvent(runtime: CopilotRuntime, event: CopilotSessionEvent) {
+    log('copilot.event', {
+      windowId: runtime.snapshot.windowId,
+      type: event.type,
+      id: (event as { id?: string }).id ?? null,
+    })
+    runtime.snapshot.copilotSessionId = runtime.session.sessionId
+
+    if (event.type === 'assistant.message_delta') {
+      const data = event.data
+      const id = data.messageId || event.id
+      const nextText = (runtime.textByMessageId.get(id) ?? '') + (data.deltaContent ?? '')
+      runtime.textByMessageId.set(id, nextText)
+      appendMessage(runtime.snapshot, {
+        id: `copilot-assistant-${id}`,
+        role: 'assistant',
+        text: nextText,
+        status: 'in_progress',
+        parentToolUseId: data.parentToolCallId ?? null,
+        updatedAt: now(),
+      })
+      return
+    }
+
+    if (event.type === 'assistant.message') {
+      const data = event.data
+      const id = data.messageId || event.id
+      const text = data.content ?? runtime.textByMessageId.get(id) ?? ''
+      const extracted =
+        runtime.request.permissionMode === 'plan' ? extractCodexProposedPlan(text) : null
+      if (extracted) {
+        runtime.snapshot.pendingPlanApproval = {
+          plan: extracted.plan,
+          createdAt: now(),
+        }
+      }
+      appendMessage(runtime.snapshot, {
+        id: `copilot-assistant-${id}`,
+        role: 'assistant',
+        text: extracted ? extracted.stripped || extracted.plan : text,
+        status: 'completed',
+        parentToolUseId: data.parentToolCallId ?? null,
+        updatedAt: now(),
+      })
+      runtime.snapshot.usage = buildUsageStats({
+        model: runtime.request.model ?? DEFAULT_COPILOT_MODEL,
+        inputTokens: 0,
+        outputTokens: data.outputTokens ?? 0,
+        cachedInputTokens: 0,
+        contextWindow: null,
+        compactsAutomatically: true,
+      })
+      return
+    }
+
+    if (event.type === 'assistant.reasoning_delta') {
+      const data = event.data
+      const id = data.reasoningId || event.id
+      const nextText = (runtime.reasoningById.get(id) ?? '') + (data.deltaContent ?? '')
+      runtime.reasoningById.set(id, nextText)
+      appendMessage(runtime.snapshot, {
+        id: `copilot-reasoning-${id}`,
+        role: 'reasoning',
+        title: 'Reasoning',
+        text: nextText,
+        status: 'in_progress',
+        updatedAt: now(),
+      })
+      return
+    }
+
+    if (event.type === 'assistant.reasoning') {
+      const data = event.data
+      const id = data.reasoningId || event.id
+      appendMessage(runtime.snapshot, {
+        id: `copilot-reasoning-${id}`,
+        role: 'reasoning',
+        title: 'Reasoning',
+        text: data.content ?? runtime.reasoningById.get(id) ?? '',
+        status: 'completed',
+        updatedAt: now(),
+      })
+      return
+    }
+
+    if (event.type === 'tool.execution_start') {
+      const data = event.data
+      appendMessage(runtime.snapshot, {
+        id: `copilot-tool-${data.toolCallId}`,
+        role: 'tool',
+        title:
+          data.mcpToolName || data.mcpServerName
+            ? `${data.mcpServerName ?? 'MCP'} · ${data.mcpToolName ?? data.toolName}`
+            : copilotToolTitle(data.toolName),
+        text: compactText(data.arguments ?? {}),
+        metadata: compactText(data.arguments ?? {}),
+        status: 'in_progress',
+        toolUseId: data.toolCallId,
+        parentToolUseId: data.parentToolCallId ?? null,
+        updatedAt: now(),
+      })
+      return
+    }
+
+    if (event.type === 'tool.execution_partial_result') {
+      const data = event.data
+      const existing = runtime.snapshot.messages.find(
+        (message) => message.id === `copilot-tool-${data.toolCallId}`,
+      )
+      if (existing) {
+        existing.text = appendBoundedText(existing.text || '', data.partialOutput ?? '', 12_000)
+        existing.updatedAt = now()
+        runtime.snapshot.updatedAt = now()
+      }
+      return
+    }
+
+    if (event.type === 'tool.execution_progress') {
+      const data = event.data
+      const existing = runtime.snapshot.messages.find(
+        (message) => message.id === `copilot-tool-${data.toolCallId}`,
+      )
+      if (existing) {
+        existing.metadata = data.progressMessage || existing.metadata || null
+        existing.updatedAt = now()
+        runtime.snapshot.updatedAt = now()
+      }
+      return
+    }
+
+    if (event.type === 'tool.execution_complete') {
+      const data = event.data
+      const existing = runtime.snapshot.messages.find(
+        (message) => message.id === `copilot-tool-${data.toolCallId}`,
+      )
+      const text = compactCopilotToolResult(data as unknown as Record<string, unknown>)
+      if (existing) {
+        existing.text = text || existing.text
+        existing.status = data.success ? 'completed' : 'failed'
+        existing.metadata = text || existing.metadata || null
+        existing.updatedAt = now()
+        runtime.snapshot.updatedAt = now()
+      } else {
+        appendMessage(runtime.snapshot, {
+          id: `copilot-tool-${data.toolCallId}`,
+          role: 'tool',
+          title: 'Tool',
+          text,
+          status: data.success ? 'completed' : 'failed',
+          toolUseId: data.toolCallId,
+          updatedAt: now(),
+        })
+      }
+      return
+    }
+
+    if (event.type === 'assistant.usage') {
+      const data = event.data
+      runtime.snapshot.usage = buildUsageStats({
+        model: data.model ?? runtime.request.model ?? DEFAULT_COPILOT_MODEL,
+        inputTokens:
+          (data.inputTokens ?? 0) + (data.cacheReadTokens ?? 0) + (data.cacheWriteTokens ?? 0),
+        outputTokens: data.outputTokens ?? 0,
+        cachedInputTokens: (data.cacheReadTokens ?? 0) + (data.cacheWriteTokens ?? 0),
+        contextWindow: null,
+        compactsAutomatically: true,
+      })
+      return
+    }
+
+    if (event.type === 'session.title_changed') {
+      const title = event.data.title?.trim()
+      if (title && isPlaceholderAgentSessionTitle(runtime.snapshot.agent, runtime.snapshot.title)) {
+        runtime.snapshot.title = title
+      }
+      return
+    }
+
+    if (event.type === 'session.error') {
+      const message = event.data.message || 'GitHub Copilot failed'
+      runtime.pendingApproval = null
+      runtime.snapshot.pendingApproval = null
+      runtime.pendingQuestion = null
+      runtime.snapshot.pendingQuestion = null
+      runtime.snapshot.status = isCopilotAuthError(message) ? 'idle' : 'error'
+      runtime.snapshot.error = isCopilotAuthError(message) ? null : message
+      appendMessage(runtime.snapshot, {
+        id: `copilot-error-${event.id}`,
+        role: isCopilotAuthError(message) ? 'auth_request' : 'error',
+        title: isCopilotAuthError(message) ? 'Sign in to GitHub Copilot' : 'GitHub Copilot',
+        text: message,
+        status: isCopilotAuthError(message) ? 'in_progress' : 'failed',
+        authLoginUrl: isCopilotAuthError(message) ? (event.data.url ?? null) : undefined,
+        updatedAt: now(),
+      })
+      runtime.rejectTurn?.(new Error(message))
+      return
+    }
+
+    if (event.type === 'session.idle') {
+      runtime.snapshot.status = 'idle'
+      runtime.snapshot.error = null
+      runtime.pendingApproval = null
+      runtime.snapshot.pendingApproval = null
+      runtime.pendingQuestion = null
+      runtime.snapshot.pendingQuestion = null
+      for (const message of runtime.snapshot.messages) {
+        if (message.status === 'in_progress') {
+          message.status = message.role === 'error' ? 'failed' : 'completed'
+          message.updatedAt = now()
+        }
+      }
+      runtime.resolveTurn?.()
+    }
+  }
+
+  private startOpencodeCliTurn(
+    runtime: OpencodeRuntime,
+    prompt: string,
+    streamGeneration: number,
+    fileAttachments: string[],
+  ) {
+    const binary = getSystemOpencodePath()
+    const windowId = runtime.snapshot.windowId
+    if (!binary) throw new Error('OpenCode CLI not found on PATH.')
+
+    const args = ['run', '--format', 'json', '--thinking']
+    if (runtime.request.cwd) args.push('--dir', runtime.request.cwd)
+    const model = runtime.request.model || DEFAULT_OPENCODE_MODEL
+    if (model && model !== 'auto') args.push('--model', model)
+    const variant = opencodeThinkingVariant(runtime.request.thinkingLevel)
+    if (variant) args.push('--variant', variant)
+    if (runtime.request.permissionMode === 'bypass') args.push('--dangerously-skip-permissions')
+    if (runtime.snapshot.opencodeSessionId)
+      args.push('--session', runtime.snapshot.opencodeSessionId)
+    for (const filePath of fileAttachments) args.push('--file', filePath)
+    args.push(prompt)
+
+    const child = spawn(binary, args, {
+      cwd: runtime.request.cwd ?? undefined,
+      env: buildAgentEnv(runtime.request.cwd ? { PWD: runtime.request.cwd } : {}),
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    })
+    runtime.activeRun = child
+    runtime.snapshot.status = 'running'
+    runtime.snapshot.error = null
+    this.emitUpdate(runtime.snapshot)
+
+    let stdoutBuffer = ''
+    let stderrBuffer = ''
+    let terminalFailure = false
+
+    const fail = (message: string) => {
+      if (runtime.closed || runtime.streamGeneration !== streamGeneration || terminalFailure) return
+      terminalFailure = true
+      const trimmed = message.trim() || 'OpenCode run failed'
+      const authError = isOpencodeAuthError(trimmed)
+      runtime.activeRun = null
+      runtime.snapshot.status = authError ? 'idle' : 'error'
+      runtime.snapshot.error = authError ? null : trimmed
+      appendMessage(runtime.snapshot, {
+        id: `${windowId}-opencode-error-${now()}`,
+        role: authError ? 'auth_request' : 'error',
+        title: authError ? 'Sign in to OpenCode' : 'OpenCode error',
+        text: authError
+          ? "OpenCode isn't signed in on this machine yet. Sign in with OpenCode CLI, then retry your last message."
+          : trimmed,
+        status: authError ? 'in_progress' : 'failed',
+        updatedAt: now(),
+      })
+      runtime.rejectRun?.(new Error(trimmed))
+      this.emitUpdate(runtime.snapshot)
+    }
+
+    const complete = () => {
+      if (runtime.closed || runtime.streamGeneration !== streamGeneration || terminalFailure) return
+      runtime.activeRun = null
+      runtime.snapshot.status = 'idle'
+      runtime.snapshot.error = null
+      for (const entry of runtime.snapshot.messages) {
+        if (entry.status === 'in_progress') {
+          entry.status = entry.role === 'error' ? 'failed' : 'completed'
+          entry.updatedAt = now()
+        }
+      }
+      runtime.resolveRun?.()
+      this.emitUpdate(runtime.snapshot)
+    }
+
+    const handleTextPart = (part: Record<string, unknown>, role: 'assistant' | 'reasoning') => {
+      const id = asNonEmptyString(part.id) || `${role}-${now()}`
+      const text = asNonEmptyText(part.text) ?? ''
+      if (!text) return
+      const extracted =
+        role === 'assistant' && runtime.request.permissionMode === 'plan'
+          ? extractCodexProposedPlan(text)
+          : null
+      if (extracted) {
+        runtime.snapshot.pendingPlanApproval = { plan: extracted.plan, createdAt: now() }
+      }
+      appendMessage(runtime.snapshot, {
+        id: `opencode-${role}-${id}`,
+        role,
+        title: role === 'reasoning' ? 'Reasoning' : null,
+        text: extracted ? extracted.stripped || extracted.plan : text,
+        status: asRecord(part.time)?.end ? 'completed' : 'in_progress',
+        updatedAt: now(),
+      })
+    }
+
+    const handleToolPart = (part: Record<string, unknown>) => {
+      const id = asNonEmptyString(part.id) || asNonEmptyString(part.callID) || `tool-${now()}`
+      const tool = asNonEmptyString(part.tool) || 'Tool'
+      const state = asRecord(part.state) ?? {}
+      const statusValue = asNonEmptyString(state.status)
+      const input = state.input ?? state.metadata ?? part.input ?? {}
+      const output = state.output ?? state.result ?? state.error ?? part.output ?? null
+      appendMessage(runtime.snapshot, {
+        id: `opencode-tool-${id}`,
+        role: 'tool',
+        title: cursorToolTitle(tool),
+        text: compactText(input),
+        metadata: output == null ? compactText(input) : compactText(output),
+        status:
+          statusValue === 'completed'
+            ? 'completed'
+            : statusValue === 'error' || statusValue === 'failed'
+              ? 'failed'
+              : 'in_progress',
+        toolUseId: id,
+        updatedAt: now(),
+      })
+    }
+
+    const handleEvent = (raw: Record<string, unknown>) => {
+      if (runtime.closed || runtime.streamGeneration !== streamGeneration) return
+      const event = (asRecord(raw.payload) ?? raw) as Record<string, unknown>
+      const type = asNonEmptyString(event.type)
+      const sessionId = asNonEmptyString(event.sessionID) ?? asNonEmptyString(event.sessionId)
+      if (sessionId) runtime.snapshot.opencodeSessionId = sessionId
+      const part = asRecord(event.part)
+
+      if (type === 'text' && part) handleTextPart(part, 'assistant')
+      else if (type === 'reasoning' && part) handleTextPart(part, 'reasoning')
+      else if (type === 'tool' && part) handleToolPart(part)
+      else if ((type === 'patch' || type === 'file') && part) {
+        appendMessage(runtime.snapshot, {
+          id: `opencode-${type}-${asNonEmptyString(part.id) || now()}`,
+          role: 'tool',
+          title: type === 'patch' ? 'File changes' : 'File',
+          text: compactText(part),
+          metadata: compactText(part),
+          status: asRecord(part.time)?.end ? 'completed' : 'in_progress',
+          updatedAt: now(),
+        })
+      } else if (type === 'step_finish' && part) {
+        const tokens = asRecord(part.tokens)
+        const cache = asRecord(tokens?.cache)
+        runtime.snapshot.usage = buildUsageStats({
+          model: runtime.request.model ?? DEFAULT_OPENCODE_MODEL,
+          inputTokens: typeof tokens?.input === 'number' ? tokens.input : 0,
+          outputTokens:
+            (typeof tokens?.output === 'number' ? tokens.output : 0) +
+            (typeof tokens?.reasoning === 'number' ? tokens.reasoning : 0),
+          cachedInputTokens: typeof cache?.read === 'number' ? cache.read : 0,
+          contextWindow: null,
+          compactsAutomatically: true,
+        })
+      } else if (type === 'compaction' || type === 'session.compacted') {
+        appendMessage(runtime.snapshot, {
+          id: `opencode-compaction-${now()}`,
+          role: 'compaction',
+          text: 'Context compacted',
+          status: 'completed',
+          updatedAt: now(),
+        })
+      } else if (type === 'error' || type === 'session.error') {
+        fail(
+          asNonEmptyString(event.message) ??
+            asNonEmptyString(asRecord(event.error)?.message) ??
+            compactText(event, 'OpenCode failed'),
+        )
+      } else {
+        return
+      }
+      this.emitUpdate(runtime.snapshot)
+    }
+
+    const handleStdout = (chunk: Buffer | string) => {
+      stdoutBuffer = appendBoundedText(stdoutBuffer, String(chunk), 64_000)
+      const lines = stdoutBuffer.split(/\r?\n/)
+      stdoutBuffer = lines.pop() ?? ''
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed) continue
+        const parsed = parseJsonRecord(trimmed)
+        if (parsed) handleEvent(parsed)
+        else stderrBuffer = appendBoundedText(stderrBuffer, `${trimmed}\n`, 8_000)
+      }
+    }
+
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', handleStdout)
+    child.stderr.on('data', (chunk: string) => {
+      stderrBuffer = appendBoundedText(stderrBuffer, chunk, 8_000)
+    })
+    child.on('error', (err) => fail(err.message))
+    child.on('close', (code, signal) => {
+      if (runtime.closed || runtime.streamGeneration !== streamGeneration) return
+      if (stdoutBuffer.trim()) handleStdout('\n')
+      runtime.activeRun = null
+      if (terminalFailure) return
+      if (signal === 'SIGINT' || signal === 'SIGTERM' || code === 0) {
+        complete()
+        return
+      }
+      fail(stderrBuffer.trim() || stdoutBuffer.trim() || `OpenCode exited with code ${code}`)
+    })
+  }
+
+  private startCursorCliTurn(runtime: CursorRuntime, prompt: string, streamGeneration: number) {
+    const binary = getSystemCursorAgentPath()
+    const windowId = runtime.snapshot.windowId
+    if (!binary) {
+      throw new Error('Cursor Agent CLI not found on PATH.')
+    }
+
+    const args = [
+      '--print',
+      '--output-format',
+      'stream-json',
+      '--stream-partial-output',
+      '--sandbox',
+    ]
+    args.push(runtime.request.permissionMode === 'bypass' ? 'disabled' : 'enabled')
+    args.push('--trust')
+    if (runtime.request.permissionMode === 'bypass') {
+      args.push('--force')
+    }
+    if (runtime.request.permissionMode === 'plan') {
+      args.push('--mode', 'plan')
+    } else if (runtime.request.permissionMode === 'ask') {
+      args.push('--mode', 'ask')
+    }
+    const model = runtime.request.model || DEFAULT_CURSOR_MODEL
+    if (model && model !== 'auto') {
+      args.push('--model', model)
+    }
+    if (runtime.snapshot.cursorAgentId) {
+      args.push('--resume', runtime.snapshot.cursorAgentId)
+    }
+    args.push(prompt)
+
+    const child = spawn(binary, args, {
+      cwd: runtime.request.cwd ?? undefined,
+      env: buildAgentEnv(runtime.request.cwd ? { PWD: runtime.request.cwd } : {}),
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    })
+    runtime.activeRun = child
+    runtime.snapshot.status = 'running'
+    runtime.snapshot.error = null
+    this.emitUpdate(runtime.snapshot)
+
+    let stdoutBuffer = ''
+    let stderrBuffer = ''
+    let sawResult = false
+    let assistantText = ''
+    let assistantIndex = 0
+    let awaitingPostToolAssistant = false
+    let terminalFailure = false
+
+    const assistantId = () => `${windowId}-cursor-assistant-${streamGeneration}-${assistantIndex}`
+
+    const fail = (message: string) => {
+      if (runtime.closed || runtime.streamGeneration !== streamGeneration) return
+      if (terminalFailure) return
+      terminalFailure = true
+      const trimmed = message.trim() || 'Cursor run failed'
+      runtime.activeRun = null
+      runtime.snapshot.status = 'error'
+      runtime.snapshot.error = trimmed
+      appendMessage(runtime.snapshot, {
+        id: `${windowId}-cursor-error-${now()}`,
+        role: 'error',
+        title: 'Cursor error',
+        text: trimmed,
+        status: 'failed',
+        updatedAt: now(),
+      })
+      runtime.rejectRun?.(new Error(trimmed))
+      this.emitUpdate(runtime.snapshot)
+    }
+
+    const complete = (result: Record<string, unknown>) => {
+      if (runtime.closed || runtime.streamGeneration !== streamGeneration) return
+      sawResult = true
+      runtime.activeRun = null
+      const isError = result.is_error === true || result.subtype === 'error'
+      const resultText = asNonEmptyString(result.result)
+      if (isError) {
+        fail(resultText || 'Cursor run failed')
+        return
+      }
+      if (resultText && !assistantText.trim()) {
+        appendMessage(runtime.snapshot, {
+          id: assistantId(),
+          role: 'assistant',
+          text: resultText,
+          status: 'completed',
+          updatedAt: now(),
+        })
+      }
+      runtime.snapshot.status = 'idle'
+      runtime.snapshot.error = null
+      runtime.snapshot.cursorRunId =
+        asNonEmptyString(result.request_id) ?? runtime.snapshot.cursorRunId
+      const usage = asRecord(result.usage)
+      runtime.snapshot.usage = {
+        model: runtime.request.model ?? DEFAULT_CURSOR_MODEL,
+        inputTokens: typeof usage?.inputTokens === 'number' ? usage.inputTokens : 0,
+        outputTokens: typeof usage?.outputTokens === 'number' ? usage.outputTokens : 0,
+        cachedInputTokens: typeof usage?.cacheReadTokens === 'number' ? usage.cacheReadTokens : 0,
+        contextWindow: null,
+        usedTokens: null,
+        totalProcessedTokens: null,
+        compactsAutomatically: true,
+        updatedAt: now(),
+      }
+      for (const entry of runtime.snapshot.messages) {
+        if (entry.status === 'in_progress') {
+          entry.status = entry.role === 'error' ? 'failed' : 'completed'
+          entry.updatedAt = now()
+        }
+      }
+      runtime.resolveRun?.()
+      this.emitUpdate(runtime.snapshot)
+    }
+
+    const handleEvent = (event: Record<string, unknown>) => {
+      if (runtime.closed || runtime.streamGeneration !== streamGeneration) return
+      const type = asNonEmptyString(event.type)
+      const sessionId = asNonEmptyString(event.session_id)
+      if (sessionId) runtime.snapshot.cursorAgentId = sessionId
+
+      if (type === 'assistant') {
+        if (awaitingPostToolAssistant) {
+          assistantIndex += 1
+          assistantText = ''
+          awaitingPostToolAssistant = false
+        }
+        const message = asRecord(event.message)
+        const content = Array.isArray(message?.content) ? message.content : []
+        const text = content
+          .map((block) => {
+            const record = asRecord(block)
+            return record?.type === 'text' ? asNonEmptyText(record.text) : null
+          })
+          .filter((value): value is string => value !== null)
+          .join('\n\n')
+        if (!text) return
+        const isFullAssistantMessage =
+          Boolean(asNonEmptyString(event.model_call_id)) || typeof event.timestamp_ms !== 'number'
+        if (isFullAssistantMessage) {
+          if (text.length >= assistantText.length) assistantText = text
+          else if (!assistantText.endsWith(text)) assistantText += text
+        } else {
+          assistantText += text
+        }
+        appendMessage(runtime.snapshot, {
+          id: assistantId(),
+          role: 'assistant',
+          text: assistantText,
+          status: 'in_progress',
+          updatedAt: now(),
+        })
+        const extracted = extractCodexProposedPlan(assistantText)
+        if (runtime.request.permissionMode === 'plan' && extracted) {
+          runtime.snapshot.pendingPlanApproval = {
+            plan: extracted.plan,
+            createdAt: now(),
+          }
+          const assistant = runtime.snapshot.messages.find((entry) => entry.id === assistantId())
+          if (assistant) assistant.text = extracted.stripped || extracted.plan
+        }
+        this.emitUpdate(runtime.snapshot)
+        return
+      }
+
+      if (type === 'tool_call') {
+        if (assistantText.trim()) {
+          const assistant = runtime.snapshot.messages.find((entry) => entry.id === assistantId())
+          if (assistant && assistant.status === 'in_progress') {
+            assistant.status = 'completed'
+            assistant.updatedAt = now()
+          }
+        }
+        awaitingPostToolAssistant = true
+        const subtype = asNonEmptyString(event.subtype)
+        const callId = asNonEmptyString(event.call_id) || `${windowId}-cursor-tool-${now()}`
+        const toolCall = asRecord(event.tool_call)
+        const entries = toolCall ? Object.entries(toolCall) : []
+        const [rawToolName, rawPayload] = entries[0] ?? ['toolCall', {}]
+        const payload = asRecord(rawPayload) ?? {}
+        const title = cursorToolTitle(rawToolName)
+        const toolArgs = normalizeCursorToolArgs(title, asRecord(payload.args) ?? {})
+        if (rawToolName === 'shellToolCall' && typeof payload.description === 'string') {
+          toolArgs.description = payload.description
+        }
+        if (subtype === 'started' && isCursorBroadProtectedGlob(title, toolArgs)) {
+          const detail = compactText(toolArgs)
+          try {
+            child.kill('SIGINT')
+          } catch {}
+          fail(`Blocked broad Cursor glob in a macOS protected location.\n\n${detail}`)
+          return
+        }
+        const result = asRecord(payload.result)
+        const success = result ? asRecord(result.success) : null
+        const error = result ? asRecord(result.error) : null
+        appendMessage(runtime.snapshot, {
+          id: `cursor-tool-${callId.replace(/\s+/g, '-')}`,
+          role: 'tool',
+          title,
+          text: compactText(toolArgs),
+          metadata: compactText(success ?? error ?? result ?? toolArgs),
+          status:
+            subtype === 'completed'
+              ? error
+                ? 'failed'
+                : 'completed'
+              : subtype === 'failed'
+                ? 'failed'
+                : 'in_progress',
+          toolUseId: callId,
+          updatedAt: now(),
+        })
+        this.emitUpdate(runtime.snapshot)
+        return
+      }
+
+      if (type === 'result') {
+        complete(event)
+      }
+    }
+
+    const handleStdout = (chunk: Buffer | string) => {
+      stdoutBuffer = appendBoundedText(stdoutBuffer, String(chunk), 32_000)
+      const lines = stdoutBuffer.split(/\r?\n/)
+      stdoutBuffer = lines.pop() ?? ''
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed) continue
+        try {
+          const parsed = asRecord(JSON.parse(trimmed))
+          if (parsed) handleEvent(parsed)
+        } catch {
+          stderrBuffer = appendBoundedText(stderrBuffer, `${trimmed}\n`, 8_000)
+        }
+      }
+    }
+
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', handleStdout)
+    child.stderr.on('data', (chunk: string) => {
+      stderrBuffer = appendBoundedText(stderrBuffer, chunk, 8_000)
+    })
+    child.on('error', (err) => fail(err.message))
+    child.on('close', (code, signal) => {
+      if (runtime.closed || runtime.streamGeneration !== streamGeneration) return
+      if (terminalFailure) return
+      if (stdoutBuffer.trim()) handleStdout('\n')
+      runtime.activeRun = null
+      if (sawResult) return
+      if (signal === 'SIGINT' || signal === 'SIGTERM') {
+        runtime.snapshot.status = 'idle'
+        runtime.resolveRun?.()
+        this.emitUpdate(runtime.snapshot)
+        return
+      }
+      const message =
+        stderrBuffer.trim() ||
+        stdoutBuffer.trim() ||
+        (code === 0 ? 'Cursor finished without a result' : `Cursor exited with code ${code}`)
+      fail(message)
+    })
+  }
+
   private async reopenRuntime(runtime: Runtime): Promise<Runtime> {
     const windowId = runtime.snapshot.windowId
     log('reopen', { windowId, kind: runtime.kind })
@@ -4215,6 +6372,22 @@ export class AgentSessionService extends EventEmitter {
       runtime.liveContextUsageUpdatedThisTurn = false
       this.startClaudeStream(runtime)
       return runtime
+    }
+
+    if (runtime.kind === 'cursor' || runtime.kind === 'opencode') {
+      runtime.activeRun = null
+      runtime.closed = false
+      return runtime
+    }
+
+    if (runtime.kind === 'copilot') {
+      try {
+        await runtime.session.disconnect()
+      } catch {}
+      await runtime.client.stop().catch(() => [])
+      const next = await this.createCopilotRuntime(runtime.request, runtime.snapshot)
+      this.runtimes.set(windowId, next)
+      return next
     }
 
     runtime.client = await createCodexAppServerSession({

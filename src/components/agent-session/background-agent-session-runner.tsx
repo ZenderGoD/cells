@@ -89,6 +89,10 @@ function BackgroundAgentSessionRunner({ agentWindow }: { agentWindow: AgentWindo
       initialPrompt: null,
       claudeSessionId: agentWindow.claudeSessionId ?? null,
       codexThreadId: agentWindow.codexThreadId ?? null,
+      cursorAgentId: agentWindow.cursorAgentId ?? null,
+      cursorRunId: agentWindow.cursorRunId ?? null,
+      copilotSessionId: agentWindow.copilotSessionId ?? null,
+      opencodeSessionId: agentWindow.opencodeSessionId ?? null,
       model: agentWindow.model ?? null,
       permissionMode: agentWindow.permissionMode ?? null,
       thinkingLevel: agentWindow.thinkingLevel ?? null,
@@ -98,6 +102,10 @@ function BackgroundAgentSessionRunner({ agentWindow }: { agentWindow: AgentWindo
     agentWindow.agent,
     agentWindow.claudeSessionId,
     agentWindow.codexThreadId,
+    agentWindow.cursorAgentId,
+    agentWindow.cursorRunId,
+    agentWindow.copilotSessionId,
+    agentWindow.opencodeSessionId,
     agentWindow.contextLength,
     agentWindow.cwd,
     agentWindow.customTitle,
@@ -181,7 +189,10 @@ function BackgroundAgentSessionRunner({ agentWindow }: { agentWindow: AgentWindo
         (next.messages.some((message) => message.role === 'user') ||
           next.status === 'running' ||
           Boolean(next.claudeSessionId) ||
-          Boolean(next.codexThreadId))
+          Boolean(next.codexThreadId) ||
+          Boolean(next.cursorAgentId) ||
+          Boolean(next.copilotSessionId) ||
+          Boolean(next.opencodeSessionId))
       const derivedStatus = deriveAgentSessionWindowStatus(next)
       const prevStatus = prevDerivedStatusRef.current
       prevDerivedStatusRef.current = derivedStatus
@@ -196,6 +207,10 @@ function BackgroundAgentSessionRunner({ agentWindow }: { agentWindow: AgentWindo
         error: next.error ?? null,
         claudeSessionId: next.claudeSessionId ?? null,
         codexThreadId: next.codexThreadId ?? null,
+        cursorAgentId: next.cursorAgentId ?? null,
+        cursorRunId: next.cursorRunId ?? null,
+        copilotSessionId: next.copilotSessionId ?? null,
+        opencodeSessionId: next.opencodeSessionId ?? null,
         initialPrompt: shouldClearInitialPrompt ? null : (agentWindow.initialPrompt ?? null),
       }
       if (justCompleted && !isViewed) {
@@ -224,6 +239,10 @@ function BackgroundAgentSessionRunner({ agentWindow }: { agentWindow: AgentWindo
       initialPrompt: agentWindow.initialPrompt ?? null,
       claudeSessionId: agentWindow.claudeSessionId ?? null,
       codexThreadId: agentWindow.codexThreadId ?? null,
+      cursorAgentId: agentWindow.cursorAgentId ?? null,
+      cursorRunId: agentWindow.cursorRunId ?? null,
+      copilotSessionId: agentWindow.copilotSessionId ?? null,
+      opencodeSessionId: agentWindow.opencodeSessionId ?? null,
       model: agentWindow.model ?? null,
       permissionMode: agentWindow.permissionMode ?? null,
       thinkingLevel: agentWindow.thinkingLevel ?? null,
@@ -275,6 +294,10 @@ function BackgroundAgentSessionRunner({ agentWindow }: { agentWindow: AgentWindo
     agentWindow.agent,
     agentWindow.claudeSessionId,
     agentWindow.codexThreadId,
+    agentWindow.cursorAgentId,
+    agentWindow.cursorRunId,
+    agentWindow.copilotSessionId,
+    agentWindow.opencodeSessionId,
     agentWindow.contextLength,
     agentWindow.cwd,
     agentWindow.customTitle,

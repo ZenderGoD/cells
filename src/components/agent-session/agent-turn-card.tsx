@@ -341,7 +341,8 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
 
 function getToolDisplayName(name: string): string {
   const stripped = name.replace(/^mcp__[^_]+__/, '')
-  return TOOL_DISPLAY_NAMES[stripped] || stripped
+  const normalized = stripped.charAt(0).toUpperCase() + stripped.slice(1)
+  return TOOL_DISPLAY_NAMES[stripped] || TOOL_DISPLAY_NAMES[normalized] || normalized
 }
 
 // Returns Craft's { description, filename, input-summary } triple for an
@@ -355,7 +356,11 @@ function formatToolRow(message: AgentSessionMessage): {
 } {
   if (message.role !== 'tool') return {}
   const rawTitle = message.title || ''
-  const title = rawTitle.replace(/^mcp__[^_]+__/, '')
+  const rawStrippedTitle = rawTitle.replace(/^mcp__[^_]+__/, '')
+  const title =
+    TOOL_DISPLAY_NAMES[rawStrippedTitle] ||
+    TOOL_DISPLAY_NAMES[rawStrippedTitle.charAt(0).toUpperCase() + rawStrippedTitle.slice(1)] ||
+    rawStrippedTitle
   const input = parseToolInput(message.text)
   if (!input) {
     const firstLine = (message.text || '').split('\n')[0].trim()
@@ -781,13 +786,19 @@ function usePreviewText(
   isStreaming: boolean,
   agent: AgentWindowNode['agent'],
 ): string {
+  const agentLabel =
+    agent === 'claude'
+      ? 'Claude'
+      : agent === 'cursor'
+        ? 'Cursor'
+        : agent === 'copilot'
+          ? 'Copilot'
+          : agent === 'opencode'
+            ? 'OpenCode'
+            : 'Codex'
   return useMemo(() => {
     if (activities.length === 0) {
-      return isStreaming
-        ? agent === 'claude'
-          ? 'Claude is thinking…'
-          : 'Codex is thinking…'
-        : 'No activity'
+      return isStreaming ? `${agentLabel} is thinking…` : 'No activity'
     }
     // Once the turn is idle, show a completion summary — even if some tool
     // row still happens to carry `in_progress` (e.g. tool_result event
@@ -818,7 +829,7 @@ function usePreviewText(
       if (row.description) return row.description
     }
     return 'Working…'
-  }, [activities, isStreaming, agent])
+  }, [activities, isStreaming, agentLabel])
 }
 
 // Mirrors Craft's ResponseCard — ../craft-agents-oss/packages/ui/src/components/chat/TurnCard.tsx
@@ -1243,7 +1254,17 @@ export function AgentTurnCard({
           </div>
         ) : isStreaming && !hasResponse && !hasLeadText ? (
           <LoadingIndicator
-            label={agent === 'claude' ? 'Claude is thinking…' : 'Codex is thinking…'}
+            label={`${
+              agent === 'claude'
+                ? 'Claude'
+                : agent === 'cursor'
+                  ? 'Cursor'
+                  : agent === 'copilot'
+                    ? 'Copilot'
+                    : agent === 'opencode'
+                      ? 'OpenCode'
+                      : 'Codex'
+            } is thinking…`}
             showElapsed
             className={cn(
               'py-1.5 pr-3 text-[13px] text-muted-foreground',

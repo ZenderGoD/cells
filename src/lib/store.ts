@@ -5,6 +5,7 @@ import type {
   AgentSessionDefaults,
   AgentWindowNode,
   AgentName,
+  AgentSessionName,
   BrowserNode,
   CanvasSnapMode,
   CanvasTransform,
@@ -167,7 +168,7 @@ interface StoreState {
   enabledAgents: Record<string, boolean | 'auto'>
   inputPrefixes: InputPrefix[]
   lastUsedAgent: string | null
-  lastAgentSessionDefaults: Record<Extract<AgentName, 'claude' | 'codex'>, AgentSessionDefaults>
+  lastAgentSessionDefaults: Record<AgentSessionName, AgentSessionDefaults>
   lastCommandAction: 'search' | 'agent' | 'run' | null
   colorScheme: 'light' | 'dark' | 'system'
   saveStatus: 'idle' | 'saving' | 'saved' | 'error'
@@ -267,7 +268,7 @@ interface StoreState {
   panToTerminal(id: string): void
   panToBrowser(id: string): void
   addAgentWindow(
-    agent: Extract<AgentName, 'claude' | 'codex'>,
+    agent: AgentSessionName,
     options?: {
       id?: string
       title?: string
@@ -279,6 +280,10 @@ interface StoreState {
       composerReplyTo?: import('../types').AgentReplyReference | null
       claudeSessionId?: string | null
       codexThreadId?: string | null
+      cursorAgentId?: string | null
+      cursorRunId?: string | null
+      copilotSessionId?: string | null
+      opencodeSessionId?: string | null
       model?: string | null
       permissionMode?: import('../types').AgentPermissionMode | null
       thinkingLevel?: import('../types').AgentThinkingLevel | null
@@ -360,10 +365,7 @@ interface StoreState {
   setEnabledAgents(agents: Record<string, boolean | 'auto'>): void
   setInputPrefixes(prefixes: InputPrefix[]): void
   setLastUsedAgent(agent: string): void
-  setLastAgentSessionDefaults(
-    agent: Extract<AgentName, 'claude' | 'codex'>,
-    patch: Partial<AgentSessionDefaults>,
-  ): void
+  setLastAgentSessionDefaults(agent: AgentSessionName, patch: Partial<AgentSessionDefaults>): void
   setLastCommandAction(action: 'search' | 'agent' | 'run'): void
   trackCommandAction(key: string): void
   appDarkTheme: string
@@ -393,7 +395,7 @@ interface StoreState {
   moveTerminalsToWorktree(termIds: string[], worktreePath: string): Promise<void>
   openTerminalInWorktree(worktreePath: string): TerminalNode
   openAgentInWorktree(
-    agent: Extract<AgentName, 'claude' | 'codex'>,
+    agent: AgentSessionName,
     worktreePath: string,
     options?: {
       title?: string
@@ -402,6 +404,10 @@ interface StoreState {
       permissionMode?: import('../types').AgentPermissionMode | null
       thinkingLevel?: import('../types').AgentThinkingLevel | null
       contextLength?: import('../types').AgentContextLength | null
+      cursorAgentId?: string | null
+      cursorRunId?: string | null
+      copilotSessionId?: string | null
+      opencodeSessionId?: string | null
     },
   ): AgentWindowNode
   createWorktree(options: GitWorktreeCreateOptions): Promise<GitWorktree>
@@ -482,10 +488,14 @@ const PROJECT_CLOSE_GRACE_MS = 15000
 const DEFAULT_INPUT_PREFIXES: InputPrefix[] = [{ prefix: '!', target: 'terminal' }]
 const DEFAULT_TITLE_BAR_POSITION: TitleBarPosition = 'bottom'
 const SAVE_STATUS_RESET_MS = 1800
-const DEFAULT_AGENT_SESSION_DEFAULTS: Record<
-  Extract<AgentName, 'claude' | 'codex'>,
-  AgentSessionDefaults
-> = {
+function getAgentDisplayTitle(agent: AgentSessionName): string {
+  if (agent === 'claude') return 'Claude Code'
+  if (agent === 'cursor') return 'Cursor'
+  if (agent === 'copilot') return 'GitHub Copilot'
+  if (agent === 'opencode') return 'OpenCode'
+  return 'Codex'
+}
+const DEFAULT_AGENT_SESSION_DEFAULTS: Record<AgentSessionName, AgentSessionDefaults> = {
   claude: {
     model: null,
     permissionMode: null,
@@ -500,14 +510,32 @@ const DEFAULT_AGENT_SESSION_DEFAULTS: Record<
     thinkingLevelsByModel: {},
     contextLength: null,
   },
+  cursor: {
+    model: null,
+    permissionMode: null,
+    thinkingLevel: null,
+    thinkingLevelsByModel: {},
+    contextLength: null,
+  },
+  copilot: {
+    model: null,
+    permissionMode: null,
+    thinkingLevel: null,
+    thinkingLevelsByModel: {},
+    contextLength: null,
+  },
+  opencode: {
+    model: null,
+    permissionMode: null,
+    thinkingLevel: null,
+    thinkingLevelsByModel: {},
+    contextLength: null,
+  },
 }
 
 function normalizeAgentSessionDefaults(
-  value:
-    | Partial<Record<Extract<AgentName, 'claude' | 'codex'>, AgentSessionDefaults>>
-    | null
-    | undefined,
-): Record<Extract<AgentName, 'claude' | 'codex'>, AgentSessionDefaults> {
+  value: Partial<Record<AgentSessionName, AgentSessionDefaults>> | null | undefined,
+): Record<AgentSessionName, AgentSessionDefaults> {
   return {
     claude: {
       ...DEFAULT_AGENT_SESSION_DEFAULTS.claude,
@@ -521,6 +549,27 @@ function normalizeAgentSessionDefaults(
       ...(value?.codex ?? {}),
       thinkingLevelsByModel: {
         ...(value?.codex?.thinkingLevelsByModel ?? {}),
+      },
+    },
+    cursor: {
+      ...DEFAULT_AGENT_SESSION_DEFAULTS.cursor,
+      ...(value?.cursor ?? {}),
+      thinkingLevelsByModel: {
+        ...(value?.cursor?.thinkingLevelsByModel ?? {}),
+      },
+    },
+    copilot: {
+      ...DEFAULT_AGENT_SESSION_DEFAULTS.copilot,
+      ...(value?.copilot ?? {}),
+      thinkingLevelsByModel: {
+        ...(value?.copilot?.thinkingLevelsByModel ?? {}),
+      },
+    },
+    opencode: {
+      ...DEFAULT_AGENT_SESSION_DEFAULTS.opencode,
+      ...(value?.opencode ?? {}),
+      thinkingLevelsByModel: {
+        ...(value?.opencode?.thinkingLevelsByModel ?? {}),
       },
     },
   }
@@ -5578,13 +5627,17 @@ export const useStore = create<StoreState>((set, get) => ({
 
   openAgentInWorktree(agent, worktreePath, options) {
     return get().addAgentWindow(agent, {
-      title: options?.title ?? (agent === 'claude' ? 'Claude Code' : 'Codex'),
+      title: options?.title ?? getAgentDisplayTitle(agent),
       cwd: worktreePath,
       initialPrompt: options?.initialPrompt ?? null,
       model: options?.model ?? null,
       permissionMode: options?.permissionMode ?? null,
       thinkingLevel: options?.thinkingLevel ?? null,
       contextLength: options?.contextLength ?? null,
+      cursorAgentId: options?.cursorAgentId ?? null,
+      cursorRunId: options?.cursorRunId ?? null,
+      copilotSessionId: options?.copilotSessionId ?? null,
+      opencodeSessionId: options?.opencodeSessionId ?? null,
     })
   },
 
@@ -6075,7 +6128,7 @@ export const useStore = create<StoreState>((set, get) => ({
       y,
       width,
       height,
-      title: options?.title ?? (agent === 'claude' ? 'Claude Code' : 'Codex'),
+      title: options?.title ?? getAgentDisplayTitle(agent),
       customTitle: options?.customTitle ?? null,
       cwd: options?.cwd ?? get().getActiveProjectPath() ?? null,
       initialPrompt: options?.initialPrompt ?? null,
@@ -6084,6 +6137,10 @@ export const useStore = create<StoreState>((set, get) => ({
       composerReplyTo: options?.composerReplyTo ?? null,
       claudeSessionId: options?.claudeSessionId ?? null,
       codexThreadId: options?.codexThreadId ?? null,
+      cursorAgentId: options?.cursorAgentId ?? null,
+      cursorRunId: options?.cursorRunId ?? null,
+      copilotSessionId: options?.copilotSessionId ?? null,
+      opencodeSessionId: options?.opencodeSessionId ?? null,
       model: options?.model ?? savedDefaults.model ?? null,
       permissionMode: options?.permissionMode ?? savedDefaults.permissionMode ?? null,
       thinkingLevel:

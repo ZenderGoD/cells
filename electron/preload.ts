@@ -68,12 +68,14 @@ const api: CellsAPI = {
     registerLaunch: (
       termId: string,
       launch: {
-        agent?: 'claude' | 'codex' | 'opencode' | 'pi' | null
+        agent?: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode' | 'pi' | null
         command?: string | null
         cwd?: string | null
         startedAt?: number | null
         claudeSessionId?: string | null
         codexThreadId?: string | null
+        copilotSessionId?: string | null
+        opencodeSessionId?: string | null
       },
     ) => ipcRenderer.invoke('terminal:register-launch', termId, launch),
     getCodexTitle: (termId: string) => ipcRenderer.invoke('terminal:get-codex-title', termId),
@@ -139,6 +141,11 @@ const api: CellsAPI = {
     setZoomFactor: (browserId: string, factor: number) =>
       ipcRenderer.send('browser:set-zoom-factor', browserId, factor),
     toggleDevTools: (browserId: string) => ipcRenderer.send('browser:toggle-devtools', browserId),
+    onViewFocused: (callback: (browserId: string) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, browserId: string) => callback(browserId)
+      ipcRenderer.on('browser:view-focused', handler)
+      return () => ipcRenderer.removeListener('browser:view-focused', handler)
+    },
     onTitleUpdated: (callback: (browserId: string, title: string) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, browserId: string, title: string) =>
         callback(browserId, title)
@@ -432,6 +439,20 @@ const api: CellsAPI = {
       ipcRenderer.invoke('editor:write-file', filePath, content),
     saveFileAs: (content: string, defaultPath?: string | null, defaultDirectory?: string | null) =>
       ipcRenderer.invoke('editor:save-file-as', content, defaultPath, defaultDirectory),
+    lspOpen: (request) => ipcRenderer.invoke('editor:lsp-open', request),
+    lspChange: (uri: string, content: string, version?: number) =>
+      ipcRenderer.invoke('editor:lsp-change', uri, content, version),
+    lspClose: (uri: string) => ipcRenderer.invoke('editor:lsp-close', uri),
+    lspCompletion: (uri: string, position) =>
+      ipcRenderer.invoke('editor:lsp-completion', uri, position),
+    lspHover: (uri: string, position) => ipcRenderer.invoke('editor:lsp-hover', uri, position),
+    lspDefinition: (uri: string, position) =>
+      ipcRenderer.invoke('editor:lsp-definition', uri, position),
+    onLspDiagnostics: (callback) => {
+      const handler = (_event: Electron.IpcRendererEvent, payload: any) => callback(payload)
+      ipcRenderer.on('editor:lsp-diagnostics', handler)
+      return () => ipcRenderer.removeListener('editor:lsp-diagnostics', handler)
+    },
   },
   git: {
     isRepo: (cwd: string) => ipcRenderer.invoke('git:is-repo', cwd),
@@ -502,17 +523,17 @@ const api: CellsAPI = {
     notifyQueuedStart: (windowId: string) => {
       ipcRenderer.send('agent-session:notify-queued-start', windowId)
     },
-    getAuth: (agent: 'claude' | 'codex') =>
+    getAuth: (agent: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode') =>
       ipcRenderer.invoke('agent-session:get-auth', agent) as Promise<{
-        agent: 'claude' | 'codex'
+        agent: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode'
         binaryPath: string | null
         authenticated: boolean | 'unknown'
       }>,
-    getLoginCommand: (agent: 'claude' | 'codex') =>
+    getLoginCommand: (agent: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode') =>
       ipcRenderer.invoke('agent-session:get-login-command', agent) as Promise<string>,
-    startLogin: (agent: 'claude' | 'codex') =>
+    startLogin: (agent: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode') =>
       ipcRenderer.invoke('agent-session:start-login', agent) as Promise<void>,
-    cancelLogin: (agent: 'claude' | 'codex') =>
+    cancelLogin: (agent: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode') =>
       ipcRenderer.invoke('agent-session:cancel-login', agent) as Promise<void>,
     updatePermissionMode: (
       windowId: string,
@@ -568,15 +589,62 @@ const api: CellsAPI = {
           supportsAdaptiveThinking: boolean
         }>
       >,
+    listCursorModels: () =>
+      ipcRenderer.invoke('agent-session:list-cursor-models') as Promise<
+        Array<{
+          id: string
+          displayName: string
+          description: string
+          parameters?: Array<{
+            id: string
+            displayName?: string
+            values: Array<{ value: string; displayName?: string }>
+          }>
+          variants?: Array<{
+            params: Array<{ id: string; value: string }>
+            displayName: string
+            description?: string
+            isDefault?: boolean
+          }>
+        }>
+      >,
+    listCopilotModels: () =>
+      ipcRenderer.invoke('agent-session:list-copilot-models') as Promise<
+        Array<{
+          id: string
+          displayName: string
+          description: string
+          isDefault: boolean
+          hidden: boolean
+          supportedReasoningEfforts: string[]
+          defaultReasoningEffort: string
+          contextWindow: number | null
+        }>
+      >,
+    listOpencodeModels: () =>
+      ipcRenderer.invoke('agent-session:list-opencode-models') as Promise<
+        Array<{
+          id: string
+          displayName: string
+          description: string
+          isDefault: boolean
+          hidden: boolean
+          supportedReasoningEfforts: string[]
+          defaultReasoningEffort: string
+          contextWindow: number | null
+        }>
+      >,
     listSavedSessions: () =>
       ipcRenderer.invoke('agent-session:list-saved-sessions') as Promise<
         SavedAgentSessionSummary[]
       >,
-    listRecentSessions: (agent: 'claude' | 'codex', limit?: number) =>
-      ipcRenderer.invoke('agent-session:list-recent-sessions', agent, limit),
+    listRecentSessions: (
+      agent: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode',
+      limit?: number,
+    ) => ipcRenderer.invoke('agent-session:list-recent-sessions', agent, limit),
     onLoginEvent: (
       callback: (event: {
-        agent: 'claude' | 'codex'
+        agent: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode'
         phase: 'starting' | 'awaiting_browser' | 'success' | 'failed' | 'cancelled'
         url?: string | null
         message?: string | null

@@ -1,10 +1,11 @@
 import { useMemo, useState, useCallback, useRef, useEffect } from 'react'
-import { ChevronRight, FileText, X } from 'lucide-react'
+import { ChevronRight, FileText, Pencil, X } from 'lucide-react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import type { AgentSessionMessage } from '@/types'
 import { cn } from '@/lib/utils'
 import { groupDiffsByFile, type FileDiffStats } from '@/lib/tool-diff-stats'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { useStore } from '@/lib/store'
 
 // ease-out-quart — smoother tail for height-based expand/collapse.
 const EASE_EXPAND: [number, number, number, number] = [0.22, 1, 0.36, 1]
@@ -15,12 +16,25 @@ const EXPAND_TRANSITION = {
 
 interface SessionDiffsPanelProps {
   messages: AgentSessionMessage[]
+  cwd?: string | null
   onClose: () => void
 }
 
 function baseName(p: string): string {
   const parts = p.split('/').filter(Boolean)
   return parts[parts.length - 1] ?? p
+}
+
+function resolveDiffFilePath(filePath: string, cwd?: string | null): string {
+  if (
+    filePath.startsWith('/') ||
+    filePath.startsWith('file://') ||
+    /^[A-Za-z]:[\\/]/.test(filePath)
+  ) {
+    return filePath
+  }
+  if (!cwd) return filePath
+  return `${cwd.replace(/[\\/]+$/, '')}/${filePath}`
 }
 
 // ─── Line-level LCS diff ──────────────────────────────────────────────────────
@@ -280,28 +294,37 @@ export function FileDiffPreview({
   )
 }
 
-function FileDiffRow({ file }: { file: FileDiffStats }) {
+function FileDiffRow({ file, cwd }: { file: FileDiffStats; cwd?: string | null }) {
   const [expanded, setExpanded] = useState(false)
   const reduceMotion = useReducedMotion()
+  const activeProjectId = useStore((state) => state.activeProjectId)
+  const openTextEditorForPath = useStore((state) => state.openTextEditorForPath)
   const name = baseName(file.filePath)
   const dir = file.filePath.slice(0, Math.max(0, file.filePath.length - name.length - 1))
+  const openFile = useCallback(() => {
+    openTextEditorForPath(resolveDiffFilePath(file.filePath, cwd), activeProjectId)
+  }, [activeProjectId, cwd, file.filePath, openTextEditorForPath])
+
   return (
     <li className="border-b border-border/20 last:border-b-0">
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-foreground/5"
-      >
-        <ChevronRight
-          className={cn(
-            'size-3 shrink-0 text-muted-foreground/40 transition-transform',
-            expanded && 'rotate-90',
-          )}
-        />
-        <span className="min-w-0 flex-1 truncate text-[12px]" title={file.filePath}>
-          <span className="font-medium text-foreground/85">{name}</span>
-          {dir ? <span className="ml-1.5 text-muted-foreground/45">{dir}</span> : null}
-        </span>
+      <div className="flex w-full items-center gap-1 px-3 py-1.5 transition-colors hover:bg-foreground/5">
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+          aria-expanded={expanded}
+        >
+          <ChevronRight
+            className={cn(
+              'size-3 shrink-0 text-muted-foreground/40 transition-transform',
+              expanded && 'rotate-90',
+            )}
+          />
+          <span className="min-w-0 flex-1 truncate text-[12px]" title={file.filePath}>
+            <span className="font-medium text-foreground/85">{name}</span>
+            {dir ? <span className="ml-1.5 text-muted-foreground/45">{dir}</span> : null}
+          </span>
+        </button>
         <span className="shrink-0 text-[11px] tabular-nums">
           {file.additions > 0 ? (
             <span className="text-emerald-400/80">+{file.additions}</span>
@@ -311,7 +334,16 @@ function FileDiffRow({ file }: { file: FileDiffStats }) {
           ) : null}
           {file.deletions > 0 ? <span className="text-rose-400/80">-{file.deletions}</span> : null}
         </span>
-      </button>
+        <button
+          type="button"
+          onClick={openFile}
+          className="ml-1 flex size-6 shrink-0 items-center justify-center rounded-[6px] text-muted-foreground/40 transition-colors hover:bg-foreground/8 hover:text-foreground"
+          title="Open in text editor"
+          aria-label={`Open ${name} in text editor`}
+        >
+          <Pencil className="size-3.5" />
+        </button>
+      </div>
       <AnimatePresence initial={false}>
         {expanded ? (
           <motion.div
@@ -336,7 +368,7 @@ const MIN_WIDTH = 280
 const MAX_WIDTH = 900
 const DEFAULT_WIDTH = 520
 
-export function SessionDiffsPanel({ messages, onClose }: SessionDiffsPanelProps) {
+export function SessionDiffsPanel({ messages, cwd, onClose }: SessionDiffsPanelProps) {
   const files = useMemo(() => groupDiffsByFile(messages), [messages])
   const totalAdditions = files.reduce((acc, f) => acc + f.additions, 0)
   const totalDeletions = files.reduce((acc, f) => acc + f.deletions, 0)
@@ -416,7 +448,7 @@ export function SessionDiffsPanel({ messages, onClose }: SessionDiffsPanelProps)
         ) : (
           <ul className="flex flex-col py-1">
             {files.map((file) => (
-              <FileDiffRow key={file.filePath} file={file} />
+              <FileDiffRow key={file.filePath} file={file} cwd={cwd} />
             ))}
           </ul>
         )}

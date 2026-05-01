@@ -267,7 +267,6 @@ export function BrowserNode({
         if (!mountedRef.current || createRunRef.current !== createRun) return
         setViewReady(true)
         await hydrateBrowserState()
-        if (isFocusedRef.current) window.cells.browser.focus(browser.id)
         // Only navigate on fresh creation, not when unparking (live page is preserved)
         if (!result?.unparked && url) {
           await window.cells.browser.navigate(browser.id, url, useStore.getState().searchEngine)
@@ -478,6 +477,12 @@ export function BrowserNode({
     return unsub
   }, [browser.id])
 
+  useEffect(() => {
+    return window.cells.browser.onViewFocused((id) => {
+      if (id === browser.id) focusBrowser(browser.id)
+    })
+  }, [browser.id, focusBrowser])
+
   // Hide native view briefly when focus transitions in, so the spring animation is visible
   useEffect(() => {
     if (isFocused && !prevFocusedRef.current && viewReady) {
@@ -508,6 +513,9 @@ export function BrowserNode({
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
   }, [])
+
+  const nativeViewBlocked =
+    overlayOpen || offline || !!failure || dragModeActive || suspended || transitionHidden
 
   useEffect(() => {
     if (!viewReady || !isFocused) {
@@ -560,15 +568,7 @@ export function BrowserNode({
       window.cells.browser.setZoomFactor(browser.id, roundedZoom)
     }
 
-    const shouldBeVisible =
-      !overlayOpen &&
-      !offline &&
-      !failure &&
-      !dragModeActive &&
-      !suspended &&
-      !transitionHidden &&
-      bounds.width >= 20 &&
-      bounds.height >= 20
+    const shouldBeVisible = !nativeViewBlocked && bounds.width >= 20 && bounds.height >= 20
     window.cells.browser.setVisible(browser.id, shouldBeVisible)
   }, [
     browser.id,
@@ -579,19 +579,19 @@ export function BrowserNode({
     canvas.x,
     canvas.y,
     canvas.scale,
-    dragModeActive,
     isFocused,
-    offline,
-    overlayOpen,
-    failure,
-    suspended,
-    transitionHidden,
+    nativeViewBlocked,
     viewReady,
     windowSize.height,
     windowSize.width,
     titleBarHidden,
     titleBarPosition,
   ])
+
+  useEffect(() => {
+    if (!isFocused || !viewReady || nativeViewBlocked) return
+    window.cells.browser.focus(browser.id)
+  }, [browser.id, isFocused, nativeViewBlocked, viewReady])
 
   const handleEdgeMouseDown = useCallback(
     (edge: Edge, e: MouseEvent) => {
@@ -749,7 +749,7 @@ export function BrowserNode({
     >
       {dragModeActive && <div className="absolute inset-0 z-10 cursor-grab" />}
 
-      {/* Content area — WebContentsView covers this when focused.
+      {/* Content area — WebContentsView covers this when visible.
           Always dark bg so hiding the native view (popover/overlay) doesn't flash white. */}
       <div
         ref={contentRef}
@@ -812,14 +812,7 @@ export function BrowserNode({
           </svg>
         )}
         {/* Placeholder shown when native view is hidden */}
-        {(!isFocused ||
-          !viewReady ||
-          overlayOpen ||
-          offline ||
-          !!failure ||
-          suspended ||
-          dragModeActive ||
-          transitionHidden) && (
+        {(!isFocused || !viewReady || nativeViewBlocked) && (
           <div className="w-full h-full flex flex-col items-center justify-center gap-2 px-5 text-center">
             {offline ? (
               <WifiOff className="w-8 h-8 text-muted-foreground/30" />

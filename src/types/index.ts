@@ -47,7 +47,11 @@ export type DwindleLayoutTree =
       second: DwindleLayoutTree
     }
 export type TitleBarPosition = 'top' | 'bottom'
-export type AgentName = 'claude' | 'codex' | 'opencode' | 'pi'
+export type AgentName = 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode' | 'pi'
+export type AgentSessionName = Extract<
+  AgentName,
+  'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode'
+>
 export type AgentStatus = 'active' | 'unread' | 'done' | null
 export type AgentRuntimeState = 'working' | 'approval' | 'waiting' | 'done' | 'error'
 export type TerminalRuntimeKind = 'none' | 'process' | 'agent'
@@ -388,7 +392,7 @@ export type AgentWindowStatus =
 
 export interface AgentWindowNode {
   id: string
-  agent: Extract<AgentName, 'claude' | 'codex'>
+  agent: AgentSessionName
   x: number
   y: number
   width: number
@@ -400,6 +404,10 @@ export interface AgentWindowNode {
   error?: string | null
   claudeSessionId?: string | null
   codexThreadId?: string | null
+  cursorAgentId?: string | null
+  cursorRunId?: string | null
+  copilotSessionId?: string | null
+  opencodeSessionId?: string | null
   cwd?: string | null
   initialPrompt?: string | null
   model?: AgentModel | null
@@ -503,12 +511,16 @@ export interface AgentSessionMessage {
 
 export interface AgentSessionRequest {
   windowId: string
-  agent: Extract<AgentName, 'claude' | 'codex'>
+  agent: AgentSessionName
   title?: string | null
   cwd?: string | null
   initialPrompt?: string | null
   claudeSessionId?: string | null
   codexThreadId?: string | null
+  cursorAgentId?: string | null
+  cursorRunId?: string | null
+  copilotSessionId?: string | null
+  opencodeSessionId?: string | null
   model?: AgentModel | null
   permissionMode?: AgentPermissionMode | null
   thinkingLevel?: AgentThinkingLevel | null
@@ -577,7 +589,7 @@ export interface CodexPlanSnapshot {
 
 export interface AgentSessionSnapshot {
   windowId: string
-  agent: Extract<AgentName, 'claude' | 'codex'>
+  agent: AgentSessionName
   title: string
   cwd?: string | null
   /** True only on the first snapshot returned after we reconstruct a session
@@ -588,6 +600,10 @@ export interface AgentSessionSnapshot {
   error?: string | null
   claudeSessionId?: string | null
   codexThreadId?: string | null
+  cursorAgentId?: string | null
+  cursorRunId?: string | null
+  copilotSessionId?: string | null
+  opencodeSessionId?: string | null
   updatedAt: number
   messages: AgentSessionMessage[]
   usage?: AgentUsageStats | null
@@ -599,11 +615,15 @@ export interface AgentSessionSnapshot {
 
 export interface SavedAgentSessionSummary {
   windowId: string
-  agent: Extract<AgentName, 'claude' | 'codex'>
+  agent: AgentSessionName
   title: string
   cwd?: string | null
   claudeSessionId?: string | null
   codexThreadId?: string | null
+  cursorAgentId?: string | null
+  cursorRunId?: string | null
+  copilotSessionId?: string | null
+  opencodeSessionId?: string | null
   model?: string | null
   updatedAt: number
   messageCount: number
@@ -614,16 +634,37 @@ export interface RecentAgentSessionSummary {
   origin: 'cells' | 'native'
   windowId?: string | null
   nativeId?: string | null
-  agent: Extract<AgentName, 'claude' | 'codex'>
+  agent: AgentSessionName
   title: string
   cwd?: string | null
   claudeSessionId?: string | null
   codexThreadId?: string | null
+  cursorAgentId?: string | null
+  cursorRunId?: string | null
+  copilotSessionId?: string | null
+  opencodeSessionId?: string | null
   model?: string | null
   updatedAt: number
   messageCount?: number | null
   lastMessageText?: string | null
   sourceLabel: string
+}
+
+export interface EditorLspPosition {
+  line: number
+  character: number
+}
+
+export interface EditorLspOpenRequest {
+  filePath: string
+  languageId: string
+  content: string
+  rootPath?: string | null
+}
+
+export interface EditorLspDiagnosticsPayload {
+  uri: string
+  diagnostics: unknown[]
 }
 
 export interface AgentNotificationSettings {
@@ -652,7 +693,7 @@ export interface AgentMentionSearchResult {
   relativePath: string
   absolutePath: string
   description?: string | null
-  sourceRoot: '.agents' | '.claude' | '.codex'
+  sourceRoot: '.agents' | '.claude' | '.codex' | '.cursor' | '.github' | '.opencode'
 }
 
 export interface Project {
@@ -693,9 +734,7 @@ export interface ProjectsState {
   version: 4
   activeProjectId: string | null
   projects: Project[]
-  lastAgentSessionDefaults?: Partial<
-    Record<Extract<AgentName, 'claude' | 'codex'>, AgentSessionDefaults>
-  >
+  lastAgentSessionDefaults?: Partial<Record<AgentSessionName, AgentSessionDefaults>>
   appDarkTheme?: string
   appLightTheme?: string
   terminalSessionBackend?: TerminalSessionBackend
@@ -874,6 +913,8 @@ export interface CellsAPI {
         startedAt?: number | null
         claudeSessionId?: string | null
         codexThreadId?: string | null
+        copilotSessionId?: string | null
+        opencodeSessionId?: string | null
       },
     ): Promise<void>
     onData(callback: (termId: string, data: string) => void): () => void
@@ -916,15 +957,15 @@ export interface CellsAPI {
     /** Tell main that a queued message is about to start running for this window.
      *  Main emits a silent notification if the user has that setting enabled. */
     notifyQueuedStart(windowId: string): void
-    getAuth(agent: 'claude' | 'codex'): Promise<{
-      agent: 'claude' | 'codex'
+    getAuth(agent: AgentSessionName): Promise<{
+      agent: AgentSessionName
       binaryPath: string | null
       authenticated: boolean | 'unknown'
       account?: string | null
     }>
-    getLoginCommand(agent: 'claude' | 'codex'): Promise<string>
-    startLogin(agent: 'claude' | 'codex'): Promise<void>
-    cancelLogin(agent: 'claude' | 'codex'): Promise<void>
+    getLoginCommand(agent: AgentSessionName): Promise<string>
+    startLogin(agent: AgentSessionName): Promise<void>
+    cancelLogin(agent: AgentSessionName): Promise<void>
     updatePermissionMode(windowId: string, mode: AgentPermissionMode | null): Promise<void>
     updateContextLength(windowId: string, length: AgentContextLength | null): Promise<void>
     respondPlan(
@@ -966,14 +1007,56 @@ export interface CellsAPI {
         supportsAdaptiveThinking: boolean
       }>
     >
+    listCursorModels(): Promise<
+      Array<{
+        id: string
+        displayName: string
+        description: string
+        parameters?: Array<{
+          id: string
+          displayName?: string
+          values: Array<{ value: string; displayName?: string }>
+        }>
+        variants?: Array<{
+          params: Array<{ id: string; value: string }>
+          displayName: string
+          description?: string
+          isDefault?: boolean
+        }>
+      }>
+    >
+    listCopilotModels(): Promise<
+      Array<{
+        id: string
+        displayName: string
+        description: string
+        isDefault: boolean
+        hidden: boolean
+        supportedReasoningEfforts: string[]
+        defaultReasoningEffort: string
+        contextWindow: number | null
+      }>
+    >
+    listOpencodeModels(): Promise<
+      Array<{
+        id: string
+        displayName: string
+        description: string
+        isDefault: boolean
+        hidden: boolean
+        supportedReasoningEfforts: string[]
+        defaultReasoningEffort: string
+        contextWindow: number | null
+      }>
+    >
     listSavedSessions(): Promise<SavedAgentSessionSummary[]>
     listRecentSessions(
-      agent: 'claude' | 'codex',
+      agent: AgentSessionName,
       limit?: number,
     ): Promise<RecentAgentSessionSummary[]>
     onLoginEvent(
       callback: (event: {
-        agent: 'claude' | 'codex'
+        agent: AgentSessionName
         phase: 'starting' | 'awaiting_browser' | 'success' | 'failed' | 'cancelled'
         url?: string | null
         message?: string | null
@@ -1066,6 +1149,7 @@ export interface CellsAPI {
     setVisible(browserId: string, visible: boolean): void
     setZoomFactor(browserId: string, factor: number): void
     toggleDevTools(browserId: string): void
+    onViewFocused(callback: (browserId: string) => void): () => void
     onTitleUpdated(callback: (browserId: string, title: string) => void): () => void
     onUrlChanged(callback: (browserId: string, url: string) => void): () => void
     onNavState(
@@ -1127,6 +1211,13 @@ export interface CellsAPI {
       mtimeMs: number
       size: number
     } | null>
+    lspOpen(request: EditorLspOpenRequest): Promise<{ enabled: boolean; uri?: string }>
+    lspChange(uri: string, content: string, version?: number): Promise<{ enabled: boolean }>
+    lspClose(uri: string): Promise<void>
+    lspCompletion(uri: string, position: EditorLspPosition): Promise<unknown>
+    lspHover(uri: string, position: EditorLspPosition): Promise<unknown>
+    lspDefinition(uri: string, position: EditorLspPosition): Promise<unknown>
+    onLspDiagnostics(callback: (payload: EditorLspDiagnosticsPayload) => void): () => void
   }
   extensions: {
     install(input: string): Promise<ExtensionMeta>

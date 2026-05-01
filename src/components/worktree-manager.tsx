@@ -13,7 +13,7 @@ import {
   TerminalSquare,
   Trash2,
 } from 'lucide-react'
-import type { AgentName, AgentSessionSnapshot, GitWorktree } from '@/types'
+import type { AgentSessionName, AgentSessionSnapshot, GitWorktree } from '@/types'
 import { useStore } from '@/lib/store'
 import { cn } from '@/lib/utils'
 import {
@@ -214,6 +214,9 @@ function WorktreeActionMenu({
   onOpenTerminal,
   onOpenCodex,
   onOpenClaude,
+  onOpenCursor,
+  onOpenCopilot,
+  onOpenOpencode,
   onCopyPath,
   onReveal,
   onRemove,
@@ -223,6 +226,9 @@ function WorktreeActionMenu({
   onOpenTerminal(): void
   onOpenCodex(): void
   onOpenClaude(): void
+  onOpenCursor(): void
+  onOpenCopilot(): void
+  onOpenOpencode(): void
   onCopyPath(): void
   onReveal(): void
   onRemove(): void
@@ -275,6 +281,30 @@ function WorktreeActionMenu({
         >
           <AgentIcon agent="claude" className="size-4" size={16} />
           Open Claude
+        </Button>
+        <Button
+          variant="ghost"
+          className="h-8 w-full justify-start gap-2 px-2 text-left text-[12px] text-foreground/85"
+          onClick={() => run(onOpenCursor)}
+        >
+          <AgentIcon agent="cursor" className="size-4" size={16} />
+          Open Cursor
+        </Button>
+        <Button
+          variant="ghost"
+          className="h-8 w-full justify-start gap-2 px-2 text-left text-[12px] text-foreground/85"
+          onClick={() => run(onOpenCopilot)}
+        >
+          <AgentIcon agent="copilot" className="size-4" size={16} />
+          Open Copilot
+        </Button>
+        <Button
+          variant="ghost"
+          className="h-8 w-full justify-start gap-2 px-2 text-left text-[12px] text-foreground/85"
+          onClick={() => run(onOpenOpencode)}
+        >
+          <AgentIcon agent="opencode" className="size-4" size={16} />
+          Open OpenCode
         </Button>
         <Button
           variant="ghost"
@@ -445,9 +475,18 @@ export function WorktreeManager({
     handleOpenChange(false)
   }
 
-  const openAgent = (agent: Extract<AgentName, 'claude' | 'codex'>, worktree: GitWorktree) => {
+  const openAgent = (agent: AgentSessionName, worktree: GitWorktree) => {
     openAgentInWorktree(agent, worktree.path, {
-      title: agent === 'claude' ? 'Claude Code' : 'Codex',
+      title:
+        agent === 'claude'
+          ? 'Claude Code'
+          : agent === 'cursor'
+            ? 'Cursor'
+            : agent === 'copilot'
+              ? 'GitHub Copilot'
+              : agent === 'opencode'
+                ? 'OpenCode'
+                : 'Codex',
     })
     handleOpenChange(false)
   }
@@ -461,7 +500,13 @@ export function WorktreeManager({
 
   const moveFocusedAgent = async (worktree: GitWorktree) => {
     if (!agentWindow) return
-    const hasSession = Boolean(agentWindow.claudeSessionId || agentWindow.codexThreadId)
+    const hasSession = Boolean(
+      agentWindow.claudeSessionId ||
+      agentWindow.codexThreadId ||
+      agentWindow.cursorAgentId ||
+      agentWindow.copilotSessionId ||
+      agentWindow.opencodeSessionId,
+    )
     if (!hasSession) {
       syncAgentWindow(agentWindow.id, { cwd: worktree.path })
       hapticSuccess()
@@ -479,6 +524,10 @@ export function WorktreeManager({
         initialPrompt: null,
         claudeSessionId: agentWindow.claudeSessionId ?? null,
         codexThreadId: agentWindow.codexThreadId ?? null,
+        cursorAgentId: agentWindow.cursorAgentId ?? null,
+        cursorRunId: agentWindow.cursorRunId ?? null,
+        copilotSessionId: agentWindow.copilotSessionId ?? null,
+        opencodeSessionId: agentWindow.opencodeSessionId ?? null,
         model: agentWindow.model ?? null,
         permissionMode: agentWindow.permissionMode ?? null,
         thinkingLevel: agentWindow.thinkingLevel ?? null,
@@ -495,6 +544,8 @@ export function WorktreeManager({
       permissionMode: agentWindow.permissionMode ?? null,
       thinkingLevel: agentWindow.thinkingLevel ?? null,
       contextLength: agentWindow.contextLength ?? null,
+      copilotSessionId: agentWindow.copilotSessionId ?? null,
+      opencodeSessionId: agentWindow.opencodeSessionId ?? null,
     })
     handleOpenChange(false)
   }
@@ -646,6 +697,9 @@ export function WorktreeManager({
                         onOpenTerminal={() => openTerminal(worktree)}
                         onOpenCodex={() => openAgent('codex', worktree)}
                         onOpenClaude={() => openAgent('claude', worktree)}
+                        onOpenCursor={() => openAgent('cursor', worktree)}
+                        onOpenCopilot={() => openAgent('copilot', worktree)}
+                        onOpenOpencode={() => openAgent('opencode', worktree)}
                         onCopyPath={() => void navigator.clipboard.writeText(worktree.path)}
                         onReveal={() => void window.cells.app.revealPath(worktree.path)}
                         onRemove={() => setCleanup(worktree)}

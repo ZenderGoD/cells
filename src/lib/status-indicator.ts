@@ -169,6 +169,8 @@ function buildAgentDetails(
 const AGENT_LABELS: Record<AgentName, string> = {
   claude: 'Claude',
   codex: 'Codex',
+  cursor: 'Cursor',
+  copilot: 'Copilot',
   opencode: 'OpenCode',
   pi: 'Pi',
 }

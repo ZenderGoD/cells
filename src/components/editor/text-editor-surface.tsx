@@ -19,6 +19,32 @@ import {
 import { cn } from '@/lib/utils'
 
 const MONACO_THEME_PREFIX = 'cells-editor'
+const LSP_MARKER_OWNER = 'cells-lsp'
+let monacoLspRegistered = false
+
+const LSP_LANGUAGE_IDS = [
+  'typescript',
+  'javascript',
+  'python',
+  'go',
+  'rust',
+  'css',
+  'scss',
+  'less',
+  'html',
+  'json',
+  'yaml',
+  'shell',
+  'lua',
+  'ruby',
+  'c',
+  'cpp',
+  'csharp',
+  'swift',
+  'kotlin',
+  'markdown',
+  'toml',
+]
 
 function stripHash(color: string) {
   return color.replace(/^#/, '')
@@ -82,6 +108,159 @@ function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error)
 }
 
+function configureEditorLanguageDefaults() {
+  ;(monaco.languages as any).typescript?.typescriptDefaults?.setDiagnosticsOptions({
+    noSemanticValidation: true,
+    noSyntaxValidation: false,
+  })
+  ;(monaco.languages as any).typescript?.javascriptDefaults?.setDiagnosticsOptions({
+    noSemanticValidation: true,
+    noSyntaxValidation: false,
+  })
+}
+
+function lspRangeToMonaco(range: any): monaco.IRange {
+  const start = range?.start ?? {}
+  const end = range?.end ?? start
+  return {
+    startLineNumber: Math.max(1, (start.line ?? 0) + 1),
+    startColumn: Math.max(1, (start.character ?? 0) + 1),
+    endLineNumber: Math.max(1, (end.line ?? start.line ?? 0) + 1),
+    endColumn: Math.max(1, (end.character ?? start.character ?? 0) + 1),
+  }
+}
+
+function lspSeverityToMarker(severity: number | undefined): monaco.MarkerSeverity {
+  if (severity === 1) return monaco.MarkerSeverity.Error
+  if (severity === 2) return monaco.MarkerSeverity.Warning
+  if (severity === 3) return monaco.MarkerSeverity.Info
+  return monaco.MarkerSeverity.Hint
+}
+
+function lspMarkupToMarkdown(value: any): monaco.IMarkdownString[] {
+  if (!value) return []
+  if (typeof value === 'string') return [{ value }]
+  if (Array.isArray(value)) return value.flatMap(lspMarkupToMarkdown)
+  if (typeof value.value === 'string') return [{ value: value.value }]
+  if (typeof value.language === 'string' && typeof value.value === 'string') {
+    return [{ value: `\`\`\`${value.language}\n${value.value}\n\`\`\`` }]
+  }
+  return []
+}
+
+function lspCompletionKind(kind: number | undefined): monaco.languages.CompletionItemKind {
+  switch (kind) {
+    case 2:
+      return monaco.languages.CompletionItemKind.Method
+    case 3:
+      return monaco.languages.CompletionItemKind.Function
+    case 4:
+      return monaco.languages.CompletionItemKind.Constructor
+    case 5:
+      return monaco.languages.CompletionItemKind.Field
+    case 6:
+      return monaco.languages.CompletionItemKind.Variable
+    case 7:
+      return monaco.languages.CompletionItemKind.Class
+    case 8:
+      return monaco.languages.CompletionItemKind.Interface
+    case 9:
+      return monaco.languages.CompletionItemKind.Module
+    case 10:
+      return monaco.languages.CompletionItemKind.Property
+    case 12:
+      return monaco.languages.CompletionItemKind.Value
+    case 13:
+      return monaco.languages.CompletionItemKind.Enum
+    case 14:
+      return monaco.languages.CompletionItemKind.Keyword
+    case 15:
+      return monaco.languages.CompletionItemKind.Snippet
+    case 16:
+      return monaco.languages.CompletionItemKind.Color
+    case 17:
+      return monaco.languages.CompletionItemKind.File
+    case 18:
+      return monaco.languages.CompletionItemKind.Reference
+    default:
+      return monaco.languages.CompletionItemKind.Text
+  }
+}
+
+function registerMonacoLspProviders() {
+  if (monacoLspRegistered) return
+  monacoLspRegistered = true
+  configureEditorLanguageDefaults()
+
+  monaco.languages.registerCompletionItemProvider(LSP_LANGUAGE_IDS, {
+    triggerCharacters: ['.', ':', '/', '"', "'", '<'],
+    async provideCompletionItems(model, position) {
+      const result: any = await window.cells.editor.lspCompletion(model.uri.toString(), {
+        line: position.lineNumber - 1,
+        character: position.column - 1,
+      })
+      const items = Array.isArray(result)
+        ? result
+        : Array.isArray(result?.items)
+          ? result.items
+          : []
+      const word = model.getWordUntilPosition(position)
+      const fallbackRange = {
+        startLineNumber: position.lineNumber,
+        endLineNumber: position.lineNumber,
+        startColumn: word.startColumn,
+        endColumn: word.endColumn,
+      }
+      return {
+        suggestions: items.map((item: any) => ({
+          label: item.label,
+          kind: lspCompletionKind(item.kind),
+          insertText: item.insertText ?? item.textEdit?.newText ?? item.label,
+          detail: item.detail,
+          documentation: lspMarkupToMarkdown(item.documentation)[0],
+          range: item.textEdit?.range ? lspRangeToMonaco(item.textEdit.range) : fallbackRange,
+        })),
+      }
+    },
+  })
+
+  monaco.languages.registerHoverProvider(LSP_LANGUAGE_IDS, {
+    async provideHover(model, position) {
+      const result: any = await window.cells.editor.lspHover(model.uri.toString(), {
+        line: position.lineNumber - 1,
+        character: position.column - 1,
+      })
+      const contents = lspMarkupToMarkdown(result?.contents)
+      if (contents.length === 0) return null
+      return {
+        contents,
+        range: result?.range ? lspRangeToMonaco(result.range) : undefined,
+      }
+    },
+  })
+
+  monaco.languages.registerDefinitionProvider(LSP_LANGUAGE_IDS, {
+    async provideDefinition(model, position) {
+      const result: any = await window.cells.editor.lspDefinition(model.uri.toString(), {
+        line: position.lineNumber - 1,
+        character: position.column - 1,
+      })
+      const entries = Array.isArray(result) ? result : result ? [result] : []
+      return entries
+        .map((entry: any) => {
+          const targetUri = entry.targetUri ?? entry.uri
+          const targetRange = entry.targetSelectionRange ?? entry.targetRange ?? entry.range
+          if (!targetUri || !targetRange) return null
+          return {
+            uri: monaco.Uri.parse(targetUri),
+            range: lspRangeToMonaco(targetRange),
+          }
+        })
+        .filter(Boolean) as monaco.languages.Location[]
+    },
+  })
+}
+
 interface TextEditorSurfaceProps {
   editor: TextEditorNode
   className?: string
@@ -92,6 +271,9 @@ export function TextEditorSurface({ editor, className }: TextEditorSurfaceProps)
   const vimStatusRef = useRef<HTMLDivElement>(null)
   const monacoRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
   const modelRef = useRef<monaco.editor.ITextModel | null>(null)
+  const ownsModelRef = useRef(false)
+  const lspUriRef = useRef<string | null>(null)
+  const lspChangeTimerRef = useRef<number | null>(null)
   const vimModeRef = useRef<VimAdapterInstance | null>(null)
   const savedContentRef = useRef(editor.content ?? '')
   const currentEditorIdRef = useRef(editor.id)
@@ -230,10 +412,23 @@ export function TextEditorSurface({ editor, className }: TextEditorSurfaceProps)
 
   useEffect(() => {
     configureMonacoWorkers()
+    registerMonacoLspProviders()
     if (!containerRef.current) return
 
     const language = editor.language ?? inferEditorLanguage(editor.filePath, editor.title)
-    const model = monaco.editor.createModel(editor.content ?? '', language)
+    const uri = editor.filePath
+      ? monaco.Uri.file(editor.filePath)
+      : monaco.Uri.parse(`inmemory://cells/${editor.id}/${encodeURIComponent(editor.title)}`)
+    let model = monaco.editor.getModel(uri)
+    ownsModelRef.current = !model
+    if (!model) {
+      model = monaco.editor.createModel(editor.content ?? '', language, uri)
+    } else {
+      monaco.editor.setModelLanguage(model, language)
+      if (model.getValue() !== (editor.content ?? '')) {
+        model.setValue(editor.content ?? '')
+      }
+    }
     modelRef.current = model
     savedContentRef.current = editor.isDirty ? savedContentRef.current : (editor.content ?? '')
 
@@ -266,17 +461,35 @@ export function TextEditorSurface({ editor, className }: TextEditorSurfaceProps)
         isDirty: value !== savedContentRef.current,
         error: null,
       })
+      const lspUri = lspUriRef.current
+      if (lspUri) {
+        if (lspChangeTimerRef.current) window.clearTimeout(lspChangeTimerRef.current)
+        lspChangeTimerRef.current = window.setTimeout(() => {
+          lspChangeTimerRef.current = null
+          void window.cells.editor.lspChange(lspUri, value, model.getVersionId())
+        }, 180)
+      }
     })
     instance.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
       void saveRef.current()
     })
 
     return () => {
+      if (lspChangeTimerRef.current) {
+        window.clearTimeout(lspChangeTimerRef.current)
+        lspChangeTimerRef.current = null
+      }
+      if (lspUriRef.current) {
+        void window.cells.editor.lspClose(lspUriRef.current)
+        monaco.editor.setModelMarkers(model, LSP_MARKER_OWNER, [])
+        lspUriRef.current = null
+      }
       contentDisposable.dispose()
       instance.dispose()
-      model.dispose()
+      if (ownsModelRef.current) model.dispose()
       monacoRef.current = null
       modelRef.current = null
+      ownsModelRef.current = false
     }
     // Create the Monaco instance once per editor id. Runtime option changes
     // are applied through the targeted effects below.
@@ -329,6 +542,57 @@ export function TextEditorSurface({ editor, className }: TextEditorSurfaceProps)
   useEffect(() => {
     void readFile()
   }, [readFile])
+
+  useEffect(() => {
+    const model = modelRef.current
+    if (!model || !editor.filePath) return
+    const languageId = editor.language ?? inferEditorLanguage(editor.filePath, editor.title)
+    let cancelled = false
+    void window.cells.editor
+      .lspOpen({
+        filePath: editor.filePath,
+        languageId,
+        content: model.getValue(),
+        rootPath: activeProjectPath,
+      })
+      .then((result) => {
+        if (cancelled) return
+        lspUriRef.current = result.enabled ? (result.uri ?? model.uri.toString()) : null
+      })
+      .catch(() => {
+        if (!cancelled) lspUriRef.current = null
+      })
+
+    return () => {
+      cancelled = true
+      const uri = lspUriRef.current
+      if (uri) {
+        void window.cells.editor.lspClose(uri)
+        monaco.editor.setModelMarkers(model, LSP_MARKER_OWNER, [])
+      }
+      lspUriRef.current = null
+    }
+  }, [activeProjectPath, editor.filePath, editor.language, editor.title, editor.id, editor.loaded])
+
+  useEffect(() => {
+    return window.cells.editor.onLspDiagnostics((payload) => {
+      const model = modelRef.current
+      if (!model || payload.uri !== model.uri.toString()) return
+      const markers = (Array.isArray(payload.diagnostics) ? payload.diagnostics : []).map(
+        (diagnostic: any) => ({
+          ...lspRangeToMonaco(diagnostic.range),
+          severity: lspSeverityToMarker(diagnostic.severity),
+          message: diagnostic.message ?? 'Language server diagnostic',
+          source: diagnostic.source ?? 'LSP',
+          code:
+            typeof diagnostic.code === 'string' || typeof diagnostic.code === 'number'
+              ? String(diagnostic.code)
+              : undefined,
+        }),
+      )
+      monaco.editor.setModelMarkers(model, LSP_MARKER_OWNER, markers)
+    })
+  }, [editor.id])
 
   useEffect(() => {
     const handleSave = (event: Event) => {

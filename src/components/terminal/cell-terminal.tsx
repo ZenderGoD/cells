@@ -1077,7 +1077,7 @@ interface CellTerminalProps {
   onTitleChange?: (title: string) => void
 }
 
-type AgentName = 'claude' | 'codex' | 'opencode' | 'pi'
+type AgentName = 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode' | 'pi'
 
 const COMMON_SHELL_COMMANDS = new Set([
   'awk',
@@ -1091,8 +1091,11 @@ const COMMON_SHELL_COMMANDS = new Set([
   'claude',
   'clear',
   'codex',
+  'copilot',
   'cp',
   'curl',
+  'cursor',
+  'cursor-agent',
   'docker',
   'find',
   'git',
@@ -1157,6 +1160,25 @@ const CLAUDE_SUBCOMMANDS = new Set([
   'upgrade',
 ])
 
+const CURSOR_SUBCOMMANDS = new Set([
+  'about',
+  'agent',
+  'create-chat',
+  'help',
+  'install-shell-integration',
+  'login',
+  'logout',
+  'mcp',
+  'models',
+  'resume',
+  'status',
+  'uninstall-shell-integration',
+  'update',
+  'whoami',
+])
+
+const COPILOT_SUBCOMMANDS = new Set(['help', 'login'])
+
 const OPENCODE_SUBCOMMANDS = new Set([
   'acp',
   'agent',
@@ -1182,6 +1204,8 @@ const PI_SUBCOMMANDS = new Set(['update'])
 function getAgentLabel(agent: AgentName) {
   if (agent === 'claude') return 'Claude'
   if (agent === 'codex') return 'Codex'
+  if (agent === 'cursor') return 'Cursor'
+  if (agent === 'copilot') return 'GitHub Copilot'
   if (agent === 'pi') return 'Pi'
   return 'OpenCode'
 }
@@ -1243,6 +1267,8 @@ function normalizeAgentProcess(proc: string | null): AgentName | null {
   if (normalized === 'codex' || normalized === 'codex-cli' || normalized.startsWith('codex-')) {
     return 'codex'
   }
+  if (normalized === 'cursor' || normalized === 'cursor-agent') return 'cursor'
+  if (normalized === 'copilot' || normalized.startsWith('copilot-')) return 'copilot'
   if (normalized === 'opencode' || normalized.startsWith('opencode-')) return 'opencode'
   if (normalized === 'pi' || normalized.startsWith('pi-')) return 'pi'
   // Check user-configured aliases
@@ -1260,7 +1286,7 @@ function inferAgentLaunch(line: string): { agent: AgentName; title: string } | n
 
   // Build regex that matches canonical names + any user-configured aliases
   const aliases = useStore.getState().agentAliases
-  const names = new Set(['claude', 'codex', 'opencode', 'pi'])
+  const names = new Set(['claude', 'codex', 'cursor', 'cursor-agent', 'copilot', 'opencode', 'pi'])
   for (const alias of Object.values(aliases)) {
     if (alias?.trim()) names.add(alias.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
   }
@@ -1280,11 +1306,15 @@ function inferAgentLaunch(line: string): { agent: AgentName; title: string } | n
   const knownSubcommands =
     agent === 'claude'
       ? CLAUDE_SUBCOMMANDS
-      : agent === 'opencode'
-        ? OPENCODE_SUBCOMMANDS
-        : agent === 'pi'
-          ? PI_SUBCOMMANDS
-          : CODEX_SUBCOMMANDS
+      : agent === 'cursor'
+        ? CURSOR_SUBCOMMANDS
+        : agent === 'copilot'
+          ? COPILOT_SUBCOMMANDS
+          : agent === 'opencode'
+            ? OPENCODE_SUBCOMMANDS
+            : agent === 'pi'
+              ? PI_SUBCOMMANDS
+              : CODEX_SUBCOMMANDS
   const prompt =
     rest && !rest.startsWith('-') && firstToken && !knownSubcommands.has(firstToken)
       ? summarizeTitle(rest)

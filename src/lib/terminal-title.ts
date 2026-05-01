@@ -9,6 +9,8 @@ export const STRIPPABLE_TITLE_PREFIXES = [
   'claude code',
   'claude',
   'codex',
+  'cursor',
+  'cursor agent',
   'opencode',
   'pi',
 ] as const

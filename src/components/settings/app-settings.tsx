@@ -1456,6 +1456,9 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                           [
                             { id: 'claude', label: 'Claude Code', placeholder: 'claude' },
                             { id: 'codex', label: 'Codex', placeholder: 'codex' },
+                            { id: 'cursor', label: 'Cursor', placeholder: 'cursor-agent' },
+                            { id: 'copilot', label: 'GitHub Copilot', placeholder: 'copilot' },
+                            { id: 'opencode', label: 'OpenCode', placeholder: 'opencode' },
                           ] as const
                         ).map(({ id, label, placeholder }) => {
                           const override = enabledAgents[id]
@@ -1747,6 +1750,8 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                               >
                                 <option value="claude">Claude</option>
                                 <option value="codex">Codex</option>
+                                <option value="cursor">Cursor</option>
+                                <option value="copilot">Copilot</option>
                                 <option value="opencode">OpenCode</option>
                                 <option value="pi">Pi</option>
                               </select>
@@ -2025,7 +2030,7 @@ function ThemePreviewButton({
 }
 
 type AgentAuthState = {
-  agent: 'claude' | 'codex'
+  agent: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode'
   binaryPath: string | null
   authenticated: boolean | 'unknown'
 }
@@ -2033,34 +2038,52 @@ type AgentAuthState = {
 const AGENT_AUTH_ITEMS = [
   { id: 'claude' as const, label: 'Claude Code' },
   { id: 'codex' as const, label: 'Codex' },
+  { id: 'cursor' as const, label: 'Cursor' },
+  { id: 'copilot' as const, label: 'GitHub Copilot' },
+  { id: 'opencode' as const, label: 'OpenCode' },
 ]
+type AgentAuthId = (typeof AGENT_AUTH_ITEMS)[number]['id']
 
 type LoginPhase = 'idle' | 'starting' | 'awaiting_browser' | 'success' | 'failed' | 'cancelled'
 
 function AgentAuthSection() {
-  const [statuses, setStatuses] = useState<Record<'claude' | 'codex', AgentAuthState | null>>({
+  const [statuses, setStatuses] = useState<Record<AgentAuthId, AgentAuthState | null>>({
     claude: null,
     codex: null,
+    cursor: null,
+    copilot: null,
+    opencode: null,
   })
-  const [phases, setPhases] = useState<Record<'claude' | 'codex', LoginPhase>>({
+  const [phases, setPhases] = useState<Record<AgentAuthId, LoginPhase>>({
     claude: 'idle',
     codex: 'idle',
+    cursor: 'idle',
+    copilot: 'idle',
+    opencode: 'idle',
   })
-  const [errors, setErrors] = useState<Record<'claude' | 'codex', string | null>>({
+  const [errors, setErrors] = useState<Record<AgentAuthId, string | null>>({
     claude: null,
     codex: null,
+    cursor: null,
+    copilot: null,
+    opencode: null,
   })
 
   const refresh = useCallback(async () => {
-    try {
-      const [claude, codex] = await Promise.all([
-        window.cells.agentSession.getAuth('claude'),
-        window.cells.agentSession.getAuth('codex'),
-      ])
-      setStatuses({ claude, codex })
-    } catch {
-      // leave nulls — UI renders "unknown"
-    }
+    const results = await Promise.allSettled([
+      window.cells.agentSession.getAuth('claude'),
+      window.cells.agentSession.getAuth('codex'),
+      window.cells.agentSession.getAuth('cursor'),
+      window.cells.agentSession.getAuth('copilot'),
+      window.cells.agentSession.getAuth('opencode'),
+    ])
+    setStatuses((prev) => ({
+      claude: results[0].status === 'fulfilled' ? results[0].value : prev.claude,
+      codex: results[1].status === 'fulfilled' ? results[1].value : prev.codex,
+      cursor: results[2].status === 'fulfilled' ? results[2].value : prev.cursor,
+      copilot: results[3].status === 'fulfilled' ? results[3].value : prev.copilot,
+      opencode: results[4].status === 'fulfilled' ? results[4].value : prev.opencode,
+    }))
   }, [])
 
   useEffect(() => {
@@ -2078,7 +2101,7 @@ function AgentAuthSection() {
     return unsubscribe
   }, [refresh])
 
-  const launchLogin = async (agent: 'claude' | 'codex') => {
+  const launchLogin = async (agent: AgentAuthId) => {
     setErrors((prev) => ({ ...prev, [agent]: null }))
     setPhases((prev) => ({ ...prev, [agent]: 'starting' }))
     try {
@@ -2092,74 +2115,105 @@ function AgentAuthSection() {
     }
   }
 
-  const cancelLogin = (agent: 'claude' | 'codex') => {
+  const cancelLogin = (agent: AgentAuthId) => {
     void window.cells.agentSession.cancelLogin(agent)
   }
 
   return (
     <SettingsGroup title="Accounts">
-      <p className="text-[10px] text-muted-foreground/40 mb-3">
-        Cells drives your locally-installed <code className="font-mono">claude</code> and{' '}
-        <code className="font-mono">codex</code> CLIs. Sign in once per CLI and every agent window
-        will inherit the credentials.
+      <p className="mb-3 max-w-full break-words text-[10px] leading-[1.45] text-muted-foreground/40">
+        Cells drives Claude Code, Codex, Cursor, GitHub Copilot, and OpenCode agent sessions. Sign
+        in once per provider and every agent window will inherit the credentials.
       </p>
       <div className="space-y-2">
         {AGENT_AUTH_ITEMS.map(({ id, label }) => {
           const status = statuses[id]
-          const installed = Boolean(status?.binaryPath)
+          const checking = status === null && phases[id] === 'idle'
+          const canRunLogin = Boolean(status?.binaryPath)
+          const installed =
+            canRunLogin ||
+            ((id === 'cursor' || id === 'copilot' || id === 'opencode') &&
+              status?.authenticated === 'unknown')
           const signedIn = status?.authenticated === true
           const phase = phases[id]
           const errorText = errors[id]
           const isBusy = phase === 'starting' || phase === 'awaiting_browser'
 
-          const stateLabel = isBusy
-            ? phase === 'starting'
-              ? 'Starting…'
-              : 'Waiting for browser'
-            : phase === 'failed'
-              ? 'Failed'
-              : phase === 'cancelled'
-                ? 'Cancelled'
+          const stateLabel = checking
+            ? 'Checking…'
+            : isBusy
+              ? phase === 'starting'
+                ? 'Starting…'
+                : 'Waiting for browser'
+              : phase === 'failed'
+                ? 'Failed'
+                : phase === 'cancelled'
+                  ? 'Cancelled'
+                  : !installed
+                    ? 'Not installed'
+                    : signedIn
+                      ? 'Signed in'
+                      : 'Not signed in'
+          const stateTone = checking
+            ? 'text-muted-foreground/60'
+            : isBusy
+              ? 'text-amber-400'
+              : phase === 'failed' || phase === 'cancelled'
+                ? 'text-red-400'
                 : !installed
-                  ? 'Not installed'
+                  ? 'text-muted-foreground/60'
                   : signedIn
-                    ? 'Signed in'
-                    : 'Not signed in'
-          const stateTone = isBusy
-            ? 'text-amber-400'
-            : phase === 'failed' || phase === 'cancelled'
-              ? 'text-red-400'
-              : !installed
-                ? 'text-muted-foreground/60'
-                : signedIn
-                  ? 'text-emerald-400'
-                  : 'text-amber-400'
-          const dotTone = isBusy
-            ? 'bg-amber-400'
-            : phase === 'failed' || phase === 'cancelled'
-              ? 'bg-red-400'
-              : !installed
-                ? 'bg-muted-foreground/40'
-                : signedIn
-                  ? 'bg-emerald-400'
-                  : 'bg-amber-400'
+                    ? 'text-emerald-400'
+                    : 'text-amber-400'
+          const dotTone = checking
+            ? 'bg-muted-foreground/40'
+            : isBusy
+              ? 'bg-amber-400'
+              : phase === 'failed' || phase === 'cancelled'
+                ? 'bg-red-400'
+                : !installed
+                  ? 'bg-muted-foreground/40'
+                  : signedIn
+                    ? 'bg-emerald-400'
+                    : 'bg-amber-400'
 
           return (
-            <div key={id} className="rounded-md border border-border/10 p-2.5">
+            <div key={id} className="overflow-hidden rounded-md border border-border/10 p-2.5">
               <div className="flex items-center gap-3">
                 <div className="flex size-7 shrink-0 items-center justify-center rounded-[8px] bg-foreground/5">
                   <AgentIcon agent={id} className="size-4" />
                 </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[12px] font-medium text-foreground">{label}</span>
+                <div className="min-w-0 flex-1 overflow-hidden">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="min-w-0 truncate text-[12px] font-medium text-foreground">
+                      {label}
+                    </span>
                     <span className={cn('inline-flex items-center gap-1 text-[10.5px]', stateTone)}>
                       <span className={cn('size-1.5 rounded-full', dotTone)} />
                       {stateLabel}
                     </span>
                   </div>
-                  <div className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground/50">
-                    {status?.binaryPath ?? 'binary not detected on PATH'}
+                  <div
+                    className="mt-0.5 block max-w-full overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[10px] text-muted-foreground/50"
+                    title={
+                      status?.binaryPath ??
+                      (id === 'cursor'
+                        ? 'Cursor SDK / CURSOR_API_KEY'
+                        : id === 'copilot'
+                          ? 'GitHub Copilot SDK / CLI'
+                          : id === 'opencode'
+                            ? 'OpenCode CLI'
+                            : 'binary not detected on PATH')
+                    }
+                  >
+                    {status?.binaryPath ??
+                      (id === 'cursor'
+                        ? 'Cursor SDK / CURSOR_API_KEY'
+                        : id === 'copilot'
+                          ? 'GitHub Copilot SDK / CLI'
+                          : id === 'opencode'
+                            ? 'OpenCode CLI'
+                            : 'binary not detected on PATH')}
                   </div>
                 </div>
                 {isBusy ? (
@@ -2175,14 +2229,16 @@ function AgentAuthSection() {
                   <button
                     type="button"
                     onClick={() => void launchLogin(id)}
-                    disabled={!installed}
+                    disabled={checking || !canRunLogin}
                     className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-border/30 bg-background/60 px-2 text-[11px] text-foreground transition-colors hover:bg-foreground/5 disabled:cursor-not-allowed disabled:opacity-50"
                     title={
-                      !installed
-                        ? `Install the ${label} CLI first`
-                        : signedIn
-                          ? 'Re-authenticate'
-                          : 'Sign in'
+                      checking
+                        ? 'Checking sign-in status'
+                        : !canRunLogin
+                          ? `Install the ${label} CLI first`
+                          : signedIn
+                            ? 'Re-authenticate'
+                            : 'Sign in'
                     }
                   >
                     <KeyRound className="size-3" />

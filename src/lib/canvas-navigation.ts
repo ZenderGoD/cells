@@ -20,7 +20,7 @@ export interface CanvasWindow {
   width: number
   height: number
   zIndex: number
-  agent?: 'claude' | 'codex' | 'opencode' | 'pi' | null
+  agent?: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode' | 'pi' | null
   runtimeStatus?: TerminalRuntimeStatus | null
   agentWindowStatus?: AgentWindowStatus | null
   hasUnviewedCompletion?: boolean

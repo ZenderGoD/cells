@@ -90,8 +90,12 @@ import {
   getAgentLoginCommand,
   listClaudeModels,
   listCodexModels,
+  listCopilotModels,
+  listCursorModels,
+  listOpencodeModels,
   type LoginEvent,
 } from './agent-session-service'
+import { EditorLspManager } from './editor-lsp-manager'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -309,6 +313,7 @@ let cachedAgentNotificationContext: AgentNotificationContext = {
   activeProjectId: null,
   focusedAgentWindowId: null,
 }
+let editorLspManager: EditorLspManager | null = null
 
 app.on('second-instance', (_event, argv) => {
   queueOpenFiles(argv)
@@ -502,7 +507,11 @@ function flushPendingOpenFiles() {
 }
 
 function getDefaultAgentSessionTitle(agent: AgentSessionSnapshot['agent']) {
-  return agent === 'claude' ? 'Claude Code' : 'Codex'
+  if (agent === 'claude') return 'Claude Code'
+  if (agent === 'cursor') return 'Cursor'
+  if (agent === 'copilot') return 'GitHub Copilot'
+  if (agent === 'opencode') return 'OpenCode'
+  return 'Codex'
 }
 
 function getSessionNotificationLabel(snapshot: AgentSessionSnapshot) {
@@ -1562,17 +1571,23 @@ ipcMain.handle(
     _event,
     termId: string,
     launch: {
-      agent?: 'claude' | 'codex' | 'opencode' | 'pi' | null
+      agent?: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode' | 'pi' | null
       command?: string | null
       cwd?: string | null
       startedAt?: number | null
       claudeSessionId?: string | null
       codexThreadId?: string | null
+      copilotSessionId?: string | null
+      opencodeSessionId?: string | null
     },
   ) => {
     if (launch.agent) {
       agentSessionTracker?.trackSession(termId, launch.agent, {
-        sessionId: launch.claudeSessionId ?? undefined,
+        sessionId:
+          launch.claudeSessionId ??
+          launch.copilotSessionId ??
+          launch.opencodeSessionId ??
+          undefined,
         threadId: launch.codexThreadId ?? undefined,
       })
     }
@@ -1650,7 +1665,14 @@ function expandHomePath(input: string) {
   return input
 }
 
-const AGENT_MENTION_ROOTS = ['.agents', '.claude', '.codex'] as const
+const AGENT_MENTION_ROOTS = [
+  '.agents',
+  '.claude',
+  '.codex',
+  '.cursor',
+  '.github',
+  '.opencode',
+] as const
 const MAX_AGENT_MENTION_RESULTS = 60
 const MAX_AGENT_MENTION_SCAN_ENTRIES = 2000
 
@@ -2259,7 +2281,7 @@ ipcMain.handle(
       `${home}/.nvm/versions/node`,
     ]
     const results: Record<string, boolean> = {}
-    for (const name of ['claude', 'codex', 'opencode', 'pi']) {
+    for (const name of ['claude', 'codex', 'cursor', 'cursor-agent', 'copilot', 'opencode', 'pi']) {
       // If a custom path is configured, check it directly first.
       const customPath = customPaths?.[name]?.trim()
       if (customPath) {
@@ -2365,21 +2387,33 @@ ipcMain.handle('agent-session:dispose', (_event, windowId: string) => {
   return agentSessionService.dispose(windowId)
 })
 
-ipcMain.handle('agent-session:get-auth', (_event, agent: 'claude' | 'codex') => {
-  return getAgentAuthStatus(agent)
-})
+ipcMain.handle(
+  'agent-session:get-auth',
+  (_event, agent: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode') => {
+    return getAgentAuthStatus(agent)
+  },
+)
 
-ipcMain.handle('agent-session:get-login-command', (_event, agent: 'claude' | 'codex') => {
-  return getAgentLoginCommand(agent)
-})
+ipcMain.handle(
+  'agent-session:get-login-command',
+  (_event, agent: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode') => {
+    return getAgentLoginCommand(agent)
+  },
+)
 
-ipcMain.handle('agent-session:start-login', (_event, agent: 'claude' | 'codex') => {
-  return agentLoginManager.start(agent)
-})
+ipcMain.handle(
+  'agent-session:start-login',
+  (_event, agent: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode') => {
+    return agentLoginManager.start(agent)
+  },
+)
 
-ipcMain.handle('agent-session:cancel-login', (_event, agent: 'claude' | 'codex') => {
-  agentLoginManager.cancel(agent)
-})
+ipcMain.handle(
+  'agent-session:cancel-login',
+  (_event, agent: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode') => {
+    agentLoginManager.cancel(agent)
+  },
+)
 
 ipcMain.handle(
   'agent-session:update-permission-mode',
@@ -2450,6 +2484,33 @@ ipcMain.handle('agent-session:list-claude-models', async () => {
   }
 })
 
+ipcMain.handle('agent-session:list-cursor-models', async () => {
+  try {
+    return await listCursorModels()
+  } catch (err) {
+    console.warn('[agent-session] list-cursor-models failed', err)
+    return []
+  }
+})
+
+ipcMain.handle('agent-session:list-copilot-models', async () => {
+  try {
+    return await listCopilotModels()
+  } catch (err) {
+    console.warn('[agent-session] list-copilot-models failed', err)
+    return []
+  }
+})
+
+ipcMain.handle('agent-session:list-opencode-models', async () => {
+  try {
+    return await listOpencodeModels()
+  } catch (err) {
+    console.warn('[agent-session] list-opencode-models failed', err)
+    return []
+  }
+})
+
 ipcMain.handle('agent-session:list-saved-sessions', async () => {
   try {
     return await agentSessionService.listSavedSessions()
@@ -2461,7 +2522,7 @@ ipcMain.handle('agent-session:list-saved-sessions', async () => {
 
 ipcMain.handle(
   'agent-session:list-recent-sessions',
-  async (_event, agent: 'claude' | 'codex', limit?: number) => {
+  async (_event, agent: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode', limit?: number) => {
     try {
       return await agentSessionService.listRecentSessions(agent, limit)
     } catch (err) {
@@ -2568,7 +2629,7 @@ ipcMain.handle('mcp:install', async (_event, projectPath: string) => {
   targets.push('.agents/mcp.json')
 
   // Remove stale symlinks left by older install flow
-  for (const dir of ['.claude', '.codex']) {
+  for (const dir of ['.claude', '.codex', '.cursor', '.github', '.opencode']) {
     const linkPath = path.join(projectPath, dir, 'mcp.json')
     try {
       if (fs.lstatSync(linkPath).isSymbolicLink()) {
@@ -2588,6 +2649,14 @@ ipcMain.handle('mcp:install', async (_event, projectPath: string) => {
     const codexToml = path.join(codexDir, 'config.toml')
     upsertCodexTomlEntry(codexToml, mcpEntry)
     targets.push('.codex/config.toml')
+  }
+
+  // 4. Cursor: .cursor/mcp.json (only if .cursor/ exists)
+  const cursorDir = path.join(projectPath, '.cursor')
+  if (fs.existsSync(cursorDir)) {
+    const cursorMcpJson = path.join(cursorDir, 'mcp.json')
+    upsertMcpJsonEntry(cursorMcpJson, mcpEntry)
+    targets.push('.cursor/mcp.json')
   }
 
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -2845,6 +2914,48 @@ ipcMain.handle(
     return editorFileSnapshot(result.filePath, stat)
   },
 )
+
+function sendEditorLspDiagnostics(payload: { uri: string; diagnostics: unknown[] }) {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (window.isDestroyed()) continue
+    const contents = window.webContents
+    if (contents.isDestroyed() || contents.isCrashed()) continue
+    try {
+      contents.send('editor:lsp-diagnostics', payload)
+    } catch {}
+  }
+}
+
+function getEditorLspManager() {
+  if (!editorLspManager) {
+    editorLspManager = new EditorLspManager(sendEditorLspDiagnostics)
+  }
+  return editorLspManager
+}
+
+ipcMain.handle('editor:lsp-open', async (_event, request) => {
+  return getEditorLspManager().openDocument(request)
+})
+
+ipcMain.handle('editor:lsp-change', (_event, uri: string, content: string, version?: number) => {
+  return getEditorLspManager().changeDocument(uri, content, version)
+})
+
+ipcMain.handle('editor:lsp-close', (_event, uri: string) => {
+  getEditorLspManager().closeDocument(uri)
+})
+
+ipcMain.handle('editor:lsp-completion', (_event, uri: string, position) => {
+  return getEditorLspManager().completion({ uri, position })
+})
+
+ipcMain.handle('editor:lsp-hover', (_event, uri: string, position) => {
+  return getEditorLspManager().hover({ uri, position })
+})
+
+ipcMain.handle('editor:lsp-definition', (_event, uri: string, position) => {
+  return getEditorLspManager().definition({ uri, position })
+})
 
 ipcMain.handle('app:list-recent-files', async () => {
   const dirs = [
@@ -3326,6 +3437,12 @@ function setupBrowserView(browserId: string, view: WebContentsView, projectId: s
   browserIdToProject.set(browserId, projectId)
   ensureMcpNetworkCapture(projectId, view.webContents.session)
   const browserState = getBrowserViewState(browserId)
+
+  view.webContents.on('focus', () => {
+    const targetWindow = mainWindow
+    if (!targetWindow || targetWindow.isDestroyed()) return
+    targetWindow.webContents.send('browser:view-focused', browserId)
+  })
 
   // Intercept app shortcuts before the WebContentsView consumes them
   view.webContents.on('before-input-event', (_e, input) => {
@@ -4072,9 +4189,6 @@ ipcMain.on('browser:set-visible', (_event, browserId: string, visible: boolean) 
   if (visible) {
     attachBrowserView(browserId, view, { force: true })
     if (state.bounds) view.setBounds(state.bounds)
-    try {
-      view.webContents.focus()
-    } catch {}
   } else {
     detachBrowserView(browserId, view)
   }
@@ -4812,6 +4926,8 @@ app.whenReady().then(async () => {
 app.on('before-quit', () => {
   perfMonitor?.stop()
   agentSessionTracker?.stop()
+  editorLspManager?.stop()
+  editorLspManager = null
   stopAutomaticUpdateChecks()
   quitConfirmed = true
   stopMcpBridge(MCP_BRIDGE_SOCKET)

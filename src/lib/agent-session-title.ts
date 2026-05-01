@@ -3,6 +3,9 @@ import type { AgentSessionMessage, AgentSessionSnapshot } from '../types'
 const DEFAULT_SESSION_TITLE = {
   claude: 'Claude Code',
   codex: 'Codex',
+  cursor: 'Cursor',
+  copilot: 'GitHub Copilot',
+  opencode: 'OpenCode',
 } as const
 
 const CLAUDE_IMPORTED_PREAMBLE_PATTERNS = [
@@ -61,7 +64,10 @@ export function isPlaceholderAgentSessionTitle(
   if (normalized === DEFAULT_SESSION_TITLE[agent]) return true
   if (normalized === 'New thread') return true
   if (agent === 'claude') return /^Claude session\b/i.test(normalized)
-  return /^Codex session\b/i.test(normalized)
+  if (agent === 'codex') return /^Codex session\b/i.test(normalized)
+  if (agent === 'copilot') return /^Copilot session\b|^GitHub Copilot session\b/i.test(normalized)
+  if (agent === 'opencode') return /^OpenCode session\b/i.test(normalized)
+  return /^Cursor session\b/i.test(normalized)
 }
 
 export function inferAgentSessionTitle(

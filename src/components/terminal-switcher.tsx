@@ -21,7 +21,7 @@ interface SwitcherItem {
   id: string
   title: string
   type: 'terminal' | 'browser' | 'agent' | 'editor'
-  agent?: 'claude' | 'codex' | 'opencode' | 'pi' | null
+  agent?: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode' | 'pi' | null
   runtimeStatus?: TerminalRuntimeStatus | null
   agentStatus?: AgentWindowStatus | null
   url?: string
@@ -102,7 +102,18 @@ export function TerminalSwitcher() {
     })),
     ...agentWindows.map((a) => ({
       id: a.id,
-      title: a.customTitle || a.title || (a.agent === 'claude' ? 'Claude Code' : 'Codex'),
+      title:
+        a.customTitle ||
+        a.title ||
+        (a.agent === 'claude'
+          ? 'Claude Code'
+          : a.agent === 'cursor'
+            ? 'Cursor'
+            : a.agent === 'copilot'
+              ? 'GitHub Copilot'
+              : a.agent === 'opencode'
+                ? 'OpenCode'
+                : 'Codex'),
       type: 'agent' as const,
       agent: a.agent,
       agentStatus: a.status ?? null,

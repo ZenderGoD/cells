@@ -100,7 +100,7 @@ export default defineConfig(({ command }) => {
             build: {
               outDir: 'dist-electron',
               rollupOptions: {
-                external: ['node-pty', 'adm-zip', 'execa'],
+                external: ['node-pty', 'adm-zip', 'execa', '@cursor/sdk', '@github/copilot-sdk'],
               },
             },
           },

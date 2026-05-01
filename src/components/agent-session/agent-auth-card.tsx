@@ -17,7 +17,11 @@ interface AgentAuthCardProps {
 type Phase = 'idle' | 'starting' | 'awaiting_browser' | 'success' | 'failed' | 'cancelled'
 
 function agentLabel(agent: AgentWindowNode['agent']) {
-  return agent === 'claude' ? 'Claude Code' : 'Codex'
+  if (agent === 'claude') return 'Claude Code'
+  if (agent === 'cursor') return 'Cursor'
+  if (agent === 'copilot') return 'GitHub Copilot'
+  if (agent === 'opencode') return 'OpenCode'
+  return 'Codex'
 }
 
 export function AgentAuthCard({ message, agent }: AgentAuthCardProps) {

@@ -120,11 +120,19 @@ const BRANCH_IMPORT_MAX_CHARS = 80_000
 const BROWSER_ELEMENT_PICKER_RETRY_DELAYS_MS = [80, 140, 180, 240, 320, 420] as const
 
 function getComposerPlaceholder(agent: AgentWindowNode['agent']) {
-  return agent === 'claude' ? 'Message Claude Code…' : 'Message Codex…'
+  if (agent === 'claude') return 'Message Claude Code…'
+  if (agent === 'cursor') return 'Message Cursor…'
+  if (agent === 'copilot') return 'Message GitHub Copilot…'
+  if (agent === 'opencode') return 'Message OpenCode…'
+  return 'Message Codex…'
 }
 
 function getAgentDisplayName(agent: AgentWindowNode['agent']) {
-  return agent === 'claude' ? 'Claude Code' : 'Codex'
+  if (agent === 'claude') return 'Claude Code'
+  if (agent === 'cursor') return 'Cursor'
+  if (agent === 'copilot') return 'GitHub Copilot'
+  if (agent === 'opencode') return 'OpenCode'
+  return 'Codex'
 }
 
 function getSourceSessionLabel(snapshot: AgentSessionSnapshot, sourceWindow: AgentWindowNode) {
@@ -132,6 +140,21 @@ function getSourceSessionLabel(snapshot: AgentSessionSnapshot, sourceWindow: Age
     return snapshot.claudeSessionId
       ? `Claude Code session ${snapshot.claudeSessionId}`
       : `Claude Code window ${sourceWindow.id}`
+  }
+  if (snapshot.agent === 'cursor') {
+    return snapshot.cursorAgentId
+      ? `Cursor agent ${snapshot.cursorAgentId}`
+      : `Cursor window ${sourceWindow.id}`
+  }
+  if (snapshot.agent === 'copilot') {
+    return snapshot.copilotSessionId
+      ? `GitHub Copilot session ${snapshot.copilotSessionId}`
+      : `GitHub Copilot window ${sourceWindow.id}`
+  }
+  if (snapshot.agent === 'opencode') {
+    return snapshot.opencodeSessionId
+      ? `OpenCode session ${snapshot.opencodeSessionId}`
+      : `OpenCode window ${sourceWindow.id}`
   }
   return snapshot.codexThreadId
     ? `Codex thread ${snapshot.codexThreadId}`
@@ -861,7 +884,7 @@ function UserImageTokenChip({
       type="button"
       onClick={onPreview}
       disabled={!path}
-      className={`${USER_IMAGE_TOKEN_CHIP_CLASS} pr-2 align-[-0.18em] transition-colors hover:bg-background/65 disabled:pointer-events-none disabled:opacity-70`}
+      className={`${USER_IMAGE_TOKEN_CHIP_CLASS} pr-2 align-middle transition-colors hover:bg-background/65 disabled:pointer-events-none disabled:opacity-70`}
       title={path ?? label}
     >
       {url ? (
@@ -945,7 +968,14 @@ function UserMessageText({
       {parts.map((part, index) => {
         if (typeof part === 'string') {
           if (!part) return null
-          return <span key={index}>{part}</span>
+          return (
+            <span
+              key={index}
+              className="inline-flex min-h-6 items-center align-middle leading-[1.45]"
+            >
+              {part}
+            </span>
+          )
         }
         const path = images[part.imageIndex]
         return (
@@ -1507,14 +1537,29 @@ function getReconnectStatus(text: string | null | undefined): {
   }
 }
 
+function formatAgentErrorMessage(text: string | null | undefined): string {
+  const lines = (text ?? '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+  const useful = lines
+    .filter((line) => !/^cursor-retrieval:\s*tracing to\b/i.test(line))
+    .filter((line) => !/^['"]?\/var\/folders\/.*cursor_retrieval.*\.log['"]?$/i.test(line))
+    .map((line) => line.replace(/^S:\s*/i, '').trim())
+    .filter(Boolean)
+  return (useful.length > 0 ? useful : lines).join('\n')
+}
+
 function ErrorBubble({ message }: { message: AgentSessionMessage }) {
+  const text = formatAgentErrorMessage(message.text)
   return (
     <div className="flex w-full justify-start">
-      <div className="max-w-[92%] rounded-[10px] border border-red-500/25 bg-red-500/8 px-4 py-3 text-[12.5px] text-red-300 select-text">
-        <div className="mb-1 text-[10.5px] font-medium uppercase tracking-[0.14em] text-red-400/85">
-          {message.title || 'Error'}
+      <div className="max-w-[92%] rounded-[12px] bg-background/55 px-3.5 py-3 text-[12.5px] text-foreground/90 shadow-minimal backdrop-blur-md select-text">
+        <div className="mb-1.5 flex items-center gap-2 text-[11px] font-medium text-muted-foreground">
+          <X className="size-3.5 shrink-0 text-rose-300/85" />
+          <span className="min-w-0 truncate">{message.title || 'Error'}</span>
         </div>
-        <div className="whitespace-pre-wrap break-words">{message.text}</div>
+        <div className="whitespace-pre-wrap break-words text-rose-100/90">{text}</div>
       </div>
     </div>
   )
@@ -1549,6 +1594,7 @@ function SessionErrorBanner({
   agent: AgentWindowNode['agent']
   onRetry: (() => void) | null
 }) {
+  const displayError = formatAgentErrorMessage(error)
   const reconnect = getReconnectStatus(error)
   if (reconnect) {
     const attemptLabel =
@@ -1608,14 +1654,14 @@ function SessionErrorBanner({
   }
 
   return (
-    <div className="mb-2 flex items-center gap-2 rounded-[10px] border border-red-500/20 bg-red-500/7 px-2.5 py-1.5 text-[12px] text-red-300 shadow-minimal backdrop-blur-md">
-      <X className="size-3.5 shrink-0 text-red-300/80" />
-      <span className="min-w-0 flex-1 truncate">{error}</span>
+    <div className="mb-2 flex items-center gap-2 rounded-[10px] bg-background/60 px-2.5 py-1.5 text-[12px] text-foreground/85 shadow-minimal backdrop-blur-md">
+      <X className="size-3.5 shrink-0 text-rose-300/85" />
+      <span className="min-w-0 flex-1 truncate text-rose-100/90">{displayError}</span>
       {onRetry ? (
         <button
           type="button"
           onClick={onRetry}
-          className="inline-flex shrink-0 items-center gap-1 rounded-[6px] bg-red-500/15 px-2 py-0.5 text-[11px] font-medium text-red-200 transition-colors hover:bg-red-500/25"
+          className="inline-flex shrink-0 items-center gap-1 rounded-[6px] bg-foreground/8 px-2 py-0.5 text-[11px] font-medium text-foreground/85 transition-colors hover:bg-foreground/12"
           title="Resend last message"
         >
           <RotateCcw className="size-3" />
@@ -1998,7 +2044,7 @@ function demoteInterimResponses(groups: ChatGroup[]): ChatGroup[] {
 function PendingTurnIndicator({ agent }: { agent: AgentWindowNode['agent'] }) {
   return (
     <LoadingIndicator
-      label={`${agent === 'claude' ? 'Claude Code' : 'Codex'} is thinking`}
+      label={`${getAgentDisplayName(agent)} is thinking`}
       showElapsed
       className="py-1.5 pl-1.5 pr-2.5 text-[12px] text-muted-foreground"
     />
@@ -2403,10 +2449,23 @@ function PlanApprovalBanner({
 // Default width used by the animated side-panel wrapper. We pin to a concrete
 // value so framer-motion's `width: 0 → N → 0` transition has stable endpoints
 // and the panel doesn't wobble during the expand.
-const SIDE_PANEL_DEFAULT_WIDTH = 440
-const SIDE_PANEL_MIN_WIDTH = 320
-const SIDE_PANEL_MAX_WIDTH = 900
-const SIDE_PANEL_WIDTH_STORAGE_KEY = 'agent-chat.sidePanelWidth'
+const SIDE_PANEL_MIN_WIDTH = 360
+const SIDE_PANEL_MAX_WIDTH = 1200
+const SIDE_PANEL_DEFAULT_WIDTH_RATIO = 0.5
+const SIDE_PANEL_WIDTH_STORAGE_KEY = 'agent-chat.sidePanelWidth.v2'
+
+function getDefaultSidePanelWidth(containerWidth?: number | null) {
+  const width =
+    typeof containerWidth === 'number' && Number.isFinite(containerWidth) && containerWidth > 0
+      ? containerWidth
+      : typeof window !== 'undefined'
+        ? window.innerWidth
+        : 880
+  return Math.min(
+    SIDE_PANEL_MAX_WIDTH,
+    Math.max(SIDE_PANEL_MIN_WIDTH, Math.round(width * SIDE_PANEL_DEFAULT_WIDTH_RATIO)),
+  )
+}
 
 // Right-side side-panel that renders the full proposed plan as markdown.
 // Opened from the PlanApprovalBanner's "View plan" button. The markdown is
@@ -2439,8 +2498,8 @@ function PlanPreviewPanel({
   }, [plan])
   return (
     <div
-      className="relative flex h-full min-h-0 shrink-0 flex-col border-l border-border/50 bg-background"
-      style={{ width }}
+      className="relative flex h-full min-h-0 shrink-0 flex-col border-l border-border/35"
+      style={{ width, backgroundColor: 'var(--elevated-surface)' }}
     >
       {/* Resize handle — sits flush on the left edge, invisible until hover /
           active drag. Pointer events are handled via onPointerDown so the drag
@@ -2453,7 +2512,7 @@ function PlanPreviewPanel({
       >
         <div className="absolute inset-y-0 left-0 w-px bg-transparent transition-colors group-hover/resize:bg-primary/40 group-active/resize:bg-primary/60" />
       </div>
-      <div className="flex items-center gap-2 border-b border-border/40 px-3 py-2">
+      <div className="flex items-center gap-2 border-b border-border/30 px-3 py-2">
         <FileText className="size-3.5 shrink-0 text-muted-foreground" />
         <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-foreground">
           {agentName}'s proposed plan
@@ -3143,6 +3202,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     }))
   }, [])
   const scrollViewportRef = useRef<HTMLDivElement>(null)
+  const chatPanelRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<LegendListRef>(null)
   const recentSessionsViewportRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLDivElement>(null)
@@ -3453,7 +3513,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         (next.messages.some((message) => message.role === 'user') ||
           next.status === 'running' ||
           Boolean(next.claudeSessionId) ||
-          Boolean(next.codexThreadId))
+          Boolean(next.codexThreadId) ||
+          Boolean(next.cursorAgentId) ||
+          Boolean(next.copilotSessionId) ||
+          Boolean(next.opencodeSessionId))
       const derivedStatus = deriveAgentSessionWindowStatus(next)
       const prevStatus = prevDerivedStatusRef.current
       prevDerivedStatusRef.current = derivedStatus
@@ -3471,6 +3534,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         error: next.error ?? null,
         claudeSessionId: next.claudeSessionId ?? null,
         codexThreadId: next.codexThreadId ?? null,
+        cursorAgentId: next.cursorAgentId ?? null,
+        cursorRunId: next.cursorRunId ?? null,
+        copilotSessionId: next.copilotSessionId ?? null,
+        opencodeSessionId: next.opencodeSessionId ?? null,
         initialPrompt: shouldClearInitialPrompt ? null : (agentWindow.initialPrompt ?? null),
       }
       if (justCompleted && !isViewed) {
@@ -3506,6 +3573,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       initialPrompt: agentWindow.initialPrompt ?? null,
       claudeSessionId: agentWindow.claudeSessionId ?? null,
       codexThreadId: agentWindow.codexThreadId ?? null,
+      cursorAgentId: agentWindow.cursorAgentId ?? null,
+      cursorRunId: agentWindow.cursorRunId ?? null,
+      copilotSessionId: agentWindow.copilotSessionId ?? null,
+      opencodeSessionId: agentWindow.opencodeSessionId ?? null,
       model: agentWindow.model ?? null,
       permissionMode: agentWindow.permissionMode ?? null,
       thinkingLevel: agentWindow.thinkingLevel ?? null,
@@ -3564,6 +3635,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     agentWindow.agent,
     agentWindow.claudeSessionId,
     agentWindow.codexThreadId,
+    agentWindow.copilotSessionId,
+    agentWindow.opencodeSessionId,
+    agentWindow.cursorAgentId,
+    agentWindow.cursorRunId,
     agentWindow.cwd,
     agentWindow.customTitle,
     agentWindow.id,
@@ -3621,6 +3696,13 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     }
     return null
   }, [visibleMessages])
+  const showSessionErrorBanner = useMemo(() => {
+    const error = visibleSnapshot?.error
+    if (!error) return false
+    const lastMessage = visibleMessages.at(-1)
+    if (lastMessage?.role !== 'error') return true
+    return formatAgentErrorMessage(lastMessage.text) !== formatAgentErrorMessage(error)
+  }, [visibleMessages, visibleSnapshot?.error])
   const inlineMention = useInlineMention({
     inputRef: textareaRef,
     cwd: visibleSnapshot?.cwd ?? agentWindow.cwd ?? null,
@@ -3725,7 +3807,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     : agentWindow.thinkingLevel
   const branchTargets = useMemo(
     () =>
-      (['claude', 'codex'] as const).map((agent) => ({
+      (['claude', 'codex', 'cursor', 'copilot', 'opencode'] as const).map((agent) => ({
         agent,
         label: getAgentDisplayName(agent),
         isCurrent: agent === agentWindow.agent,
@@ -3773,6 +3855,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       initialPrompt: null,
       claudeSessionId: agentWindow.claudeSessionId ?? null,
       codexThreadId: agentWindow.codexThreadId ?? null,
+      cursorAgentId: agentWindow.cursorAgentId ?? null,
+      cursorRunId: agentWindow.cursorRunId ?? null,
+      copilotSessionId: agentWindow.copilotSessionId ?? null,
+      opencodeSessionId: agentWindow.opencodeSessionId ?? null,
       model: agentWindow.model ?? null,
       permissionMode: agentWindow.permissionMode ?? null,
       thinkingLevel: agentWindow.thinkingLevel ?? null,
@@ -3781,6 +3867,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     agentWindow.agent,
     agentWindow.claudeSessionId,
     agentWindow.codexThreadId,
+    agentWindow.cursorAgentId,
+    agentWindow.cursorRunId,
+    agentWindow.copilotSessionId,
+    agentWindow.opencodeSessionId,
     agentWindow.customTitle,
     agentWindow.cwd,
     agentWindow.id,
@@ -4024,6 +4114,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
             initialPrompt: null,
             claudeSessionId: null,
             codexThreadId: null,
+            cursorAgentId: null,
+            cursorRunId: null,
+            copilotSessionId: null,
+            opencodeSessionId: null,
             model: targetModel,
             permissionMode: agentWindow.permissionMode ?? null,
             thinkingLevel: agentWindow.thinkingLevel ?? null,
@@ -4231,6 +4325,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
             initialPrompt: null,
             claudeSessionId: null,
             codexThreadId: null,
+            cursorAgentId: null,
+            cursorRunId: null,
+            copilotSessionId: null,
+            opencodeSessionId: null,
             model: nextWindow.model ?? null,
             permissionMode: nextWindow.permissionMode ?? null,
             thinkingLevel: nextWindow.thinkingLevel ?? null,
@@ -4768,6 +4866,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
           cwd: session.cwd ?? null,
           claudeSessionId: session.claudeSessionId ?? null,
           codexThreadId: session.codexThreadId ?? null,
+          cursorAgentId: session.cursorAgentId ?? null,
+          cursorRunId: session.cursorRunId ?? null,
+          copilotSessionId: session.copilotSessionId ?? null,
+          opencodeSessionId: session.opencodeSessionId ?? null,
           model: session.model ?? null,
         })
       } else {
@@ -4776,6 +4878,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
           cwd: session.cwd ?? null,
           claudeSessionId: session.claudeSessionId ?? null,
           codexThreadId: session.codexThreadId ?? null,
+          cursorAgentId: session.cursorAgentId ?? null,
+          cursorRunId: session.cursorRunId ?? null,
+          copilotSessionId: session.copilotSessionId ?? null,
+          opencodeSessionId: session.opencodeSessionId ?? null,
           model: session.model ?? null,
         })
       }
@@ -4796,10 +4902,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   // Persist the plan panel width so the size the user picks carries across
   // sessions, window reopens, and app restarts.
   const [sidePanelWidth, setSidePanelWidth] = useState<number>(() => {
-    if (typeof window === 'undefined') return SIDE_PANEL_DEFAULT_WIDTH
+    if (typeof window === 'undefined') return getDefaultSidePanelWidth()
     const raw = window.localStorage.getItem(SIDE_PANEL_WIDTH_STORAGE_KEY)
     const parsed = raw ? Number.parseInt(raw, 10) : NaN
-    if (!Number.isFinite(parsed)) return SIDE_PANEL_DEFAULT_WIDTH
+    if (!Number.isFinite(parsed)) return getDefaultSidePanelWidth()
     return Math.min(SIDE_PANEL_MAX_WIDTH, Math.max(SIDE_PANEL_MIN_WIDTH, parsed))
   })
   useEffect(() => {
@@ -4853,6 +4959,9 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     } else if (lastAutoOpenedPlanAt.current !== pendingPlanApproval.createdAt) {
       lastAutoOpenedPlanAt.current = pendingPlanApproval.createdAt
       frame = window.requestAnimationFrame(() => {
+        setSidePanelWidth(
+          getDefaultSidePanelWidth(chatPanelRef.current?.getBoundingClientRect().width),
+        )
         setSidePanel('plan')
       })
     }
@@ -4876,6 +4985,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
 
   return (
     <div
+      ref={chatPanelRef}
       className="agent-chat-panel flex h-full min-h-0"
       data-focus-zone="chat"
       onDragOver={(event) => {
@@ -5113,7 +5223,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                   </button>
                 </div>
               ) : null}
-              {visibleSnapshot?.error ? (
+              {showSessionErrorBanner && visibleSnapshot?.error ? (
                 <SessionErrorBanner
                   error={visibleSnapshot.error}
                   agent={agentWindow.agent}
@@ -5745,7 +5855,15 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                             >
                               <AgentIcon agent={target.agent} className="size-3.5" size={14} />
                               <span className="whitespace-nowrap">
-                                {target.agent === 'claude' ? 'Claude' : 'Codex'}
+                                {target.agent === 'claude'
+                                  ? 'Claude'
+                                  : target.agent === 'cursor'
+                                    ? 'Cursor'
+                                    : target.agent === 'copilot'
+                                      ? 'Copilot'
+                                      : target.agent === 'opencode'
+                                        ? 'OpenCode'
+                                        : 'Codex'}
                               </span>
                             </button>
                           ))}
@@ -5918,7 +6036,11 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
               opacity: { duration: 0.18, ease: EASE_EXPAND },
             }}
           >
-            <SessionDiffsPanel messages={visibleMessages} onClose={() => setSidePanel(null)} />
+            <SessionDiffsPanel
+              messages={visibleMessages}
+              cwd={agentWindow.cwd}
+              onClose={() => setSidePanel(null)}
+            />
           </motion.div>
         ) : null}
         {sidePanel === 'plan' && pendingPlanApproval ? (

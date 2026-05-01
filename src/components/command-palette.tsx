@@ -72,6 +72,9 @@ import type { SavedAgentSessionSummary } from '@/types'
 const AGENT_OPTIONS = [
   { id: 'claude', label: 'Claude Code' },
   { id: 'codex', label: 'Codex' },
+  { id: 'cursor', label: 'Cursor' },
+  { id: 'copilot', label: 'GitHub Copilot' },
+  { id: 'opencode', label: 'OpenCode' },
 ] as const
 
 interface Attachment {
@@ -174,7 +177,13 @@ function launchAgentAction(
   const prompt = stripPrefix(searchText.trim())
   const directPrompt = buildDirectAgentPrompt(prompt, attachments)
 
-  if (id === 'claude' || id === 'codex') {
+  if (
+    id === 'claude' ||
+    id === 'codex' ||
+    id === 'cursor' ||
+    id === 'copilot' ||
+    id === 'opencode'
+  ) {
     const openWindow = (cwd: string | null) => {
       useStore.getState().addAgentWindow(id, {
         title: label,
@@ -466,14 +475,13 @@ export function CommandPalette() {
   )
   const selectionMode = useStore((s) => s.selectionMode)
   const selectedNodeIds = useStore((s) => s.selectedNodeIds)
-  // Always surface all supported agents — the detection heuristic occasionally
-  // misses binaries (e.g. flaky login shell PATH). If the CLI is missing the
-  // user still sees the row, so the fix is visible: install + retry.
-  const availableAgents = AGENT_OPTIONS.map(({ id, label }) => ({
-    id,
-    label,
-    detected: agents[id] === true,
-  }))
+  const availableAgents = AGENT_OPTIONS.filter(({ id }) => agents[id] === true).map(
+    ({ id, label }) => ({
+      id,
+      label,
+      detected: true,
+    }),
+  )
   const wordCount = search.trim().split(/\s+/).filter(Boolean).length
   const isPromptMode = wordCount > 10
   // Determine which catch-all group appears at the bottom (closest to input = default selected).
@@ -658,14 +666,25 @@ export function CommandPalette() {
 
   useEffect(() => {
     if (open) {
-      window.cells.agent.checkAvailable(agentAliases, agentPaths).then((detected) => {
-        // Apply enabledAgents overrides: true = force on, false = force off, 'auto'/undefined = use detected
-        const merged = { ...detected }
+      Promise.all([
+        window.cells.agent
+          .checkAvailable(agentAliases, agentPaths)
+          .catch((): Record<string, boolean> => ({})),
+        Promise.allSettled(AGENT_OPTIONS.map(({ id }) => window.cells.agentSession.getAuth(id))),
+      ]).then(([detected, authResults]) => {
+        const authByAgent = new Map(
+          authResults
+            .map((result) => (result.status === 'fulfilled' ? result.value : null))
+            .filter((status): status is NonNullable<typeof status> => Boolean(status))
+            .map((status) => [status.agent, status] as const),
+        )
+        const merged: Record<string, boolean> = {}
         for (const { id } of AGENT_OPTIONS) {
           const override = enabledAgents[id]
-          if (override === true) merged[id] = true
-          else if (override === false) merged[id] = false
-          // 'auto' or undefined → keep detected value
+          const auth = authByAgent.get(id)
+          const installed = detected[id] === true || Boolean(auth?.binaryPath)
+          const authenticated = auth?.authenticated === true
+          merged[id] = override === false ? false : installed && authenticated
         }
         setAgents(merged)
       })
@@ -931,7 +950,11 @@ export function CommandPalette() {
                     ? `Ask ${label}: "${search.trim().slice(0, 50)}"`
                     : attachments.length > 0
                       ? `Send ${attachments.length} file${attachments.length > 1 ? 's' : ''} to ${label}`
-                      : id === 'claude' || id === 'codex'
+                      : id === 'claude' ||
+                          id === 'codex' ||
+                          id === 'cursor' ||
+                          id === 'copilot' ||
+                          id === 'opencode'
                         ? `New ${label} window`
                         : `New ${label} Terminal`}
               </span>
@@ -1248,6 +1271,10 @@ export function CommandPalette() {
                             cwd: session.cwd ?? null,
                             claudeSessionId: session.claudeSessionId ?? null,
                             codexThreadId: session.codexThreadId ?? null,
+                            cursorAgentId: session.cursorAgentId ?? null,
+                            cursorRunId: session.cursorRunId ?? null,
+                            copilotSessionId: session.copilotSessionId ?? null,
+                            opencodeSessionId: session.opencodeSessionId ?? null,
                             model: session.model ?? null,
                           }),
                         )
@@ -1312,38 +1339,116 @@ export function CommandPalette() {
                           </span>
                         </CommandItem>
                       ))}
-                      {nonBare.map((wt) => (
-                        <CommandItem
-                          key={`wt-codex-${wt.path}`}
-                          value={`open codex agent in worktree ${getWorktreeName(wt)} ${wt.path}`}
-                          onSelect={() =>
-                            runAction(() => {
-                              useStore.getState().openAgentInWorktree('codex', wt.path, {
-                                title: 'Codex',
-                              })
-                            })
-                          }
-                        >
-                          <AgentIcon agent="codex" className="text-muted-foreground" size={16} />
-                          Open Codex in {getWorktreeName(wt)}
-                        </CommandItem>
-                      ))}
-                      {nonBare.map((wt) => (
-                        <CommandItem
-                          key={`wt-claude-${wt.path}`}
-                          value={`open claude agent in worktree ${getWorktreeName(wt)} ${wt.path}`}
-                          onSelect={() =>
-                            runAction(() => {
-                              useStore.getState().openAgentInWorktree('claude', wt.path, {
-                                title: 'Claude Code',
-                              })
-                            })
-                          }
-                        >
-                          <AgentIcon agent="claude" className="text-muted-foreground" size={16} />
-                          Open Claude in {getWorktreeName(wt)}
-                        </CommandItem>
-                      ))}
+                      {agents.codex === true
+                        ? nonBare.map((wt) => (
+                            <CommandItem
+                              key={`wt-codex-${wt.path}`}
+                              value={`open codex agent in worktree ${getWorktreeName(wt)} ${wt.path}`}
+                              onSelect={() =>
+                                runAction(() => {
+                                  useStore.getState().openAgentInWorktree('codex', wt.path, {
+                                    title: 'Codex',
+                                  })
+                                })
+                              }
+                            >
+                              <AgentIcon
+                                agent="codex"
+                                className="text-muted-foreground"
+                                size={16}
+                              />
+                              Open Codex in {getWorktreeName(wt)}
+                            </CommandItem>
+                          ))
+                        : null}
+                      {agents.claude === true
+                        ? nonBare.map((wt) => (
+                            <CommandItem
+                              key={`wt-claude-${wt.path}`}
+                              value={`open claude agent in worktree ${getWorktreeName(wt)} ${wt.path}`}
+                              onSelect={() =>
+                                runAction(() => {
+                                  useStore.getState().openAgentInWorktree('claude', wt.path, {
+                                    title: 'Claude Code',
+                                  })
+                                })
+                              }
+                            >
+                              <AgentIcon
+                                agent="claude"
+                                className="text-muted-foreground"
+                                size={16}
+                              />
+                              Open Claude in {getWorktreeName(wt)}
+                            </CommandItem>
+                          ))
+                        : null}
+                      {agents.cursor === true
+                        ? nonBare.map((wt) => (
+                            <CommandItem
+                              key={`wt-cursor-${wt.path}`}
+                              value={`open cursor agent in worktree ${getWorktreeName(wt)} ${wt.path}`}
+                              onSelect={() =>
+                                runAction(() => {
+                                  useStore.getState().openAgentInWorktree('cursor', wt.path, {
+                                    title: 'Cursor',
+                                  })
+                                })
+                              }
+                            >
+                              <AgentIcon
+                                agent="cursor"
+                                className="text-muted-foreground"
+                                size={16}
+                              />
+                              Open Cursor in {getWorktreeName(wt)}
+                            </CommandItem>
+                          ))
+                        : null}
+                      {agents.copilot === true
+                        ? nonBare.map((wt) => (
+                            <CommandItem
+                              key={`wt-copilot-${wt.path}`}
+                              value={`open copilot agent in worktree ${getWorktreeName(wt)} ${wt.path}`}
+                              onSelect={() =>
+                                runAction(() => {
+                                  useStore.getState().openAgentInWorktree('copilot', wt.path, {
+                                    title: 'GitHub Copilot',
+                                  })
+                                })
+                              }
+                            >
+                              <AgentIcon
+                                agent="copilot"
+                                className="text-muted-foreground"
+                                size={16}
+                              />
+                              Open Copilot in {getWorktreeName(wt)}
+                            </CommandItem>
+                          ))
+                        : null}
+                      {agents.opencode === true
+                        ? nonBare.map((wt) => (
+                            <CommandItem
+                              key={`wt-opencode-${wt.path}`}
+                              value={`open opencode agent in worktree ${getWorktreeName(wt)} ${wt.path}`}
+                              onSelect={() =>
+                                runAction(() => {
+                                  useStore.getState().openAgentInWorktree('opencode', wt.path, {
+                                    title: 'OpenCode',
+                                  })
+                                })
+                              }
+                            >
+                              <AgentIcon
+                                agent="opencode"
+                                className="text-muted-foreground"
+                                size={16}
+                              />
+                              Open OpenCode in {getWorktreeName(wt)}
+                            </CommandItem>
+                          ))
+                        : null}
                       {search.trim() && !nonBare.some((wt) => wt.branch === search.trim()) && (
                         <CommandItem
                           forceMount

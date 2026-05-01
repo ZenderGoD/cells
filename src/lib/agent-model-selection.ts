@@ -10,7 +10,7 @@ function hasModelId(models: AgentModelCandidate[], id: string | null | undefined
 }
 
 export function resolveAgentModelId(
-  agent: 'claude' | 'codex',
+  agent: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode',
   requested: string | null | undefined,
   models: AgentModelCandidate[],
   fallback: string,
@@ -18,7 +18,7 @@ export function resolveAgentModelId(
   const availableModels = models.filter((model) => model.available !== false)
   if (availableModels.length === 0) return fallback
   if (hasModelId(availableModels, requested)) return requested!
-  if (agent === 'codex') {
+  if (agent === 'codex' || agent === 'cursor' || agent === 'copilot' || agent === 'opencode') {
     return (
       availableModels.find((model) => model.isDefault)?.id ?? availableModels[0]?.id ?? fallback
     )

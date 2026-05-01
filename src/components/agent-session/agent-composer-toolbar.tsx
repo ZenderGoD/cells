@@ -265,6 +265,51 @@ const CODEX_MODELS_FALLBACK: ModelOption[] = [
 // app-server just to ask the same question.
 let codexModelsCache: ModelOption[] | null = null
 let codexModelsPromise: Promise<ModelOption[]> | null = null
+const CURSOR_MODELS_FALLBACK: ModelOption[] = [
+  {
+    id: 'auto',
+    label: 'Auto',
+    hint: 'Cursor account default',
+    isDefault: true,
+    supportedEfforts: [],
+    defaultEffort: 'off',
+  },
+  {
+    id: 'sonnet-4',
+    label: 'Sonnet 4',
+    hint: 'Claude Sonnet through Cursor',
+    supportedEfforts: [],
+    defaultEffort: 'off',
+  },
+]
+let cursorModelsCache: ModelOption[] | null = null
+let cursorModelsPromise: Promise<ModelOption[]> | null = null
+
+const COPILOT_MODELS_FALLBACK: ModelOption[] = [
+  {
+    id: 'auto',
+    label: 'Auto',
+    hint: 'GitHub Copilot account default',
+    isDefault: true,
+    supportedEfforts: [],
+    defaultEffort: 'off',
+  },
+]
+let copilotModelsCache: ModelOption[] | null = null
+let copilotModelsPromise: Promise<ModelOption[]> | null = null
+
+const OPENCODE_MODELS_FALLBACK: ModelOption[] = [
+  {
+    id: 'opencode/gpt-5-nano',
+    label: 'GPT-5 Nano',
+    hint: 'OpenCode default',
+    isDefault: true,
+    supportedEfforts: ['off', 'low', 'medium', 'high', 'max'],
+    defaultEffort: 'medium',
+  },
+]
+let opencodeModelsCache: ModelOption[] | null = null
+let opencodeModelsPromise: Promise<ModelOption[]> | null = null
 
 // Prettify a Codex model id/displayName into a picker label. The CLI often
 // returns displayName equal to id (e.g. "gpt-5.4", "gpt-5.2-codex"); we
@@ -282,6 +327,38 @@ function prettifyCodexModel(raw: string): string {
     .replace(/-max\b/gi, ' Max')
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+function prettifyCursorModel(raw: string): string {
+  const s = raw.trim()
+  if (/[A-Z]/.test(s)) return s
+  return s
+    .replace(/^gpt-/i, 'GPT-')
+    .replace(/^claude-/i, 'Claude ')
+    .replace(/^sonnet-/i, 'Sonnet ')
+    .replace(/^opus-/i, 'Opus ')
+    .replace(/-/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+    .replace(/^GPT /, 'GPT-')
+    .trim()
+}
+
+function prettifyCopilotModel(raw: string): string {
+  const s = raw.trim()
+  if (/[A-Z]/.test(s)) return s
+  return s
+    .replace(/^gpt-/i, 'GPT-')
+    .replace(/^claude-/i, 'Claude ')
+    .replace(/sonnet-/i, 'Sonnet ')
+    .replace(/-/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+    .replace(/^GPT /, 'GPT-')
+    .trim()
+}
+
+function prettifyOpencodeModel(raw: string): string {
+  const providerless = raw.includes('/') ? raw.split('/').slice(1).join('/') : raw
+  return prettifyCodexModel(providerless)
 }
 
 // Maps the Codex CLI's reasoning-effort strings onto Cells's portable
@@ -357,14 +434,167 @@ function fetchCodexModels(): Promise<ModelOption[]> {
   return codexModelsPromise
 }
 
-const DEFAULT_MODEL: Record<'claude' | 'codex', string> = {
+function fetchCursorModels(): Promise<ModelOption[]> {
+  if (cursorModelsCache) return Promise.resolve(cursorModelsCache)
+  if (cursorModelsPromise) return cursorModelsPromise
+  const api = (window as any).cells?.agentSession?.listCursorModels
+  if (typeof api !== 'function') return Promise.resolve(CURSOR_MODELS_FALLBACK)
+  cursorModelsPromise = (
+    api() as Promise<
+      Array<{
+        id: string
+        displayName: string
+        description: string
+        variants?: Array<{ displayName: string; description?: string; isDefault?: boolean }>
+      }>
+    >
+  )
+    .then((list) => {
+      const mapped = list.map<ModelOption>((m) => {
+        const defaultVariant = m.variants?.find((variant) => variant.isDefault)
+        return {
+          id: m.id,
+          label: prettifyCursorModel(m.displayName || m.id),
+          hint: defaultVariant?.description || m.description || undefined,
+          isDefault: Boolean(defaultVariant?.isDefault),
+          supportedEfforts: [],
+          defaultEffort: 'off',
+        }
+      })
+      cursorModelsCache =
+        mapped.length > 0
+          ? [...mapped].sort((a, b) => Number(!!b.isDefault) - Number(!!a.isDefault))
+          : CURSOR_MODELS_FALLBACK
+      return cursorModelsCache
+    })
+    .catch(() => {
+      cursorModelsCache = CURSOR_MODELS_FALLBACK
+      return cursorModelsCache
+    })
+    .finally(() => {
+      cursorModelsPromise = null
+    }) as Promise<ModelOption[]>
+  return cursorModelsPromise
+}
+
+function fetchCopilotModels(): Promise<ModelOption[]> {
+  if (copilotModelsCache) return Promise.resolve(copilotModelsCache)
+  if (copilotModelsPromise) return copilotModelsPromise
+  const api = (window as any).cells?.agentSession?.listCopilotModels
+  if (typeof api !== 'function') return Promise.resolve(COPILOT_MODELS_FALLBACK)
+  copilotModelsPromise = (
+    api() as Promise<
+      Array<{
+        id: string
+        displayName: string
+        description: string
+        isDefault: boolean
+        hidden: boolean
+        supportedReasoningEfforts: string[]
+        defaultReasoningEffort: string
+      }>
+    >
+  )
+    .then((list) => {
+      const mapped = list
+        .filter((m) => !m.hidden)
+        .map<ModelOption>((m) => {
+          const efforts = (m.supportedReasoningEfforts || [])
+            .map(claudeEffortToLevel)
+            .filter((value): value is AgentThinkingLevel => value != null)
+          return {
+            id: m.id,
+            label: prettifyCopilotModel(m.displayName || m.id),
+            hint: m.description || undefined,
+            isDefault: Boolean(m.isDefault || m.id === 'auto'),
+            supportedEfforts: efforts,
+            defaultEffort:
+              claudeEffortToLevel(m.defaultReasoningEffort || '') ?? efforts[0] ?? 'off',
+          }
+        })
+      copilotModelsCache =
+        mapped.length > 0
+          ? [...mapped].sort((a, b) => Number(!!b.isDefault) - Number(!!a.isDefault))
+          : COPILOT_MODELS_FALLBACK
+      return copilotModelsCache
+    })
+    .catch(() => {
+      copilotModelsCache = COPILOT_MODELS_FALLBACK
+      return copilotModelsCache
+    })
+    .finally(() => {
+      copilotModelsPromise = null
+    }) as Promise<ModelOption[]>
+  return copilotModelsPromise
+}
+
+function fetchOpencodeModels(): Promise<ModelOption[]> {
+  if (opencodeModelsCache) return Promise.resolve(opencodeModelsCache)
+  if (opencodeModelsPromise) return opencodeModelsPromise
+  const api = (window as any).cells?.agentSession?.listOpencodeModels
+  if (typeof api !== 'function') return Promise.resolve(OPENCODE_MODELS_FALLBACK)
+  opencodeModelsPromise = (
+    api() as Promise<
+      Array<{
+        id: string
+        displayName: string
+        description: string
+        isDefault: boolean
+        hidden: boolean
+        supportedReasoningEfforts: string[]
+        defaultReasoningEffort: string
+      }>
+    >
+  )
+    .then((list) => {
+      const mapped = list
+        .filter((m) => !m.hidden)
+        .map<ModelOption>((m) => {
+          const efforts = (m.supportedReasoningEfforts || [])
+            .map((effort) => (effort === 'minimal' ? 'off' : effort))
+            .filter((value): value is AgentThinkingLevel =>
+              ['off', 'low', 'medium', 'high', 'max', 'xhigh'].includes(value),
+            )
+          return {
+            id: m.id,
+            label: prettifyOpencodeModel(m.displayName || m.id),
+            hint: m.description || undefined,
+            isDefault: Boolean(m.isDefault),
+            supportedEfforts:
+              efforts.length > 0 ? efforts : ['off', 'low', 'medium', 'high', 'max'],
+            defaultEffort:
+              ((m.defaultReasoningEffort === 'minimal'
+                ? 'off'
+                : m.defaultReasoningEffort) as AgentThinkingLevel) || 'medium',
+          }
+        })
+      opencodeModelsCache =
+        mapped.length > 0
+          ? [...mapped].sort((a, b) => Number(!!b.isDefault) - Number(!!a.isDefault))
+          : OPENCODE_MODELS_FALLBACK
+      return opencodeModelsCache
+    })
+    .catch(() => {
+      opencodeModelsCache = OPENCODE_MODELS_FALLBACK
+      return opencodeModelsCache
+    })
+    .finally(() => {
+      opencodeModelsPromise = null
+    }) as Promise<ModelOption[]>
+  return opencodeModelsPromise
+}
+
+const DEFAULT_MODEL: Record<AgentWindowNode['agent'], string> = {
   claude: 'claude-sonnet-4-6',
   codex: 'gpt-5-codex',
+  cursor: 'auto',
+  copilot: 'auto',
+  opencode: 'opencode/gpt-5-nano',
 }
 
 function findModel(
   models: ModelOption[],
-  agent: 'claude' | 'codex',
+  agent: AgentWindowNode['agent'],
   id: string | null | undefined,
 ) {
   const resolvedId = resolveAgentModelId(agent, id, models, DEFAULT_MODEL[agent])
@@ -389,8 +619,12 @@ export const THINKING_LEVEL_LABEL_MAP: Record<AgentThinkingLevel, string> = {
   xhigh: 'Extra-high',
 }
 
-export function prettifyModelId(agent: 'claude' | 'codex', id: string): string {
-  return agent === 'codex' ? prettifyCodexModel(id) : prettifyClaudeModel(id)
+export function prettifyModelId(agent: AgentWindowNode['agent'], id: string): string {
+  if (agent === 'codex') return prettifyCodexModel(id)
+  if (agent === 'cursor') return prettifyCursorModel(id)
+  if (agent === 'copilot') return prettifyCopilotModel(id)
+  if (agent === 'opencode') return prettifyOpencodeModel(id)
+  return prettifyClaudeModel(id)
 }
 
 // Returns the currently-known model list synchronously — uses the live cache
@@ -399,6 +633,9 @@ export function prettifyModelId(agent: 'claude' | 'codex', id: string): string {
 // now and rely on the picker to stay in sync once the fetch lands.
 function getCachedModelsSync(agent: AgentWindowNode['agent']): ModelOption[] {
   if (agent === 'codex') return codexModelsCache ?? CODEX_MODELS_FALLBACK
+  if (agent === 'cursor') return cursorModelsCache ?? CURSOR_MODELS_FALLBACK
+  if (agent === 'copilot') return copilotModelsCache ?? COPILOT_MODELS_FALLBACK
+  if (agent === 'opencode') return opencodeModelsCache ?? OPENCODE_MODELS_FALLBACK
   return claudeModelsCache ?? CLAUDE_MODELS_FALLBACK
 }
 
@@ -506,11 +743,32 @@ export function ModelPicker({
   const [claudeModels, setClaudeModels] = useState<ModelOption[]>(
     () => claudeModelsCache ?? CLAUDE_MODELS_FALLBACK,
   )
+  const [cursorModels, setCursorModels] = useState<ModelOption[]>(
+    () => cursorModelsCache ?? CURSOR_MODELS_FALLBACK,
+  )
+  const [copilotModels, setCopilotModels] = useState<ModelOption[]>(
+    () => copilotModelsCache ?? COPILOT_MODELS_FALLBACK,
+  )
+  const [opencodeModels, setOpencodeModels] = useState<ModelOption[]>(
+    () => opencodeModelsCache ?? OPENCODE_MODELS_FALLBACK,
+  )
   useEffect(() => {
     let cancelled = false
     if (agent === 'codex') {
       void fetchCodexModels().then((list) => {
         if (!cancelled) setCodexModels(list)
+      })
+    } else if (agent === 'cursor') {
+      void fetchCursorModels().then((list) => {
+        if (!cancelled) setCursorModels(list)
+      })
+    } else if (agent === 'copilot') {
+      void fetchCopilotModels().then((list) => {
+        if (!cancelled) setCopilotModels(list)
+      })
+    } else if (agent === 'opencode') {
+      void fetchOpencodeModels().then((list) => {
+        if (!cancelled) setOpencodeModels(list)
       })
     } else {
       void fetchClaudeModels().then((list) => {
@@ -521,7 +779,16 @@ export function ModelPicker({
       cancelled = true
     }
   }, [agent])
-  const models = agent === 'claude' ? claudeModels : codexModels
+  const models =
+    agent === 'claude'
+      ? claudeModels
+      : agent === 'cursor'
+        ? cursorModels
+        : agent === 'copilot'
+          ? copilotModels
+          : agent === 'opencode'
+            ? opencodeModels
+            : codexModels
   const current = findModel(models, agent, value)
   const supportsExtended = modelSupportsExtendedContext(agent, current.id)
   const isExtended = supportsExtended && contextLength === 'extended'
@@ -551,7 +818,17 @@ export function ModelPicker({
       />
       <PopoverContent align="start" side="top" sideOffset={6} className="w-64 p-1">
         <div className="mb-1 flex items-center justify-between gap-2 px-2 pt-1 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
-          <span>{agent === 'claude' ? 'Claude models' : 'Codex models'}</span>
+          <span>
+            {agent === 'claude'
+              ? 'Claude models'
+              : agent === 'cursor'
+                ? 'Cursor models'
+                : agent === 'copilot'
+                  ? 'Copilot models'
+                  : agent === 'opencode'
+                    ? 'OpenCode models'
+                    : 'Codex models'}
+          </span>
           <ShortcutHint keys={['Ctrl', 'M']} />
         </div>
         {models.map((model) => {
@@ -667,11 +944,32 @@ export function ThinkingPicker({ agent, model, value, onChange }: ThinkingPicker
   const [claudeModels, setClaudeModels] = useState<ModelOption[]>(
     () => claudeModelsCache ?? CLAUDE_MODELS_FALLBACK,
   )
+  const [cursorModels, setCursorModels] = useState<ModelOption[]>(
+    () => cursorModelsCache ?? CURSOR_MODELS_FALLBACK,
+  )
+  const [copilotModels, setCopilotModels] = useState<ModelOption[]>(
+    () => copilotModelsCache ?? COPILOT_MODELS_FALLBACK,
+  )
+  const [opencodeModels, setOpencodeModels] = useState<ModelOption[]>(
+    () => opencodeModelsCache ?? OPENCODE_MODELS_FALLBACK,
+  )
   useEffect(() => {
     let cancelled = false
     if (agent === 'codex') {
       void fetchCodexModels().then((list) => {
         if (!cancelled) setCodexModels(list)
+      })
+    } else if (agent === 'cursor') {
+      void fetchCursorModels().then((list) => {
+        if (!cancelled) setCursorModels(list)
+      })
+    } else if (agent === 'copilot') {
+      void fetchCopilotModels().then((list) => {
+        if (!cancelled) setCopilotModels(list)
+      })
+    } else if (agent === 'opencode') {
+      void fetchOpencodeModels().then((list) => {
+        if (!cancelled) setOpencodeModels(list)
       })
     } else {
       void fetchClaudeModels().then((list) => {
@@ -682,7 +980,16 @@ export function ThinkingPicker({ agent, model, value, onChange }: ThinkingPicker
       cancelled = true
     }
   }, [agent])
-  const models = agent === 'claude' ? claudeModels : codexModels
+  const models =
+    agent === 'claude'
+      ? claudeModels
+      : agent === 'cursor'
+        ? cursorModels
+        : agent === 'copilot'
+          ? copilotModels
+          : agent === 'opencode'
+            ? opencodeModels
+            : codexModels
   const current = findModel(models, agent, model)
   const effective = resolveModelThinkingLevel(current, value)
   if (current.supportedEfforts.length === 0) return null
@@ -754,9 +1061,12 @@ interface ContextUsageIndicatorProps {
 // Known-at-design-time context windows used when `usage.contextWindow` isn't
 // available yet (pre-first-turn). Real value comes from the SDK after the
 // first turn completes. Claude 1M beta is handled separately.
-const CONTEXT_WINDOW_FALLBACK: Record<'claude' | 'codex', number> = {
+const CONTEXT_WINDOW_FALLBACK: Record<AgentWindowNode['agent'], number> = {
   claude: 200_000,
   codex: 272_000,
+  cursor: 200_000,
+  copilot: 200_000,
+  opencode: 200_000,
 }
 
 function formatTokens(n: number): string {

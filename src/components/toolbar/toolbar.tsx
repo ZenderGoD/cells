@@ -1444,7 +1444,17 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
             const aw = agentWindows.find((a) => a.id === focusedAgentWindowId)
             if (!aw) return <div className="flex-1" />
             const awTitle =
-              aw.customTitle || aw.title || (aw.agent === 'claude' ? 'Claude Code' : 'Codex')
+              aw.customTitle ||
+              aw.title ||
+              (aw.agent === 'claude'
+                ? 'Claude Code'
+                : aw.agent === 'cursor'
+                  ? 'Cursor'
+                  : aw.agent === 'copilot'
+                    ? 'GitHub Copilot'
+                    : aw.agent === 'opencode'
+                      ? 'OpenCode'
+                      : 'Codex')
             const awStatus = aw.status || 'idle'
             const isEditingAgentTitle = editingTitleForAgentId === focusedAgentWindowId
             const awStatusPill = getAgentWindowStatusPresentation(awStatus, {
