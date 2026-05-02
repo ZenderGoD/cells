@@ -191,6 +191,15 @@ export interface AppShortcutPayload {
   browserId?: string | null
 }
 
+export interface ProjectFileSearchResult {
+  path: string
+  name: string
+  relativePath: string
+  directory: string
+  mtime: number
+  size: number
+}
+
 export interface UnpinnedWindowSnapshot {
   url?: string | null
   title?: string | null
@@ -1265,6 +1274,7 @@ export interface CellsAPI {
     pickFolder(): Promise<string | null>
     pickFiles(defaultDirectory?: string | null): Promise<string[] | null>
     listRecentFiles(): Promise<Array<{ path: string; name: string; mtime: number; source: string }>>
+    searchProjectFiles(rootPath: string, query?: string): Promise<ProjectFileSearchResult[]>
     copyRichTextToClipboard(text: string, html?: string | null): Promise<void>
     searchAgentMentions(cwd: string, query: string): Promise<AgentMentionSearchResult[]>
     getPathForFile(file: File): string

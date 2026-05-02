@@ -55,6 +55,7 @@ import { inferAgentFromTitle, type AgentName } from '@/lib/agent-command'
 import { terminalThemes } from '@/lib/terminal-themes'
 import { AppSettings } from './settings/app-settings'
 import { NewProjectDialog } from './new-project-dialog'
+import { OpenFileDialog } from './open-file-dialog'
 import { AgentIcon } from './agent-icon'
 import { StatusBar } from './toolbar/toolbar'
 import { getTerminalRestoreSnapshot } from './terminal/terminal-cache-api'
@@ -432,6 +433,7 @@ export function CommandPalette() {
   const [cmdHeld, setCmdHeld] = useState(false)
   const [showSettingsRaw, setShowSettingsRaw] = useState(false)
   const [showNewProjectRaw, setShowNewProjectRaw] = useState(false)
+  const [showOpenFileRaw, setShowOpenFileRaw] = useState(false)
   const [search, setSearch] = useState('')
   const [agents, setAgents] = useState<Record<string, boolean>>({})
   const [attachments, setAttachments] = useState<Attachment[]>([])
@@ -642,6 +644,9 @@ export function CommandPalette() {
     },
     [setOverlayOpen],
   )
+  const setShowOpenFile = useCallback((v: boolean) => {
+    setShowOpenFileRaw(v)
+  }, [])
 
   const togglePalette = useCallback(() => {
     setOpen((o) => {
@@ -1747,18 +1752,12 @@ export function CommandPalette() {
                       </CommandItem>
                       <CommandItem
                         value="open-file-in-editor"
-                        onSelect={async () => {
-                          const paths = await window.cells.app.pickFiles(
-                            useStore.getState().getActiveProjectPath(),
-                          )
-                          if (paths && paths.length > 0) {
-                            runAction(() => {
-                              const state = useStore.getState()
-                              for (const filePath of paths) {
-                                state.openTextEditorForPath(filePath, state.activeProjectId)
-                              }
-                            })
-                          }
+                        onSelect={() => {
+                          setOpen(false)
+                          setSearch('')
+                          setAttachments([])
+                          setOverlayOpen('command-palette', false)
+                          setShowOpenFile(true)
                         }}
                       >
                         <FileText className="text-muted-foreground" />
@@ -1938,6 +1937,7 @@ export function CommandPalette() {
 
       <AppSettings open={showSettingsRaw} onOpenChange={setShowSettings} />
       <NewProjectDialog open={showNewProjectRaw} onOpenChange={setShowNewProject} />
+      {showOpenFileRaw ? <OpenFileDialog open onOpenChange={setShowOpenFile} /> : null}
     </>
   )
 }

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent } from 'react'
 import { AnimatePresence, animate, motion, useMotionValue, useReducedMotion } from 'motion/react'
 import {
@@ -56,6 +56,9 @@ const TOOL_GROUP_ACTIVITY_RAIL_CLASS = 'ml-[18px]'
 const REPLY_SWIPE_TRIGGER_X = 34
 const REPLY_WHEEL_RESET_MS = 280
 const REPLY_WHEEL_COOLDOWN_MS = 700
+const STREAMING_TEXT_REVEAL_CHARS_PER_SECOND = 260
+const STREAMING_TEXT_FRAME_MS = 32
+const STREAMING_TEXT_MAX_LAG = 220
 
 interface AgentTurnCardProps {
   activities: AgentSessionMessage[]
@@ -89,6 +92,102 @@ function baseName(p: string): string {
 
 function isAbsolutePath(p: string): boolean {
   return p.startsWith('/') || p.startsWith('~') || /^[A-Za-z]:[\\/]/.test(p)
+}
+
+function useSmoothStreamingText(text: string, enabled: boolean) {
+  const [visibleText, setVisibleText] = useState(text)
+  const visibleRef = useRef(text)
+  const targetRef = useRef(text)
+  const frameRef = useRef<number | null>(null)
+  const lastFrameAtRef = useRef(0)
+  const carryRef = useRef(0)
+
+  useEffect(() => {
+    targetRef.current = text
+
+    const scheduleVisibleText = (next: string) => {
+      visibleRef.current = next
+      if (frameRef.current !== null) {
+        window.cancelAnimationFrame(frameRef.current)
+      }
+      frameRef.current = window.requestAnimationFrame(() => {
+        frameRef.current = null
+        setVisibleText(next)
+      })
+    }
+
+    if (!enabled) {
+      if (frameRef.current !== null) {
+        window.cancelAnimationFrame(frameRef.current)
+        frameRef.current = null
+      }
+      carryRef.current = 0
+      visibleRef.current = text
+      return
+    }
+
+    if (!text.startsWith(visibleRef.current)) {
+      carryRef.current = 0
+      scheduleVisibleText(text)
+      return
+    }
+
+    if (text.length - visibleRef.current.length > STREAMING_TEXT_MAX_LAG) {
+      carryRef.current = 0
+      scheduleVisibleText(text.slice(0, Math.max(0, text.length - STREAMING_TEXT_MAX_LAG)))
+      return
+    }
+
+    if (frameRef.current !== null) return
+
+    lastFrameAtRef.current = performance.now()
+    const tick = (now: number) => {
+      const target = targetRef.current
+      const current = visibleRef.current
+
+      if (current.length >= target.length) {
+        frameRef.current = null
+        lastFrameAtRef.current = now
+        return
+      }
+
+      if (now - lastFrameAtRef.current < STREAMING_TEXT_FRAME_MS) {
+        frameRef.current = window.requestAnimationFrame(tick)
+        return
+      }
+
+      const elapsed = now - lastFrameAtRef.current
+      lastFrameAtRef.current = now
+      carryRef.current += (elapsed / 1000) * STREAMING_TEXT_REVEAL_CHARS_PER_SECOND
+      const step = Math.max(1, Math.floor(carryRef.current))
+      carryRef.current -= step
+      const next = target.slice(0, Math.min(target.length, current.length + step))
+      visibleRef.current = next
+      setVisibleText(next)
+      frameRef.current = window.requestAnimationFrame(tick)
+    }
+
+    frameRef.current = window.requestAnimationFrame(tick)
+  }, [enabled, text])
+
+  useEffect(
+    () => () => {
+      if (frameRef.current !== null) window.cancelAnimationFrame(frameRef.current)
+    },
+    [],
+  )
+
+  if (!enabled) return text
+  if (!text.startsWith(visibleText)) return text
+  if (text.length - visibleText.length > STREAMING_TEXT_MAX_LAG) {
+    return text.slice(0, Math.max(0, text.length - STREAMING_TEXT_MAX_LAG))
+  }
+  return visibleText
+}
+
+function StreamingAgentMarkdown({ text, streaming }: { text: string; streaming: boolean }) {
+  const displayText = useSmoothStreamingText(text, streaming)
+  return <AgentMarkdown breaks={streaming}>{displayText}</AgentMarkdown>
 }
 
 function joinPath(basePath: string, relativePath: string): string {
@@ -952,12 +1051,10 @@ function ResponseSurface({
             {isBoxed && viewMode === 'source' ? (
               <pre className="whitespace-pre-wrap break-words font-sans py-2">{response.text}</pre>
             ) : (
-              <AgentMarkdown
-                breaks={response.status === 'in_progress'}
-                streamingReveal={response.status === 'in_progress'}
-              >
-                {response.text}
-              </AgentMarkdown>
+              <StreamingAgentMarkdown
+                text={response.text}
+                streaming={response.status === 'in_progress'}
+              />
             )}
           </div>
         ))}

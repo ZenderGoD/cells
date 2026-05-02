@@ -405,6 +405,7 @@ let cachedCodexPath: string | null | undefined
 let cachedCursorAgentPath: string | null | undefined
 let cachedCopilotPath: string | null | undefined
 let cachedOpencodePath: string | null | undefined
+let cachedBundledCopilotNativePath: string | null | undefined
 let cachedBundledCopilotLoaderPath: string | null | undefined
 let cachedCopilotNodePath: string | null | undefined
 let cachedCopilotWrapperPath: string | null | undefined
@@ -521,9 +522,48 @@ function getBundledCopilotLoaderPath(): string | null {
   return null
 }
 
+function getBundledCopilotNativePath(): string | null {
+  if (cachedBundledCopilotNativePath !== undefined) return cachedBundledCopilotNativePath
+  const packageName = `@github/copilot-${process.platform}-${process.arch}`
+  const executableName = process.platform === 'win32' ? 'copilot.exe' : 'copilot'
+  const candidates: string[] = []
+  const roots = [
+    process.cwd(),
+    app.getAppPath(),
+    path.dirname(app.getAppPath()),
+    process.resourcesPath,
+    path.join(process.resourcesPath, 'app.asar.unpacked'),
+  ]
+
+  for (const root of roots) {
+    candidates.push(path.join(root, 'node_modules', packageName, executableName))
+    const pnpmDir = path.join(root, 'node_modules', '.pnpm')
+    try {
+      for (const entry of readdirSync(pnpmDir)) {
+        if (entry.startsWith(`${packageName.replace('/', '+')}@`)) {
+          candidates.push(path.join(pnpmDir, entry, 'node_modules', packageName, executableName))
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      cachedBundledCopilotNativePath = candidate
+      return candidate
+    }
+  }
+  cachedBundledCopilotNativePath = null
+  return null
+}
+
 function getCopilotCliPath(): string | null {
   const system = getSystemCopilotPath()
   if (system) return system
+  const native = getBundledCopilotNativePath()
+  if (native) return native
 
   const nodePath = getCopilotNodePath()
   const loaderPath = getBundledCopilotLoaderPath()
@@ -556,6 +596,8 @@ function getCopilotLoginCommandParts(): {
 } | null {
   const system = getSystemCopilotPath()
   if (system) return { command: system, argsPrefix: [], displayPath: system }
+  const native = getBundledCopilotNativePath()
+  if (native) return { command: native, argsPrefix: [], displayPath: native }
   const bundled = getBundledCopilotLoaderPath()
   const nodePath = getCopilotNodePath()
   if (bundled && nodePath) return { command: nodePath, argsPrefix: [bundled], displayPath: bundled }

@@ -425,7 +425,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
 
               <ScrollArea
                 className={SETTINGS_SHEET_CLASSNAMES.contentScroll}
-                viewportClassName="px-4 py-3"
+                viewportClassName="overflow-x-hidden px-4 py-3 [&>div]:!block [&>div]:min-w-0"
               >
                 {activeSection === 'appearance' ? (
                   <div className="space-y-3.5">
@@ -2121,11 +2121,11 @@ function AgentAuthSection() {
 
   return (
     <SettingsGroup title="Accounts">
-      <p className="mb-3 max-w-full break-words text-[10px] leading-[1.45] text-muted-foreground/40">
+      <p className="mb-3 max-w-full text-[10px] leading-[1.45] text-muted-foreground/40">
         Cells drives Claude Code, Codex, Cursor, GitHub Copilot, and OpenCode agent sessions. Sign
         in once per provider and every agent window will inherit the credentials.
       </p>
-      <div className="space-y-2">
+      <div className="max-w-full space-y-2">
         {AGENT_AUTH_ITEMS.map(({ id, label }) => {
           const status = statuses[id]
           const checking = status === null && phases[id] === 'idle'
@@ -2178,8 +2178,11 @@ function AgentAuthSection() {
                     : 'bg-amber-400'
 
           return (
-            <div key={id} className="overflow-hidden rounded-md border border-border/10 p-2.5">
-              <div className="flex items-center gap-3">
+            <div
+              key={id}
+              className="max-w-full overflow-hidden rounded-md border border-border/10 p-2.5"
+            >
+              <div className="flex min-w-0 items-center gap-3">
                 <div className="flex size-7 shrink-0 items-center justify-center rounded-[8px] bg-foreground/5">
                   <AgentIcon agent={id} className="size-4" />
                 </div>
@@ -2220,7 +2223,7 @@ function AgentAuthSection() {
                   <button
                     type="button"
                     onClick={() => cancelLogin(id)}
-                    className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-border/30 bg-background/60 px-2 text-[11px] text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+                    className="inline-flex h-7 w-[78px] shrink-0 items-center justify-center gap-1.5 rounded-md border border-border/30 bg-background/60 px-2 text-[11px] text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
                   >
                     <Loader2 className="size-3 animate-spin" />
                     <span>Cancel</span>
@@ -2230,7 +2233,7 @@ function AgentAuthSection() {
                     type="button"
                     onClick={() => void launchLogin(id)}
                     disabled={checking || !canRunLogin}
-                    className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-border/30 bg-background/60 px-2 text-[11px] text-foreground transition-colors hover:bg-foreground/5 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="inline-flex h-7 w-[78px] shrink-0 items-center justify-center gap-1.5 rounded-md border border-border/30 bg-background/60 px-2 text-[11px] text-foreground transition-colors hover:bg-foreground/5 disabled:cursor-not-allowed disabled:opacity-50"
                     title={
                       checking
                         ? 'Checking sign-in status'

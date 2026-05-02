@@ -26,7 +26,7 @@ interface AgentMarkdownProps {
   onImageClick?: (src: string) => void
 }
 
-const STREAMING_REVEAL_WORDS = 9
+const STREAMING_REVEAL_WORDS = 6
 const MarkdownSourceContext = createContext('')
 
 function splitTrailingWords(text: string) {

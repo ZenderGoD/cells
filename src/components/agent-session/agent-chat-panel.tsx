@@ -1790,6 +1790,18 @@ function areReplyReferencesEqual(
   )
 }
 
+function hasAgentWindowPatchChanges(
+  current: AgentWindowNode | undefined,
+  patch: Partial<AgentWindowNode>,
+) {
+  if (!current) return true
+  const currentRecord = current as unknown as Record<string, unknown>
+  for (const [key, value] of Object.entries(patch)) {
+    if (currentRecord[key] !== value) return true
+  }
+  return false
+}
+
 function isAgentSessionMessageUnchanged(
   previous: AgentSessionMessage,
   next: AgentSessionMessage,
@@ -2899,6 +2911,90 @@ const MessageGroupRow = memo(
     previous.onReply === next.onReply,
 )
 
+interface ChatTranscriptProps {
+  agentWindowId: string
+  groups: ChatGroup[]
+  cwd: string | null
+  agent: AgentWindowNode['agent']
+  streamingTurnKey: string | null
+  composerOverlayHeight: number
+  showPendingLoader: boolean
+  listRef: RefObject<LegendListRef | null>
+  onReply: (replyTo: AgentReplyReference) => void
+}
+
+const ChatTranscript = memo(function ChatTranscript({
+  agentWindowId,
+  groups,
+  cwd,
+  agent,
+  streamingTurnKey,
+  composerOverlayHeight,
+  showPendingLoader,
+  listRef,
+  onReply,
+}: ChatTranscriptProps) {
+  const maintainScrollAtEnd = useMemo(
+    () =>
+      streamingTurnKey
+        ? {
+            animated: false,
+            on: { dataChange: true, itemLayout: true, layout: true },
+          }
+        : true,
+    [streamingTurnKey],
+  )
+  const footer = useMemo(
+    () => (
+      <div
+        className="mx-auto w-[calc(100%-2rem)] min-w-0 max-w-3xl"
+        style={{ paddingBottom: composerOverlayHeight + 24 }}
+      >
+        {showPendingLoader ? <PendingTurnIndicator agent={agent} /> : null}
+      </div>
+    ),
+    [agent, composerOverlayHeight, showPendingLoader],
+  )
+  const renderItem = useCallback(
+    ({ item }: { item: ChatGroup }) => (
+      <div
+        className="mx-auto w-[calc(100%-2rem)] min-w-0 max-w-3xl"
+        style={{ contentVisibility: 'auto', containIntrinsicSize: '120px' }}
+      >
+        <div className="pb-3">
+          <MessageGroupRow
+            group={item}
+            cwd={cwd}
+            agent={agent}
+            isStreamingLastTurn={item.kind === 'turn' && item.key === streamingTurnKey}
+            onReply={onReply}
+          />
+        </div>
+      </div>
+    ),
+    [agent, cwd, onReply, streamingTurnKey],
+  )
+
+  return (
+    <LegendList<ChatGroup>
+      key={agentWindowId}
+      ref={listRef}
+      data={groups}
+      extraData={streamingTurnKey || ''}
+      keyExtractor={chatGroupKey}
+      renderItem={renderItem}
+      estimatedItemSize={120}
+      initialScrollAtEnd
+      maintainScrollAtEnd={maintainScrollAtEnd}
+      maintainScrollAtEndThreshold={0.1}
+      maintainVisibleContentPosition={!streamingTurnKey}
+      className="h-full overscroll-y-contain"
+      ListHeaderComponent={<div className="h-6" />}
+      ListFooterComponent={footer}
+    />
+  )
+})
+
 export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const reduceMotion = useReducedMotion()
   const [snapshot, setSnapshot] = useState<AgentSessionSnapshot | null>(null)
@@ -2973,6 +3069,11 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const snapshotRef = useRef(snapshot)
   const windowIdRef = useRef(agentWindow.id)
   const activeElementPickerBrowserIdRef = useRef<string | null>(null)
+  const composerPersistTimerRef = useRef<number | null>(null)
+  const pendingComposerPersistRef = useRef<{
+    value: string
+    attachments: string[]
+  } | null>(null)
   useEffect(() => {
     inputRef.current = input
   }, [input])
@@ -2988,6 +3089,31 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   useEffect(() => {
     windowIdRef.current = agentWindow.id
   }, [agentWindow.id])
+  const flushPendingComposerPersist = useCallback(() => {
+    if (composerPersistTimerRef.current !== null) {
+      window.clearTimeout(composerPersistTimerRef.current)
+      composerPersistTimerRef.current = null
+    }
+    const pending = pendingComposerPersistRef.current
+    if (!pending) return
+    pendingComposerPersistRef.current = null
+    const storedWindow = useStore
+      .getState()
+      .agentWindows.find((entry) => entry.id === windowIdRef.current)
+    const storedInput = storedWindow?.composerDraft ?? ''
+    const storedAttachments = sanitizeComposerAttachments(storedWindow?.composerAttachments ?? [])
+    if (
+      storedInput === pending.value &&
+      areStringArraysEqual(storedAttachments, pending.attachments)
+    ) {
+      return
+    }
+    useStore.getState().syncAgentWindow(windowIdRef.current, {
+      composerDraft: pending.value || null,
+      composerAttachments: pending.attachments,
+    })
+  }, [])
+  useEffect(() => () => flushPendingComposerPersist(), [flushPendingComposerPersist])
   useEffect(() => {
     return () => {
       const browserId = activeElementPickerBrowserIdRef.current
@@ -3543,7 +3669,12 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       if (justCompleted && !isViewed) {
         patch.hasUnviewedCompletion = true
       }
-      storeState.syncAgentWindow(agentWindow.id, patch)
+      const currentAgentWindow = storeState.agentWindows.find(
+        (entry) => entry.id === agentWindow.id,
+      )
+      if (hasAgentWindowPatchChanges(currentAgentWindow, patch)) {
+        storeState.syncAgentWindow(agentWindow.id, patch)
+      }
     }
 
     const sync = (next: AgentSessionSnapshot) => {
@@ -3932,18 +4063,30 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         .agentWindows.find((entry) => entry.id === agentWindow.id)
       const storedInput = storedWindow?.composerDraft ?? ''
       const storedAttachments = sanitizeComposerAttachments(storedWindow?.composerAttachments ?? [])
-      if (
-        storedInput === sanitizedValue &&
-        areStringArraysEqual(storedAttachments, sanitizedAttachments)
-      ) {
+      const attachmentsChanged = !areStringArraysEqual(storedAttachments, sanitizedAttachments)
+      const persistImmediately = attachmentsChanged || options?.selectionOffset !== undefined
+      if (storedInput === sanitizedValue && !attachmentsChanged) {
+        pendingComposerPersistRef.current = null
+        if (composerPersistTimerRef.current !== null) {
+          window.clearTimeout(composerPersistTimerRef.current)
+          composerPersistTimerRef.current = null
+        }
         return
       }
-      useStore.getState().syncAgentWindow(agentWindow.id, {
-        composerDraft: sanitizedValue || null,
-        composerAttachments: sanitizedAttachments,
-      })
+      pendingComposerPersistRef.current = {
+        value: sanitizedValue,
+        attachments: sanitizedAttachments,
+      }
+      if (persistImmediately) {
+        flushPendingComposerPersist()
+        return
+      }
+      if (composerPersistTimerRef.current !== null) {
+        window.clearTimeout(composerPersistTimerRef.current)
+      }
+      composerPersistTimerRef.current = window.setTimeout(flushPendingComposerPersist, 250)
     },
-    [agentWindow.id],
+    [agentWindow.id, flushPendingComposerPersist],
   )
 
   const pickAttachments = useCallback(async () => {
@@ -5136,52 +5279,16 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                 </div>
               </ScrollArea>
             ) : (
-              <LegendList<ChatGroup>
-                key={agentWindow.id}
-                ref={listRef}
-                data={visibleGroups}
-                // LegendList recycles row renders and only refreshes them when
-                // the backing item or `extraData` changes. The row UI also
-                // depends on which turn is currently streaming, so surface that
-                // as extraData; otherwise an older turn can stay visually stuck
-                // in the "Working..." state after a newer turn becomes active.
-                extraData={streamingTurnKey || ''}
-                keyExtractor={chatGroupKey}
-                renderItem={({ item }) => (
-                  <div className="mx-auto w-[calc(100%-2rem)] min-w-0 max-w-3xl">
-                    <div className="pb-3">
-                      <MessageGroupRow
-                        group={item}
-                        cwd={activeProjectPath ?? visibleSnapshot?.cwd ?? agentWindow.cwd ?? null}
-                        agent={agentWindow.agent}
-                        isStreamingLastTurn={item.kind === 'turn' && item.key === streamingTurnKey}
-                        onReply={beginReply}
-                      />
-                    </div>
-                  </div>
-                )}
-                estimatedItemSize={120}
-                initialScrollAtEnd
-                maintainScrollAtEnd={
-                  streamingTurnKey
-                    ? {
-                        animated: false,
-                        on: { dataChange: true, itemLayout: true, layout: true },
-                      }
-                    : true
-                }
-                maintainScrollAtEndThreshold={0.1}
-                maintainVisibleContentPosition={!streamingTurnKey}
-                className="h-full overscroll-y-contain"
-                ListHeaderComponent={<div className="h-6" />}
-                ListFooterComponent={
-                  <div
-                    className="mx-auto w-[calc(100%-2rem)] min-w-0 max-w-3xl"
-                    style={{ paddingBottom: composerOverlayHeight + 24 }}
-                  >
-                    {showPendingLoader ? <PendingTurnIndicator agent={agentWindow.agent} /> : null}
-                  </div>
-                }
+              <ChatTranscript
+                agentWindowId={agentWindow.id}
+                groups={visibleGroups}
+                cwd={activeProjectPath ?? visibleSnapshot?.cwd ?? agentWindow.cwd ?? null}
+                agent={agentWindow.agent}
+                streamingTurnKey={streamingTurnKey}
+                composerOverlayHeight={composerOverlayHeight}
+                showPendingLoader={showPendingLoader}
+                listRef={listRef}
+                onReply={beginReply}
               />
             )}
           </div>

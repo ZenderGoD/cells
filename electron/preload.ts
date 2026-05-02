@@ -343,6 +343,17 @@ const api: CellsAPI = {
       ipcRenderer.invoke('app:list-recent-files') as Promise<
         Array<{ path: string; name: string; mtime: number; source: string }>
       >,
+    searchProjectFiles: (rootPath: string, query?: string) =>
+      ipcRenderer.invoke('app:search-project-files', rootPath, query) as Promise<
+        Array<{
+          path: string
+          name: string
+          relativePath: string
+          directory: string
+          mtime: number
+          size: number
+        }>
+      >,
     copyRichTextToClipboard: (text: string, html?: string | null) =>
       ipcRenderer.invoke('app:copy-rich-text-to-clipboard', text, html) as Promise<void>,
     searchAgentMentions: (cwd: string, query: string) =>

@@ -463,20 +463,20 @@ textarea[data-ghostty] {
   --streaming-reveal-ratio: 0;
   display: inline-block;
   white-space: pre;
-  animation: streaming-reveal-character 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
-  animation-delay: calc(var(--streaming-reveal-ratio) * 140ms);
+  animation: streaming-reveal-character 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: calc(var(--streaming-reveal-ratio) * 72ms);
   transform: translateZ(0);
-  will-change: filter, opacity;
+  will-change: opacity, transform;
 }
 
 @keyframes streaming-reveal-character {
   from {
-    opacity: calc(1 - (var(--streaming-reveal-ratio) * 0.92));
-    filter: blur(calc(var(--streaming-reveal-ratio) * 3.8px));
+    opacity: calc(0.28 + ((1 - var(--streaming-reveal-ratio)) * 0.34));
+    transform: translate3d(0, 0.08em, 0);
   }
   to {
     opacity: 1;
-    filter: blur(0);
+    transform: translate3d(0, 0, 0);
   }
 }
 

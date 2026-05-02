@@ -298,6 +298,7 @@ const previousAgentSessionSnapshots = new Map<string, AgentSessionSnapshot>()
 const agentSessionUpdateSubscriptions = new Map<number, Set<string>>()
 const agentSessionSubscriberCleanupIds = new Set<number>()
 let pendingAgentSessionFlushTimer: NodeJS.Timeout | null = null
+const AGENT_SESSION_UPDATE_FLUSH_MS = 96
 let cachedAgentNotificationSettings: AgentNotificationSettings | null = null
 const cachedAgentWindowProjectIds = new Map<string, string>()
 // Per-window queued-message count reported by the renderer. Used to suppress
@@ -361,9 +362,15 @@ agentSessionService.on('update', (snapshot) => {
   maybeNotifyForAgentSessionUpdate(snapshot)
   pendingAgentSessionSnapshots.set(snapshot.windowId, snapshot)
   if (pendingAgentSessionFlushTimer) return
-  // Coalesce bursty agent-session updates into ~30fps batches instead of
-  // hammering every renderer on every streaming chunk.
-  pendingAgentSessionFlushTimer = setTimeout(flushAgentSessionSnapshots, 32)
+  // Coalesce bursty agent-session updates. Each update currently carries the
+  // full session snapshot, so long chats make structured clone cost dominate
+  // renderer input responsiveness. The renderer smooths text reveal locally,
+  // so we can ship fewer full-history snapshots without making text appear
+  // chunky.
+  pendingAgentSessionFlushTimer = setTimeout(
+    flushAgentSessionSnapshots,
+    AGENT_SESSION_UPDATE_FLUSH_MS,
+  )
 })
 
 function subscribeWebContentsToAgentSession(contents: Electron.WebContents, windowId: string) {
@@ -2864,6 +2871,194 @@ ipcMain.handle('app:pick-files', async (_event, defaultDirectory?: string | null
     properties: ['openFile', 'multiSelections'],
   })
   return result.canceled ? null : result.filePaths
+})
+
+const PROJECT_FILE_SEARCH_EXCLUDED_DIRS = new Set([
+  '.cache',
+  '.git',
+  '.hg',
+  '.next',
+  '.nuxt',
+  '.parcel-cache',
+  '.pnpm-store',
+  '.pytest_cache',
+  '.ruff_cache',
+  '.svelte-kit',
+  '.turbo',
+  '.venv',
+  '.vite',
+  '.yarn',
+  'build',
+  'coverage',
+  'dist',
+  'dist-electron',
+  'node_modules',
+  'out',
+  'target',
+  'vendor',
+])
+const PROJECT_FILE_SEARCH_MAX_RESULTS = 200
+const PROJECT_FILE_SEARCH_MAX_VISITED = 20000
+const PROJECT_FILE_SEARCH_CACHE_TTL_MS = 30_000
+
+type ProjectFileSearchResult = {
+  path: string
+  name: string
+  relativePath: string
+  directory: string
+  mtime: number
+  size: number
+}
+
+const projectFileSearchCache = new Map<
+  string,
+  {
+    expiresAt: number
+    promise: Promise<ProjectFileSearchResult[]>
+  }
+>()
+
+function scoreProjectFileMatch(relativePath: string, query: string): number | null {
+  const normalizedQuery = query.trim().toLowerCase()
+  if (!normalizedQuery) return 0
+
+  const haystack = relativePath.toLowerCase()
+  const filename = path.basename(relativePath).toLowerCase()
+  const tokens = normalizedQuery.split(/\s+/).filter(Boolean)
+  let total = 0
+
+  for (const token of tokens) {
+    if (filename === token) {
+      total += 1200
+      continue
+    }
+    if (filename.startsWith(token)) {
+      total += 900 - filename.length
+      continue
+    }
+    const filenameIndex = filename.indexOf(token)
+    if (filenameIndex >= 0) {
+      total += 700 - filenameIndex - filename.length * 0.1
+      continue
+    }
+    const pathIndex = haystack.indexOf(token)
+    if (pathIndex >= 0) {
+      total += 450 - pathIndex * 0.25
+      continue
+    }
+
+    let cursor = 0
+    let gaps = 0
+    for (const char of token) {
+      const foundAt = haystack.indexOf(char, cursor)
+      if (foundAt < 0) return null
+      gaps += foundAt - cursor
+      cursor = foundAt + 1
+    }
+    total += Math.max(120, 320 - gaps)
+  }
+
+  return total
+}
+
+async function buildProjectFileSearchIndex(
+  resolvedRoot: string,
+): Promise<ProjectFileSearchResult[]> {
+  const files: ProjectFileSearchResult[] = []
+  let visited = 0
+
+  async function walk(dir: string) {
+    if (visited >= PROJECT_FILE_SEARCH_MAX_VISITED) return
+
+    let entries: fs.Dirent[]
+    try {
+      entries = await fs.promises.readdir(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+
+    entries.sort((a, b) => {
+      if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1
+      return a.name.localeCompare(b.name)
+    })
+
+    for (const entry of entries) {
+      if (visited >= PROJECT_FILE_SEARCH_MAX_VISITED) return
+      if (entry.name === '.DS_Store') continue
+
+      const fullPath = path.join(dir, entry.name)
+      const relativePath = path.relative(resolvedRoot, fullPath)
+      if (!relativePath || relativePath.startsWith('..') || path.isAbsolute(relativePath)) continue
+
+      if (entry.isDirectory()) {
+        if (PROJECT_FILE_SEARCH_EXCLUDED_DIRS.has(entry.name)) continue
+        await walk(fullPath)
+        continue
+      }
+
+      if (!entry.isFile()) continue
+      visited += 1
+
+      try {
+        const stat = await fs.promises.stat(fullPath)
+        files.push({
+          path: fullPath,
+          name: entry.name,
+          relativePath,
+          directory: path.dirname(relativePath) === '.' ? '' : path.dirname(relativePath),
+          mtime: stat.mtimeMs,
+          size: stat.size,
+        })
+      } catch {}
+    }
+  }
+
+  await walk(resolvedRoot)
+  return files
+}
+
+async function getProjectFileSearchIndex(resolvedRoot: string) {
+  const now = Date.now()
+  const cached = projectFileSearchCache.get(resolvedRoot)
+  if (cached && cached.expiresAt > now) return cached.promise
+
+  const promise = buildProjectFileSearchIndex(resolvedRoot).catch((error) => {
+    projectFileSearchCache.delete(resolvedRoot)
+    throw error
+  })
+  projectFileSearchCache.set(resolvedRoot, {
+    expiresAt: now + PROJECT_FILE_SEARCH_CACHE_TTL_MS,
+    promise,
+  })
+  return promise
+}
+
+ipcMain.handle('app:search-project-files', async (_event, rootPath: string, query?: string) => {
+  if (typeof rootPath !== 'string' || !rootPath.trim()) return []
+  const resolvedRoot = path.resolve(rootPath)
+  const rootStat = await fs.promises.stat(resolvedRoot).catch(() => null)
+  if (!rootStat?.isDirectory()) return []
+
+  const files = await getProjectFileSearchIndex(resolvedRoot)
+  const results: Array<ProjectFileSearchResult & { score: number }> = []
+
+  for (const file of files) {
+    const score = scoreProjectFileMatch(file.relativePath, query ?? '')
+    if (score === null) continue
+    results.push({ ...file, score })
+  }
+
+  results.sort((a, b) => {
+    if (a.score !== b.score) return b.score - a.score
+    if (!query?.trim() && a.mtime !== b.mtime) return b.mtime - a.mtime
+    if (a.relativePath.length !== b.relativePath.length)
+      return a.relativePath.length - b.relativePath.length
+    return a.relativePath.localeCompare(b.relativePath)
+  })
+
+  return results
+    .slice(0, PROJECT_FILE_SEARCH_MAX_RESULTS)
+    .map(({ score: _score, ...result }) => result)
 })
 
 ipcMain.handle('editor:read-file', async (_event, filePath: string) => {
