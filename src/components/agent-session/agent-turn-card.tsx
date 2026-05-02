@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent } from 'react'
 import { AnimatePresence, animate, motion, useMotionValue, useReducedMotion } from 'motion/react'
 import {
@@ -56,9 +56,10 @@ const TOOL_GROUP_ACTIVITY_RAIL_CLASS = 'ml-[18px]'
 const REPLY_SWIPE_TRIGGER_X = 34
 const REPLY_WHEEL_RESET_MS = 280
 const REPLY_WHEEL_COOLDOWN_MS = 700
-const STREAMING_TEXT_REVEAL_CHARS_PER_SECOND = 260
-const STREAMING_TEXT_FRAME_MS = 32
-const STREAMING_TEXT_MAX_LAG = 220
+const STREAMING_TEXT_REVEAL_CHARS_PER_SECOND = 520
+const STREAMING_TEXT_MAX_LAG = 900
+const STREAMING_MARKDOWN_TAIL_TARGET_CHARS = 700
+const STREAMING_MARKDOWN_TAIL_MAX_CHARS = 1300
 
 interface AgentTurnCardProps {
   activities: AgentSessionMessage[]
@@ -94,81 +95,144 @@ function isAbsolutePath(p: string): boolean {
   return p.startsWith('/') || p.startsWith('~') || /^[A-Za-z]:[\\/]/.test(p)
 }
 
-function useSmoothStreamingText(text: string, enabled: boolean) {
-  const [visibleText, setVisibleText] = useState(text)
-  const visibleRef = useRef(text)
+function findStreamingMarkdownCommitIndex(text: string, currentIndex: number) {
+  let candidate = currentIndex
+  const tail = text.slice(currentIndex)
+  const blockBoundary = /\n[ \t]*\n/g
+  let match: RegExpExecArray | null
+  while ((match = blockBoundary.exec(tail))) {
+    candidate = currentIndex + match.index + match[0].length
+  }
+
+  if (tail.length > STREAMING_MARKDOWN_TAIL_MAX_CHARS) {
+    const targetIndex = Math.max(currentIndex, text.length - STREAMING_MARKDOWN_TAIL_TARGET_CHARS)
+    let fallback = text.lastIndexOf('\n', targetIndex)
+    if (fallback <= currentIndex) fallback = text.lastIndexOf(' ', targetIndex)
+    if (fallback <= currentIndex) fallback = targetIndex
+    candidate = Math.max(candidate, fallback + 1)
+  }
+
+  return Math.min(candidate, text.length)
+}
+
+function useStreamingMarkdownSegments(text: string, enabled: boolean) {
+  const [segments, setSegments] = useState(() => ({
+    markdownText: enabled ? '' : text,
+    tailText: enabled ? text : '',
+  }))
+  const committedIndexRef = useRef(0)
+  const committedTextRef = useRef('')
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      if (!enabled) {
+        committedIndexRef.current = text.length
+        committedTextRef.current = text
+        const next = { markdownText: text, tailText: '' }
+        setSegments((current) =>
+          current.markdownText === next.markdownText && current.tailText === next.tailText
+            ? current
+            : next,
+        )
+        return
+      }
+
+      if (!text.startsWith(committedTextRef.current)) {
+        committedIndexRef.current = 0
+        committedTextRef.current = ''
+      }
+
+      const nextCommittedIndex = findStreamingMarkdownCommitIndex(text, committedIndexRef.current)
+      if (nextCommittedIndex !== committedIndexRef.current) {
+        committedIndexRef.current = nextCommittedIndex
+        committedTextRef.current = text.slice(0, nextCommittedIndex)
+      }
+
+      const next = {
+        markdownText: committedTextRef.current,
+        tailText: text.slice(committedIndexRef.current),
+      }
+      setSegments((current) =>
+        current.markdownText === next.markdownText && current.tailText === next.tailText
+          ? current
+          : next,
+      )
+    })
+
+    return () => window.cancelAnimationFrame(frame)
+  }, [enabled, text])
+
+  return enabled ? segments : { markdownText: text, tailText: '' }
+}
+
+function StreamingPlainTextTail({ text }: { text: string }) {
+  const ref = useRef<HTMLSpanElement | null>(null)
+  const visibleRef = useRef('')
   const targetRef = useRef(text)
   const frameRef = useRef<number | null>(null)
   const lastFrameAtRef = useRef(0)
   const carryRef = useRef(0)
+  const reduceMotion = useReducedMotion()
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    const element = ref.current
+    if (!element) return
+
     targetRef.current = text
 
-    const scheduleVisibleText = (next: string) => {
-      visibleRef.current = next
-      if (frameRef.current !== null) {
-        window.cancelAnimationFrame(frameRef.current)
-      }
-      frameRef.current = window.requestAnimationFrame(() => {
-        frameRef.current = null
-        setVisibleText(next)
-      })
-    }
-
-    if (!enabled) {
+    if (reduceMotion || !text) {
       if (frameRef.current !== null) {
         window.cancelAnimationFrame(frameRef.current)
         frameRef.current = null
       }
-      carryRef.current = 0
       visibleRef.current = text
+      element.textContent = text
       return
     }
 
     if (!text.startsWith(visibleRef.current)) {
+      visibleRef.current = ''
       carryRef.current = 0
-      scheduleVisibleText(text)
-      return
+      element.textContent = ''
     }
 
     if (text.length - visibleRef.current.length > STREAMING_TEXT_MAX_LAG) {
+      visibleRef.current = text.slice(0, Math.max(0, text.length - STREAMING_TEXT_MAX_LAG))
+      element.textContent = visibleRef.current
       carryRef.current = 0
-      scheduleVisibleText(text.slice(0, Math.max(0, text.length - STREAMING_TEXT_MAX_LAG)))
-      return
     }
 
     if (frameRef.current !== null) return
 
     lastFrameAtRef.current = performance.now()
     const tick = (now: number) => {
+      const node = ref.current
+      if (!node) {
+        frameRef.current = null
+        return
+      }
+
       const target = targetRef.current
       const current = visibleRef.current
-
       if (current.length >= target.length) {
         frameRef.current = null
         lastFrameAtRef.current = now
         return
       }
 
-      if (now - lastFrameAtRef.current < STREAMING_TEXT_FRAME_MS) {
-        frameRef.current = window.requestAnimationFrame(tick)
-        return
-      }
-
-      const elapsed = now - lastFrameAtRef.current
+      const elapsed = Math.max(0, now - lastFrameAtRef.current)
       lastFrameAtRef.current = now
       carryRef.current += (elapsed / 1000) * STREAMING_TEXT_REVEAL_CHARS_PER_SECOND
       const step = Math.max(1, Math.floor(carryRef.current))
       carryRef.current -= step
       const next = target.slice(0, Math.min(target.length, current.length + step))
       visibleRef.current = next
-      setVisibleText(next)
+      node.textContent = next
       frameRef.current = window.requestAnimationFrame(tick)
     }
 
     frameRef.current = window.requestAnimationFrame(tick)
-  }, [enabled, text])
+  }, [reduceMotion, text])
 
   useEffect(
     () => () => {
@@ -177,17 +241,24 @@ function useSmoothStreamingText(text: string, enabled: boolean) {
     [],
   )
 
-  if (!enabled) return text
-  if (!text.startsWith(visibleText)) return text
-  if (text.length - visibleText.length > STREAMING_TEXT_MAX_LAG) {
-    return text.slice(0, Math.max(0, text.length - STREAMING_TEXT_MAX_LAG))
-  }
-  return visibleText
+  return <span ref={ref}>{reduceMotion ? text : null}</span>
 }
 
 function StreamingAgentMarkdown({ text, streaming }: { text: string; streaming: boolean }) {
-  const displayText = useSmoothStreamingText(text, streaming)
-  return <AgentMarkdown breaks={streaming}>{displayText}</AgentMarkdown>
+  const { markdownText, tailText } = useStreamingMarkdownSegments(text, streaming)
+  if (!streaming) return <AgentMarkdown>{text}</AgentMarkdown>
+  return (
+    <>
+      {markdownText ? <AgentMarkdown breaks>{markdownText}</AgentMarkdown> : null}
+      {tailText ? (
+        <div className="agent-markdown">
+          <p className="my-2 whitespace-pre-wrap break-words leading-relaxed">
+            <StreamingPlainTextTail text={tailText} />
+          </p>
+        </div>
+      ) : null}
+    </>
+  )
 }
 
 function joinPath(basePath: string, relativePath: string): string {
@@ -524,6 +595,33 @@ function formatToolRow(message: AgentSessionMessage): {
     return { summary: `${input.todos.length} todos` }
   }
   return {}
+}
+
+function truncatePreviewText(text: string, maxLength = 110) {
+  const cleaned = text.replace(/\s+/g, ' ').trim()
+  return cleaned.length > maxLength ? `${cleaned.slice(0, maxLength)}…` : cleaned
+}
+
+function formatActivityPreview(message: AgentSessionMessage, running: boolean) {
+  if (message.role === 'reasoning') return 'Thinking…'
+  if (message.role === 'assistant') {
+    const text = truncatePreviewText(message.text || '')
+    return text ? `Agent · ${text}` : running ? 'Running Agent…' : 'Agent'
+  }
+  if (message.role !== 'tool') return running ? 'Working…' : 'Completed'
+
+  const toolName = getToolDisplayName(message.title || 'Tool')
+  const row = formatToolRow(message)
+  const action = running ? `Running ${toolName}` : toolName
+  const filename = row.filename ? ` ${row.filename}` : ''
+
+  if (row.description) {
+    return `${action}${filename} · ${truncatePreviewText(row.description)}`
+  }
+  if (row.summary) {
+    return `${action}${filename} · ${truncatePreviewText(row.summary)}`
+  }
+  return running ? `${action}${filename}…` : `${action}${filename}`
 }
 
 // Craft-style status icon: spinner while running, green check when done,
@@ -895,40 +993,36 @@ function usePreviewText(
           : agent === 'opencode'
             ? 'OpenCode'
             : 'Codex'
-  return useMemo(() => {
-    if (activities.length === 0) {
-      return isStreaming ? `${agentLabel} is thinking…` : 'No activity'
-    }
-    // Once the turn is idle, show a completion summary — even if some tool
-    // row still happens to carry `in_progress` (e.g. tool_result event
-    // dropped), we don't want to keep saying "Running Read…".
-    if (!isStreaming) {
-      const errorCount = activities.filter((a) => a.status === 'failed').length
-      const durationMs = getActivitiesDurationMs(activities)
-      for (let index = activities.length - 1; index >= 0; index -= 1) {
-        const a = activities[index]
-        const row = formatToolRow(a)
-        if (row.description) return row.description
-      }
-      const completedLabel = durationMs ? `Completed · ${formatDuration(durationMs)}` : 'Completed'
-      return errorCount > 0 ? `${completedLabel} · ${errorCount} failed` : completedLabel
-    }
-    // Streaming: prefer a running activity's description/summary
-    for (let index = activities.length - 1; index >= 0; index -= 1) {
-      const running = activities[index]
-      if (running.status !== 'in_progress') continue
-      const row = formatToolRow(running)
-      if (row.description) return row.description
-      if (running.role === 'reasoning') return 'Thinking…'
-      return `Running ${getToolDisplayName(running.title || 'Tool')}…`
-    }
+  if (activities.length === 0) {
+    return isStreaming ? `${agentLabel} is thinking…` : 'No activity'
+  }
+  // Once the turn is idle, show a completion summary — even if some tool
+  // row still happens to carry `in_progress` (e.g. tool_result event
+  // dropped), we don't want to keep saying "Running Read…".
+  if (!isStreaming) {
+    const errorCount = activities.filter((a) => a.status === 'failed').length
+    const durationMs = getActivitiesDurationMs(activities)
     for (let index = activities.length - 1; index >= 0; index -= 1) {
       const a = activities[index]
       const row = formatToolRow(a)
       if (row.description) return row.description
     }
-    return 'Working…'
-  }, [activities, isStreaming, agentLabel])
+    const completedLabel = durationMs ? `Completed · ${formatDuration(durationMs)}` : 'Completed'
+    return errorCount > 0 ? `${completedLabel} · ${errorCount} failed` : completedLabel
+  }
+  // Streaming: prefer the newest running activity and include the file,
+  // command, query, or prompt when we can derive one.
+  for (let index = activities.length - 1; index >= 0; index -= 1) {
+    const running = activities[index]
+    if (running.status !== 'in_progress') continue
+    return formatActivityPreview(running, true)
+  }
+  for (let index = activities.length - 1; index >= 0; index -= 1) {
+    const a = activities[index]
+    const preview = formatActivityPreview(a, false)
+    if (preview) return preview
+  }
+  return 'Working…'
 }
 
 // Mirrors Craft's ResponseCard — ../craft-agents-oss/packages/ui/src/components/chat/TurnCard.tsx
@@ -1153,6 +1247,7 @@ function ChangedFilesSection({
   const [open, setOpen] = useState(false)
   const reduceMotion = useReducedMotion()
   const files = useMemo(() => groupDiffsByFile(activities), [activities])
+  const durationMs = getActivitiesDurationMs(activities)
   if (files.length === 0) return null
   const totals = files.reduce(
     (acc, f) => ({
@@ -1179,6 +1274,14 @@ function ChangedFilesSection({
           {totals.additions > 0 && <span className="text-emerald-400/80">+{totals.additions}</span>}
           {totals.deletions > 0 && <span className="text-rose-400/80">-{totals.deletions}</span>}
         </span>
+        {durationMs ? (
+          <>
+            <span className="text-muted-foreground/35">·</span>
+            <span className="shrink-0 tabular-nums text-muted-foreground/55">
+              {formatDuration(durationMs)}
+            </span>
+          </>
+        ) : null}
       </button>
       <AnimatePresence initial={false}>
         {open ? (

@@ -1,4 +1,13 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
+import {
+  Fragment,
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type RefObject,
+} from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import {
   ArchiveRestore,
@@ -408,11 +417,11 @@ function sanitizeComposerAttachments(paths: string[] | null | undefined): string
 }
 
 const IMAGE_ATTACHMENT_TOKEN_RE = /\[Image\s+\d+\]\s*/gi
-const IMAGE_ATTACHMENT_TOKEN_CAPTURE_RE = /\[Image\s+(\d+)\]/gi
+const IMAGE_ATTACHMENT_TOKEN_CAPTURE_RE = /\[Image\s+(\d+)\][ \t]*/gi
 const IMAGE_ATTACHMENT_TOKEN_AT_START_RE = /^\s*\[Image\s+\d+\]/i
 const IMAGE_ATTACHMENT_TOKEN_AT_END_RE = /\[Image\s+\d+\]\s*$/i
 const USER_IMAGE_TOKEN_CHIP_CLASS =
-  'mx-0.5 inline-flex h-6 max-w-full items-center gap-1.5 rounded-[6px] border border-border/35 bg-background/45 py-0.5 pl-1 text-[12px] font-medium text-foreground/85 shadow-minimal'
+  'mx-0.5 inline-flex h-[1.85em] max-w-full items-center gap-1.5 rounded-[6px] border border-border/35 bg-background/45 py-0.5 pl-1 text-[12px] font-medium leading-none text-foreground/85 shadow-minimal'
 const USER_IMAGE_TOKEN_THUMB_CLASS = 'size-4 shrink-0 rounded-[3px] bg-foreground/10 object-cover'
 const BROWSER_SELECTION_TOKEN_CHIP_CLASS =
   'my-1 inline-flex max-w-full items-center gap-2 rounded-[7px] border border-cyan-300/20 bg-cyan-400/10 px-2.5 py-1.5 text-[12px] text-cyan-50/90 shadow-minimal'
@@ -884,7 +893,7 @@ function UserImageTokenChip({
       type="button"
       onClick={onPreview}
       disabled={!path}
-      className={`${USER_IMAGE_TOKEN_CHIP_CLASS} pr-2 align-middle transition-colors hover:bg-background/65 disabled:pointer-events-none disabled:opacity-70`}
+      className={`${USER_IMAGE_TOKEN_CHIP_CLASS} pr-2 align-[-0.28em] transition-colors hover:bg-background/65 disabled:pointer-events-none disabled:opacity-70`}
       title={path ?? label}
     >
       {url ? (
@@ -968,14 +977,7 @@ function UserMessageText({
       {parts.map((part, index) => {
         if (typeof part === 'string') {
           if (!part) return null
-          return (
-            <span
-              key={index}
-              className="inline-flex min-h-6 items-center align-middle leading-[1.45]"
-            >
-              {part}
-            </span>
-          )
+          return <Fragment key={index}>{part}</Fragment>
         }
         const path = images[part.imageIndex]
         return (
