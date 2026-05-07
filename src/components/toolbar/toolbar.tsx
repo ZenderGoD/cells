@@ -1755,7 +1755,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
                   className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-md text-[11px] text-foreground hover:bg-muted/60 transition-colors"
                 >
                   <FolderOpen className="w-3.5 h-3.5 text-muted-foreground" />
-                  Open file
+                  Search files
                 </button>
                 <button
                   onClick={() => {

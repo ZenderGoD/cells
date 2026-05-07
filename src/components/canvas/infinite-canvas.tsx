@@ -25,6 +25,7 @@ import { BrowserNode } from './browser-node'
 import { AgentWindowNode } from './agent-window-node'
 import { TextEditorNode } from './text-editor-node'
 import { CANVAS_GESTURE_LOCKED_EVENT } from '@/components/ui/popover'
+import { CELLS_SHORTCUT_STATE_RESET_EVENT } from '@/lib/cells-shortcuts'
 import { useShallow } from 'zustand/react/shallow'
 import type { WindowSection } from '@/types'
 
@@ -549,23 +550,82 @@ export function InfiniteCanvas() {
     if (snapTimerRef.current) clearTimeout(snapTimerRef.current)
     snapTimerRef.current = setTimeout(() => {
       snapTimerRef.current = null
-      if (useStore.getState().activeProjectId !== scheduledProjectId) return
+      const currentState = useStore.getState()
+      if (currentState.activeProjectId !== scheduledProjectId) return
+      if (document.visibilityState === 'hidden' || currentState.appWindowFocused === false) {
+        setIsUserDriving(false)
+        return
+      }
+
+      const currentViewport = getCanvasViewportSize({
+        titleBarHidden: currentState.titleBarHidden,
+      })
+      const currentWindows = getCanvasWindows(
+        currentState.terminals,
+        currentState.browsers,
+        currentState.textEditors,
+        currentState.agentWindows,
+      )
+      const currentSectionTargets = currentState.windowSections.map((section) => ({
+        id: section.id,
+        type: 'section' as const,
+        x: section.x,
+        y: section.y,
+        width: Math.max(SECTION_MIN_WIDTH, section.width ?? currentViewport.width - 16),
+        height: Math.max(SECTION_MIN_HEIGHT, section.height ?? currentViewport.height - 16),
+      }))
+      const currentFocusedSection = currentState.focusedWindowSectionId
+        ? currentSectionTargets.find(
+            (section) => section.id === currentState.focusedWindowSectionId,
+          )
+        : null
+      const currentTargets = currentFocusedSection
+        ? [currentFocusedSection]
+        : [...currentWindows, ...currentSectionTargets]
+      const currentViewL = -currentState.canvas.x / currentState.canvas.scale
+      const currentViewT = -currentState.canvas.y / currentState.canvas.scale
+      const currentViewR = currentViewL + currentViewport.width / currentState.canvas.scale
+      const currentViewB = currentViewT + currentViewport.height / currentState.canvas.scale
+      const currentViewArea = Math.max(
+        1,
+        (currentViewR - currentViewL) * (currentViewB - currentViewT),
+      )
+      let snapTarget: (typeof currentTargets)[number] | null = null
+      let snapCoverage = 0
+      for (const target of currentTargets) {
+        const overlapW = Math.max(
+          0,
+          Math.min(target.x + target.width, currentViewR) - Math.max(target.x, currentViewL),
+        )
+        const overlapH = Math.max(
+          0,
+          Math.min(target.y + target.height, currentViewB) - Math.max(target.y, currentViewT),
+        )
+        const coverage = (overlapW * overlapH) / currentViewArea
+        if (coverage > snapCoverage) {
+          snapCoverage = coverage
+          snapTarget = target
+        }
+      }
+
       setIsUserDriving(false)
       setSnapPaused(false)
-      if (!bestTarget) {
+      if (!snapTarget && !bestTarget) {
         snapToClosest()
         return
       }
-      if (bestTarget.type === 'section') {
-        snapToWindowSection(bestTarget.id)
-      } else if (bestTarget.type === 'terminal') {
-        snapToTerminal(bestTarget.id)
-      } else if (bestTarget.type === 'editor') {
-        snapToTextEditor(bestTarget.id)
-      } else if (bestTarget.type === 'agent') {
-        snapToAgentWindow(bestTarget.id)
+      const target = snapTarget ?? bestTarget
+      if (!target) return
+      if (target.type === 'section') {
+        snapToWindowSection(target.id)
+      } else if (target.type === 'terminal') {
+        snapToTerminal(target.id)
+      } else if (target.type === 'editor') {
+        snapToTextEditor(target.id)
+      } else if (target.type === 'agent') {
+        snapToAgentWindow(target.id)
       } else {
-        snapToBrowser(bestTarget.id)
+        snapToBrowser(target.id)
       }
     }, delay)
   }, [
@@ -709,6 +769,7 @@ export function InfiniteCanvas() {
   // Pan handlers
   const handleCanvasMouseDown = useCallback(
     (e: MouseEvent) => {
+      containerRef.current?.focus({ preventScroll: true })
       const termNode = (e.target as HTMLElement).closest('.terminal-node')
       const browserNode = (e.target as HTMLElement).closest('.browser-node')
       const editorNode = (e.target as HTMLElement).closest('.text-editor-node')
@@ -923,15 +984,22 @@ export function InfiniteCanvas() {
       if (isPrimaryModifierKey(e.key)) setPrimaryModifierHeld(false)
     }
     const blur = () => setPrimaryModifierHeld(false)
+    const reset = () => {
+      setPrimaryModifierHeld(false)
+      cancelSnap()
+      setIsUserDriving(false)
+    }
     window.addEventListener('keydown', down)
     window.addEventListener('keyup', up)
     window.addEventListener('blur', blur)
+    window.addEventListener(CELLS_SHORTCUT_STATE_RESET_EVENT, reset)
     return () => {
       window.removeEventListener('keydown', down)
       window.removeEventListener('keyup', up)
       window.removeEventListener('blur', blur)
+      window.removeEventListener(CELLS_SHORTCUT_STATE_RESET_EVENT, reset)
     }
-  }, [])
+  }, [cancelSnap])
 
   // Wheel handler: trackpad pan + pinch zoom, with snap-after-idle
   // Reads canvas state directly from the store on each event so rapid trackpad
@@ -1066,6 +1134,7 @@ export function InfiniteCanvas() {
         primaryModifierHeld && !isPanning && !isDragging && 'cursor-grab',
         selectionMode && !isPanning && !isDragging && !primaryModifierHeld && 'cursor-default',
       )}
+      tabIndex={-1}
       onMouseDown={handleCanvasMouseDown}
       onWheelCapture={handleWheel}
     >

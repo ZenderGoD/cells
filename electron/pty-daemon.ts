@@ -31,14 +31,16 @@ import path from 'path'
 import { HOME_DIR } from './pty-shared'
 import { PTY_DAEMON_COMPAT_VERSION, PTY_DAEMON_PROTOCOL_VERSION } from './pty-daemon-contract'
 import { createTerminalSessionManager, getTerminalBackendSupportStatus } from './terminal-backend'
-import type { TerminalSessionBackend } from '../src/types'
+import type { Project, ProjectsState, TerminalNode, TerminalSessionBackend } from '../src/types'
 
 // ---------- Paths ----------
 
 const STATE_DIR = process.env.CELLS_HOME_DIR || path.join(HOME_DIR, '.cells')
 const SOCKET_PATH = path.join(STATE_DIR, 'pty-daemon.sock')
+const SERVICE_SOCKET_PATH = path.join(STATE_DIR, 'terminal-service.sock')
 const PID_FILE = path.join(STATE_DIR, 'pty-daemon.pid')
 const VERSION_FILE = path.join(STATE_DIR, 'pty-daemon.version')
+const STATE_FILE = path.join(STATE_DIR, 'state.json')
 const BACKEND = (
   process.env.CELLS_TERMINAL_BACKEND === 'tmux' ? 'tmux' : 'zellij'
 ) as TerminalSessionBackend
@@ -46,6 +48,8 @@ const BACKEND = (
 // ---------- State ----------
 
 const subscribers = new Map<string, net.Socket>() // termId → subscribed client socket
+const serviceTerminals = new Map<string, { termId: string; projectId: string; cwd: string }>()
+const serviceAttachedTerminals = new Set<string>()
 
 // Track which terminals each client socket owns subscriptions for
 const clientSubscriptions = new Map<net.Socket, Set<string>>()
@@ -116,6 +120,9 @@ const sessionManager = createTerminalSessionManager(BACKEND, STATE_DIR, {
     bufferTerminalData(termId, data)
   },
   onExit(termId) {
+    serviceAttachedTerminals.delete(termId)
+    serviceTerminals.delete(termId)
+
     // Flush any buffered data before sending the exit event so the client
     // sees the final output before the terminal disappears.
     const buffered = pendingData.get(termId)
@@ -177,6 +184,242 @@ function sendResponse(socket: net.Socket, id: number, ok: boolean, data?: any) {
 
 function sendError(socket: net.Socket, id: number, error: string) {
   sendJson(socket, { type: 'response', id, ok: false, error })
+}
+
+function sendServiceResponse(
+  socket: net.Socket,
+  id: number,
+  ok: boolean,
+  data?: any,
+  error?: string,
+) {
+  sendJson(socket, { id, ok, ...(ok ? { data } : { error }) })
+}
+
+function loadState(): ProjectsState | null {
+  try {
+    return JSON.parse(fs.readFileSync(STATE_FILE, 'utf-8')) as ProjectsState
+  } catch {
+    return null
+  }
+}
+
+function listProjects(): Project[] {
+  return loadState()?.projects ?? []
+}
+
+function findProject(projectPath: string): Project | null {
+  let best: Project | null = null
+  let bestLen = 0
+  for (const project of listProjects()) {
+    if (projectPath.startsWith(project.path) && project.path.length > bestLen) {
+      best = project
+      bestLen = project.path.length
+    }
+  }
+  return best
+}
+
+function findProjectById(projectId: string): Project | null {
+  return listProjects().find((project) => project.id === projectId) ?? null
+}
+
+function findTerminalContext(
+  termId: string,
+  projectPath: string,
+): { project: Project; cwd: string } | null {
+  const serviceTerminal = serviceTerminals.get(termId)
+  if (serviceTerminal) {
+    const project = findProjectById(serviceTerminal.projectId)
+    return project ? { project, cwd: serviceTerminal.cwd } : null
+  }
+
+  const preferredProject = findProject(projectPath)
+  const projects = preferredProject
+    ? [preferredProject, ...listProjects().filter((project) => project.id !== preferredProject.id)]
+    : listProjects()
+
+  for (const project of projects) {
+    const terminal = (project.terminals ?? []).find((entry) => entry.id === termId)
+    if (terminal) return { project, cwd: terminal.cwd || project.path }
+  }
+
+  return null
+}
+
+function ensureServiceTerminalAttached(termId: string, params: any) {
+  if (serviceAttachedTerminals.has(termId)) return true
+  const context = findTerminalContext(termId, String(params.projectPath ?? ''))
+  if (!context) return false
+  attachPty(termId, 120, 40, context.cwd, context.project.id)
+  serviceAttachedTerminals.add(termId)
+  return true
+}
+
+function trimLines(value: string, lines?: number) {
+  if (!lines) return value
+  return value.split('\n').slice(-lines).join('\n')
+}
+
+function generateServiceTermId() {
+  return `mcp-${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`
+}
+
+function serializeTerminal(project: Project, terminal: TerminalNode) {
+  const processInfo = sessionManager.has(terminal.id)
+    ? sessionManager.getProcessInfo(terminal.id)
+    : null
+  return {
+    id: terminal.id,
+    title: terminal.title,
+    type: 'terminal',
+    projectId: project.id,
+    projectName: project.name,
+    projectPath: project.path,
+    agent: terminal.agent ?? null,
+    agentStatus: terminal.agentStatus ?? null,
+    runtimeStatus: null,
+    processInfo,
+  }
+}
+
+function serializeServiceTerminal(project: Project, entry: { termId: string; cwd: string }) {
+  return {
+    id: entry.termId,
+    title: `MCP Terminal (${entry.cwd})`,
+    type: 'terminal',
+    projectId: project.id,
+    projectName: project.name,
+    projectPath: project.path,
+    agent: null,
+    agentStatus: null,
+    runtimeStatus: null,
+    processInfo: sessionManager.has(entry.termId)
+      ? sessionManager.getProcessInfo(entry.termId)
+      : null,
+  }
+}
+
+async function handleServiceRequest(method: string, params: any): Promise<any> {
+  switch (method) {
+    case 'get-project': {
+      const project = findProject(String(params.projectPath ?? ''))
+      return project ? { id: project.id, name: project.name, path: project.path } : null
+    }
+
+    case 'list-windows': {
+      const project = findProject(String(params.projectPath ?? ''))
+      if (!project) return { terminals: [], browsers: [], agents: [] }
+      const terminals = (project.terminals ?? []).map((terminal) =>
+        serializeTerminal(project, terminal),
+      )
+      for (const entry of serviceTerminals.values()) {
+        if (entry.projectId === project.id) terminals.push(serializeServiceTerminal(project, entry))
+      }
+      const browsers = (project.browsers ?? []).map((browser) => ({
+        id: browser.id,
+        url: browser.url,
+        title: browser.title,
+      }))
+      const agents = (project.agentWindows ?? []).map((agentWindow) => ({
+        id: agentWindow.id,
+        title: agentWindow.customTitle || agentWindow.title,
+        agent: agentWindow.agent,
+        status: agentWindow.status ?? 'idle',
+        cwd: agentWindow.cwd ?? null,
+        messageCount: null,
+        claudeSessionId: agentWindow.claudeSessionId ?? null,
+        codexThreadId: agentWindow.codexThreadId ?? null,
+        pendingPlanApproval: false,
+        pendingQuestion: false,
+        pendingApproval: false,
+      }))
+      return { terminals, browsers, agents }
+    }
+
+    case 'list-all-windows': {
+      const projects = listProjects()
+      return {
+        projects: projects.map((project) => ({
+          project: { id: project.id, name: project.name, path: project.path },
+          windows: [
+            ...(project.terminals ?? []).map((terminal) => serializeTerminal(project, terminal)),
+            ...(project.browsers ?? []).map((browser) => ({
+              id: browser.id,
+              type: 'browser',
+              title: browser.title,
+              projectId: project.id,
+              projectName: project.name,
+              projectPath: project.path,
+              url: browser.url,
+            })),
+            ...(project.agentWindows ?? []).map((agentWindow) => ({
+              id: agentWindow.id,
+              type: 'agent',
+              title: agentWindow.customTitle || agentWindow.title,
+              projectId: project.id,
+              projectName: project.name,
+              projectPath: project.path,
+              agent: agentWindow.agent,
+              status: agentWindow.status ?? 'idle',
+              cwd: agentWindow.cwd ?? null,
+              messageCount: null,
+              pendingPlanApproval: false,
+              pendingQuestion: false,
+              pendingApproval: false,
+            })),
+            ...[...serviceTerminals.values()]
+              .filter((entry) => entry.projectId === project.id)
+              .map((entry) => serializeServiceTerminal(project, entry)),
+          ],
+        })),
+      }
+    }
+
+    case 'get-terminal-output': {
+      const termId = String(params.terminalId ?? '')
+      const output = sessionManager.has(termId)
+        ? sessionManager.getBuffer(termId) || sessionManager.getHistory(termId)
+        : ''
+      return { output: trimLines(output, params.lines) }
+    }
+
+    case 'write-terminal': {
+      const termId = String(params.terminalId ?? '')
+      if (!ensureServiceTerminalAttached(termId, params)) {
+        throw new Error(`Terminal not found: ${termId}`)
+      }
+      sessionManager.write(termId, String(params.data ?? ''))
+      return null
+    }
+
+    case 'get-terminal-process': {
+      const termId = String(params.terminalId ?? '')
+      return sessionManager.has(termId) ? sessionManager.getProcessInfo(termId) : null
+    }
+
+    case 'create-terminal': {
+      const project = findProject(String(params.projectPath ?? ''))
+      if (!project) throw new Error(`No project found for path: ${params.projectPath ?? ''}`)
+      const cwd = String(params.cwd || project.path)
+      const termId = generateServiceTermId()
+      attachPty(termId, 120, 40, cwd, project.id)
+      serviceAttachedTerminals.add(termId)
+      serviceTerminals.set(termId, { termId, projectId: project.id, cwd })
+      return { terminalId: termId }
+    }
+
+    case 'close-terminal': {
+      const termId = String(params.terminalId ?? '')
+      sessionManager.kill(termId)
+      serviceAttachedTerminals.delete(termId)
+      serviceTerminals.delete(termId)
+      return null
+    }
+
+    default:
+      throw new Error(`Cells app bridge is required for '${method}'`)
+  }
 }
 
 // ---------- PTY management ----------
@@ -423,11 +666,51 @@ function handleClient(socket: net.Socket) {
   })
 }
 
+function handleServiceClient(socket: net.Socket) {
+  let lineBuffer = ''
+
+  socket.on('data', (chunk) => {
+    lineBuffer += chunk.toString()
+    let newlineIdx: number
+    while ((newlineIdx = lineBuffer.indexOf('\n')) !== -1) {
+      const line = lineBuffer.slice(0, newlineIdx)
+      lineBuffer = lineBuffer.slice(newlineIdx + 1)
+      if (!line.trim()) continue
+
+      let msg: any
+      try {
+        msg = JSON.parse(line)
+      } catch {
+        continue
+      }
+
+      const id = Number(msg.id)
+      const method = String(msg.method ?? '')
+      handleServiceRequest(method, msg.params ?? {})
+        .then((data) => sendServiceResponse(socket, id, true, data))
+        .catch((error) =>
+          sendServiceResponse(
+            socket,
+            id,
+            false,
+            undefined,
+            error instanceof Error ? error.message : String(error),
+          ),
+        )
+    }
+  })
+
+  socket.on('error', () => {})
+}
+
 // ---------- Lifecycle ----------
 
 function cleanup() {
   try {
     fs.unlinkSync(SOCKET_PATH)
+  } catch {}
+  try {
+    fs.unlinkSync(SERVICE_SOCKET_PATH)
   } catch {}
   try {
     fs.unlinkSync(PID_FILE)
@@ -439,6 +722,7 @@ function cleanup() {
 
 function gracefulShutdown() {
   server.close()
+  serviceServer.close()
   // Flush any buffered terminal data before tearing down
   if (flushTimer) {
     clearTimeout(flushTimer)
@@ -470,8 +754,12 @@ fs.mkdirSync(STATE_DIR, { recursive: true })
 try {
   fs.unlinkSync(SOCKET_PATH)
 } catch {}
+try {
+  fs.unlinkSync(SERVICE_SOCKET_PATH)
+} catch {}
 
 const server = net.createServer(handleClient)
+const serviceServer = net.createServer(handleServiceClient)
 
 server.listen(SOCKET_PATH, () => {
   // Write PID and version files
@@ -488,4 +776,14 @@ server.listen(SOCKET_PATH, () => {
 server.on('error', (err) => {
   console.error('Daemon server error:', err)
   process.exit(1)
+})
+
+serviceServer.listen(SERVICE_SOCKET_PATH, () => {
+  try {
+    fs.chmodSync(SERVICE_SOCKET_PATH, 0o600)
+  } catch {}
+})
+
+serviceServer.on('error', (err) => {
+  console.error('Terminal service server error:', err)
 })

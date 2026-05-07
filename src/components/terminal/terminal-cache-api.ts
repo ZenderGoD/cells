@@ -7,6 +7,7 @@ type TerminalCacheApi = {
     options?: { lines?: number; columns?: number },
   ): string[]
   getTerminalRestoreSnapshot(termId: string): string | null
+  recoverFromSystemResume(): void
   reloadAllTerminals(): void
   reloadTerminal(termId: string): void
 }
@@ -23,6 +24,7 @@ const noopApi: TerminalCacheApi = {
   getTerminalRestoreSnapshot() {
     return null
   },
+  recoverFromSystemResume() {},
   reloadAllTerminals() {},
   reloadTerminal() {},
 }
@@ -54,6 +56,10 @@ export function getTerminalPreviewSnapshot(
 
 export function getTerminalRestoreSnapshot(termId: string) {
   return terminalCacheApi.getTerminalRestoreSnapshot(termId)
+}
+
+export function recoverTerminalsFromSystemResume() {
+  terminalCacheApi.recoverFromSystemResume()
 }
 
 export function reloadTerminal(termId: string) {

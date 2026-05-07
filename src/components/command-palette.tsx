@@ -559,7 +559,7 @@ export function CommandPalette() {
       'Kill All Processes',
       'New Project',
       'New Text Editor',
-      'Open File in Editor',
+      'Search Files',
       'Install MCP Server',
       'Manage Extensions',
       'Settings',
@@ -1751,7 +1751,7 @@ export function CommandPalette() {
                         Attach File...
                       </CommandItem>
                       <CommandItem
-                        value="open-file-in-editor"
+                        value="search-files"
                         onSelect={() => {
                           setOpen(false)
                           setSearch('')
@@ -1761,7 +1761,7 @@ export function CommandPalette() {
                         }}
                       >
                         <FileText className="text-muted-foreground" />
-                        Open File in Editor...
+                        Search Files...
                       </CommandItem>
                       <CommandItem
                         value="new-text-editor"

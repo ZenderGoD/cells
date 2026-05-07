@@ -35,6 +35,8 @@ const SERVER_OWNED_ATTACH_RECOVERY_DELAYS_MS = [800, 1600] as const
 const SERVER_OWNED_WHEEL_HANDLED_KEY = '__cellsServerOwnedWheelHandled'
 const SERVER_OWNED_MOUSE_FLUSH_MS = 16
 const SERVER_OWNED_MOUSE_HANDLED_KEY = '__cellsServerOwnedMouseHandled'
+const TERMINAL_SELECTION_AUTOSCROLL_EDGE_PX = 36
+const TERMINAL_SELECTION_AUTOSCROLL_MAX_LINES = 5
 
 type TerminalAttachResponse = {
   reattached: boolean
@@ -65,6 +67,11 @@ type TerminalCopyResult = {
   handled: boolean
   selection: string | null
   clearSelection: () => void
+}
+
+type TerminalSelectionManager = {
+  updateAutoScroll?: (mouseY: number, viewportHeight: number) => void
+  stopAutoScroll?: () => void
 }
 
 function ensureInit() {
@@ -1056,12 +1063,38 @@ function reloadAllTerminals() {
   }
 }
 
+function recoverFromSystemResume() {
+  const repaint = () => {
+    for (const [, cached] of terminalCache) {
+      const isMounted = cached.wrapper.isConnected
+      const renderer = Reflect.get(cached.term, 'renderer') as
+        | { remeasureFont?: () => void }
+        | undefined
+
+      if (isMounted) {
+        setTerminalRenderLoopEnabled(cached.term, true)
+        cached.fitAddon.fit()
+        renderer?.remeasureFont?.()
+        forceTerminalFullRender(cached.term)
+        forceTerminalRepaint(cached.term)
+      } else {
+        setTerminalRenderLoopEnabled(cached.term, false)
+      }
+    }
+  }
+
+  repaint()
+  window.setTimeout(repaint, 80)
+  window.setTimeout(repaint, 280)
+}
+
 registerTerminalCacheApi({
   applyThemeToAllTerminals,
   destroyCachedTerminal,
   getCachedTerminalCount,
   getTerminalPreviewSnapshot,
   getTerminalRestoreSnapshot,
+  recoverFromSystemResume,
   reloadAllTerminals,
   reloadTerminal,
 })
@@ -1469,6 +1502,60 @@ function forceTerminalRepaint(term: Terminal) {
     _repaintTimer = 0
     requestAnimationFrame(() => forceTerminalFullRender(term))
   }, 32)
+}
+
+function getTerminalCanvas(term: Terminal, container: HTMLElement) {
+  const canvas = Reflect.get(term, 'canvas')
+  return canvas instanceof HTMLCanvasElement ? canvas : container.querySelector('canvas')
+}
+
+function updateTerminalSelectionAutoScroll(
+  term: Terminal,
+  container: HTMLElement,
+  clientY: number,
+) {
+  const canvas = getTerminalCanvas(term, container)
+  if (!canvas) return
+
+  const rect = canvas.getBoundingClientRect()
+  const mouseY = clientY - rect.top
+  const selectionManager = Reflect.get(term, 'selectionManager') as
+    | TerminalSelectionManager
+    | undefined
+
+  if (typeof selectionManager?.updateAutoScroll === 'function') {
+    selectionManager.updateAutoScroll(mouseY, rect.height)
+    return
+  }
+
+  const insideAutoscrollDeadZone =
+    mouseY >= TERMINAL_SELECTION_AUTOSCROLL_EDGE_PX &&
+    mouseY <= rect.height - TERMINAL_SELECTION_AUTOSCROLL_EDGE_PX
+  if (insideAutoscrollDeadZone) return
+
+  const direction = mouseY < TERMINAL_SELECTION_AUTOSCROLL_EDGE_PX ? -1 : 1
+  const distance =
+    direction < 0
+      ? Math.max(0, TERMINAL_SELECTION_AUTOSCROLL_EDGE_PX - mouseY)
+      : Math.max(0, mouseY - (rect.height - TERMINAL_SELECTION_AUTOSCROLL_EDGE_PX))
+  const lines = Math.max(
+    1,
+    Math.min(
+      TERMINAL_SELECTION_AUTOSCROLL_MAX_LINES,
+      Math.ceil(distance / TERMINAL_SELECTION_AUTOSCROLL_EDGE_PX),
+    ),
+  )
+
+  term.scrollLines(direction * lines)
+  forceTerminalRepaint(term)
+}
+
+function stopTerminalSelectionAutoScroll(term: Terminal | null) {
+  if (!term) return
+  const selectionManager = Reflect.get(term, 'selectionManager') as
+    | TerminalSelectionManager
+    | undefined
+  selectionManager?.stopAutoScroll?.()
 }
 
 function shouldRetryTerminalAttach(error: unknown) {
@@ -3168,6 +3255,55 @@ export function CellTerminal({
   // Its alternate-screen wheel fallback synthesizes arrow keys, which breaks
   // TUIs under tmux/Zellij. For regular terminals we still let ghostty-web own
   // scrolling, and Cmd/Ctrl+wheel continues to drive canvas zoom.
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+
+    let selectingInTerminal = false
+
+    const stopSelectionAutoScroll = () => {
+      if (!selectingInTerminal) return
+      selectingInTerminal = false
+      stopTerminalSelectionAutoScroll(terminalRef.current)
+    }
+
+    const onSelectionMouseDown = (event: MouseEvent) => {
+      if (event.button !== 0 || overlayOpen || terminalExited) return
+      if (!(event.target instanceof Node) || !container.contains(event.target)) return
+      const term = terminalRef.current
+      if (!term || shouldRouteServerOwnedMouseInput(term)) return
+      selectingInTerminal = true
+      updateTerminalSelectionAutoScroll(term, container, event.clientY)
+    }
+
+    const onSelectionMouseMove = (event: MouseEvent) => {
+      if (!selectingInTerminal) return
+      if ((event.buttons & 1) === 0) {
+        stopSelectionAutoScroll()
+        return
+      }
+      const term = terminalRef.current
+      if (!term) {
+        stopSelectionAutoScroll()
+        return
+      }
+      updateTerminalSelectionAutoScroll(term, container, event.clientY)
+    }
+
+    container.addEventListener('mousedown', onSelectionMouseDown, { capture: true })
+    document.addEventListener('mousemove', onSelectionMouseMove, { capture: true })
+    document.addEventListener('mouseup', stopSelectionAutoScroll, { capture: true })
+    window.addEventListener('blur', stopSelectionAutoScroll)
+
+    return () => {
+      container.removeEventListener('mousedown', onSelectionMouseDown, { capture: true })
+      document.removeEventListener('mousemove', onSelectionMouseMove, { capture: true })
+      document.removeEventListener('mouseup', stopSelectionAutoScroll, { capture: true })
+      window.removeEventListener('blur', stopSelectionAutoScroll)
+      stopSelectionAutoScroll()
+    }
+  }, [overlayOpen, shouldRouteServerOwnedMouseInput, terminalExited])
+
   useEffect(() => {
     const container = containerRef.current
     if (!container) return

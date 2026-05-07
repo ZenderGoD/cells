@@ -524,10 +524,8 @@ async function handleRequest(ctx: BridgeContext, method: string, params: any): P
       const termId = 'mcp-' + generateId()
       const daemon = ctx.getDaemonClient()
       if (ctx.getUseDaemon() && daemon?.isConnected()) {
-        await daemon.spawn(termId, 120, 40, cwd)
-        // Subscribe so we get output in the ring buffer
-        const buffer = await daemon.subscribe(termId)
-        if (buffer) bufferTerminalOutput(termId, buffer)
+        const result = await daemon.attach(termId, 120, 40, cwd, project.id)
+        if (result.buffer) bufferTerminalOutput(termId, result.buffer)
         ctx.subscribedTerminals.add(termId)
 
         mcpTerminals.set(termId, {

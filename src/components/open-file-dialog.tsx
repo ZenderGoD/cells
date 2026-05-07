@@ -10,6 +10,7 @@ import { AlertCircle, FileText, Loader2, Search, X } from 'lucide-react'
 
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { hasPrimaryModifier } from '@/lib/keyboard-shortcuts'
 import { useStore } from '@/lib/store'
 import { cn } from '@/lib/utils'
 import type { ProjectFileSearchResult } from '@/types'
@@ -39,6 +40,10 @@ function splitPreview(content: string) {
     lines: lines.slice(0, PREVIEW_MAX_LINES),
     truncated: lines.length > PREVIEW_MAX_LINES,
   }
+}
+
+function appendUniquePath(paths: string[], filePath: string) {
+  return paths.includes(filePath) ? paths : [...paths, filePath]
 }
 
 export function OpenFileDialog({
@@ -151,6 +156,32 @@ export function OpenFileDialog({
     [onOpenChange, selectedFile],
   )
 
+  const addSelectedFileToFocusedWindow = useCallback(
+    (file: ProjectFileSearchResult | null = selectedFile) => {
+      if (!file) return
+      const state = useStore.getState()
+      const windowId = state.focusedAgentWindowId
+      const agentWindow = windowId
+        ? state.agentWindows.find((candidate) => candidate.id === windowId)
+        : null
+      if (!agentWindow) {
+        openSelectedFile(file)
+        return
+      }
+
+      state.syncAgentWindow(agentWindow.id, {
+        composerAttachments: appendUniquePath(agentWindow.composerAttachments ?? [], file.path),
+      })
+      onOpenChange(false)
+      window.setTimeout(() => {
+        window.dispatchEvent(
+          new CustomEvent('agent-composer-focus', { detail: { windowId: agentWindow.id } }),
+        )
+      }, 0)
+    },
+    [onOpenChange, openSelectedFile, selectedFile],
+  )
+
   const handleKeyDown = useCallback(
     (event: ReactKeyboardEvent) => {
       if (event.key === 'ArrowDown') {
@@ -163,10 +194,11 @@ export function OpenFileDialog({
         setSelectedIndex((index) => Math.max(0, index - 1))
       } else if (event.key === 'Enter') {
         event.preventDefault()
-        openSelectedFile()
+        if (hasPrimaryModifier(event)) addSelectedFileToFocusedWindow()
+        else openSelectedFile()
       }
     },
-    [files.length, openSelectedFile],
+    [addSelectedFileToFocusedWindow, files.length, openSelectedFile],
   )
 
   const preview = useMemo<PreviewState>(() => {
@@ -199,15 +231,15 @@ export function OpenFileDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         showCloseButton={false}
-        className="flex h-[min(720px,calc(100vh-48px))] w-[min(1120px,calc(100vw-48px))] max-w-none flex-col gap-0 overflow-hidden rounded-xl p-0"
+        className="flex h-[min(680px,calc(100vh-40px))] w-[min(980px,calc(100vw-32px))] max-w-none flex-col gap-0 overflow-hidden rounded-lg border-border/60 bg-background/95 p-0 shadow-2xl"
         onWheelCapture={(event) => event.stopPropagation()}
       >
-        <DialogTitle className="sr-only">Open file</DialogTitle>
+        <DialogTitle className="sr-only">Search files</DialogTitle>
         <DialogDescription className="sr-only">
-          Search project files and open the selected file in the editor.
+          Search project files and open or attach the selected file.
         </DialogDescription>
 
-        <div className="flex h-12 items-center gap-2 border-b border-border/40 px-3">
+        <div className="flex h-11 items-center gap-2 border-b border-border/50 px-3">
           <Search className="size-4 shrink-0 text-muted-foreground" />
           <Input
             ref={inputRef}
@@ -231,10 +263,12 @@ export function OpenFileDialog({
           </button>
         </div>
 
-        <div className="grid min-h-0 flex-1 grid-cols-[minmax(320px,0.42fr)_minmax(0,0.58fr)]">
-          <div className="min-h-0 border-r border-border/40">
-            <div className="flex h-8 items-center justify-between px-3 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
-              <span>{activeProject?.name ?? 'Project'}</span>
+        <div className="grid min-h-0 flex-1 grid-cols-[minmax(300px,0.38fr)_minmax(0,0.62fr)]">
+          <div className="min-h-0 min-w-0 border-r border-border/50">
+            <div className="flex h-8 items-center justify-between gap-3 px-3 text-[11px] font-medium uppercase text-muted-foreground/70">
+              <span className="min-w-0 truncate tracking-[0.14em]">
+                {activeProject?.name ?? 'Project'}
+              </span>
               <span className="font-mono tracking-normal">{files.length}</span>
             </div>
             <div className="h-[calc(100%-2rem)] overflow-y-auto overscroll-contain px-1.5 pb-1.5">
@@ -265,7 +299,7 @@ export function OpenFileDialog({
                       ref={selected ? selectedRowRef : undefined}
                       type="button"
                       className={cn(
-                        'flex h-12 w-full min-w-0 items-center gap-2 rounded-md px-2 text-left outline-none',
+                        'flex h-[52px] w-full min-w-0 items-center gap-2 rounded-md px-2 text-left outline-none',
                         selected
                           ? 'bg-accent text-accent-foreground'
                           : 'text-foreground hover:bg-muted/60',
@@ -276,7 +310,7 @@ export function OpenFileDialog({
                     >
                       <FileText className="size-4 shrink-0 text-muted-foreground" />
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm font-medium">{file.name}</span>
+                        <span className="block truncate text-[13px] font-medium">{file.name}</span>
                         <span className="block truncate font-mono text-[11px] text-muted-foreground">
                           {file.directory || '.'}
                         </span>
@@ -291,7 +325,7 @@ export function OpenFileDialog({
             </div>
           </div>
 
-          <div className="flex min-h-0 flex-col">
+          <div className="flex min-h-0 min-w-0 flex-col">
             <div className="flex h-8 min-w-0 items-center gap-2 border-b border-border/30 px-3">
               <span className="truncate font-mono text-[12px] text-muted-foreground">
                 {selectedFile?.relativePath ?? 'Preview'}

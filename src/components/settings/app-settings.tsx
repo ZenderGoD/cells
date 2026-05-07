@@ -2839,13 +2839,33 @@ function DaemonSection() {
                   Restart required because the daemon is from an incompatible Cells build.
                 </p>
               ) : null}
+              {status.service?.available ? (
+                <p className="text-[10px] text-muted-foreground/40">
+                  Service {status.service.loaded ? 'loaded' : 'registered'}{' '}
+                  <span className="font-mono">{status.service.label}</span>
+                </p>
+              ) : null}
+              {status.service?.error ? (
+                <p className="text-[10px] text-amber-400/70">{status.service.error}</p>
+              ) : null}
             </div>
           ) : status ? (
-            <p className="mt-1.5 text-[10px] text-muted-foreground/40">
-              {status.enabled === false
-                ? 'Daemon is not available in this build. Using direct PTY mode.'
-                : 'Daemon is not running. Sessions will not persist across restarts.'}
-            </p>
+            <div className="mt-1.5 space-y-0.5">
+              <p className="text-[10px] text-muted-foreground/40">
+                {status.enabled === false
+                  ? 'Daemon is not available in this build. Using direct PTY mode.'
+                  : 'Daemon is not running. Sessions will not persist across restarts.'}
+              </p>
+              {status.service?.available ? (
+                <p className="text-[10px] text-muted-foreground/40">
+                  Service {status.service.loaded ? 'loaded' : 'registered'}{' '}
+                  <span className="font-mono">{status.service.label}</span>
+                </p>
+              ) : null}
+              {status.service?.error ? (
+                <p className="text-[10px] text-amber-400/70">{status.service.error}</p>
+              ) : null}
+            </div>
           ) : null}
           {confirmRestart && status?.connected ? (
             <div className="mt-2 rounded-md border border-destructive/15 bg-destructive/5 px-2.5 py-2">

@@ -9,6 +9,7 @@ import {
   dialog,
   Menu,
   nativeImage,
+  powerMonitor,
   session,
   shell,
 } from 'electron'
@@ -24,6 +25,7 @@ import { getPickFolderDialogOptions } from './app-dialog-options'
 import { PtyDaemonClient } from './pty-client'
 import { ensureDaemon } from './daemon-lifecycle'
 import { getDaemonRestartReason, type PtyDaemonVersionInfo } from './pty-daemon-contract'
+import { createTerminalServiceControls, type TerminalServiceControls } from './terminal-service'
 import { PerfMonitor, type RendererPerfReport, type TerminalPerfReport } from './perf-monitor'
 import type { TerminalSessionManager } from './terminal-session-manager'
 import type {
@@ -290,6 +292,7 @@ app.commandLine.appendSwitch('enable-features', 'ElasticOverscroll')
 
 let daemonClient: PtyDaemonClient | null = null
 let fallbackSessions: TerminalSessionManager | null = null
+let terminalServiceControls: TerminalServiceControls | null = null
 let useDaemon = false
 let daemonRestartInProgress = false
 let daemonRecoveryPromise: Promise<void> | null = null
@@ -464,6 +467,21 @@ function sendCanvasZoomCommand(command: 'fit' | 'in' | 'out') {
 function sendShortcutToRenderer(payload: AppShortcutPayload) {
   if (mainWindow?.isDestroyed()) return
   mainWindow?.webContents.send('app:shortcut', payload)
+}
+
+function broadcastToRenderer(channel: string, ...args: unknown[]) {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (window.isDestroyed()) continue
+    const contents = window.webContents
+    if (contents.isDestroyed() || contents.isCrashed()) continue
+    try {
+      contents.send(channel, ...args)
+    } catch {}
+  }
+}
+
+function notifySystemResume(reason: 'resume' | 'unlock-screen') {
+  broadcastToRenderer('app:system-resume', reason)
 }
 
 function resolveOpenFilePath(candidate: string) {
@@ -1144,6 +1162,18 @@ function describeSelectedBackendRequirement() {
   return describeTerminalBackendRequirement(terminalBackendSupport)
 }
 
+function refreshTerminalServiceControls() {
+  terminalServiceControls = createTerminalServiceControls({
+    stateDir: STATE_DIR,
+    appVersion: app.getVersion(),
+    execPath: process.execPath,
+    daemonScript: path.join(__dirname, 'pty-daemon.js'),
+    backend: selectedTerminalBackend,
+    packaged: app.isPackaged,
+  })
+  return terminalServiceControls
+}
+
 async function showTerminalBackendRequirementDialog() {
   if (terminalBackendSupport.ok) return
   const messageBoxOptions = {
@@ -1749,12 +1779,14 @@ async function recoverFromUnexpectedDaemonDisconnect() {
     }
 
     const daemonScript = path.join(__dirname, 'pty-daemon.js')
+    const service = refreshTerminalServiceControls()
     const recovered = await ensureDaemon(
       STATE_DIR,
       app.getVersion(),
       process.execPath,
       daemonScript,
       selectedTerminalBackend,
+      service,
     )
 
     if (!recovered) {
@@ -3196,6 +3228,7 @@ const PROJECT_FILE_SEARCH_EXCLUDED_DIRS = new Set([
   'dist-electron',
   'node_modules',
   'out',
+  'release',
   'target',
   'vendor',
 ])
@@ -5143,6 +5176,7 @@ ipcMain.handle('daemon:get-status', async () => {
     restartReason,
     daemonVersion,
     backendDetails: daemonVersion?.backendDetails ?? null,
+    service: terminalServiceControls?.status() ?? null,
   }
 })
 
@@ -5206,6 +5240,7 @@ ipcMain.handle('daemon:restart', async () => {
 
     const daemonScript = path.join(__dirname, 'pty-daemon.js')
     refreshTerminalBackendSelection()
+    const service = refreshTerminalServiceControls()
     useDaemon = terminalBackendSupport.ok
       ? await ensureDaemon(
           STATE_DIR,
@@ -5213,6 +5248,7 @@ ipcMain.handle('daemon:restart', async () => {
           process.execPath,
           daemonScript,
           selectedTerminalBackend,
+          service,
         )
       : false
 
@@ -5267,12 +5303,14 @@ app.whenReady().then(async () => {
     refreshTerminalBackendSelection()
     if (terminalBackendSupport.ok) {
       const daemonScript = path.join(__dirname, 'pty-daemon.js')
+      const service = refreshTerminalServiceControls()
       useDaemon = await ensureDaemon(
         STATE_DIR,
         app.getVersion(),
         process.execPath,
         daemonScript,
         selectedTerminalBackend,
+        service,
       )
       console.log('PTY daemon result:', useDaemon)
       if (useDaemon) {
@@ -5294,6 +5332,9 @@ app.whenReady().then(async () => {
 
   agentSessionTracker = new EnhancedSessionTracker()
   agentSessionTracker.subscribe(broadcastTerminalStatus)
+
+  powerMonitor.on('resume', () => notifySystemResume('resume'))
+  powerMonitor.on('unlock-screen', () => notifySystemResume('unlock-screen'))
 
   // Set dock icon on macOS (for dev; production uses the bundled .icns)
   if (process.platform === 'darwin') {

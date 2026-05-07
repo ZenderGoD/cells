@@ -3124,7 +3124,14 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     }
     const nextDraft = agentWindow.composerDraft ?? ''
     let draftFrame: number | null = null
+    let attachmentsFrame: number | null = null
     let replyFrame: number | null = null
+    if (!areStringArraysEqual(sanitized, attachmentsRef.current)) {
+      attachmentsRef.current = sanitized
+      attachmentsFrame = window.requestAnimationFrame(() => {
+        setAttachments(sanitized)
+      })
+    }
     if (nextDraft !== inputRef.current) {
       inputRef.current = nextDraft
       draftFrame = window.requestAnimationFrame(() => {
@@ -3140,6 +3147,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     }
     return () => {
       if (draftFrame !== null) window.cancelAnimationFrame(draftFrame)
+      if (attachmentsFrame !== null) window.cancelAnimationFrame(attachmentsFrame)
       if (replyFrame !== null) window.cancelAnimationFrame(replyFrame)
     }
   }, [
@@ -3148,6 +3156,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     agentWindow.composerReplyTo,
     agentWindow.id,
   ])
+
   // Only gate resume when the session was actually reconstructed from the
   // persisted snapshot after Cells restarted. Project/window remounts within
   // the same app session should not show the "Continue" banner.
@@ -3355,6 +3364,16 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     }
     return document.activeElement === editor
   }, [])
+  useEffect(() => {
+    const onComposerFocus = (event: Event) => {
+      const detail = (event as CustomEvent<{ windowId?: string | null }>).detail
+      if (detail?.windowId && detail.windowId !== agentWindow.id) return
+      window.requestAnimationFrame(() => focusComposer(true))
+    }
+
+    window.addEventListener('agent-composer-focus', onComposerFocus)
+    return () => window.removeEventListener('agent-composer-focus', onComposerFocus)
+  }, [agentWindow.id, focusComposer])
   // Returns the DOM scroll container backing the active LegendList so we can
   // read scroll position (to gate auto-scroll on "near bottom") and bypass the
   // list's maintainVisibleContentPosition by setting `scrollTop` directly.

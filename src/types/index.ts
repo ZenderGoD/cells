@@ -258,6 +258,15 @@ export interface DaemonStatus {
   restartReason: string | null
   daemonVersion: DaemonVersionInfo | null
   backendDetails: TmuxBackendDetails | null
+  service?: {
+    available: boolean
+    enabled: boolean
+    loaded: boolean
+    label: string
+    plistPath: string | null
+    domain: string | null
+    error: string | null
+  } | null
 }
 
 export interface GitWorktree {
@@ -1270,6 +1279,7 @@ export interface CellsAPI {
     updateNotificationContext(context: AgentNotificationContext): void
     onBeforeQuit(callback: () => void): () => void
     onDaemonDisconnected(callback: () => void): () => void
+    onSystemResume(callback: (reason: 'resume' | 'unlock-screen') => void): () => void
     onNewTerminal(callback: () => void): () => void
     onCloseTerminal(callback: () => void): () => void
     onShortcut(callback: (payload: AppShortcutPayload) => void): () => void

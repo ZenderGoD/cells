@@ -17,6 +17,7 @@ import { BackgroundAgentSessionHosts } from './components/agent-session/backgrou
 import { AgentQueueReporter } from './components/agent-session/agent-queue-reporter'
 import {
   getCachedTerminalCount,
+  recoverTerminalsFromSystemResume,
   reloadAllTerminals,
 } from './components/terminal/terminal-cache-api'
 import { STATUS_BAR_HEIGHT } from './lib/canvas-navigation'
@@ -29,6 +30,7 @@ import {
   CELLS_COPY_BROWSER_URL_EVENT,
   CELLS_OPEN_BROWSER_LOCATION_EVENT,
   CELLS_OPEN_SETTINGS_EVENT,
+  CELLS_SHORTCUT_STATE_RESET_EVENT,
   CELLS_TOGGLE_COMMAND_PALETTE_EVENT,
   CELLS_TOGGLE_PROJECT_SWITCHER_EVENT,
   getCellsShortcutScope,
@@ -506,6 +508,37 @@ function MainApp() {
     },
     [closeWindow, toggleTitleBarHidden],
   )
+
+  const resetShortcutState = useCallback(() => {
+    keyboardNavigationActiveRef.current = false
+    window.dispatchEvent(new Event(CELLS_SHORTCUT_STATE_RESET_EVENT))
+    window.dispatchEvent(new Event('terminal-navigation-end'))
+  }, [])
+
+  useEffect(() => {
+    const recoverRendererState = () => {
+      resetShortcutState()
+      recoverTerminalsFromSystemResume()
+      requestAnimationFrame(() => {
+        window.dispatchEvent(new Event('terminal-refocus'))
+      })
+    }
+
+    const unsubscribe = window.cells.app.onSystemResume(recoverRendererState)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') recoverRendererState()
+      else resetShortcutState()
+    }
+    const handlePageShow = () => recoverRendererState()
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    window.addEventListener('pageshow', handlePageShow)
+    return () => {
+      unsubscribe()
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      window.removeEventListener('pageshow', handlePageShow)
+    }
+  }, [resetShortcutState])
 
   // When the title bar toggles, the effective viewport height changes, so
   // any canvas math that subtracts the title bar has new answers. Re-snap to

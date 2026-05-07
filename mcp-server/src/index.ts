@@ -20,6 +20,7 @@ import { BridgeClient } from './bridge-client.js'
 
 const STATE_DIR = process.env.CELLS_HOME_DIR || path.join(os.homedir(), '.cells')
 const BRIDGE_SOCKET = process.env.CELLS_MCP_SOCKET || path.join(STATE_DIR, 'mcp-bridge.sock')
+const TERMINAL_SERVICE_SOCKET = path.join(STATE_DIR, 'terminal-service.sock')
 const STATE_FILE = path.join(STATE_DIR, 'state.json')
 
 // ---------- Project resolution ----------
@@ -53,16 +54,54 @@ function resolveProjectFromState(): {
 // ---------- Bridge connection ----------
 
 let bridge: BridgeClient | null = null
+let bridgeSocketPath: string | null = null
 
-async function getBridge(): Promise<BridgeClient> {
-  if (bridge?.isConnected()) return bridge
-  bridge = new BridgeClient()
-  await bridge.connect(BRIDGE_SOCKET)
-  return bridge
+const TERMINAL_SERVICE_METHODS = new Set([
+  'get-project',
+  'list-windows',
+  'list-all-windows',
+  'get-terminal-output',
+  'write-terminal',
+  'get-terminal-process',
+  'create-terminal',
+  'close-terminal',
+])
+
+async function getBridge(method: string): Promise<BridgeClient> {
+  const canUseTerminalService = TERMINAL_SERVICE_METHODS.has(method)
+  if (bridge?.isConnected()) {
+    if (bridgeSocketPath === BRIDGE_SOCKET) return bridge
+    if (canUseTerminalService && !fs.existsSync(BRIDGE_SOCKET)) return bridge
+  }
+
+  bridge?.disconnect()
+  bridge = null
+  bridgeSocketPath = null
+
+  const candidates =
+    BRIDGE_SOCKET === TERMINAL_SERVICE_SOCKET || !canUseTerminalService
+      ? [BRIDGE_SOCKET]
+      : [BRIDGE_SOCKET, TERMINAL_SERVICE_SOCKET]
+
+  let lastError: unknown = null
+  for (const socketPath of candidates) {
+    const next = new BridgeClient()
+    try {
+      await next.connect(socketPath)
+      bridge = next
+      bridgeSocketPath = socketPath
+      return next
+    } catch (error) {
+      lastError = error
+      next.disconnect()
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error('Cells bridge is not available')
 }
 
 async function bridgeRequest(method: string, params: object = {}): Promise<any> {
-  const b = await getBridge()
+  const b = await getBridge(method)
   return b.request(method, {
     projectPath: resolveProjectPath(),
     ...params,
@@ -110,7 +149,7 @@ server.addTool({
   execute: async () => {
     const project = resolveProjectFromState()
     if (!project) {
-      return 'No Cells project found for the current directory. Make sure Cells is running and this directory is part of a project.'
+      return 'No Cells project found for the current directory. Add this directory as a Cells project first.'
     }
 
     const result = await bridgeRequest('list-windows')

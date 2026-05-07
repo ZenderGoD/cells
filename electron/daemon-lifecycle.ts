@@ -12,6 +12,7 @@ import path from 'path'
 import { spawn as spawnProcess } from 'child_process'
 import { getDaemonRestartReason, type PtyDaemonVersionInfo } from './pty-daemon-contract'
 import type { TerminalSessionBackend } from '../src/types'
+import type { TerminalServiceControls } from './terminal-service'
 
 const CONNECT_TIMEOUT = 500
 const REQUEST_TIMEOUT = 1000
@@ -28,6 +29,7 @@ export async function ensureDaemon(
   execPath: string,
   daemonScript: string,
   backend: TerminalSessionBackend,
+  service?: TerminalServiceControls | null,
 ): Promise<boolean> {
   const socketPath = path.join(stateDir, 'pty-daemon.sock')
   const pidFile = path.join(stateDir, 'pty-daemon.pid')
@@ -46,6 +48,10 @@ export async function ensureDaemon(
 
     console.warn(`PTY daemon incompatible (${restartReason}); restarting daemon`)
 
+    if (service?.enabled) {
+      await service.stop()
+    }
+
     const stopped = await stopExistingDaemon(socketPath, pidFile, versionFile)
     if (!stopped) {
       console.warn('Failed to stop existing PTY daemon cleanly')
@@ -56,7 +62,18 @@ export async function ensureDaemon(
   // No daemon running — clean stale files
   cleanStaleFiles(socketPath, pidFile, versionFile)
 
-  // 2. Spawn new daemon
+  // 2. Prefer the OS service on packaged macOS builds, then fall back to a
+  // detached child if launchd is unavailable or slow to boot the job.
+  if (service?.enabled) {
+    const serviceStarted = await service.start()
+    if (serviceStarted && (await waitForDaemonReady(socketPath))) {
+      console.log('PTY daemon service is ready')
+      return true
+    }
+    console.warn('PTY daemon service did not become ready; falling back to direct spawn')
+  }
+
+  // 3. Spawn new daemon directly
   try {
     fs.mkdirSync(stateDir, { recursive: true })
 
@@ -91,7 +108,11 @@ export async function ensureDaemon(
     return false
   }
 
-  // 3. Poll for daemon readiness
+  // 4. Poll for daemon readiness
+  return waitForDaemonReady(socketPath)
+}
+
+async function waitForDaemonReady(socketPath: string): Promise<boolean> {
   const deadline = Date.now() + POLL_MAX_WAIT
   while (Date.now() < deadline) {
     const conn = await tryConnect(socketPath)

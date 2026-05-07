@@ -1,4 +1,4 @@
-import { useMemo, useState, useCallback, useRef, useEffect } from 'react'
+import { Suspense, lazy, useMemo, useState, useCallback, useRef, useEffect } from 'react'
 import { ChevronRight, FileText, Pencil, X } from 'lucide-react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import type { AgentSessionMessage } from '@/types'
@@ -13,6 +13,11 @@ const EXPAND_TRANSITION = {
   height: { duration: 0.28, ease: EASE_EXPAND },
   opacity: { duration: 0.18, ease: EASE_EXPAND },
 } as const
+const LazyPierreFileDiffPreview = lazy(() =>
+  import('./session-diffs-viewer').then((module) => ({
+    default: module.PierreFileDiffPreview,
+  })),
+)
 
 interface SessionDiffsPanelProps {
   messages: AgentSessionMessage[]
@@ -37,234 +42,7 @@ function resolveDiffFilePath(filePath: string, cwd?: string | null): string {
   return `${cwd.replace(/[\\/]+$/, '')}/${filePath}`
 }
 
-// ─── Line-level LCS diff ──────────────────────────────────────────────────────
-
-type DiffOp = { op: 'eq' | 'del' | 'add'; text: string }
-
-const MAX_DIFF_LINES = 300
-
-function lineDiff(oldStr: string, newStr: string): DiffOp[] {
-  const a = oldStr.split('\n')
-  const b = newStr.split('\n')
-
-  // Cap to avoid O(n²) hangs on huge files
-  if (a.length + b.length > MAX_DIFF_LINES) {
-    return [
-      ...a.map((text) => ({ op: 'del' as const, text })),
-      ...b.map((text) => ({ op: 'add' as const, text })),
-    ]
-  }
-
-  const m = a.length
-  const n = b.length
-  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0))
-  for (let i = 1; i <= m; i++) {
-    for (let j = 1; j <= n; j++) {
-      dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] + 1 : Math.max(dp[i - 1][j], dp[i][j - 1])
-    }
-  }
-
-  const result: DiffOp[] = []
-  let i = m,
-    j = n
-  while (i > 0 || j > 0) {
-    if (i > 0 && j > 0 && a[i - 1] === b[j - 1]) {
-      result.unshift({ op: 'eq', text: a[i - 1] })
-      i--
-      j--
-    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
-      result.unshift({ op: 'add', text: b[j - 1] })
-      j--
-    } else {
-      result.unshift({ op: 'del', text: a[i - 1] })
-      i--
-    }
-  }
-  return result
-}
-
-// Show ±CONTEXT lines around each changed hunk; collapse the rest.
-const CONTEXT = 3
-
-function buildHunks(ops: DiffOp[]): Array<DiffOp | 'ellipsis'> {
-  const changed = new Set<number>()
-  ops.forEach((op, i) => {
-    if (op.op !== 'eq') {
-      for (let k = Math.max(0, i - CONTEXT); k <= Math.min(ops.length - 1, i + CONTEXT); k++) {
-        changed.add(k)
-      }
-    }
-  })
-  if (changed.size === 0) return [] // identical
-  const result: Array<DiffOp | 'ellipsis'> = []
-  let skipping = false
-  ops.forEach((op, i) => {
-    if (changed.has(i)) {
-      skipping = false
-      result.push(op)
-    } else {
-      if (!skipping) result.push('ellipsis')
-      skipping = true
-    }
-  })
-  return result
-}
-
-// Convert a unified-diff patch into our DiffOp stream so it can render in the
-// same table as the Claude (LCS) hunks. Hunk headers / file headers collapse
-// to a single ellipsis so the visual matches "skip unchanged context".
-function patchToOps(patch: string): Array<DiffOp | 'ellipsis'> {
-  const out: Array<DiffOp | 'ellipsis'> = []
-  let pendingEllipsis = false
-  const pushEllipsis = () => {
-    if (pendingEllipsis) return
-    if (out.length === 0) return
-    out.push('ellipsis')
-    pendingEllipsis = true
-  }
-  for (const line of patch.split('\n')) {
-    if (
-      line.startsWith('diff --git ') ||
-      line.startsWith('index ') ||
-      line.startsWith('@@') ||
-      line.startsWith('--- ') ||
-      line.startsWith('+++ ') ||
-      line.startsWith('rename ') ||
-      line.startsWith('similarity index ') ||
-      line.startsWith('new file mode ') ||
-      line.startsWith('deleted file mode ') ||
-      line.startsWith('Binary files ')
-    ) {
-      pushEllipsis()
-      continue
-    }
-    if (line.startsWith('+')) {
-      out.push({ op: 'add', text: line.slice(1) })
-      pendingEllipsis = false
-      continue
-    }
-    if (line.startsWith('-')) {
-      out.push({ op: 'del', text: line.slice(1) })
-      pendingEllipsis = false
-      continue
-    }
-    if (line === '' || line.startsWith(' ')) {
-      out.push({ op: 'eq', text: line.startsWith(' ') ? line.slice(1) : '' })
-      pendingEllipsis = false
-    }
-  }
-  return out
-}
-
-// Merge LCS hunks from each Claude edit and parsed unified-diff patches into
-// one continuous stream so the file row renders a single cumulative diff
-// instead of N separately-bordered blocks.
-function combinedFileHunks(
-  edits: ReadonlyArray<{ oldString: string; newString: string }>,
-  patches: ReadonlyArray<string>,
-): Array<DiffOp | 'ellipsis'> {
-  const out: Array<DiffOp | 'ellipsis'> = []
-  const appendSection = (section: Array<DiffOp | 'ellipsis'>) => {
-    if (section.length === 0) return
-    if (out.length > 0 && out[out.length - 1] !== 'ellipsis' && section[0] !== 'ellipsis') {
-      out.push('ellipsis')
-    }
-    for (const item of section) {
-      if (item === 'ellipsis' && out.length > 0 && out[out.length - 1] === 'ellipsis') continue
-      out.push(item)
-    }
-  }
-  for (const edit of edits) {
-    appendSection(buildHunks(lineDiff(edit.oldString, edit.newString)))
-  }
-  for (const patch of patches) {
-    appendSection(patchToOps(patch))
-  }
-  if (out.length > 0 && out[out.length - 1] === 'ellipsis') out.pop()
-  return out
-}
-
 // ─── Components ───────────────────────────────────────────────────────────────
-
-const MAX_RENDERED_HUNK_ROWS = 800
-
-function HunksTable({
-  hunks,
-  className,
-}: {
-  hunks: Array<DiffOp | 'ellipsis'>
-  className?: string
-}) {
-  const truncated = hunks.length > MAX_RENDERED_HUNK_ROWS
-  const rows = truncated ? hunks.slice(0, MAX_RENDERED_HUNK_ROWS) : hunks
-  return (
-    <ScrollArea
-      className={cn(
-        'max-h-[min(55vh,520px)] rounded-[6px] border border-border/30 bg-[oklch(0.10_0.004_285)] text-[11px] leading-[1.6]',
-        className,
-      )}
-      viewportClassName="overscroll-contain"
-      maskHeight={16}
-    >
-      <table className="min-w-full border-collapse font-mono">
-        <tbody>
-          {rows.map((item, idx) => {
-            if (item === 'ellipsis') {
-              return (
-                <tr key={`ellipsis-${idx}`}>
-                  <td className="w-5 select-none border-r border-border/20 px-1.5 text-center text-muted-foreground/30">
-                    ⋯
-                  </td>
-                  <td className="px-2 text-muted-foreground/30">…</td>
-                </tr>
-              )
-            }
-            const { op, text } = item
-            const isAdd = op === 'add'
-            const isDel = op === 'del'
-            return (
-              <tr
-                key={idx}
-                className={cn(isDel && 'bg-rose-500/[0.08]', isAdd && 'bg-emerald-500/[0.08]')}
-              >
-                <td
-                  className={cn(
-                    'w-5 select-none border-r border-border/20 px-1.5 text-center font-medium',
-                    isDel && 'border-rose-500/20 text-rose-400/70',
-                    isAdd && 'border-emerald-500/20 text-emerald-400/70',
-                    op === 'eq' && 'text-muted-foreground/25',
-                  )}
-                >
-                  {isDel ? '−' : isAdd ? '+' : ' '}
-                </td>
-                <td
-                  className={cn(
-                    'whitespace-pre-wrap break-all px-2 py-px',
-                    isDel && 'text-rose-200/80',
-                    isAdd && 'text-emerald-200/80',
-                    op === 'eq' && 'text-foreground/55',
-                  )}
-                >
-                  {text}
-                </td>
-              </tr>
-            )
-          })}
-          {truncated ? (
-            <tr>
-              <td className="w-5 select-none border-r border-border/20 px-1.5 text-center text-muted-foreground/30">
-                ⋯
-              </td>
-              <td className="px-2 py-1 text-muted-foreground/55">
-                Diff truncated — {hunks.length - MAX_RENDERED_HUNK_ROWS} more rows
-              </td>
-            </tr>
-          ) : null}
-        </tbody>
-      </table>
-    </ScrollArea>
-  )
-}
 
 export function FileDiffPreview({
   file,
@@ -275,16 +53,25 @@ export function FileDiffPreview({
   className?: string
   tableClassName?: string
 }) {
-  const combinedHunks = useMemo(
-    () => combinedFileHunks(file.edits, file.patches ?? []),
-    [file.edits, file.patches],
-  )
-  const hasDetails = combinedHunks.length > 0
+  const hasDetails = file.edits.length > 0 || (file.patches?.length ?? 0) > 0
 
   return (
     <div className={className}>
       {hasDetails ? (
-        <HunksTable hunks={combinedHunks} className={tableClassName} />
+        <Suspense
+          fallback={
+            <div
+              className={cn(
+                'max-h-[min(55vh,520px)] rounded-[6px] border border-border/30 bg-[oklch(0.10_0.004_285)] px-2.5 py-2 text-[11px] text-muted-foreground/55',
+                tableClassName,
+              )}
+            >
+              Loading diff viewer...
+            </div>
+          }
+        >
+          <LazyPierreFileDiffPreview file={file} tableClassName={tableClassName} />
+        </Suspense>
       ) : (
         <div className="rounded-[6px] border border-border/25 bg-background/40 px-2.5 py-2 text-[11px] text-muted-foreground/60">
           Diff summary available, but the full patch was not preserved for this file.

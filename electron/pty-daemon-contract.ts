@@ -8,7 +8,8 @@ export const PTY_DAEMON_PROTOCOL_VERSION = 2
 // v9: terminal data switched from JSON lines to binary frames (0x02 marker)
 // v10: tmux sessions moved to project-owned window groups with per-terminal viewers
 // v11: terminal sessions clamp TERM away from inherited TERM=dumb
-export const PTY_DAEMON_COMPAT_VERSION = 11
+// v12: daemon exposes the service socket used by launchd and MCP terminal clients
+export const PTY_DAEMON_COMPAT_VERSION = 12
 
 export interface PtyDaemonVersionInfo {
   protocolVersion: number

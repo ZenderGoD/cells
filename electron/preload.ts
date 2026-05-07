@@ -320,6 +320,12 @@ const api: CellsAPI = {
       ipcRenderer.on('app:daemon-disconnected', handler)
       return () => ipcRenderer.removeListener('app:daemon-disconnected', handler)
     },
+    onSystemResume: (callback: (reason: 'resume' | 'unlock-screen') => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, reason: 'resume' | 'unlock-screen') =>
+        callback(reason)
+      ipcRenderer.on('app:system-resume', handler)
+      return () => ipcRenderer.removeListener('app:system-resume', handler)
+    },
     onNewTerminal: (callback: () => void) => {
       const handler = () => callback()
       ipcRenderer.on('app:new-terminal', handler)
