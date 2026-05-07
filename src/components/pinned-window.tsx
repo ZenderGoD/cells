@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowDownLeft } from 'lucide-react'
 import { CellTerminal } from './terminal/cell-terminal'
 import { AgentChatPanel } from './agent-session/agent-chat-panel'
+import { AgentQueueReporter } from './agent-session/agent-queue-reporter'
 import { TextEditorSurface } from './editor/text-editor-surface'
 import { useStore } from '@/lib/store'
 import { getTerminalTheme } from '@/lib/terminal-themes'
@@ -134,6 +135,7 @@ export function PinnedWindow({
       className="w-screen h-screen flex flex-col overflow-hidden"
       style={{ background: theme.background }}
     >
+      <AgentQueueReporter />
       {/* Custom title bar */}
       <div
         className="flex items-center shrink-0"

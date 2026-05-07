@@ -79,6 +79,7 @@ import { LoadingIndicator } from './agent-loading-indicator'
 import { SessionDiffsPanel } from './session-diffs-panel'
 import { InlineMentionMenu, useInlineMention } from './inline-mention-menu'
 import { sumDiffStats, hasDiffStats } from '@/lib/tool-diff-stats'
+import { createQueuedMessageId, sanitizeQueuedMessages } from '@/lib/agent-session-queue'
 import {
   deriveAgentSessionWindowStatus,
   getInFlightAgentMessages,
@@ -1678,22 +1679,6 @@ type QueuedMessage = QueuedAgentMessage
 type QueuedMessageSettings = Pick<QueuedMessage, 'model' | 'thinkingLevel' | 'permissionMode'>
 const ATTACHMENTS_ONLY_TEXT = '(attached files)'
 
-function createQueuedMessageId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID()
-  }
-  return `q_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
-}
-
-function sanitizeQueuedMessages(messages: QueuedMessage[]): QueuedMessage[] {
-  // Backfill ids for entries persisted before the id field existed so React
-  // keys and Framer layoutIds stay unique even when two messages have
-  // identical text/attachments/mode.
-  return messages
-    .filter((message) => message.mode !== 'stop')
-    .map((message) => (message.id ? message : { ...message, id: createQueuedMessageId() }))
-}
-
 function getQueuedComposerText(message: QueuedMessage) {
   return message.attachments.length > 0 && message.text === ATTACHMENTS_ONLY_TEXT
     ? ''
@@ -3217,6 +3202,31 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     updateQueueScrollFade()
   }, [queuedMessages.length, queueCollapsed, updateQueueScrollFade])
   const interruptMessageRef = useRef<QueuedMessage | null>(null)
+  const queueEditingPausedRef = useRef(false)
+  const resumeGatePausedRef = useRef(false)
+  useEffect(() => {
+    const paused = editingIndex !== null || dragIndex !== null
+    if (queueEditingPausedRef.current === paused) return
+    queueEditingPausedRef.current = paused
+    window.cells.agentSession.setQueueDrainPaused(agentWindow.id, 'queue-editing', paused)
+  }, [agentWindow.id, dragIndex, editingIndex])
+  useEffect(() => {
+    const paused = resumeGated && queuedMessages.length > 0
+    if (resumeGatePausedRef.current === paused) return
+    resumeGatePausedRef.current = paused
+    window.cells.agentSession.setQueueDrainPaused(agentWindow.id, 'resume-gate', paused)
+  }, [agentWindow.id, queuedMessages.length, resumeGated])
+  useEffect(
+    () => () => {
+      if (queueEditingPausedRef.current) {
+        window.cells.agentSession.setQueueDrainPaused(agentWindow.id, 'queue-editing', false)
+      }
+      if (resumeGatePausedRef.current) {
+        window.cells.agentSession.setQueueDrainPaused(agentWindow.id, 'resume-gate', false)
+      }
+    },
+    [agentWindow.id],
+  )
   const reorderQueue = useCallback(
     (from: number, to: number) => {
       if (from === to) return
@@ -4649,11 +4659,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     ],
   )
 
-  // Drain the queue whenever the agent flips back to idle. Pop the front
-  // item OPTIMISTICALLY before dispatching — if sendToAgent throws we push
-  // it back. Prior version removed-on-success but sendToAgent resolves after
-  // the agent flips to `running`, which the user could read as "the queue
-  // item is still there even though the agent already started it".
+  // Immediate interrupt sends stay renderer-local: the user explicitly asked
+  // to stop the current turn and send one message next. Persisted queued
+  // after-turn/after-tool messages are drained by the main process so they
+  // keep moving while this renderer is throttled or unfocused.
   //
   // `awaitingRunningRef` gates back-to-back sends: after we fire a queued
   // message, `sendToAgent()` can resolve before the backend emits the
@@ -4667,13 +4676,6 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     if (snapshot?.status === 'running') awaitingRunningRef.current = false
   }, [snapshot?.status])
 
-  // after-tool watcher: when the front-of-queue entry is waiting for a tool
-  // boundary, fire a stop the moment any tool message flips to completed
-  // after it was enqueued. Track seen completed tool ids so a single tool
-  // end doesn't fire stop twice; gate on `afterToolFiredRef` so we only
-  // interrupt once per running-turn (reset when the turn ends).
-  const seenCompletedToolsRef = useRef<Set<string>>(new Set())
-  const afterToolFiredRef = useRef(false)
   const toggleQueuedMode = useCallback(
     (index: number) => {
       setQueuedMessages((q) =>
@@ -4689,77 +4691,15 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     [setQueuedMessages],
   )
   useEffect(() => {
-    if (snapshot?.status !== 'running') afterToolFiredRef.current = false
-  }, [snapshot?.status])
-  useEffect(() => {
-    const msgs = snapshot?.messages
-    if (!msgs) return
-    const nextSeen = new Set<string>()
-    let hasNewCompletion = false
-    for (const m of msgs) {
-      if (m.role !== 'tool' || m.status !== 'completed') continue
-      nextSeen.add(m.id)
-      if (!seenCompletedToolsRef.current.has(m.id)) hasNewCompletion = true
-    }
-    seenCompletedToolsRef.current = nextSeen
-    if (!hasNewCompletion) return
-    if (snapshot?.status !== 'running') return
-    if (afterToolFiredRef.current) return
-    if (editingIndex === 0) return
-    if (getQueuedMessagesSnapshot()[0]?.mode !== 'after-tool') return
-    afterToolFiredRef.current = true
-    void handleStop()
-  }, [editingIndex, getQueuedMessagesSnapshot, snapshot?.messages, snapshot?.status, handleStop])
-  useEffect(() => {
     if (snapshot?.status !== 'idle') return
     if (resumeGated) return
     if (sendingQueuedRef.current) return
     if (awaitingRunningRef.current) return
-    if (editingIndex === 0 && !interruptMessageRef.current) return
+    if (!interruptMessageRef.current) return
     sendingQueuedRef.current = true
     awaitingRunningRef.current = true
-    if (interruptMessageRef.current) {
-      const next = interruptMessageRef.current
-      interruptMessageRef.current = null
-      void sendToAgent(
-        next.text,
-        next.attachments,
-        {
-          model: next.model,
-          thinkingLevel: next.thinkingLevel,
-          permissionMode: next.permissionMode,
-        },
-        next.replyTo ?? null,
-      )
-        .catch((err) => {
-          console.error('[agent-chat] interrupt send failed', err)
-          interruptMessageRef.current = next
-          awaitingRunningRef.current = false
-        })
-        .finally(() => {
-          sendingQueuedRef.current = false
-        })
-      return
-    }
-    if (queuedMessages.length === 0) {
-      sendingQueuedRef.current = false
-      awaitingRunningRef.current = false
-      return
-    }
-    if (editingIndex === 0) {
-      sendingQueuedRef.current = false
-      awaitingRunningRef.current = false
-      return
-    }
-    const sentBeforeEditedQueuedMessage = editingIndex !== null && editingIndex > 0
-    const next = queuedMessages[0]
-    setQueuedMessages((q) => q.slice(1))
-    if (sentBeforeEditedQueuedMessage) {
-      window.queueMicrotask(() => {
-        setEditingIndex((current) => (current === null ? null : Math.max(0, current - 1)))
-      })
-    }
-    window.cells.agentSession.notifyQueuedStart(agentWindow.id)
+    const next = interruptMessageRef.current
+    interruptMessageRef.current = null
     void sendToAgent(
       next.text,
       next.attachments,
@@ -4771,26 +4711,14 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       next.replyTo ?? null,
     )
       .catch((err) => {
-        console.error('[agent-chat] queued send failed', err)
-        // Put it back at the front so the user can retry / see it.
-        setQueuedMessages((q) => [next, ...q])
-        if (sentBeforeEditedQueuedMessage) {
-          setEditingIndex((current) => (current === null ? null : current + 1))
-        }
+        console.error('[agent-chat] interrupt send failed', err)
+        interruptMessageRef.current = next
         awaitingRunningRef.current = false
       })
       .finally(() => {
         sendingQueuedRef.current = false
       })
-  }, [
-    agentWindow.id,
-    editingIndex,
-    queuedMessages,
-    resumeGated,
-    sendToAgent,
-    setQueuedMessages,
-    snapshot?.status,
-  ])
+  }, [agentWindow.id, queuedMessages, resumeGated, sendToAgent, snapshot?.status])
 
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -5400,6 +5328,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                       setMidTurnDetected(false)
                       if (queuedMessages.length > 0) {
                         setQueueCollapsed(false)
+                        window.cells.agentSession.startQueuedDrain(agentWindow.id)
                       } else {
                         void sendToAgent('Please continue where you left off.', [], {
                           model: agentWindow.model ?? null,

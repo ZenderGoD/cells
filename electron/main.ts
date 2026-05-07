@@ -33,11 +33,14 @@ import type {
   AgentNotificationContext,
   AgentNotificationSettings,
   AgentMentionSearchResult,
+  AgentSessionQueueReport,
+  AgentSessionRequest,
   AgentSessionSnapshot,
   FocusAgentWindowRequest,
   GitWorktree,
   GitWorktreeCreateOptions,
   ProjectsState,
+  QueuedAgentMessage,
   TerminalSessionBackend,
 } from '../src/types'
 import {
@@ -81,6 +84,7 @@ import {
   DEFAULT_AGENT_NOTIFICATION_SETTINGS,
   normalizeAgentNotificationSettings,
 } from '../src/lib/agent-notification-settings'
+import { areQueuedMessagesEqual, sanitizeQueuedMessages } from '../src/lib/agent-session-queue'
 import { EnhancedSessionTracker } from '../src/lib/enhanced-session-tracker'
 import {
   AgentSessionService,
@@ -305,6 +309,13 @@ const cachedAgentWindowProjectIds = new Map<string, string>()
 // the "finished" notification when another queued message is about to run —
 // the agent isn't really done, it's just between turns.
 const cachedAgentWindowQueuedCounts = new Map<string, number>()
+const cachedAgentWindowQueues = new Map<string, QueuedAgentMessage[]>()
+const cachedAgentWindowQueueRequests = new Map<string, AgentSessionRequest>()
+const consumedAgentWindowQueuedMessageIds = new Map<string, Set<string>>()
+const pausedAgentWindowQueueReasons = new Map<string, Set<string>>()
+const drainingAgentWindowQueues = new Set<string>()
+const queueSeenCompletedToolIds = new Map<string, Set<string>>()
+const queueStopAfterToolSent = new Set<string>()
 // Hold a strong reference to live Notification objects. Without this, the JS
 // objects can be GC'd while the OS notification is still visible, so their
 // 'click' handlers never fire and clicking the notification only triggers the
@@ -360,6 +371,7 @@ function flushAgentSessionSnapshots() {
 
 agentSessionService.on('update', (snapshot) => {
   maybeNotifyForAgentSessionUpdate(snapshot)
+  handleAgentSessionQueueSnapshot(snapshot)
   pendingAgentSessionSnapshots.set(snapshot.windowId, snapshot)
   if (pendingAgentSessionFlushTimer) return
   // Coalesce bursty agent-session updates. Each update currently carries the
@@ -798,6 +810,268 @@ function maybeNotifyForAgentSessionUpdate(snapshot: AgentSessionSnapshot) {
   })
 }
 
+function setCachedAgentQueue(windowId: string, queuedMessages: QueuedAgentMessage[]) {
+  const queue = sanitizeQueuedMessages(queuedMessages)
+  if (queue.length === 0) {
+    cachedAgentWindowQueues.delete(windowId)
+    cachedAgentWindowQueuedCounts.delete(windowId)
+    pausedAgentWindowQueueReasons.delete(windowId)
+    queueStopAfterToolSent.delete(windowId)
+    return queue
+  }
+  cachedAgentWindowQueues.set(windowId, queue)
+  cachedAgentWindowQueuedCounts.set(windowId, queue.length)
+  return queue
+}
+
+function clearAgentSessionQueueState(windowId: string) {
+  cachedAgentWindowQueues.delete(windowId)
+  cachedAgentWindowQueueRequests.delete(windowId)
+  cachedAgentWindowQueuedCounts.delete(windowId)
+  consumedAgentWindowQueuedMessageIds.delete(windowId)
+  pausedAgentWindowQueueReasons.delete(windowId)
+  drainingAgentWindowQueues.delete(windowId)
+  queueSeenCompletedToolIds.delete(windowId)
+  queueStopAfterToolSent.delete(windowId)
+}
+
+function setAgentQueuePaused(windowId: string, reason: string, paused: boolean) {
+  const normalizedReason = reason.trim() || 'renderer'
+  if (!paused) {
+    const reasons = pausedAgentWindowQueueReasons.get(windowId)
+    if (!reasons) return
+    reasons.delete(normalizedReason)
+    if (reasons.size === 0) pausedAgentWindowQueueReasons.delete(windowId)
+    return
+  }
+
+  let reasons = pausedAgentWindowQueueReasons.get(windowId)
+  if (!reasons) {
+    reasons = new Set()
+    pausedAgentWindowQueueReasons.set(windowId, reasons)
+  }
+  reasons.add(normalizedReason)
+}
+
+function isAgentQueuePaused(windowId: string) {
+  return (pausedAgentWindowQueueReasons.get(windowId)?.size ?? 0) > 0
+}
+
+function broadcastAgentQueueUpdate(windowId: string, queuedMessages: QueuedAgentMessage[]) {
+  const update = { windowId, queuedMessages }
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (window.isDestroyed()) continue
+    const contents = window.webContents
+    if (contents.isDestroyed() || contents.isCrashed()) continue
+    try {
+      contents.send('agent-session:queue-update', update)
+    } catch {}
+  }
+}
+
+function patchPersistedAgentQueue(windowId: string, queuedMessages: QueuedAgentMessage[]) {
+  try {
+    ensureStateDir()
+    if (!fs.existsSync(STATE_FILE)) return
+    const state = readStateFile(STATE_FILE) as ProjectsState
+    let changed = false
+    const projects = (state.projects ?? []).map((project) => {
+      let projectChanged = false
+      const agentWindows = (project.agentWindows ?? []).map((agentWindow) => {
+        if (agentWindow.id !== windowId) return agentWindow
+        if (areQueuedMessagesEqual(agentWindow.queuedMessages ?? [], queuedMessages)) {
+          return agentWindow
+        }
+        changed = true
+        projectChanged = true
+        return {
+          ...agentWindow,
+          queuedMessages,
+        }
+      })
+      return projectChanged ? { ...project, agentWindows } : project
+    })
+    if (!changed) return
+    const nextState: ProjectsState = { ...state, projects }
+    fs.writeFileSync(STATE_FILE, JSON.stringify(nextState, null, 2))
+    syncCachedNotificationState(nextState)
+    refreshTerminalBackendSelection(nextState)
+    cachedAgentNotificationSettings = normalizeAgentNotificationSettings(
+      nextState.agentNotificationSettings,
+    )
+  } catch (err) {
+    console.error('[agent-session-queue] failed to patch persisted queue', err)
+  }
+}
+
+function publishAgentQueue(windowId: string, queuedMessages: QueuedAgentMessage[]) {
+  const queue = setCachedAgentQueue(windowId, queuedMessages)
+  patchPersistedAgentQueue(windowId, queue)
+  broadcastAgentQueueUpdate(windowId, queue)
+  return queue
+}
+
+function rememberConsumedQueuedMessage(windowId: string, messageId: string) {
+  let ids = consumedAgentWindowQueuedMessageIds.get(windowId)
+  if (!ids) {
+    ids = new Set()
+    consumedAgentWindowQueuedMessageIds.set(windowId, ids)
+  }
+  ids.add(messageId)
+}
+
+function forgetConsumedQueuedMessage(windowId: string, messageId: string) {
+  const ids = consumedAgentWindowQueuedMessageIds.get(windowId)
+  if (!ids) return
+  ids.delete(messageId)
+  if (ids.size === 0) consumedAgentWindowQueuedMessageIds.delete(windowId)
+}
+
+function notifyAgentQueuedStart(windowId: string) {
+  const settings = getAgentNotificationSettings()
+  if (!settings.enabled || !settings.notifyOnQueuedStart) return
+  const snapshot = previousAgentSessionSnapshots.get(windowId)
+  if (!snapshot) return
+  if (!shouldDeliverAgentNotification(snapshot, settings)) return
+  const label = getSessionNotificationLabel(snapshot)
+  void showSystemNotification(`${label} started next message`, 'Running a queued message.', {
+    playSound: false,
+    focusAgentWindowId: windowId,
+    focusProjectId: getProjectIdForAgentWindow(windowId),
+  })
+}
+
+async function sendQueuedAgentMessage(
+  windowId: string,
+  message: QueuedAgentMessage,
+): Promise<void> {
+  const overrides = {
+    model: message.model,
+    thinkingLevel: message.thinkingLevel,
+    permissionMode: message.permissionMode,
+  }
+  const send = () =>
+    agentSessionService.send(
+      windowId,
+      message.text,
+      message.attachments,
+      overrides,
+      message.replyTo ?? null,
+    )
+
+  try {
+    await send()
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err)
+    const request = cachedAgentWindowQueueRequests.get(windowId)
+    if (!/Missing agent session/i.test(errorMessage) || !request) throw err
+    await agentSessionService.ensure({
+      ...request,
+      initialPrompt: null,
+    })
+    await send()
+  }
+}
+
+function maybeDrainAgentQueue(windowId: string, snapshot?: AgentSessionSnapshot | null) {
+  if (isAgentQueuePaused(windowId)) return
+  if (drainingAgentWindowQueues.has(windowId)) return
+  if (!snapshot || snapshot.status !== 'idle') return
+  const queue = cachedAgentWindowQueues.get(windowId)
+  if (!queue || queue.length === 0) return
+
+  const [next, ...rest] = queue
+  drainingAgentWindowQueues.add(windowId)
+  rememberConsumedQueuedMessage(windowId, next.id)
+  publishAgentQueue(windowId, rest)
+  notifyAgentQueuedStart(windowId)
+
+  void sendQueuedAgentMessage(windowId, next)
+    .catch((err) => {
+      console.error('[agent-session-queue] queued send failed', err)
+      forgetConsumedQueuedMessage(windowId, next.id)
+      publishAgentQueue(windowId, [next, ...(cachedAgentWindowQueues.get(windowId) ?? [])])
+    })
+    .finally(() => {
+      drainingAgentWindowQueues.delete(windowId)
+    })
+}
+
+function handleAgentSessionQueueSnapshot(snapshot: AgentSessionSnapshot) {
+  const completedToolIds = new Set(
+    snapshot.messages
+      .filter((message) => message.role === 'tool' && message.status === 'completed')
+      .map((message) => message.id),
+  )
+  const previousCompletedToolIds = queueSeenCompletedToolIds.get(snapshot.windowId)
+  let hasNewCompletedTool = false
+  if (previousCompletedToolIds) {
+    for (const id of completedToolIds) {
+      if (!previousCompletedToolIds.has(id)) {
+        hasNewCompletedTool = true
+        break
+      }
+    }
+  }
+  queueSeenCompletedToolIds.set(snapshot.windowId, completedToolIds)
+
+  if (snapshot.status !== 'running') {
+    queueStopAfterToolSent.delete(snapshot.windowId)
+  }
+  if (isAgentQueuePaused(snapshot.windowId)) return
+
+  const nextQueuedMessage = cachedAgentWindowQueues.get(snapshot.windowId)?.[0]
+  if (
+    nextQueuedMessage?.mode === 'stop' &&
+    snapshot.status === 'running' &&
+    !queueStopAfterToolSent.has(snapshot.windowId)
+  ) {
+    queueStopAfterToolSent.add(snapshot.windowId)
+    void agentSessionService
+      .close(snapshot.windowId)
+      .catch((err) => console.error('[agent-session-queue] stop failed', err))
+    return
+  }
+
+  if (
+    nextQueuedMessage?.mode === 'after-tool' &&
+    snapshot.status === 'running' &&
+    hasNewCompletedTool &&
+    !queueStopAfterToolSent.has(snapshot.windowId)
+  ) {
+    queueStopAfterToolSent.add(snapshot.windowId)
+    void agentSessionService
+      .close(snapshot.windowId)
+      .catch((err) => console.error('[agent-session-queue] after-tool stop failed', err))
+    return
+  }
+
+  maybeDrainAgentQueue(snapshot.windowId, snapshot)
+}
+
+function reportAgentQueues(reports: AgentSessionQueueReport[]) {
+  for (const report of reports) {
+    if (!report || typeof report.windowId !== 'string' || report.windowId.length === 0) continue
+    if (!report.request || report.request.windowId !== report.windowId) continue
+
+    cachedAgentWindowQueueRequests.set(report.windowId, report.request)
+    const consumedIds = consumedAgentWindowQueuedMessageIds.get(report.windowId)
+    const reportedQueue = sanitizeQueuedMessages(report.queuedMessages)
+    const sanitized = reportedQueue.filter((message) => !consumedIds?.has(message.id))
+    if (!areQueuedMessagesEqual(reportedQueue, sanitized)) {
+      broadcastAgentQueueUpdate(report.windowId, sanitized)
+    }
+    const queue = setCachedAgentQueue(report.windowId, sanitized)
+    const snapshot = agentSessionService.getSnapshot(report.windowId)
+    if (queue.length > 0 && !agentSessionService.hasRuntime(report.windowId)) {
+      setAgentQueuePaused(report.windowId, 'missing-runtime', true)
+      continue
+    }
+    setAgentQueuePaused(report.windowId, 'missing-runtime', false)
+    maybeDrainAgentQueue(report.windowId, snapshot)
+  }
+}
+
 function repairLegacyTerminalFontStateEarly() {
   const statePath = STATE_FILE
   try {
@@ -1157,6 +1431,43 @@ ipcMain.on('app:update-notification-context', (_event, context: AgentNotificatio
   }
 })
 
+ipcMain.on('agent-session:report-queues', (_event, reports: AgentSessionQueueReport[]) => {
+  if (!Array.isArray(reports)) return
+  reportAgentQueues(reports)
+})
+
+ipcMain.on('agent-session:start-queued-drain', (_event, windowId: string) => {
+  setAgentQueuePaused(windowId, 'missing-runtime', false)
+  setAgentQueuePaused(windowId, 'resume-gate', false)
+  const request = cachedAgentWindowQueueRequests.get(windowId)
+  const snapshot = agentSessionService.getSnapshot(windowId)
+  if (agentSessionService.hasRuntime(windowId)) {
+    maybeDrainAgentQueue(windowId, snapshot)
+    return
+  }
+  if (!request) return
+  void agentSessionService
+    .ensure({ ...request, initialPrompt: null })
+    .then((next) => maybeDrainAgentQueue(windowId, next))
+    .catch((err) => console.error('[agent-session-queue] resume ensure failed', err))
+})
+
+ipcMain.on(
+  'agent-session:set-queue-drain-paused',
+  (_event, windowId: string, reason: string, paused: boolean) => {
+    setAgentQueuePaused(windowId, reason, paused === true)
+    if (paused) return
+    if (
+      (cachedAgentWindowQueues.get(windowId)?.length ?? 0) > 0 &&
+      !agentSessionService.hasRuntime(windowId)
+    ) {
+      setAgentQueuePaused(windowId, 'missing-runtime', true)
+      return
+    }
+    maybeDrainAgentQueue(windowId, agentSessionService.getSnapshot(windowId))
+  },
+)
+
 ipcMain.on('agent-session:report-queue-count', (_event, windowId: string, count: number) => {
   const normalized = Math.max(0, Math.trunc(Number(count) || 0))
   if (normalized === 0) {
@@ -1167,17 +1478,7 @@ ipcMain.on('agent-session:report-queue-count', (_event, windowId: string, count:
 })
 
 ipcMain.on('agent-session:notify-queued-start', (_event, windowId: string) => {
-  const settings = getAgentNotificationSettings()
-  if (!settings.enabled || !settings.notifyOnQueuedStart) return
-  const snapshot = previousAgentSessionSnapshots.get(windowId)
-  if (!snapshot) return
-  if (!shouldDeliverAgentNotification(snapshot, settings)) return
-  const label = getSessionNotificationLabel(snapshot)
-  void showSystemNotification(`${label} started next message`, 'Running a queued message.', {
-    playSound: false,
-    focusAgentWindowId: windowId,
-    focusProjectId: getProjectIdForAgentWindow(windowId),
-  })
+  notifyAgentQueuedStart(windowId)
 })
 
 ipcMain.on('perf:renderer-sample', (_event, sample: RendererPerfReport) => {
@@ -2391,6 +2692,7 @@ ipcMain.handle('agent-session:close', (_event, windowId: string) => {
 ipcMain.handle('agent-session:dispose', (_event, windowId: string) => {
   // Full teardown — called when the agent window itself is destroyed.
   clearAgentSessionNotificationState(windowId)
+  clearAgentSessionQueueState(windowId)
   return agentSessionService.dispose(windowId)
 })
 

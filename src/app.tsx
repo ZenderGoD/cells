@@ -14,6 +14,7 @@ import { OpenFileProjectDialog } from './components/open-file-project-dialog'
 import { Toaster, showToast } from './components/toast'
 import { PinnedWindow } from './components/pinned-window'
 import { BackgroundAgentSessionHosts } from './components/agent-session/background-agent-session-runner'
+import { AgentQueueReporter } from './components/agent-session/agent-queue-reporter'
 import {
   getCachedTerminalCount,
   reloadAllTerminals,
@@ -294,38 +295,6 @@ function MainApp() {
       focusedAgentWindowId,
     })
   }, [activeProjectId, focusedAgentWindowId])
-
-  // Push each agent window's queued-message count to main so it can suppress
-  // the "finished" notification when more queued work is about to run.
-  useEffect(() => {
-    const lastReported = new Map<string, number>()
-    const push = () => {
-      const state = useStore.getState()
-      const counts = new Map<string, number>()
-      for (const agentWindow of state.agentWindows) {
-        counts.set(agentWindow.id, agentWindow.queuedMessages?.length ?? 0)
-      }
-      for (const project of state.projects) {
-        for (const agentWindow of project.agentWindows ?? []) {
-          counts.set(agentWindow.id, agentWindow.queuedMessages?.length ?? 0)
-        }
-      }
-      for (const [id, count] of counts) {
-        if (lastReported.get(id) !== count) {
-          lastReported.set(id, count)
-          window.cells.agentSession.reportQueueCount(id, count)
-        }
-      }
-      for (const id of [...lastReported.keys()]) {
-        if (!counts.has(id)) {
-          lastReported.delete(id)
-          window.cells.agentSession.reportQueueCount(id, 0)
-        }
-      }
-    }
-    push()
-    return useStore.subscribe(push)
-  }, [])
 
   useEffect(() => {
     return window.cells.app.onDaemonDisconnected(() => {
@@ -846,6 +815,7 @@ function MainApp() {
         className="app-shell h-full ring-1 ring-terminal-active/30 rounded-lg overflow-hidden"
         style={shellStyle}
       >
+        <AgentQueueReporter />
         <Onboarding />
         <OpenFileProjectDialog
           open={pendingExternalFilePaths.length > 0}
@@ -865,6 +835,7 @@ function MainApp() {
       className="app-shell h-full flex flex-col ring-1 ring-terminal-active/30 rounded-lg overflow-hidden"
       style={shellStyle}
     >
+      <AgentQueueReporter />
       <AnimatedTitleBarSlot position="top" show={!titleBarHidden && titleBarPosition === 'top'} />
       <InfiniteCanvas />
       <BackgroundAgentSessionHosts />

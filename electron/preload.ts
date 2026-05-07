@@ -3,6 +3,8 @@ import type {
   AgentPermissionMode,
   AgentMentionSearchResult,
   AgentReplyReference,
+  AgentSessionQueueReport,
+  AgentSessionQueueUpdate,
   AgentSessionRequest,
   AgentSessionSnapshot,
   BrowserCanvasWheelGesture,
@@ -528,6 +530,15 @@ const api: CellsAPI = {
       ) as Promise<void>,
     close: (windowId: string) => ipcRenderer.invoke('agent-session:close', windowId),
     dispose: (windowId: string) => ipcRenderer.invoke('agent-session:dispose', windowId),
+    reportQueues: (reports: AgentSessionQueueReport[]) => {
+      ipcRenderer.send('agent-session:report-queues', reports)
+    },
+    startQueuedDrain: (windowId: string) => {
+      ipcRenderer.send('agent-session:start-queued-drain', windowId)
+    },
+    setQueueDrainPaused: (windowId: string, reason: string, paused: boolean) => {
+      ipcRenderer.send('agent-session:set-queue-drain-paused', windowId, reason, paused)
+    },
     reportQueueCount: (windowId: string, count: number) => {
       ipcRenderer.send('agent-session:report-queue-count', windowId, count)
     },
@@ -670,6 +681,12 @@ const api: CellsAPI = {
         callback(snapshot)
       ipcRenderer.on('agent-session:update', handler)
       return () => ipcRenderer.removeListener('agent-session:update', handler)
+    },
+    onQueueUpdate: (callback: (update: AgentSessionQueueUpdate) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, update: AgentSessionQueueUpdate) =>
+        callback(update)
+      ipcRenderer.on('agent-session:queue-update', handler)
+      return () => ipcRenderer.removeListener('agent-session:queue-update', handler)
     },
   },
   mcp: {

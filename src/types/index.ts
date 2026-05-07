@@ -436,8 +436,8 @@ export interface AgentWindowNode {
   /** Structured reply target currently attached to the composer draft. */
   composerReplyTo?: AgentReplyReference | null
   /** Messages the user queued while a prior turn was in flight. Persisted so
-   *  they survive app restart — the chat panel drains them in order on the
-   *  next idle. */
+   *  they survive app restart; the main process drains them in order on the
+   *  next idle so focus/visibility throttling cannot strand them. */
   queuedMessages?: QueuedAgentMessage[]
   /** Set when the agent finishes a turn while the user isn't viewing this
    *  window, cleared when the window regains focus. Surfaces a distinct
@@ -535,6 +535,17 @@ export interface AgentSessionRequest {
   thinkingLevel?: AgentThinkingLevel | null
   fastMode?: boolean | null
   contextLength?: AgentContextLength | null
+}
+
+export interface AgentSessionQueueReport {
+  windowId: string
+  request: AgentSessionRequest
+  queuedMessages: QueuedAgentMessage[]
+}
+
+export interface AgentSessionQueueUpdate {
+  windowId: string
+  queuedMessages: QueuedAgentMessage[]
 }
 
 /** When the Claude agent invokes `ExitPlanMode` and we're waiting for the
@@ -960,8 +971,17 @@ export interface CellsAPI {
     ): Promise<void>
     close(windowId: string): Promise<void>
     dispose(windowId: string): Promise<void>
+    /** Report queue state so main can drain it even when renderer timers are
+     *  throttled, and suppress "finished" notifications between queued turns. */
+    reportQueues(reports: AgentSessionQueueReport[]): void
+    /** Manually release a queue recovered from a previous app session. */
+    startQueuedDrain(windowId: string): void
+    /** Temporarily pause main-process queue draining while the renderer is
+     *  editing/reordering queue rows or showing a recovered-session gate. */
+    setQueueDrainPaused(windowId: string, reason: string, paused: boolean): void
     /** Report how many messages are queued for this window so main can suppress
-     *  the "finished" notification when another queued message is about to run. */
+     *  the "finished" notification when another queued message is about to run.
+     *  Legacy fallback; reportQueues carries the authoritative queue. */
     reportQueueCount(windowId: string, count: number): void
     /** Tell main that a queued message is about to start running for this window.
      *  Main emits a silent notification if the user has that setting enabled. */
@@ -1072,6 +1092,7 @@ export interface CellsAPI {
       }) => void,
     ): () => void
     onUpdate(callback: (snapshot: AgentSessionSnapshot) => void): () => void
+    onQueueUpdate(callback: (update: AgentSessionQueueUpdate) => void): () => void
   }
   git: {
     isRepo(cwd: string): Promise<boolean>
