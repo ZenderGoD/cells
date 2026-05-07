@@ -547,6 +547,14 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
     if (!v) requestAnimationFrame(() => window.dispatchEvent(new Event('terminal-refocus')))
   }
   const [plusOpen, setPlusOpen] = useState(false)
+  const setPlusOpenWithOverlay = useCallback(
+    (open: boolean) => {
+      setPlusOpen(open)
+      setOverlayOpen('toolbar-plus-menu', open)
+      if (!open) requestAnimationFrame(() => window.dispatchEvent(new Event('terminal-refocus')))
+    },
+    [setOverlayOpen],
+  )
   const tabsRef = useRef<HTMLDivElement>(null)
   const urlInputRef = useRef<HTMLInputElement>(null)
   const [urlInput, setUrlInput] = useState('')
@@ -811,8 +819,9 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
       if (copyResetRef.current) {
         window.clearTimeout(copyResetRef.current)
       }
+      setOverlayOpen('toolbar-plus-menu', false)
     }
-  }, [])
+  }, [setOverlayOpen])
 
   useEffect(() => {
     if (embedded) return
@@ -1711,15 +1720,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
             </AnimatePresence>
 
             {/* Plus button with popover */}
-            <Popover
-              open={plusOpen}
-              onOpenChange={(open) => {
-                setPlusOpen(open)
-                setOverlayOpen('toolbar-plus-menu', open)
-                if (!open)
-                  requestAnimationFrame(() => window.dispatchEvent(new Event('terminal-refocus')))
-              }}
-            >
+            <Popover open={plusOpen} onOpenChange={setPlusOpenWithOverlay}>
               <PopoverTrigger className="text-muted-foreground/40 hover:text-foreground transition-colors">
                 <Plus className="w-3.5 h-3.5" />
               </PopoverTrigger>
@@ -1728,7 +1729,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
                   onClick={() => {
                     hapticSuccess()
                     addTerminal()
-                    setPlusOpen(false)
+                    setPlusOpenWithOverlay(false)
                   }}
                   className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-md text-[11px] text-foreground hover:bg-muted/60 transition-colors"
                 >
@@ -1739,7 +1740,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
                   onClick={() => {
                     hapticSuccess()
                     addTextEditor()
-                    setPlusOpen(false)
+                    setPlusOpenWithOverlay(false)
                   }}
                   className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-md text-[11px] text-foreground hover:bg-muted/60 transition-colors"
                 >
@@ -1750,7 +1751,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
                   onClick={() => {
                     hapticSuccess()
                     void openPickedFilesInEditor()
-                    setPlusOpen(false)
+                    setPlusOpenWithOverlay(false)
                   }}
                   className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-md text-[11px] text-foreground hover:bg-muted/60 transition-colors"
                 >
@@ -1761,7 +1762,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
                   onClick={() => {
                     hapticSuccess()
                     addBrowser()
-                    setPlusOpen(false)
+                    setPlusOpenWithOverlay(false)
                   }}
                   className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-md text-[11px] text-foreground hover:bg-muted/60 transition-colors"
                 >

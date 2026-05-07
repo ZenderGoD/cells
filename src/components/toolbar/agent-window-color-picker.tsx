@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Check } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
@@ -24,15 +24,21 @@ export function AgentWindowColorPicker({
   const syncAgentWindow = useStore((s) => s.syncAgentWindow)
   const active = getAgentWindowColor(currentColor)
   const hasColor = active.id !== 'none'
+  const overlayOwner = `agent-window-color-picker:${agentWindowId}`
+  const handleOpenChange = useCallback(
+    (next: boolean) => {
+      setOpen(next)
+      setOverlayOpen(overlayOwner, next)
+    },
+    [overlayOwner, setOverlayOpen],
+  )
+
+  useEffect(() => {
+    return () => setOverlayOpen(overlayOwner, false)
+  }, [overlayOwner, setOverlayOpen])
 
   return (
-    <Popover
-      open={open}
-      onOpenChange={(next) => {
-        setOpen(next)
-        setOverlayOpen(`agent-window-color-picker:${agentWindowId}`, next)
-      }}
-    >
+    <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger
         className="inline-flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/40 transition-colors hover:bg-muted/40 hover:text-foreground"
         title="Color-code window"
@@ -65,7 +71,7 @@ export function AgentWindowColorPicker({
                   syncAgentWindow(agentWindowId, {
                     color: color.id === 'none' ? null : color.id,
                   })
-                  setOpen(false)
+                  handleOpenChange(false)
                 }}
                 className={cn(
                   'group relative flex size-7 items-center justify-center rounded-md transition-colors hover:bg-muted/60',
