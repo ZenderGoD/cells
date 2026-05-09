@@ -11,7 +11,7 @@ test('normalizeWindowAppearance clamps stored values into the supported slider r
 
   assert.deepEqual(normalized, {
     windowOpacity: 100,
-    useTransparentWindow: true,
+    useTransparentWindow: false,
   })
 })
 
@@ -22,7 +22,7 @@ test('normalizeWindowAppearance preserves a fully transparent window opacity', (
 
   assert.deepEqual(normalized, {
     windowOpacity: 0,
-    useTransparentWindow: true,
+    useTransparentWindow: false,
   })
 })
 

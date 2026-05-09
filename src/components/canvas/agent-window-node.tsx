@@ -313,7 +313,7 @@ export const AgentWindowNode = memo(function AgentWindowNode({
     <div
       data-focused={isFocused ? 'true' : 'false'}
       className={cn(
-        'agent-window-node group absolute overflow-hidden rounded-lg border bg-background/75 backdrop-blur-xl transition-[box-shadow,border-color,transform] duration-150',
+        'agent-window-node group absolute overflow-hidden rounded-lg border bg-background/92 transition-[box-shadow,border-color,transform] duration-150',
         hasColor && 'border-[3px]',
         hasColor
           ? isFocused

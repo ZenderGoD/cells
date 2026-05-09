@@ -134,6 +134,7 @@ if (shouldIgnoreGpuBlocklist) {
   app.commandLine.appendSwitch('ignore-gpu-blocklist')
 }
 
+const shouldUseNativeWindowVibrancy = process.env.CELLS_ENABLE_NATIVE_WINDOW_VIBRANCY === '1'
 const isPerfMonitorEnabled = !app.isPackaged || process.env.CELLS_ENABLE_PERF_MONITOR === '1'
 
 const DEV_ROOT = process.env.CELLS_DEV_ROOT
@@ -1211,7 +1212,15 @@ function readSavedState() {
 }
 
 function isTransparentWindowModeEnabled() {
-  return readSavedState()?.useTransparentWindow !== false
+  return readSavedState()?.useTransparentWindow === true
+}
+
+function getNativeWindowVisualEffects(transparentWindow: boolean) {
+  const enabled = transparentWindow && shouldUseNativeWindowVibrancy
+  return {
+    vibrancy: enabled ? ('under-window' as const) : undefined,
+    visualEffectState: enabled ? ('active' as const) : undefined,
+  }
 }
 
 function createWindow() {
@@ -1227,8 +1236,7 @@ function createWindow() {
     show: false, // Don't show until ready — avoids GPU race on launch
     transparent: transparentWindow,
     backgroundColor: transparentWindow ? '#00000000' : '#15171a',
-    vibrancy: transparentWindow ? 'under-window' : undefined,
-    visualEffectState: transparentWindow ? 'active' : undefined,
+    ...getNativeWindowVisualEffects(transparentWindow),
     titleBarStyle: 'hidden',
     trafficLightPosition: { x: -20, y: -20 },
     roundedCorners: true,
@@ -3080,8 +3088,7 @@ ipcMain.handle(
       show: false,
       transparent: isBrowser ? false : transparentWindow,
       backgroundColor: isBrowser ? '#1e1e1e' : transparentWindow ? '#00000000' : '#15171a',
-      vibrancy: isBrowser || !transparentWindow ? undefined : 'under-window',
-      visualEffectState: isBrowser || !transparentWindow ? undefined : 'active',
+      ...getNativeWindowVisualEffects(!isBrowser && transparentWindow),
       webPreferences: isBrowser
         ? browserWebPreferences
         : {

@@ -6,8 +6,8 @@ export interface WindowAppearanceSettings {
 }
 
 export const DEFAULT_WINDOW_APPEARANCE: WindowAppearanceSettings = {
-  windowOpacity: 82,
-  useTransparentWindow: true,
+  windowOpacity: 100,
+  useTransparentWindow: false,
 }
 
 const SHELL_SURFACE_OPACITY = 0.82

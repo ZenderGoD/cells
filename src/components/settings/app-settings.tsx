@@ -549,7 +549,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                           <div className="flex min-w-0 flex-col items-start gap-0.5 text-left">
                             <span className="text-foreground">Use translucent Electron window</span>
                             <span className="text-[10px] text-muted-foreground/40">
-                              Turn this off to reduce WindowServer compositing. Applies after
+                              Keep this off for the lowest GPU and WindowServer load. Applies after
                               restart.
                             </span>
                           </div>

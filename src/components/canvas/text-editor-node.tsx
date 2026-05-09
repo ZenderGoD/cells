@@ -176,7 +176,7 @@ export const TextEditorNode = memo(function TextEditorNode({
     <div
       data-focused={isFocused ? 'true' : 'false'}
       className={cn(
-        'text-editor-node group absolute overflow-hidden rounded-lg border bg-background/75 backdrop-blur-xl transition-[box-shadow,border-color,transform] duration-150',
+        'text-editor-node group absolute overflow-hidden rounded-lg border bg-background/92 transition-[box-shadow,border-color,transform] duration-150',
         isFocused ? 'border-foreground/15 shadow-elevated' : 'border-border/50 shadow-middle',
         isSelected && 'ring-2 ring-primary/35',
         isResizing && 'select-none',
