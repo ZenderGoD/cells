@@ -1,9 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { init, Terminal, FitAddon, UrlRegexProvider, OSC8LinkProvider } from 'ghostty-web'
-import type { CanvasRenderer, ILinkProvider } from 'ghostty-web'
+import {
+  init,
+  Terminal,
+  FitAddon,
+  UrlRegexProvider,
+  OSC8LinkProvider,
+  CanvasRenderer,
+} from 'ghostty-web'
+import type { ILinkProvider } from 'ghostty-web'
 
 type ScrollbackProvider = NonNullable<Parameters<CanvasRenderer['render']>[3]>
 import { useStore, consumePendingCommand, consumePendingWorktreePath } from '@/lib/store'
+import {
+  UNICODE_REPLACEMENT_CHAR,
+  isRenderableCodePoint,
+  safeCodePointsString,
+} from '@/lib/terminal-codepoints'
 import { DEFAULT_TERMINAL_CURSOR_SETTINGS, type TerminalCursorStyle } from '@/lib/terminal-cursor'
 import { isServerOwnedTerminalBackend } from '@/lib/terminal-session-backend'
 import { DEFAULT_TERMINAL_SCROLLBACK_LINES } from '@/lib/terminal-scrollback'
@@ -73,6 +85,78 @@ type TerminalSelectionManager = {
   updateAutoScroll?: (mouseY: number, viewportHeight: number) => void
   stopAutoScroll?: () => void
 }
+
+function isInvalidCodePointRangeError(error: unknown) {
+  return error instanceof RangeError && /Invalid code point/i.test(error.message)
+}
+
+function shouldReplaceRendererCodePoint(codePoint: unknown) {
+  return typeof codePoint === 'number' && !isRenderableCodePoint(codePoint)
+}
+
+function patchGhosttyRendererInvalidCodePoints() {
+  // ghostty-web trusts raw WASM cell codepoints. A corrupt or out-of-range
+  // glyph should not prevent the whole terminal surface from opening.
+  const prototype = CanvasRenderer.prototype as unknown as {
+    renderCellText?: (cell: any, col: number, row: number) => void
+    __cellsInvalidCodePointPatch?: boolean
+  }
+  if (prototype.__cellsInvalidCodePointPatch || typeof prototype.renderCellText !== 'function') {
+    return
+  }
+
+  const renderCellText = prototype.renderCellText
+  prototype.__cellsInvalidCodePointPatch = true
+  prototype.renderCellText = function patchedRenderCellText(cell: any, col: number, row: number) {
+    const renderer = this as any
+    const originalCodePoint = cell?.codepoint
+    const originalGraphemeLength = cell?.grapheme_len
+    const shouldPatchCell = shouldReplaceRendererCodePoint(originalCodePoint)
+
+    if (shouldPatchCell && cell) {
+      cell.codepoint = UNICODE_REPLACEMENT_CHAR.codePointAt(0)
+      cell.grapheme_len = 0
+    }
+
+    const buffer = renderer.currentBuffer
+    const getGraphemeString =
+      buffer && typeof buffer.getGraphemeString === 'function' ? buffer.getGraphemeString : null
+
+    if (getGraphemeString) {
+      buffer.getGraphemeString = function patchedGetGraphemeString(...args: unknown[]) {
+        try {
+          return getGraphemeString.apply(this, args)
+        } catch (error) {
+          if (!isInvalidCodePointRangeError(error)) throw error
+          const codePoints =
+            typeof (this as any).getGrapheme === 'function'
+              ? (this as any).getGrapheme(...args)
+              : null
+          return safeCodePointsString(codePoints)
+        }
+      }
+    }
+
+    try {
+      return renderCellText.call(this, cell, col, row)
+    } catch (error) {
+      if (!isInvalidCodePointRangeError(error) || !cell) throw error
+      cell.codepoint = UNICODE_REPLACEMENT_CHAR.codePointAt(0)
+      cell.grapheme_len = 0
+      return renderCellText.call(this, cell, col, row)
+    } finally {
+      if (cell) {
+        cell.codepoint = originalCodePoint
+        cell.grapheme_len = originalGraphemeLength
+      }
+      if (getGraphemeString) {
+        buffer.getGraphemeString = getGraphemeString
+      }
+    }
+  }
+}
+
+patchGhosttyRendererInvalidCodePoints()
 
 function ensureInit() {
   if (!ghosttyReady) ghosttyReady = init()
