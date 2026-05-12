@@ -80,6 +80,7 @@ import {
 } from '@/lib/status-indicator'
 import { getTitleBarProjects } from '@/lib/project-title-bar'
 import {
+  CELLS_BROWSER_ELEMENT_SELECTION_STAGED_EVENT,
   appendBrowserElementSelectionToDraft,
   copyBrowserElementSelectionToClipboard,
 } from '@/lib/browser-element-selection'
@@ -761,13 +762,22 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
         copied = false
         console.error('[toolbar] copy browser element failed', err)
       })
+      const composerDraft = appendBrowserElementSelectionToDraft(
+        storedAgentWindow.composerDraft,
+        selection,
+      )
       state.syncAgentWindow(storedAgentWindow.id, {
-        composerDraft: appendBrowserElementSelectionToDraft(
-          storedAgentWindow.composerDraft,
-          selection,
-        ),
+        composerDraft,
         composerAttachments: storedAgentWindow.composerAttachments ?? [],
       })
+      window.dispatchEvent(
+        new CustomEvent(CELLS_BROWSER_ELEMENT_SELECTION_STAGED_EVENT, {
+          detail: {
+            agentWindowId: storedAgentWindow.id,
+            draftLength: composerDraft.length,
+          },
+        }),
+      )
       showToast(copied ? 'Copied element and added it to chat' : 'Added element to chat', 'info')
     },
     [],
@@ -827,14 +837,29 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
     if (embedded) return
     const unsubscribeSelected = window.cells.browser.onElementSelected(
       (browserId, targetAgentWindowId, selection) => {
-        if (targetAgentWindowId !== null) return
-        if (activeBrowserElementPickerRef.current !== browserId) return
-        activeBrowserElementPickerRef.current = null
-        setBrowserElementPickerActive(false)
+        const state = useStore.getState()
+        let agentWindow: AgentWindowNode | undefined
+        if (targetAgentWindowId === null) {
+          if (activeBrowserElementPickerRef.current !== browserId) return
+          activeBrowserElementPickerRef.current = null
+          setBrowserElementPickerActive(false)
+          agentWindow = resolveBrowserSelectionAgentWindow()
+        } else {
+          agentWindow = state.agentWindows.find((entry) => entry.id === targetAgentWindowId)
+        }
+        if (!agentWindow) {
+          showToast('Agent window is no longer available', 'error')
+          return
+        }
 
-        const agentWindow = resolveBrowserSelectionAgentWindow()
         void stageBrowserElementInAgentDraft(agentWindow, selection).finally(() => {
-          useStore.getState().snapToAgentWindow(agentWindow.id)
+          const store = useStore.getState()
+          store.snapToAgentWindow(agentWindow.id)
+          window.dispatchEvent(
+            new CustomEvent('agent-composer-focus', {
+              detail: { windowId: agentWindow.id },
+            }),
+          )
         })
       },
     )

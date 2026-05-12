@@ -93,8 +93,7 @@ import { cn } from '@/lib/utils'
 import { computeStableList, createEmptyStableListState } from '@/lib/stable-list'
 import { getVerticalScrollFadeMask, useVerticalScrollFades } from '@/lib/use-scroll-fades'
 import {
-  appendBrowserElementSelectionToDraft,
-  copyBrowserElementSelectionToClipboard,
+  CELLS_BROWSER_ELEMENT_SELECTION_STAGED_EVENT,
   parseBrowserElementSelectionPreview,
   splitBrowserElementSelectionDraft,
 } from '@/lib/browser-element-selection'
@@ -4433,26 +4432,17 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   )
 
   useEffect(() => {
-    const unsubscribeSelected = window.cells.browser.onElementSelected(
-      (_browserId, targetAgentWindowId, selection) => {
-        if (targetAgentWindowId !== agentWindow.id) return
-        activeElementPickerBrowserIdRef.current = null
-        setSelectingBrowserElement(false)
-        void copyBrowserElementSelectionToClipboard(selection)
-          .then(() => showToast('Copied element and added it to chat', 'info'))
-          .catch((err) => {
-            console.error('[agent-chat] copy browser element failed', err)
-            showToast('Added element to chat', 'info')
-          })
-        const nextValue = appendBrowserElementSelectionToDraft(inputRef.current, selection)
-        writeComposer(nextValue, attachmentsRef.current)
-        setPendingComposerSelectionOffset(nextValue.length)
-        window.setTimeout(() => {
-          useStore.getState().snapToAgentWindow(agentWindow.id)
-          focusComposer(true)
-        }, 0)
-      },
-    )
+    const handleSelectionStaged = (event: Event) => {
+      const detail = (
+        event as CustomEvent<{
+          agentWindowId?: string | null
+          draftLength?: number | null
+        }>
+      ).detail
+      if (detail?.agentWindowId !== agentWindow.id) return
+      activeElementPickerBrowserIdRef.current = null
+      setSelectingBrowserElement(false)
+    }
     const unsubscribeCancelled = window.cells.browser.onElementPickerCancelled(
       (_browserId, targetAgentWindowId) => {
         if (targetAgentWindowId !== agentWindow.id) return
@@ -4460,11 +4450,15 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         setSelectingBrowserElement(false)
       },
     )
+    window.addEventListener(CELLS_BROWSER_ELEMENT_SELECTION_STAGED_EVENT, handleSelectionStaged)
     return () => {
-      unsubscribeSelected()
+      window.removeEventListener(
+        CELLS_BROWSER_ELEMENT_SELECTION_STAGED_EVENT,
+        handleSelectionStaged,
+      )
       unsubscribeCancelled()
     }
-  }, [agentWindow.id, focusComposer, writeComposer])
+  }, [agentWindow.id])
 
   const startNewSessionFromComposer = useCallback(async () => {
     const currentSnapshot = snapshotRef.current

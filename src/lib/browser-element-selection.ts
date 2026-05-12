@@ -1,6 +1,7 @@
 import type { BrowserElementSelection } from '@/types'
 
 export const BROWSER_SELECTION_INTRO = 'I selected this element in the browser. Use it as context.'
+export const CELLS_BROWSER_ELEMENT_SELECTION_STAGED_EVENT = 'cells-browser-element-selection-staged'
 
 function compactMultiline(value: string) {
   return value
