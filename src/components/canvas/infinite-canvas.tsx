@@ -13,6 +13,7 @@ import { hasPrimaryModifier, isPrimaryModifierKey } from '@/lib/keyboard-shortcu
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
 import { getCanvasViewportSize, getCanvasWindows, getViewportRect } from '@/lib/canvas-navigation'
+import { createWheelModifierBurstState, shouldHonorWheelModifier } from '@/lib/wheel-modifier-burst'
 import {
   applySelectionDelta,
   createSelectionOrigins,
@@ -163,6 +164,7 @@ export function InfiniteCanvas() {
   const [primaryModifierHeld, setPrimaryModifierHeld] = useState(false)
   const [draggingSectionId, setDraggingSectionId] = useState<string | null>(null)
   const [resizingSectionId, setResizingSectionId] = useState<string | null>(null)
+  const wheelModifierBurstRef = useRef(createWheelModifierBurstState())
   const [marqueeBox, setMarqueeBox] = useState<{
     x: number
     y: number
@@ -1017,12 +1019,21 @@ export function InfiniteCanvas() {
       const browserNode = (e.target as HTMLElement).closest('.browser-node')
       const editorNode = (e.target as HTMLElement).closest('.text-editor-node')
       const agentNode = (e.target as HTMLElement).closest('.agent-window-node')
-      const zoomModifier = e.ctrlKey || e.metaKey
-      const forceCanvasPan = e.shiftKey && !zoomModifier
+      const requestedZoomModifier = e.ctrlKey || e.metaKey
+      const requestedModifierWheel = requestedZoomModifier || e.shiftKey
+      const honorModifierWheel = shouldHonorWheelModifier(
+        wheelModifierBurstRef.current,
+        requestedModifierWheel,
+        e.timeStamp,
+      )
+      const zoomModifier = requestedZoomModifier && honorModifierWheel
+      const forceCanvasPan = e.shiftKey && honorModifierWheel && !zoomModifier
       // Let node content own plain scroll, but reserve Cmd/Ctrl+scroll for
       // zoom and Shift+scroll/swipe as an explicit canvas-pan override.
       if ((termNode || browserNode || editorNode || agentNode) && !zoomModifier && !forceCanvasPan)
         return
+
+      if (requestedModifierWheel && !honorModifierWheel) return
 
       e.preventDefault()
       e.stopPropagation()

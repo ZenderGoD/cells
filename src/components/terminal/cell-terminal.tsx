@@ -19,6 +19,7 @@ import {
 import { DEFAULT_TERMINAL_CURSOR_SETTINGS, type TerminalCursorStyle } from '@/lib/terminal-cursor'
 import { isServerOwnedTerminalBackend } from '@/lib/terminal-session-backend'
 import { DEFAULT_TERMINAL_SCROLLBACK_LINES } from '@/lib/terminal-scrollback'
+import { createWheelModifierBurstState, shouldHonorWheelModifier } from '@/lib/wheel-modifier-burst'
 import { activateLink } from '@/lib/activate-link'
 import { LOCAL_PATH_RE, looksLikeOpenablePath } from '@/lib/terminal-links'
 import { sanitizeBackendLeakedTitle } from '@/lib/terminal-title'
@@ -1760,6 +1761,7 @@ export function CellTerminal({
   const serverOwnedMouseModeRef = useRef(false)
   const lastReportedSizeRef = useRef<{ cols: number; rows: number } | null>(null)
   const wheelDeltaCarryRef = useRef(0)
+  const wheelModifierBurstRef = useRef(createWheelModifierBurstState())
   const searchMatchesRef = useRef<SearchMatch[]>([])
   const searchDebounceRef = useRef<number | null>(null)
   const searchLimitHitRef = useRef(false)
@@ -3393,8 +3395,18 @@ export function CellTerminal({
     if (!container) return
 
     const onWheel = (e: WheelEvent) => {
+      const requestedZoomModifier = e.metaKey || e.ctrlKey
+      const requestedModifierWheel = requestedZoomModifier || e.shiftKey
+      const honorModifierWheel = shouldHonorWheelModifier(
+        wheelModifierBurstRef.current,
+        requestedModifierWheel,
+        e.timeStamp,
+      )
+      const zoomModifier = requestedZoomModifier && honorModifierWheel
+      const forceCanvasPan = e.shiftKey && honorModifierWheel && !zoomModifier
+
       const term = terminalRef.current
-      if (term && shouldRouteServerOwnedWheel(term) && !e.metaKey && !e.ctrlKey) {
+      if (term && shouldRouteServerOwnedWheel(term) && !requestedZoomModifier) {
         if (Reflect.get(e, SERVER_OWNED_WHEEL_HANDLED_KEY) === true) return
         const payload = getMouseWheelSequencePayload(e, term, container)
         if (payload) {
@@ -3406,8 +3418,6 @@ export function CellTerminal({
         }
       }
 
-      const zoomModifier = e.metaKey || e.ctrlKey
-      const forceCanvasPan = e.shiftKey && !zoomModifier
       if (!zoomModifier && !forceCanvasPan) return
 
       e.preventDefault()

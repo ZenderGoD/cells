@@ -383,6 +383,8 @@ let direction = null
 let gesturePhase = 'idle'
 let resetTimer = null
 let cooldownUntil = 0 // ignore wheel events until this timestamp (post-navigation)
+let modifierBurstLastWheelAt = null
+let modifierBurstStartedWithModifier = false
 
 function isAtLeftEdge() {
   const el = document.scrollingElement || document.documentElement
@@ -403,6 +405,14 @@ function resetGesture() {
   gesturePhase = 'idle'
 }
 
+function shouldHonorModifierWheel(modifierActive) {
+  const now = Date.now()
+  const startsNewBurst = modifierBurstLastWheelAt === null || now - modifierBurstLastWheelAt > 180
+  if (startsNewBurst) modifierBurstStartedWithModifier = modifierActive
+  modifierBurstLastWheelAt = now
+  return modifierActive && modifierBurstStartedWithModifier
+}
+
 const THRESHOLD = 150 // px of accumulated delta to trigger navigation
 
 window.addEventListener(
@@ -412,9 +422,20 @@ window.addEventListener(
     // WebContentsView does not apply Chrome-style page zoom for us here, so
     // forward the gesture to main where the browser's page zoom multiplier is
     // kept separate from the canvas zoom multiplier.
-    const pageZoomGesture = e.ctrlKey && !e.metaKey
-    const canvasZoomGesture = e.metaKey
-    const canvasPanGesture = e.shiftKey && !canvasZoomGesture && !pageZoomGesture
+    const requestedPageZoomGesture = e.ctrlKey && !e.metaKey
+    const requestedCanvasZoomGesture = e.metaKey
+    const requestedModifierWheel = requestedPageZoomGesture || requestedCanvasZoomGesture || e.shiftKey
+    const honorModifierWheel = shouldHonorModifierWheel(requestedModifierWheel)
+    const pageZoomGesture = requestedPageZoomGesture && honorModifierWheel
+    const canvasZoomGesture = requestedCanvasZoomGesture && honorModifierWheel
+    const canvasPanGesture = e.shiftKey && honorModifierWheel && !canvasZoomGesture && !pageZoomGesture
+    if (requestedModifierWheel && !honorModifierWheel) {
+      if (resetTimer) clearTimeout(resetTimer)
+      if (gesturePhase === 'overscrolling') resetGesture()
+      e.preventDefault()
+      return
+    }
+
     if (pageZoomGesture) {
       if (resetTimer) clearTimeout(resetTimer)
       if (gesturePhase === 'overscrolling') resetGesture()
