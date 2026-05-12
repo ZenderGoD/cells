@@ -9,6 +9,7 @@ let gesturePhase: 'idle' | 'scrolling' | 'overscrolling' | 'committed' = 'idle'
 let resetTimer: ReturnType<typeof setTimeout> | null = null
 let modifierBurstLastWheelAt: number | null = null
 let modifierBurstStartedWithModifier = false
+let suppressModifierWheelUntil = 0
 
 function isAtLeftEdge(): boolean {
   const el = document.scrollingElement || document.documentElement
@@ -32,7 +33,12 @@ function resetGesture() {
 function shouldHonorModifierWheel(modifierActive: boolean): boolean {
   const now = Date.now()
   const startsNewBurst = modifierBurstLastWheelAt === null || now - modifierBurstLastWheelAt > 180
-  if (startsNewBurst) modifierBurstStartedWithModifier = modifierActive
+  if (startsNewBurst) {
+    modifierBurstStartedWithModifier = modifierActive && now >= suppressModifierWheelUntil
+  }
+  if (!modifierActive || (modifierActive && !modifierBurstStartedWithModifier)) {
+    suppressModifierWheelUntil = now + 1500
+  }
   modifierBurstLastWheelAt = now
   return modifierActive && modifierBurstStartedWithModifier
 }

@@ -385,6 +385,7 @@ let resetTimer = null
 let cooldownUntil = 0 // ignore wheel events until this timestamp (post-navigation)
 let modifierBurstLastWheelAt = null
 let modifierBurstStartedWithModifier = false
+let suppressModifierWheelUntil = 0
 
 function isAtLeftEdge() {
   const el = document.scrollingElement || document.documentElement
@@ -408,7 +409,12 @@ function resetGesture() {
 function shouldHonorModifierWheel(modifierActive) {
   const now = Date.now()
   const startsNewBurst = modifierBurstLastWheelAt === null || now - modifierBurstLastWheelAt > 180
-  if (startsNewBurst) modifierBurstStartedWithModifier = modifierActive
+  if (startsNewBurst) {
+    modifierBurstStartedWithModifier = modifierActive && now >= suppressModifierWheelUntil
+  }
+  if (!modifierActive || (modifierActive && !modifierBurstStartedWithModifier)) {
+    suppressModifierWheelUntil = now + 1500
+  }
   modifierBurstLastWheelAt = now
   return modifierActive && modifierBurstStartedWithModifier
 }
