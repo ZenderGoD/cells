@@ -259,8 +259,8 @@ function truncateCwd(cwd: string | null | undefined) {
   return cwd
 }
 
-function formatRelativeTime(timestamp: number) {
-  const deltaMs = Math.max(0, Date.now() - timestamp)
+function formatRelativeTime(timestamp: number, now = Date.now()) {
+  const deltaMs = Math.max(0, now - timestamp)
   const deltaMinutes = Math.floor(deltaMs / 60_000)
   if (deltaMinutes < 1) return 'just now'
   if (deltaMinutes < 60) return `${deltaMinutes}m ago`
@@ -269,6 +269,27 @@ function formatRelativeTime(timestamp: number) {
   const deltaDays = Math.floor(deltaHours / 24)
   if (deltaDays < 7) return `${deltaDays}d ago`
   return new Date(timestamp).toLocaleDateString()
+}
+
+function formatExactUpdateTime(timestamp: number) {
+  return new Date(timestamp).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  })
+}
+
+function getSessionLastUpdatedAt(
+  snapshot: AgentSessionSnapshot | null,
+  messages: AgentSessionMessage[],
+) {
+  let updatedAt = snapshot?.updatedAt ?? 0
+  for (const message of messages) {
+    const messageUpdatedAt = message.updatedAt ?? message.startedAt ?? 0
+    if (messageUpdatedAt > updatedAt) updatedAt = messageUpdatedAt
+  }
+  return updatedAt > 0 ? updatedAt : null
 }
 
 function formatElapsedMs(startedAt: number | null | undefined) {
@@ -3845,6 +3866,16 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     () => visibleMessages.filter((message) => message.role === 'user').length,
     [visibleMessages],
   )
+  const sessionLastUpdatedAt = useMemo(
+    () => getSessionLastUpdatedAt(visibleSnapshot, visibleMessages),
+    [visibleMessages, visibleSnapshot],
+  )
+  const [relativeTimeNow, setRelativeTimeNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!sessionLastUpdatedAt) return
+    const id = window.setInterval(() => setRelativeTimeNow(Date.now()), 30_000)
+    return () => window.clearInterval(id)
+  }, [sessionLastUpdatedAt])
   const lastUserMessage = useMemo(() => {
     for (let i = visibleMessages.length - 1; i >= 0; i--) {
       const message = visibleMessages[i]
@@ -5090,6 +5121,22 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     >
       <div className="relative flex min-w-0 flex-1 flex-col">
         <div className="relative flex min-h-0 flex-1 flex-col">
+          {sessionLastUpdatedAt ? (
+            <div
+              className="pointer-events-none absolute right-3 top-2 z-10 flex justify-end"
+              aria-live="polite"
+            >
+              <div
+                className="pointer-events-auto inline-flex h-6 min-w-[112px] items-center justify-center gap-1.5 rounded-[6px] border border-border/50 bg-background/82 px-2 text-[11px] font-medium text-muted-foreground/80 shadow-sm backdrop-blur-xl tabular-nums"
+                title={`Last update ${formatExactUpdateTime(sessionLastUpdatedAt)}`}
+              >
+                <Clock className="size-3.5 shrink-0 text-muted-foreground/70" />
+                <span className="truncate">
+                  Updated {formatRelativeTime(sessionLastUpdatedAt, relativeTimeNow)}
+                </span>
+              </div>
+            </div>
+          ) : null}
           <div
             className="min-h-0 flex-1"
             style={{
