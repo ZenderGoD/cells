@@ -2701,7 +2701,7 @@ ipcMain.handle(
 ipcMain.handle(
   'agent-session:branch-from',
   (
-    _event,
+    event,
     sourceWindowId: string,
     request,
     visibleInput: string,
@@ -2710,6 +2710,7 @@ ipcMain.handle(
     overrides?: Parameters<typeof agentSessionService.send>[3],
     replyTo?: Parameters<typeof agentSessionService.send>[4],
   ) => {
+    subscribeWebContentsToAgentSession(event.sender, request?.windowId)
     return agentSessionService.branchFrom(
       sourceWindowId,
       request,

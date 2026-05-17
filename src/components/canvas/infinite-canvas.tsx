@@ -13,6 +13,7 @@ import { hasPrimaryModifier, isPrimaryModifierKey } from '@/lib/keyboard-shortcu
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
 import { getCanvasViewportSize, getCanvasWindows, getViewportRect } from '@/lib/canvas-navigation'
+import { getTopLevelArrangeItems } from '@/lib/canvas-arrange'
 import { createWheelModifierBurstState, shouldHonorWheelModifier } from '@/lib/wheel-modifier-burst'
 import {
   applySelectionDelta,
@@ -249,39 +250,46 @@ export function InfiniteCanvas() {
     }
   }, [transform.scale, viewportRect.x, viewportRect.y, viewportRect.width, viewportRect.height])
   const viewportArea = viewportRect.width * viewportRect.height
-  const visibleWindowCount = useMemo(
-    () =>
-      viewportArea > 0
-        ? getCanvasWindows(terminals, browsers, textEditors, agentWindows).reduce(
-            (count, window) => {
-              const overlapW = Math.max(
-                0,
-                Math.min(window.x + window.width, viewportRect.x + viewportRect.width) -
-                  Math.max(window.x, viewportRect.x),
-              )
-              const overlapH = Math.max(
-                0,
-                Math.min(window.y + window.height, viewportRect.y + viewportRect.height) -
-                  Math.max(window.y, viewportRect.y),
-              )
-              const coverage = (overlapW * overlapH) / viewportArea
-              return coverage >= 0.08 ? count + 1 : count
-            },
-            0,
-          )
-        : 0,
-    [
-      viewportArea,
-      viewportRect.x,
-      viewportRect.y,
-      viewportRect.width,
-      viewportRect.height,
-      terminals,
-      browsers,
-      textEditors,
-      agentWindows,
-    ],
-  )
+  const visibleWindowCount = useMemo(() => {
+    if (viewportArea <= 0) return 0
+    const windows = getCanvasWindows(terminals, browsers, textEditors, agentWindows)
+    const sections = windowSections.map((section) => ({
+      id: section.id,
+      type: 'section' as const,
+      x: section.x,
+      y: section.y,
+      width: getSectionWidth(section),
+      height: getSectionHeight(section),
+      windowIds: section.windowIds,
+    }))
+    return getTopLevelArrangeItems(windows, sections).reduce((count, window) => {
+      const overlapW = Math.max(
+        0,
+        Math.min(window.x + window.width, viewportRect.x + viewportRect.width) -
+          Math.max(window.x, viewportRect.x),
+      )
+      const overlapH = Math.max(
+        0,
+        Math.min(window.y + window.height, viewportRect.y + viewportRect.height) -
+          Math.max(window.y, viewportRect.y),
+      )
+      const coverage = (overlapW * overlapH) / viewportArea
+      return coverage >= 0.08 ? count + 1 : count
+    }, 0)
+  }, [
+    getSectionHeight,
+    getSectionWidth,
+    viewportArea,
+    viewportRect.x,
+    viewportRect.y,
+    viewportRect.width,
+    viewportRect.height,
+    terminals,
+    browsers,
+    textEditors,
+    agentWindows,
+    windowSections,
+  ])
   const showFocusedWindowRing = visibleWindowCount >= 2
   const canvasWillChange = isPanning || isDragging || isUserDriving ? 'transform' : undefined
   const renderedWindowSections = useMemo(
@@ -514,11 +522,14 @@ export function InfiniteCanvas() {
       y: section.y,
       width: Math.max(SECTION_MIN_WIDTH, section.width ?? viewW - 16),
       height: Math.max(SECTION_MIN_HEIGHT, section.height ?? viewH - 16),
+      windowIds: section.windowIds,
     }))
     const focusedSectionTarget = scheduledFocusedWindowSectionId
       ? sectionTargets.find((section) => section.id === scheduledFocusedWindowSectionId)
       : null
-    const targets = focusedSectionTarget ? [focusedSectionTarget] : [...windows, ...sectionTargets]
+    const targets = focusedSectionTarget
+      ? [focusedSectionTarget]
+      : getTopLevelArrangeItems(windows, sectionTargets)
     if (targets.length === 0) return
 
     const viewL = -canvas.x / canvas.scale
@@ -575,6 +586,7 @@ export function InfiniteCanvas() {
         y: section.y,
         width: Math.max(SECTION_MIN_WIDTH, section.width ?? currentViewport.width - 16),
         height: Math.max(SECTION_MIN_HEIGHT, section.height ?? currentViewport.height - 16),
+        windowIds: section.windowIds,
       }))
       const currentFocusedSection = currentState.focusedWindowSectionId
         ? currentSectionTargets.find(
@@ -583,7 +595,7 @@ export function InfiniteCanvas() {
         : null
       const currentTargets = currentFocusedSection
         ? [currentFocusedSection]
-        : [...currentWindows, ...currentSectionTargets]
+        : getTopLevelArrangeItems(currentWindows, currentSectionTargets)
       const currentViewL = -currentState.canvas.x / currentState.canvas.scale
       const currentViewT = -currentState.canvas.y / currentState.canvas.scale
       const currentViewR = currentViewL + currentViewport.width / currentState.canvas.scale

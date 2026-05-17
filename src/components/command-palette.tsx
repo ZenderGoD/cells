@@ -1698,7 +1698,9 @@ export function CommandPalette() {
                         <CommandShortcut>⌘,</CommandShortcut>
                       </CommandItem>
                       <CommandItem
-                        onSelect={() => runAction(() => useStore.getState().autoArrangeGrid())}
+                        onSelect={() =>
+                          runAction(() => useStore.getState().arrangeCurrentContext())
+                        }
                       >
                         <LayoutGrid className="text-muted-foreground" />
                         Arrange Windows

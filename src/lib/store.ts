@@ -60,6 +60,11 @@ import {
   normalizeCanvasSnapMode,
 } from './canvas-navigation'
 import {
+  getGridArrangePositions,
+  getTopLevelArrangeItems,
+  type CanvasArrangeSectionItem,
+} from './canvas-arrange'
+import {
   destroyCachedTerminal,
   applyThemeToAllTerminals,
   getTerminalRestoreSnapshot,
@@ -379,7 +384,12 @@ interface StoreState {
   confirmPendingClose(skipFuturePrompts?: boolean): void
   restoreLastClosedWindow(): void
   autoArrangeGrid(skipOverview?: boolean): void
-  arrangeDwindleSections(skipOverview?: boolean, splitTargetId?: string | null): void
+  arrangeCurrentContext(skipOverview?: boolean): void
+  arrangeDwindleSections(
+    skipOverview?: boolean,
+    splitTargetId?: string | null,
+    sectionScopeId?: string | null,
+  ): void
   reloadFocused(): void
   getAgentCommand(agent: string): string
   getSearchUrl(query: string): string
@@ -1499,6 +1509,7 @@ function getWindowSectionSnapTargets(
     id: section.id,
     type: 'section' as const,
     title: section.name,
+    windowIds: section.windowIds,
     ...getWindowSectionRect(section, options),
   }))
 }
@@ -1568,6 +1579,40 @@ function getFocusedSectionWindowSnap(
 
 function getSectionIdForWindow(sections: WindowSection[], windowId: string) {
   return sections.find((section) => section.windowIds.includes(windowId))?.id ?? null
+}
+
+function getFocusedWindowSection(
+  state: Pick<
+    StoreState,
+    | 'focusedWindowSectionId'
+    | 'focusedTerminalId'
+    | 'focusedBrowserId'
+    | 'focusedTextEditorId'
+    | 'focusedAgentWindowId'
+    | 'windowSections'
+  >,
+) {
+  const focusedSection = state.focusedWindowSectionId
+    ? state.windowSections.find((section) => section.id === state.focusedWindowSectionId)
+    : null
+  if (focusedSection) return focusedSection
+
+  const focusedWindowId = getFocusedWindowId(state)
+  return focusedWindowId
+    ? (state.windowSections.find((section) => section.windowIds.includes(focusedWindowId)) ?? null)
+    : null
+}
+
+function getSectionArrangeItems(
+  sections: WindowSection[],
+  options: { titleBarHidden: boolean },
+): CanvasArrangeSectionItem[] {
+  return sections.map((section) => ({
+    id: section.id,
+    type: 'section',
+    windowIds: section.windowIds,
+    ...getWindowSectionRect(section, options),
+  }))
 }
 
 function pushFocusHistory(history: string[], id: string) {
@@ -4095,7 +4140,7 @@ export const useStore = create<StoreState>((set, get) => ({
 
     const windows = getCanvasWindows(terminals, browsers, textEditors, agentWindows)
     const sectionTargets = getWindowSectionSnapTargets(windowSections, { titleBarHidden })
-    const targets = [...windows, ...sectionTargets]
+    const targets = getTopLevelArrangeItems(windows, sectionTargets)
     if (targets.length === 0) return
 
     const best = getClosestCanvasRect(targets, getViewportCenter(canvas))
@@ -4533,26 +4578,12 @@ export const useStore = create<StoreState>((set, get) => ({
   zoomToFitAll() {
     const { terminals, browsers, textEditors, agentWindows, windowSections } = get()
     const viewport = getCanvasViewportSize({ titleBarHidden: get().titleBarHidden })
-    const allNodes = [
-      ...terminals.map((t) => ({ x: t.x, y: t.y, width: t.width, height: t.height })),
-      ...browsers.map((b) => ({ x: b.x, y: b.y, width: b.width, height: b.height })),
-      ...textEditors.map((editor) => ({
-        x: editor.x,
-        y: editor.y,
-        width: editor.width,
-        height: editor.height,
-      })),
-      ...agentWindows.map((entry) => ({
-        x: entry.x,
-        y: entry.y,
-        width: entry.width,
-        height: entry.height,
-      })),
-      ...windowSections.map((section) => ({
-        ...getWindowSectionRect(section, { titleBarHidden: get().titleBarHidden }),
-      })),
-    ]
-    const nextTransform = getOverviewTransform(allNodes, viewport.width, viewport.height)
+    const windows = getCanvasWindows(terminals, browsers, textEditors, agentWindows)
+    const sectionItems = getSectionArrangeItems(windowSections, {
+      titleBarHidden: get().titleBarHidden,
+    })
+    const targets = getTopLevelArrangeItems(windows, sectionItems)
+    const nextTransform = getOverviewTransform(targets, viewport.width, viewport.height)
     if (!nextTransform) return
 
     set({
@@ -4622,111 +4653,35 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   autoArrangeGrid(skipOverview?: boolean) {
-    const { terminals, browsers, textEditors, agentWindows } = get()
-    const allNodes: Array<{
-      id: string
-      type: 'terminal' | 'browser' | 'agent' | 'editor'
-      x: number
-      y: number
-      width: number
-      height: number
-    }> = [
-      ...terminals.map((t) => ({
-        id: t.id,
-        type: 'terminal' as const,
-        x: t.x,
-        y: t.y,
-        width: t.width,
-        height: t.height,
-      })),
-      ...browsers.map((b) => ({
-        id: b.id,
-        type: 'browser' as const,
-        x: b.x,
-        y: b.y,
-        width: b.width,
-        height: b.height,
-      })),
-      ...textEditors.map((editor) => ({
-        id: editor.id,
-        type: 'editor' as const,
-        x: editor.x,
-        y: editor.y,
-        width: editor.width,
-        height: editor.height,
-      })),
-      ...agentWindows.map((entry) => ({
-        id: entry.id,
-        type: 'agent' as const,
-        x: entry.x,
-        y: entry.y,
-        width: entry.width,
-        height: entry.height,
-      })),
-    ]
-    if (allNodes.length === 0) return
+    const state = get()
+    const allNodes = getAllMutableCanvasNodes(state)
+    const sectionItems = getSectionArrangeItems(state.windowSections, {
+      titleBarHidden: state.titleBarHidden,
+    })
+    const allItems = getTopLevelArrangeItems(allNodes, sectionItems)
+    if (allItems.length === 0) return
 
-    const gap = TERMINAL_GAP
-
-    // Sort by Y first, then X to detect rows
-    const sorted = [...allNodes].sort((a, b) => a.y - b.y || a.x - b.x)
-
-    // Group into rows by Y-proximity: windows within half the tallest
-    // node's height are considered the same row
-    const maxH = Math.max(...allNodes.map((n) => n.height))
-    const rowThreshold = maxH * 0.5
-    const rows: Array<typeof sorted> = []
-    let currentRow: typeof sorted = [sorted[0]]
-    for (let i = 1; i < sorted.length; i++) {
-      const rowCenterY = currentRow.reduce((s, n) => s + n.y, 0) / currentRow.length
-      if (Math.abs(sorted[i].y - rowCenterY) <= rowThreshold) {
-        currentRow.push(sorted[i])
-      } else {
-        rows.push(currentRow)
-        currentRow = [sorted[i]]
-      }
-    }
-    rows.push(currentRow)
-
-    // Within each row, sort by X position (preserve left-to-right order)
-    for (const row of rows) {
-      row.sort((a, b) => a.x - b.x)
-    }
-
-    // Tidy: snap each row to consistent positions with uniform gaps
-    // Center the whole layout around the centroid of all windows
-    const centroidX = allNodes.reduce((s, n) => s + n.x + n.width / 2, 0) / allNodes.length
-    const centroidY = allNodes.reduce((s, n) => s + n.y + n.height / 2, 0) / allNodes.length
-
-    // Calculate total grid height first
-    let totalH = 0
-    for (const row of rows) {
-      const rowH = Math.max(...row.map((n) => n.height))
-      totalH += rowH
-    }
-    totalH += (rows.length - 1) * gap
-
+    const positions = getGridArrangePositions(allItems, TERMINAL_GAP)
     const updatedTerminals = new Map<string, { x: number; y: number }>()
     const updatedBrowsers = new Map<string, { x: number; y: number }>()
     const updatedTextEditors = new Map<string, { x: number; y: number }>()
     const updatedAgentWindows = new Map<string, { x: number; y: number }>()
-    let curY = centroidY - totalH / 2
+    const updatedSections = new Map<string, { x: number; y: number; dx: number; dy: number }>()
 
-    for (const row of rows) {
-      const rowH = Math.max(...row.map((n) => n.height))
-      // Total row width
-      const totalW = row.reduce((s, n) => s + n.width, 0) + (row.length - 1) * gap
-      let curX = centroidX - totalW / 2
-
-      for (const node of row) {
-        const pos = { x: curX, y: curY }
-        if (node.type === 'terminal') updatedTerminals.set(node.id, pos)
-        else if (node.type === 'agent') updatedAgentWindows.set(node.id, pos)
-        else if (node.type === 'editor') updatedTextEditors.set(node.id, pos)
-        else updatedBrowsers.set(node.id, pos)
-        curX += node.width + gap
+    for (const item of allItems) {
+      const pos = positions.get(item.id)
+      if (!pos) continue
+      if (item.type === 'section') {
+        updatedSections.set(item.id, { ...pos, dx: pos.x - item.x, dy: pos.y - item.y })
+      } else if (item.type === 'terminal') {
+        updatedTerminals.set(item.id, pos)
+      } else if (item.type === 'agent') {
+        updatedAgentWindows.set(item.id, pos)
+      } else if (item.type === 'editor') {
+        updatedTextEditors.set(item.id, pos)
+      } else {
+        updatedBrowsers.set(item.id, pos)
       }
-      curY += rowH + gap
     }
 
     // Enable CSS transition on nodes, then update positions
@@ -4734,21 +4689,45 @@ export const useStore = create<StoreState>((set, get) => ({
     // RAF ensures the animating class is applied before positions change
     requestAnimationFrame(() => {
       set((s) => ({
+        windowSections: s.windowSections.map((section) => {
+          const pos = updatedSections.get(section.id)
+          return pos ? { ...section, x: pos.x, y: pos.y } : section
+        }),
         terminals: s.terminals.map((t) => {
           const pos = updatedTerminals.get(t.id)
-          return pos ? { ...t, x: pos.x, y: pos.y } : t
+          if (pos) return { ...t, x: pos.x, y: pos.y }
+          const section = s.windowSections.find((entry) => entry.windowIds.includes(t.id))
+          const sectionDelta = section ? updatedSections.get(section.id) : null
+          return sectionDelta ? { ...t, x: t.x + sectionDelta.dx, y: t.y + sectionDelta.dy } : t
         }),
         browsers: s.browsers.map((b) => {
           const pos = updatedBrowsers.get(b.id)
-          return pos ? { ...b, x: pos.x, y: pos.y } : b
+          if (pos) return { ...b, x: pos.x, y: pos.y }
+          const section = s.windowSections.find((entry) => entry.windowIds.includes(b.id))
+          const sectionDelta = section ? updatedSections.get(section.id) : null
+          return sectionDelta ? { ...b, x: b.x + sectionDelta.dx, y: b.y + sectionDelta.dy } : b
         }),
         textEditors: s.textEditors.map((editor) => {
           const pos = updatedTextEditors.get(editor.id)
-          return pos ? { ...editor, x: pos.x, y: pos.y } : editor
+          if (pos) return { ...editor, x: pos.x, y: pos.y }
+          const section = s.windowSections.find((entry) => entry.windowIds.includes(editor.id))
+          const sectionDelta = section ? updatedSections.get(section.id) : null
+          return sectionDelta
+            ? { ...editor, x: editor.x + sectionDelta.dx, y: editor.y + sectionDelta.dy }
+            : editor
         }),
         agentWindows: s.agentWindows.map((agentWindow) => {
           const pos = updatedAgentWindows.get(agentWindow.id)
-          return pos ? { ...agentWindow, x: pos.x, y: pos.y } : agentWindow
+          if (pos) return { ...agentWindow, x: pos.x, y: pos.y }
+          const section = s.windowSections.find((entry) => entry.windowIds.includes(agentWindow.id))
+          const sectionDelta = section ? updatedSections.get(section.id) : null
+          return sectionDelta
+            ? {
+                ...agentWindow,
+                x: agentWindow.x + sectionDelta.dx,
+                y: agentWindow.y + sectionDelta.dy,
+              }
+            : agentWindow
         }),
       }))
 
@@ -4761,7 +4740,30 @@ export const useStore = create<StoreState>((set, get) => ({
     })
   },
 
-  arrangeDwindleSections(skipOverview?: boolean, splitTargetId?: string | null) {
+  arrangeCurrentContext(skipOverview?: boolean) {
+    const state = get()
+    const focusedSection = getFocusedWindowSection(state)
+    if (focusedSection) {
+      const focusedId = getFocusedWindowId(state)
+      set({ focusedWindowSectionId: focusedSection.id })
+      get().arrangeDwindleSections(true, focusedId, focusedSection.id)
+      requestAnimationFrame(() => get().snapToWindowSection(focusedSection.id))
+      return
+    }
+
+    if (state.autoArrangeMode === 'dwindle' && state.windowSections.length === 0) {
+      get().arrangeDwindleSections(skipOverview)
+      return
+    }
+
+    get().autoArrangeGrid(skipOverview)
+  },
+
+  arrangeDwindleSections(
+    skipOverview?: boolean,
+    splitTargetId?: string | null,
+    sectionScopeId?: string | null,
+  ) {
     const state = get()
     const allNodes = getAllMutableCanvasNodes(state)
     if (allNodes.length === 0) return
@@ -4771,12 +4773,13 @@ export const useStore = create<StoreState>((set, get) => ({
     const viewport = getCanvasViewportSize({ titleBarHidden: state.titleBarHidden })
     const viewportRect = getViewportRect(state.canvas, viewport.width, viewport.height)
     const settings = normalizeDwindleLayoutSettings(state.dwindleLayoutSettings)
+    const scopedSectionId = sectionScopeId ?? null
     let sections = state.windowSections.map((section) => ({
       ...section,
       windowIds: section.windowIds.filter((id) => nodeById.has(id)),
     }))
 
-    if (sections.length === 0) {
+    if (sections.length === 0 && !scopedSectionId) {
       sections = [
         {
           id: nanoid(8),
@@ -4788,7 +4791,7 @@ export const useStore = create<StoreState>((set, get) => ({
           layoutTree: null,
         },
       ]
-    } else if (state.autoArrangeOnCreate) {
+    } else if (state.autoArrangeOnCreate && !scopedSectionId) {
       const assigned = new Set(sections.flatMap((section) => section.windowIds))
       const unassigned = allNodes.filter((node) => !assigned.has(node.id))
       if (unassigned.length > 0) {
@@ -4809,6 +4812,13 @@ export const useStore = create<StoreState>((set, get) => ({
 
     const nextRects = new Map<string, { x: number; y: number; width: number; height: number }>()
     const nextSections = sections.map((section) => {
+      if (scopedSectionId && section.id !== scopedSectionId) {
+        return {
+          ...section,
+          layoutTree: sanitizeDwindleTree(section.layoutTree, new Set(section.windowIds)),
+        }
+      }
+
       const sectionNodes = section.windowIds
         .map((id) => nodeById.get(id))
         .filter(Boolean) as MutableCanvasNode[]

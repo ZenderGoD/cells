@@ -664,22 +664,16 @@ function getSerializedLength(node: Node): number {
   return serializeComposerNode(node).length
 }
 
-function getComposerSelectionOffset(root: HTMLElement | null) {
-  if (!root) return 0
-  const selection = window.getSelection()
-  if (!selection || selection.rangeCount === 0) return serializeComposerElement(root).length
-  const range = selection.getRangeAt(0)
-  if (!root.contains(range.startContainer)) return serializeComposerElement(root).length
-
+function getComposerOffsetForPosition(root: HTMLElement, container: Node, containerOffset: number) {
   let offset = 0
   let found = false
   const visit = (node: Node) => {
     if (found) return
-    if (node === range.startContainer) {
+    if (node === container) {
       if (node.nodeType === Node.TEXT_NODE) {
-        offset += Math.min(range.startOffset, node.textContent?.length ?? 0)
+        offset += Math.min(containerOffset, node.textContent?.length ?? 0)
       } else {
-        const children = Array.from(node.childNodes).slice(0, range.startOffset)
+        const children = Array.from(node.childNodes).slice(0, containerOffset)
         offset += children.reduce((sum, child) => sum + getSerializedLength(child), 0)
       }
       found = true
@@ -698,6 +692,60 @@ function getComposerSelectionOffset(root: HTMLElement | null) {
   }
   root.childNodes.forEach(visit)
   return offset
+}
+
+function getComposerSelectionOffset(root: HTMLElement | null) {
+  if (!root) return 0
+  const selection = window.getSelection()
+  if (!selection || selection.rangeCount === 0) return serializeComposerElement(root).length
+  const range = selection.getRangeAt(0)
+  if (!root.contains(range.startContainer)) return serializeComposerElement(root).length
+  return getComposerOffsetForPosition(root, range.startContainer, range.startOffset)
+}
+
+function getComposerSelectionRange(root: HTMLElement | null) {
+  if (!root) return null
+  const selection = window.getSelection()
+  if (!selection || selection.rangeCount === 0) return null
+  const range = selection.getRangeAt(0)
+  if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) return null
+
+  const start = getComposerOffsetForPosition(root, range.startContainer, range.startOffset)
+  const end = getComposerOffsetForPosition(root, range.endContainer, range.endOffset)
+  if (start === end) return null
+  return {
+    start: Math.min(start, end),
+    end: Math.max(start, end),
+  }
+}
+
+function getBranchComposerDraft(draft: string, root: HTMLElement | null) {
+  const selectionRange = getComposerSelectionRange(root)
+  if (!selectionRange) {
+    return {
+      value: draft.trim(),
+      nextDraft: '',
+      nextSelectionOffset: null as number | null,
+      usedSelection: false,
+    }
+  }
+
+  const selected = draft.slice(selectionRange.start, selectionRange.end).trim()
+  if (!selected) {
+    return {
+      value: draft.trim(),
+      nextDraft: '',
+      nextSelectionOffset: null as number | null,
+      usedSelection: false,
+    }
+  }
+
+  return {
+    value: selected,
+    nextDraft: `${draft.slice(0, selectionRange.start)}${draft.slice(selectionRange.end)}`,
+    nextSelectionOffset: selectionRange.start,
+    usedSelection: true,
+  }
 }
 
 function setComposerSelectionOffset(root: HTMLElement | null, targetOffset: number) {
@@ -4280,7 +4328,11 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     async (targetAgent: AgentWindowNode['agent']) => {
       const currentSnapshot = snapshotRef.current
       if (!currentSnapshot || currentSnapshot.windowId !== agentWindow.id) return
-      const continuation = inputRef.current.trim()
+      const originalDraft = inputRef.current
+      const originalAttachments = [...attachmentsRef.current]
+      const originalReplyTo = replyToRef.current
+      const branchDraft = getBranchComposerDraft(originalDraft, textareaRef.current)
+      const continuation = branchDraft.value
       const continuationAttachments = [...attachmentsRef.current]
       const currentReplyTo = replyToRef.current
       if (!continuation && continuationAttachments.length === 0) return
@@ -4308,6 +4360,13 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         contextLength: targetContextLength,
       })
       try {
+        writeComposer(branchDraft.nextDraft, branchDraft.usedSelection ? originalAttachments : [], {
+          selectionOffset: branchDraft.nextSelectionOffset,
+        })
+        if (!branchDraft.usedSelection) setComposerReplyTarget(null)
+        window.setTimeout(() => {
+          store.snapToAgentWindow(targetWindow.id)
+        }, 0)
         await window.cells.agentSession.branchFrom(
           agentWindow.id,
           {
@@ -4337,15 +4396,12 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
           },
           currentReplyTo,
         )
-        writeComposer('', [])
-        setComposerReplyTarget(null)
         showToast(`Branched into ${getAgentDisplayName(targetAgent)}`, 'info')
-        window.setTimeout(() => {
-          store.snapToAgentWindow(targetWindow.id)
-        }, 0)
       } catch (err) {
         console.error('[agent-chat] branch target failed', err)
         store.removeAgentWindow(targetWindow.id)
+        writeComposer(originalDraft, originalAttachments)
+        setComposerReplyTarget(originalReplyTo)
         showToast('Failed to branch session', 'error')
       }
     },
@@ -4493,14 +4549,16 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
 
   const startNewSessionFromComposer = useCallback(async () => {
     const currentSnapshot = snapshotRef.current
-    const draft = inputRef.current
-    const rawValue = draft.trim()
+    const originalDraft = inputRef.current
+    const originalAttachments = [...attachmentsRef.current]
+    const originalReplyTo = replyToRef.current
+    const branchDraft = getBranchComposerDraft(originalDraft, textareaRef.current)
+    const rawValue = branchDraft.value
     const pinned = [...attachmentsRef.current]
     const currentReplyTo = replyToRef.current
     if (!rawValue && pinned.length === 0) return
 
     const value = rawValue || ATTACHMENTS_ONLY_TEXT
-    const nextDraft = ''
     const store = useStore.getState()
     if (currentSnapshot && currentSnapshot.windowId === agentWindow.id) {
       const titleSource =
@@ -4514,6 +4572,13 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         contextLength: agentWindow.contextLength ?? null,
       })
       try {
+        writeComposer(branchDraft.nextDraft, branchDraft.usedSelection ? originalAttachments : [], {
+          selectionOffset: branchDraft.nextSelectionOffset,
+        })
+        if (!branchDraft.usedSelection) setComposerReplyTarget(null)
+        window.setTimeout(() => {
+          store.snapToAgentWindow(nextWindow.id)
+        }, 0)
         await window.cells.agentSession.branchFrom(
           agentWindow.id,
           {
@@ -4549,15 +4614,12 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
           },
           currentReplyTo,
         )
-        writeComposer(nextDraft, [])
-        setComposerReplyTarget(null)
         showToast('Branched current session', 'info')
-        window.setTimeout(() => {
-          store.snapToAgentWindow(nextWindow.id)
-        }, 0)
       } catch (err) {
         console.error('[agent-chat] branch failed', err)
         store.removeAgentWindow(nextWindow.id)
+        writeComposer(originalDraft, originalAttachments)
+        setComposerReplyTarget(originalReplyTo)
         showToast('Failed to branch session', 'error')
       }
       return
@@ -4589,8 +4651,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         ],
       })
     }
-    writeComposer(nextDraft, [])
-    setComposerReplyTarget(null)
+    writeComposer(branchDraft.nextDraft, branchDraft.usedSelection ? originalAttachments : [], {
+      selectionOffset: branchDraft.nextSelectionOffset,
+    })
+    if (!branchDraft.usedSelection) setComposerReplyTarget(null)
     window.setTimeout(() => {
       store.snapToAgentWindow(nextWindow.id)
     }, 0)

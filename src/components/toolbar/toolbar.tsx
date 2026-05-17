@@ -447,6 +447,15 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
   const windowCount = useStore(
     (s) => s.terminals.length + s.browsers.length + s.textEditors.length + s.agentWindows.length,
   )
+  const arrangeItemCount = useStore((s) => {
+    const sectionWindowIds = new Set(s.windowSections.flatMap((section) => section.windowIds))
+    const unsectionedWindowCount =
+      s.terminals.filter((entry) => !sectionWindowIds.has(entry.id)).length +
+      s.browsers.filter((entry) => !entry.pinned && !sectionWindowIds.has(entry.id)).length +
+      s.textEditors.filter((entry) => !entry.pinned && !sectionWindowIds.has(entry.id)).length +
+      s.agentWindows.filter((entry) => !sectionWindowIds.has(entry.id)).length
+    return s.windowSections.length + unsectionedWindowCount
+  })
   const terminals = useStore((s) => s.terminals)
   const browsers = useStore((s) => s.browsers)
   const textEditors = useStore((s) => s.textEditors)
@@ -498,7 +507,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
   const syncAgentWindow = useStore((s) => s.syncAgentWindow)
   const [editingTitleForAgentId, setEditingTitleForAgentId] = useState<string | null>(null)
   const zoomToFitAll = useStore((s) => s.zoomToFitAll)
-  const autoArrangeGrid = useStore((s) => s.autoArrangeGrid)
+  const arrangeCurrentContext = useStore((s) => s.arrangeCurrentContext)
   const autoArrangeOnCreate = useStore((s) => s.autoArrangeOnCreate)
   const setAutoArrangeOnCreate = useStore((s) => s.setAutoArrangeOnCreate)
   const autoArrangeMode = useStore((s) => s.autoArrangeMode)
@@ -1798,7 +1807,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
             </Popover>
 
             {/* Auto-arrange grid */}
-            {windowCount > 1 && (
+            {arrangeItemCount > 1 && (
               <Popover>
                 <PopoverTrigger
                   className={cn(
@@ -1853,11 +1862,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
                   <button
                     onClick={() => {
                       hapticSuccess()
-                      if (autoArrangeMode === 'dwindle') {
-                        useStore.getState().arrangeDwindleSections()
-                      } else {
-                        autoArrangeGrid()
-                      }
+                      arrangeCurrentContext()
                     }}
                     className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-md text-[11px] text-foreground hover:bg-muted/60 transition-colors"
                   >
