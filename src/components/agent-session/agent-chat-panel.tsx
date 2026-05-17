@@ -5187,7 +5187,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         <div className="relative flex min-h-0 flex-1 flex-col">
           {sessionLastUpdatedAt ? (
             <div
-              className="pointer-events-none absolute right-3 top-2 z-10 flex justify-end"
+              className="pointer-events-none absolute left-3 top-2 z-10 flex justify-start"
               aria-live="polite"
             >
               <div
