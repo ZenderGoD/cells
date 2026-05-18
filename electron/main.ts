@@ -968,6 +968,7 @@ async function sendQueuedAgentMessage(
     model: message.model,
     thinkingLevel: message.thinkingLevel,
     permissionMode: message.permissionMode,
+    fastMode: message.fastMode,
   }
   const send = () =>
     agentSessionService.send(

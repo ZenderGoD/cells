@@ -508,6 +508,7 @@ const api: CellsAPI = {
         model?: string | null
         thinkingLevel?: AgentThinkingLevel | null
         permissionMode?: AgentPermissionMode | null
+        fastMode?: boolean | null
       },
       replyTo?: AgentReplyReference | null,
     ) => ipcRenderer.invoke('agent-session:send', windowId, input, attachments, overrides, replyTo),
@@ -521,6 +522,7 @@ const api: CellsAPI = {
         model?: string | null
         thinkingLevel?: AgentThinkingLevel | null
         permissionMode?: AgentPermissionMode | null
+        fastMode?: boolean | null
       },
       replyTo?: AgentReplyReference | null,
     ) =>

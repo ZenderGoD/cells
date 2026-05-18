@@ -394,6 +394,7 @@ export interface QueuedAgentMessage {
   model: string | null
   thinkingLevel: AgentThinkingLevel | null
   permissionMode: AgentPermissionMode | null
+  fastMode?: boolean | null
   replyTo?: AgentReplyReference | null
 }
 
@@ -464,6 +465,7 @@ export interface AgentSessionDefaults {
   permissionMode?: AgentPermissionMode | null
   thinkingLevel?: AgentThinkingLevel | null
   thinkingLevelsByModel?: Record<string, AgentThinkingLevel | null>
+  fastMode?: boolean | null
   contextLength?: AgentContextLength | null
 }
 
@@ -962,6 +964,7 @@ export interface CellsAPI {
         model?: string | null
         thinkingLevel?: AgentThinkingLevel | null
         permissionMode?: AgentPermissionMode | null
+        fastMode?: boolean | null
       },
       replyTo?: AgentReplyReference | null,
     ): Promise<void>
@@ -975,6 +978,7 @@ export interface CellsAPI {
         model?: string | null
         thinkingLevel?: AgentThinkingLevel | null
         permissionMode?: AgentPermissionMode | null
+        fastMode?: boolean | null
       },
       replyTo?: AgentReplyReference | null,
     ): Promise<void>

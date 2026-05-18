@@ -292,6 +292,7 @@ interface StoreState {
       model?: string | null
       permissionMode?: import('../types').AgentPermissionMode | null
       thinkingLevel?: import('../types').AgentThinkingLevel | null
+      fastMode?: boolean | null
       contextLength?: import('../types').AgentContextLength | null
       createdAt?: number | null
     },
@@ -413,6 +414,7 @@ interface StoreState {
       model?: string | null
       permissionMode?: import('../types').AgentPermissionMode | null
       thinkingLevel?: import('../types').AgentThinkingLevel | null
+      fastMode?: boolean | null
       contextLength?: import('../types').AgentContextLength | null
       cursorAgentId?: string | null
       cursorRunId?: string | null
@@ -511,6 +513,7 @@ const DEFAULT_AGENT_SESSION_DEFAULTS: Record<AgentSessionName, AgentSessionDefau
     permissionMode: null,
     thinkingLevel: null,
     thinkingLevelsByModel: {},
+    fastMode: null,
     contextLength: null,
   },
   codex: {
@@ -518,6 +521,7 @@ const DEFAULT_AGENT_SESSION_DEFAULTS: Record<AgentSessionName, AgentSessionDefau
     permissionMode: null,
     thinkingLevel: null,
     thinkingLevelsByModel: {},
+    fastMode: null,
     contextLength: null,
   },
   cursor: {
@@ -525,6 +529,7 @@ const DEFAULT_AGENT_SESSION_DEFAULTS: Record<AgentSessionName, AgentSessionDefau
     permissionMode: null,
     thinkingLevel: null,
     thinkingLevelsByModel: {},
+    fastMode: null,
     contextLength: null,
   },
   copilot: {
@@ -532,6 +537,7 @@ const DEFAULT_AGENT_SESSION_DEFAULTS: Record<AgentSessionName, AgentSessionDefau
     permissionMode: null,
     thinkingLevel: null,
     thinkingLevelsByModel: {},
+    fastMode: null,
     contextLength: null,
   },
   opencode: {
@@ -539,6 +545,7 @@ const DEFAULT_AGENT_SESSION_DEFAULTS: Record<AgentSessionName, AgentSessionDefau
     permissionMode: null,
     thinkingLevel: null,
     thinkingLevelsByModel: {},
+    fastMode: null,
     contextLength: null,
   },
 }
@@ -5643,6 +5650,7 @@ export const useStore = create<StoreState>((set, get) => ({
       model: options?.model ?? null,
       permissionMode: options?.permissionMode ?? null,
       thinkingLevel: options?.thinkingLevel ?? null,
+      fastMode: options?.fastMode ?? null,
       contextLength: options?.contextLength ?? null,
       cursorAgentId: options?.cursorAgentId ?? null,
       cursorRunId: options?.cursorRunId ?? null,
@@ -6163,6 +6171,7 @@ export const useStore = create<StoreState>((set, get) => ({
           : undefined) ??
         savedDefaults.thinkingLevel ??
         null,
+      fastMode: options?.fastMode ?? savedDefaults.fastMode ?? null,
       contextLength: options?.contextLength ?? savedDefaults.contextLength ?? null,
       status: 'idle',
       error: null,

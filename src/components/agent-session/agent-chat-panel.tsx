@@ -61,6 +61,7 @@ import { AgentMarkdown } from './agent-markdown'
 import { AgentAuthCard } from './agent-auth-card'
 import {
   ContextUsageIndicator,
+  FastModeToggle,
   ModelPicker,
   PERMISSION_MODE_OPTIONS,
   PermissionPicker,
@@ -1744,7 +1745,10 @@ function SessionErrorBanner({
 }
 
 type QueuedMessage = QueuedAgentMessage
-type QueuedMessageSettings = Pick<QueuedMessage, 'model' | 'thinkingLevel' | 'permissionMode'>
+type QueuedMessageSettings = Pick<
+  QueuedMessage,
+  'model' | 'thinkingLevel' | 'permissionMode' | 'fastMode'
+>
 const ATTACHMENTS_ONLY_TEXT = '(attached files)'
 
 function getQueuedComposerText(message: QueuedMessage) {
@@ -3373,13 +3377,23 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     (level: AgentThinkingLevel) => {
       const modelId = resolveAgentPickerModelId(agentWindow.agent, agentWindow.model)
       const store = useStore.getState()
-      store.syncAgentWindow(agentWindow.id, { thinkingLevel: level })
+      store.syncAgentWindow(agentWindow.id, { thinkingLevel: level, fastMode: false })
       store.setLastAgentSessionDefaults(agentWindow.agent, {
         thinkingLevel: level,
         thinkingLevelsByModel: modelId ? { [modelId]: level } : {},
+        fastMode: false,
       })
     },
     [agentWindow.agent, agentWindow.id, agentWindow.model],
+  )
+  const updateActiveComposerFastMode = useCallback(
+    (enabled: boolean) => {
+      if (agentWindow.agent !== 'codex') return
+      const store = useStore.getState()
+      store.syncAgentWindow(agentWindow.id, { fastMode: enabled })
+      store.setLastAgentSessionDefaults(agentWindow.agent, { fastMode: enabled })
+    },
+    [agentWindow.agent, agentWindow.id],
   )
   const updateQueuedEditModel = useCallback(
     (modelId: string) => {
@@ -3388,6 +3402,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         model: modelId,
         thinkingLevel: nextThinkingLevel,
         permissionMode: current?.permissionMode ?? null,
+        fastMode: current?.fastMode ?? null,
       }))
     },
     [getRememberedThinkingLevelForModel],
@@ -3404,6 +3419,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
           model: current?.model ?? fallbackModelId,
           thinkingLevel: level,
           permissionMode: current?.permissionMode ?? null,
+          fastMode: false,
         }
       })
     },
@@ -3414,6 +3430,15 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       model: current?.model ?? null,
       thinkingLevel: current?.thinkingLevel ?? null,
       permissionMode: mode,
+      fastMode: current?.fastMode ?? null,
+    }))
+  }, [])
+  const updateQueuedEditFastMode = useCallback((enabled: boolean) => {
+    setQueuedEditSettings((current) => ({
+      model: current?.model ?? null,
+      thinkingLevel: current?.thinkingLevel ?? null,
+      permissionMode: current?.permissionMode ?? null,
+      fastMode: enabled,
     }))
   }, [])
   const scrollViewportRef = useRef<HTMLDivElement>(null)
@@ -3810,6 +3835,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       model: agentWindow.model ?? null,
       permissionMode: agentWindow.permissionMode ?? null,
       thinkingLevel: agentWindow.thinkingLevel ?? null,
+      fastMode: agentWindow.fastMode ?? null,
       contextLength: agentWindow.contextLength ?? null,
     }
 
@@ -3878,6 +3904,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     agentWindow.model,
     agentWindow.permissionMode,
     agentWindow.thinkingLevel,
+    agentWindow.fastMode,
     agentWindow.contextLength,
   ])
 
@@ -4045,6 +4072,9 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const composerThinkingLevel = isEditingQueuedMessage
     ? queuedEditSettings?.thinkingLevel
     : agentWindow.thinkingLevel
+  const composerFastMode = isEditingQueuedMessage
+    ? queuedEditSettings?.fastMode
+    : agentWindow.fastMode
   const branchTargets = useMemo(
     () =>
       (['claude', 'codex', 'cursor', 'copilot', 'opencode'] as const).map((agent) => ({
@@ -4102,6 +4132,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       model: agentWindow.model ?? null,
       permissionMode: agentWindow.permissionMode ?? null,
       thinkingLevel: agentWindow.thinkingLevel ?? null,
+      fastMode: agentWindow.fastMode ?? null,
     })
   }, [
     agentWindow.agent,
@@ -4117,6 +4148,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     agentWindow.model,
     agentWindow.permissionMode,
     agentWindow.thinkingLevel,
+    agentWindow.fastMode,
     agentWindow.title,
   ])
 
@@ -4284,6 +4316,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         model?: string | null
         thinkingLevel?: AgentThinkingLevel | null
         permissionMode?: AgentPermissionMode | null
+        fastMode?: boolean | null
       },
       replyTo?: AgentReplyReference | null,
     ) => {
@@ -4347,6 +4380,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       const titleSource =
         currentSnapshot.title || agentWindow.title || getAgentDisplayName(targetAgent)
       const targetModel = targetAgent === agentWindow.agent ? (agentWindow.model ?? null) : null
+      const targetFastMode =
+        targetAgent === 'codex' && targetAgent === agentWindow.agent
+          ? (agentWindow.fastMode ?? null)
+          : null
       const targetContextLength =
         targetAgent === 'claude' ? (agentWindow.contextLength ?? null) : null
       const store = useStore.getState()
@@ -4357,6 +4394,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         model: targetModel,
         permissionMode: agentWindow.permissionMode ?? null,
         thinkingLevel: agentWindow.thinkingLevel ?? null,
+        fastMode: targetFastMode,
         contextLength: targetContextLength,
       })
       try {
@@ -4384,6 +4422,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
             model: targetModel,
             permissionMode: agentWindow.permissionMode ?? null,
             thinkingLevel: agentWindow.thinkingLevel ?? null,
+            fastMode: targetWindow.fastMode ?? null,
             contextLength: targetContextLength,
           },
           visibleValue,
@@ -4393,6 +4432,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
             model: targetModel,
             thinkingLevel: agentWindow.thinkingLevel ?? null,
             permissionMode: agentWindow.permissionMode ?? null,
+            fastMode: targetWindow.fastMode ?? null,
           },
           currentReplyTo,
         )
@@ -4442,6 +4482,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         model: agentWindow.model ?? null,
         thinkingLevel: agentWindow.thinkingLevel ?? null,
         permissionMode: agentWindow.permissionMode ?? null,
+        fastMode: agentWindow.fastMode ?? null,
       }
 
       // Cmd+Enter is an immediate interrupt/retry path, not a normal queued
@@ -4512,6 +4553,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       agentWindow.model,
       agentWindow.thinkingLevel,
       agentWindow.permissionMode,
+      agentWindow.fastMode,
       scheduleScrollToBottom,
       isNearBottom,
       visibleUserMessageCount,
@@ -4569,6 +4611,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         model: agentWindow.model ?? null,
         permissionMode: agentWindow.permissionMode ?? null,
         thinkingLevel: agentWindow.thinkingLevel ?? null,
+        fastMode: agentWindow.fastMode ?? null,
         contextLength: agentWindow.contextLength ?? null,
       })
       try {
@@ -4596,6 +4639,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
             model: nextWindow.model ?? null,
             permissionMode: nextWindow.permissionMode ?? null,
             thinkingLevel: nextWindow.thinkingLevel ?? null,
+            fastMode: nextWindow.fastMode ?? null,
             contextLength: nextWindow.contextLength ?? null,
           },
           value,
@@ -4611,6 +4655,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
             model: agentWindow.model ?? null,
             thinkingLevel: agentWindow.thinkingLevel ?? null,
             permissionMode: agentWindow.permissionMode ?? null,
+            fastMode: agentWindow.fastMode ?? null,
           },
           currentReplyTo,
         )
@@ -4632,6 +4677,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       model: agentWindow.model ?? null,
       permissionMode: agentWindow.permissionMode ?? null,
       thinkingLevel: agentWindow.thinkingLevel ?? null,
+      fastMode: agentWindow.fastMode ?? null,
       contextLength: agentWindow.contextLength ?? null,
     })
 
@@ -4647,6 +4693,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
             model: agentWindow.model ?? null,
             thinkingLevel: agentWindow.thinkingLevel ?? null,
             permissionMode: agentWindow.permissionMode ?? null,
+            fastMode: agentWindow.fastMode ?? null,
           },
         ],
       })
@@ -4692,6 +4739,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         model: entry.model ?? null,
         thinkingLevel: entry.thinkingLevel ?? null,
         permissionMode: entry.permissionMode ?? null,
+        fastMode: entry.fastMode ?? null,
       })
       writeComposer(getQueuedComposerText(entry), [...entry.attachments])
       setComposerReplyTarget(entry.replyTo ?? null)
@@ -4718,6 +4766,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
               model: nextSettings?.model ?? null,
               thinkingLevel: nextSettings?.thinkingLevel ?? null,
               permissionMode: nextSettings?.permissionMode ?? null,
+              fastMode: nextSettings?.fastMode ?? null,
             }
           : m,
       ),
@@ -4815,6 +4864,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         model: next.model,
         thinkingLevel: next.thinkingLevel,
         permissionMode: next.permissionMode,
+        fastMode: next.fastMode,
       },
       next.replyTo ?? null,
     )
@@ -5401,6 +5451,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                               model: agentWindow.model ?? null,
                               thinkingLevel: agentWindow.thinkingLevel ?? null,
                               permissionMode: agentWindow.permissionMode ?? null,
+                              fastMode: agentWindow.fastMode ?? null,
                             },
                             lastUserMessage.replyTo ?? null,
                           )
@@ -5458,6 +5509,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                           model: agentWindow.model ?? null,
                           thinkingLevel: agentWindow.thinkingLevel ?? null,
                           permissionMode: agentWindow.permissionMode ?? null,
+                          fastMode: agentWindow.fastMode ?? null,
                         })
                       }
                     }}
@@ -5570,8 +5622,9 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                               const modelLabel = entry.model
                                 ? prettifyModelId(agentWindow.agent, entry.model)
                                 : null
-                              const thinkingLabel =
-                                entry.thinkingLevel && entry.thinkingLevel !== 'off'
+                              const thinkingLabel = entry.fastMode
+                                ? 'Fast'
+                                : entry.thinkingLevel && entry.thinkingLevel !== 'off'
                                   ? THINKING_LEVEL_LABEL_MAP[entry.thinkingLevel]
                                   : null
                               const permissionOption = entry.permissionMode
@@ -5979,10 +6032,21 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                           }
                     }
                   />
+                  <FastModeToggle
+                    agent={agentWindow.agent}
+                    value={composerFastMode}
+                    onChange={(enabled) => {
+                      if (isEditingQueuedMessage) {
+                        updateQueuedEditFastMode(enabled)
+                        return
+                      }
+                      updateActiveComposerFastMode(enabled)
+                    }}
+                  />
                   <ThinkingPicker
                     agent={agentWindow.agent}
                     model={composerModel}
-                    value={composerThinkingLevel}
+                    value={composerFastMode ? 'low' : composerThinkingLevel}
                     onChange={(level) => {
                       if (isEditingQueuedMessage) updateQueuedEditThinking(level)
                       else updateActiveComposerThinking(level)

@@ -45,6 +45,7 @@ export function sanitizeQueuedMessages(
       model: typeof message.model === 'string' ? message.model : null,
       thinkingLevel: message.thinkingLevel ?? null,
       permissionMode: message.permissionMode ?? null,
+      fastMode: message.fastMode ?? null,
       replyTo: message.replyTo ?? null,
     }))
     .filter((message) => message.id.length > 0)
@@ -79,6 +80,7 @@ export function buildAgentSessionRequestFromWindow(
     model: agentWindow.model ?? null,
     permissionMode: agentWindow.permissionMode ?? null,
     thinkingLevel: agentWindow.thinkingLevel ?? null,
+    fastMode: agentWindow.fastMode ?? null,
     contextLength: agentWindow.contextLength ?? null,
   }
 }

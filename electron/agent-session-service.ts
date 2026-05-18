@@ -92,7 +92,9 @@ function claudeThinkingOptions(level: AgentThinkingLevel | null | undefined, mod
 
 function codexThinkingEffort(
   level: AgentThinkingLevel | null | undefined,
+  fastMode?: boolean | null,
 ): 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' {
+  if (fastMode) return 'low'
   switch (level) {
     case 'off':
       return 'minimal'
@@ -832,13 +834,14 @@ function buildCodexCollaborationMode(
   mode: AgentSessionRequest['permissionMode'],
   model: string | null | undefined,
   thinkingLevel: AgentThinkingLevel | null | undefined,
+  fastMode?: boolean | null,
 ) {
   const collaborationMode = mode === 'plan' ? 'plan' : 'default'
   return {
     mode: collaborationMode,
     settings: {
       ...(model ? { model } : {}),
-      reasoning_effort: codexThinkingEffort(thinkingLevel),
+      reasoning_effort: codexThinkingEffort(thinkingLevel, fastMode),
       developer_instructions:
         collaborationMode === 'plan'
           ? CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS
@@ -876,11 +879,12 @@ function buildCodexTurnStartParams(
     sandboxPolicy: buildCodexTurnSandboxPolicy(request.permissionMode),
     cwd: request.cwd ?? undefined,
     model: request.model || DEFAULT_CODEX_MODEL,
-    effort: codexThinkingEffort(request.thinkingLevel),
+    effort: codexThinkingEffort(request.thinkingLevel, request.fastMode),
     collaborationMode: buildCodexCollaborationMode(
       request.permissionMode,
       request.model || DEFAULT_CODEX_MODEL,
       request.thinkingLevel,
+      request.fastMode,
     ),
   }
 }
@@ -3854,6 +3858,7 @@ export class AgentSessionService extends EventEmitter {
       model?: AgentSessionRequest['model']
       thinkingLevel?: AgentSessionRequest['thinkingLevel']
       permissionMode?: AgentSessionRequest['permissionMode']
+      fastMode?: AgentSessionRequest['fastMode']
     },
     replyTo?: AgentReplyReference | null,
   ): Promise<void> {
@@ -3870,6 +3875,7 @@ export class AgentSessionService extends EventEmitter {
       model?: AgentSessionRequest['model']
       thinkingLevel?: AgentSessionRequest['thinkingLevel']
       permissionMode?: AgentSessionRequest['permissionMode']
+      fastMode?: AgentSessionRequest['fastMode']
     },
     replyTo?: AgentReplyReference | null,
   ): Promise<void> {
@@ -3989,6 +3995,7 @@ export class AgentSessionService extends EventEmitter {
       model?: AgentSessionRequest['model']
       thinkingLevel?: AgentSessionRequest['thinkingLevel']
       permissionMode?: AgentSessionRequest['permissionMode']
+      fastMode?: AgentSessionRequest['fastMode']
     },
     replyTo?: AgentReplyReference | null,
   ): Promise<void> {
@@ -4023,15 +4030,18 @@ export class AgentSessionService extends EventEmitter {
         overrides.permissionMode != null
           ? normalizePermissionMode(overrides.permissionMode)
           : undefined
+      const nextFastMode = overrides.fastMode != null ? Boolean(overrides.fastMode) : undefined
 
       const modelChanged = nextModel !== undefined && nextModel !== (req.model ?? null)
       const thinkingChanged =
         nextThinkingLevel !== undefined && nextThinkingLevel !== (req.thinkingLevel ?? null)
       const permissionChanged =
         nextPermissionMode !== undefined && nextPermissionMode !== (req.permissionMode ?? null)
+      const fastModeChanged = nextFastMode !== undefined && nextFastMode !== (req.fastMode ?? null)
 
       if (modelChanged) req.model = nextModel
       if (thinkingChanged) req.thinkingLevel = nextThinkingLevel
+      if (fastModeChanged) req.fastMode = nextFastMode
 
       if (permissionChanged) {
         await this.updatePermissionMode(windowId, nextPermissionMode ?? null)

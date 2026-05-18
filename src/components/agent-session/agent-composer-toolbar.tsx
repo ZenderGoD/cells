@@ -8,6 +8,7 @@ import {
   Shield,
   ShieldCheck,
   ShieldOff,
+  Zap,
 } from 'lucide-react'
 import type {
   AgentContextLength,
@@ -1049,6 +1050,38 @@ export function ThinkingPicker({ agent, model, value, onChange }: ThinkingPicker
         })}
       </PopoverContent>
     </Popover>
+  )
+}
+
+interface FastModeToggleProps {
+  agent: AgentWindowNode['agent']
+  value: boolean | null | undefined
+  onChange: (value: boolean) => void
+}
+
+export function FastModeToggle({ agent, value, onChange }: FastModeToggleProps) {
+  if (agent !== 'codex') return null
+  const active = value === true
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(!active)}
+      className={cn(
+        'inline-flex h-7 min-w-0 shrink-0 items-center gap-1.5 rounded-[8px] px-2 text-[11px] transition-colors',
+        active
+          ? 'bg-emerald-400/14 text-emerald-100 ring-1 ring-emerald-300/20 hover:bg-emerald-400/18'
+          : 'bg-foreground/5 text-foreground/85 hover:bg-foreground/10',
+      )}
+      title={
+        active
+          ? 'Fast mode on: Codex uses low reasoning effort on each turn'
+          : 'Fast mode off: Codex uses the selected thinking effort'
+      }
+      aria-pressed={active}
+    >
+      <Zap className={cn('size-3.5', active ? 'text-emerald-300' : 'text-muted-foreground/75')} />
+      <span className="truncate font-medium">Fast</span>
+    </button>
   )
 }
 
