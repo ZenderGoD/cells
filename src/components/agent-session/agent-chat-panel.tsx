@@ -3378,11 +3378,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     (level: AgentThinkingLevel) => {
       const modelId = resolveAgentPickerModelId(agentWindow.agent, agentWindow.model)
       const store = useStore.getState()
-      store.syncAgentWindow(agentWindow.id, { thinkingLevel: level, fastMode: false })
+      store.syncAgentWindow(agentWindow.id, { thinkingLevel: level })
       store.setLastAgentSessionDefaults(agentWindow.agent, {
         thinkingLevel: level,
         thinkingLevelsByModel: modelId ? { [modelId]: level } : {},
-        fastMode: false,
       })
     },
     [agentWindow.agent, agentWindow.id, agentWindow.model],
@@ -3420,7 +3419,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
           model: current?.model ?? fallbackModelId,
           thinkingLevel: level,
           permissionMode: current?.permissionMode ?? null,
-          fastMode: false,
+          fastMode: current?.fastMode ?? null,
         }
       })
     },
@@ -6056,7 +6055,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                   <ThinkingPicker
                     agent={agentWindow.agent}
                     model={composerModel}
-                    value={composerFastMode ? 'low' : composerThinkingLevel}
+                    value={composerThinkingLevel}
                     onChange={(level) => {
                       if (isEditingQueuedMessage) updateQueuedEditThinking(level)
                       else updateActiveComposerThinking(level)
