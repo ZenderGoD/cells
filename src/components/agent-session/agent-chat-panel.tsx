@@ -4909,14 +4909,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
           setQueuedMessages((queue) => {
             if (queue.some((message) => message.id === restore.message.id)) return queue
             const insertAt = Math.max(0, Math.min(restore.index, queue.length))
-            return [
-              ...queue.slice(0, insertAt),
-              {
-                ...restore.message,
-                mode: restore.message.mode === 'stop' ? 'after-turn' : restore.message.mode,
-              },
-              ...queue.slice(insertAt),
-            ]
+            return [...queue.slice(0, insertAt), restore.message, ...queue.slice(insertAt)]
           })
           setManualQueuedSendPaused(false)
         } else {
@@ -4927,7 +4920,15 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       .finally(() => {
         sendingQueuedRef.current = false
       })
-  }, [agentWindow.id, queuedMessages, resumeGated, sendToAgent, snapshot?.status])
+  }, [
+    agentWindow.id,
+    queuedMessages,
+    resumeGated,
+    sendToAgent,
+    setManualQueuedSendPaused,
+    setQueuedMessages,
+    snapshot?.status,
+  ])
 
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
