@@ -948,7 +948,7 @@ export function InfiniteCanvas() {
       commitWindowSectionDrag(draggedIds)
     }
     if (resizedSectionId) {
-      arrangeDwindleSections(true)
+      arrangeDwindleSections(true, null, resizedSectionId)
       setIsUserDriving(false)
       return
     }

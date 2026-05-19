@@ -98,6 +98,7 @@ function BackgroundAgentSessionRunner({ agentWindow }: { agentWindow: AgentWindo
       model: agentWindow.model ?? null,
       permissionMode: agentWindow.permissionMode ?? null,
       thinkingLevel: agentWindow.thinkingLevel ?? null,
+      fastMode: agentWindow.fastMode ?? null,
       contextLength: agentWindow.contextLength ?? null,
     }
 
@@ -158,6 +159,7 @@ function BackgroundAgentSessionRunner({ agentWindow }: { agentWindow: AgentWindo
     agentWindow.model,
     agentWindow.permissionMode,
     agentWindow.thinkingLevel,
+    agentWindow.fastMode,
     agentWindow.title,
   ])
 

@@ -60,6 +60,7 @@ import {
   normalizeCanvasSnapMode,
 } from './canvas-navigation'
 import {
+  getExclusiveSectionAssignments,
   getGridArrangePositions,
   getTopLevelArrangeItems,
   type CanvasArrangeSectionItem,
@@ -312,7 +313,10 @@ interface StoreState {
   bringAgentWindowToFront(id: string): void
   panToAgentWindow(id: string): void
   snapToAgentWindow(id: string, options?: { keepScale?: boolean; mode?: CanvasSnapMode }): void
-  snapToWindowSection(id: string, options?: { keepScale?: boolean; mode?: CanvasSnapMode }): void
+  snapToWindowSection(
+    id: string,
+    options?: { keepScale?: boolean; mode?: CanvasSnapMode; preserveWindowFocus?: boolean },
+  ): void
   syncAgentWindow(id: string, patch: Partial<AgentWindowNode>): void
   snapToTerminal(id: string, options?: { keepScale?: boolean; mode?: CanvasSnapMode }): void
   zoomToFit(id: string): void
@@ -970,7 +974,7 @@ function normalizeDwindleLayoutSettings(
 
 function getAllMutableCanvasNodes(
   state: Pick<StoreState, 'terminals' | 'browsers' | 'textEditors' | 'agentWindows'>,
-) {
+): MutableCanvasNode[] {
   return [
     ...state.terminals.map((terminal) => ({
       ...terminal,
@@ -1588,6 +1592,17 @@ function getSectionIdForWindow(sections: WindowSection[], windowId: string) {
   return sections.find((section) => section.windowIds.includes(windowId))?.id ?? null
 }
 
+function arrangeSectionContainingWindow(
+  get: () => StoreState,
+  windowId: string,
+  splitTargetId: string | null = windowId,
+) {
+  const sectionId = getSectionIdForWindow(get().windowSections, windowId)
+  if (!sectionId) return false
+  get().arrangeDwindleSections(true, splitTargetId, sectionId)
+  return true
+}
+
 function getFocusedWindowSection(
   state: Pick<
     StoreState,
@@ -1599,14 +1614,15 @@ function getFocusedWindowSection(
     | 'windowSections'
   >,
 ) {
-  const focusedSection = state.focusedWindowSectionId
-    ? state.windowSections.find((section) => section.id === state.focusedWindowSectionId)
-    : null
-  if (focusedSection) return focusedSection
-
   const focusedWindowId = getFocusedWindowId(state)
-  return focusedWindowId
-    ? (state.windowSections.find((section) => section.windowIds.includes(focusedWindowId)) ?? null)
+  if (focusedWindowId) {
+    return (
+      state.windowSections.find((section) => section.windowIds.includes(focusedWindowId)) ?? null
+    )
+  }
+
+  return state.focusedWindowSectionId
+    ? (state.windowSections.find((section) => section.id === state.focusedWindowSectionId) ?? null)
     : null
 }
 
@@ -2207,7 +2223,7 @@ export const useStore = create<StoreState>((set, get) => ({
                 : section,
             ),
           }))
-          get().arrangeDwindleSections(true)
+          get().arrangeDwindleSections(true, null, id)
         } else {
           set((s) => ({
             browsers: s.browsers.map((b) =>
@@ -3194,7 +3210,7 @@ export const useStore = create<StoreState>((set, get) => ({
         : { sections: get().windowSections, sectionId: null as string | null }
     if (sectionAssignment.sectionId) {
       set({ windowSections: sectionAssignment.sections })
-      get().arrangeDwindleSections(true, previousFocusedId)
+      get().arrangeDwindleSections(true, previousFocusedId, sectionAssignment.sectionId)
       set({
         focusedTerminalId: id,
         focusedBrowserId: null,
@@ -3202,7 +3218,7 @@ export const useStore = create<StoreState>((set, get) => ({
         focusedAgentWindowId: null,
         canvas: { ...get().canvas, scale: 1 },
       })
-      get().snapToWindowSection(sectionAssignment.sectionId)
+      get().snapToWindowSection(sectionAssignment.sectionId, { preserveWindowFocus: true })
     } else if (get().autoArrangeOnCreate) {
       if (get().autoArrangeMode === 'dwindle') get().arrangeDwindleSections(true)
       else get().autoArrangeGrid(true)
@@ -3441,7 +3457,7 @@ export const useStore = create<StoreState>((set, get) => ({
           ? removedSectionId
           : null,
       }))
-      get().arrangeDwindleSections(true)
+      get().arrangeDwindleSections(true, null, removedSectionId)
     }
     if (wasFocused) {
       const previousId = getPreviousWindowId(
@@ -3701,10 +3717,7 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   moveTerminal(id, x, y) {
-    if (getSectionIdForWindow(get().windowSections, id)) {
-      get().arrangeDwindleSections(true, id)
-      return
-    }
+    if (arrangeSectionContainingWindow(get, id)) return
 
     if (get().autoArrangeOnCreate && get().autoArrangeMode === 'grid') {
       get().setAutoArrangeOnCreate(false)
@@ -3777,8 +3790,9 @@ export const useStore = create<StoreState>((set, get) => ({
   resizeTerminal(id, width, height) {
     const sectionResize = getDwindleSectionResizePatch(get(), id, width, height)
     if (sectionResize) {
+      const sectionId = getSectionIdForWindow(sectionResize, id)
       set({ windowSections: sectionResize })
-      get().arrangeDwindleSections(true, id)
+      get().arrangeDwindleSections(true, id, sectionId)
       return
     }
 
@@ -3907,6 +3921,14 @@ export const useStore = create<StoreState>((set, get) => ({
     set({
       snapPaused: false,
       snapFast: true,
+      ...(options?.preserveWindowFocus
+        ? {}
+        : {
+            focusedTerminalId: null,
+            focusedBrowserId: null,
+            focusedTextEditorId: null,
+            focusedAgentWindowId: null,
+          }),
       focusedWindowSectionId: id,
       canvas,
     })
@@ -4299,7 +4321,7 @@ export const useStore = create<StoreState>((set, get) => ({
         section,
       ],
     })
-    get().arrangeDwindleSections(true)
+    get().arrangeDwindleSections(true, null, section.id)
   },
 
   createWindowSectionFromViewport() {
@@ -4339,7 +4361,7 @@ export const useStore = create<StoreState>((set, get) => ({
         section,
       ],
     })
-    if (sectionIds.length > 0) get().arrangeDwindleSections(true)
+    if (sectionIds.length > 0) get().arrangeDwindleSections(true, null, section.id)
     get().persist()
   },
 
@@ -4461,25 +4483,24 @@ export const useStore = create<StoreState>((set, get) => ({
     if (state.windowSections.length === 0) return
     const nodes = getAllMutableCanvasNodes(state)
     const nodeById = new Map(nodes.map((node) => [node.id, node]))
+    const movingNodes = movingIds
+      .map((id) => nodeById.get(id))
+      .filter((node): node is MutableCanvasNode => Boolean(node))
+    const sectionRects = state.windowSections.map((section) => ({
+      id: section.id,
+      type: 'section' as const,
+      ...getWindowSectionRect(section, { titleBarHidden: state.titleBarHidden }),
+      windowIds: section.windowIds,
+    }))
+    const targetSectionByWindowId = getExclusiveSectionAssignments(movingNodes, sectionRects)
     const nextSections = state.windowSections.map((section) => {
-      const rect = getWindowSectionRect(section, { titleBarHidden: state.titleBarHidden })
       const keptIds = section.windowIds.filter((id) => !movingIds.includes(id))
-      const idsToAdd = movingIds.filter((id) => {
-        const node = nodeById.get(id)
-        if (!node) return false
-        const centerX = node.x + node.width / 2
-        const centerY = node.y + node.height / 2
-        return (
-          centerX >= rect.x &&
-          centerX <= rect.x + rect.width &&
-          centerY >= rect.y &&
-          centerY <= rect.y + rect.height
-        )
-      })
+      const idsToAdd = movingIds.filter((id) => targetSectionByWindowId.get(id) === section.id)
+      const windowIds = [...keptIds, ...idsToAdd.filter((id) => !keptIds.includes(id))]
       return {
         ...section,
-        windowIds: [...keptIds, ...idsToAdd.filter((id) => !keptIds.includes(id))],
-        layoutTree: sanitizeDwindleTree(section.layoutTree, new Set(keptIds)),
+        windowIds,
+        layoutTree: sanitizeDwindleTree(section.layoutTree, new Set(windowIds)),
       }
     })
 
@@ -4554,7 +4575,7 @@ export const useStore = create<StoreState>((set, get) => ({
         height: viewH,
       })
       set({ focusedWindowSectionId: focusedSection.id })
-      get().arrangeDwindleSections(true)
+      get().arrangeDwindleSections(true, null, focusedSection.id)
       requestAnimationFrame(() => get().snapToWindowSection(focusedSection.id))
       return
     }
@@ -4599,6 +4620,7 @@ export const useStore = create<StoreState>((set, get) => ({
       focusedBrowserId: null,
       focusedTextEditorId: null,
       focusedAgentWindowId: null,
+      focusedWindowSectionId: null,
       snapFast: false,
     })
     get().setCanvasTransform(nextTransform)
@@ -4798,23 +4820,6 @@ export const useStore = create<StoreState>((set, get) => ({
           layoutTree: null,
         },
       ]
-    } else if (state.autoArrangeOnCreate && !scopedSectionId) {
-      const assigned = new Set(sections.flatMap((section) => section.windowIds))
-      const unassigned = allNodes.filter((node) => !assigned.has(node.id))
-      if (unassigned.length > 0) {
-        const focusedSectionIndex = focusedId
-          ? sections.findIndex((section) => section.windowIds.includes(focusedId))
-          : -1
-        const targetIndex = focusedSectionIndex >= 0 ? focusedSectionIndex : 0
-        sections = sections.map((section, index) =>
-          index === targetIndex
-            ? {
-                ...section,
-                windowIds: [...section.windowIds, ...unassigned.map((node) => node.id)],
-              }
-            : section,
-        )
-      }
     }
 
     const nextRects = new Map<string, { x: number; y: number; width: number; height: number }>()
@@ -5721,7 +5726,7 @@ export const useStore = create<StoreState>((set, get) => ({
         : { sections: get().windowSections, sectionId: null as string | null }
     if (sectionAssignment.sectionId) {
       set({ windowSections: sectionAssignment.sections })
-      get().arrangeDwindleSections(true, previousFocusedId)
+      get().arrangeDwindleSections(true, previousFocusedId, sectionAssignment.sectionId)
       set({
         focusedTerminalId: null,
         focusedBrowserId: null,
@@ -5729,7 +5734,7 @@ export const useStore = create<StoreState>((set, get) => ({
         focusedAgentWindowId: null,
         canvas: { ...get().canvas, scale: 1 },
       })
-      get().snapToWindowSection(sectionAssignment.sectionId)
+      get().snapToWindowSection(sectionAssignment.sectionId, { preserveWindowFocus: true })
     } else if (get().autoArrangeOnCreate) {
       if (get().autoArrangeMode === 'dwindle') get().arrangeDwindleSections(true)
       else get().autoArrangeGrid(true)
@@ -5804,7 +5809,7 @@ export const useStore = create<StoreState>((set, get) => ({
           ? removedSectionId
           : null,
       }))
-      get().arrangeDwindleSections(true)
+      get().arrangeDwindleSections(true, null, removedSectionId)
     }
     if (wasFocused) {
       const previousId = getPreviousWindowId(
@@ -5868,10 +5873,7 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   moveTextEditor(id, x, y) {
-    if (getSectionIdForWindow(get().windowSections, id)) {
-      get().arrangeDwindleSections(true, id)
-      return
-    }
+    if (arrangeSectionContainingWindow(get, id)) return
 
     if (get().autoArrangeOnCreate && get().autoArrangeMode === 'grid') {
       get().setAutoArrangeOnCreate(false)
@@ -5888,8 +5890,9 @@ export const useStore = create<StoreState>((set, get) => ({
   resizeTextEditor(id, width, height) {
     const sectionResize = getDwindleSectionResizePatch(get(), id, width, height)
     if (sectionResize) {
+      const sectionId = getSectionIdForWindow(sectionResize, id)
       set({ windowSections: sectionResize })
-      get().arrangeDwindleSections(true, id)
+      get().arrangeDwindleSections(true, id, sectionId)
       return
     }
 
@@ -6199,7 +6202,7 @@ export const useStore = create<StoreState>((set, get) => ({
         : { sections: get().windowSections, sectionId: null as string | null }
     if (sectionAssignment.sectionId) {
       set({ windowSections: sectionAssignment.sections })
-      get().arrangeDwindleSections(true, previousFocusedId)
+      get().arrangeDwindleSections(true, previousFocusedId, sectionAssignment.sectionId)
       set({
         focusedTerminalId: null,
         focusedBrowserId: null,
@@ -6207,7 +6210,7 @@ export const useStore = create<StoreState>((set, get) => ({
         focusedAgentWindowId: id,
         canvas: { ...get().canvas, scale: 1 },
       })
-      get().snapToWindowSection(sectionAssignment.sectionId)
+      get().snapToWindowSection(sectionAssignment.sectionId, { preserveWindowFocus: true })
     } else if (get().autoArrangeOnCreate) {
       if (get().autoArrangeMode === 'dwindle') get().arrangeDwindleSections(true)
       else get().autoArrangeGrid(true)
@@ -6259,7 +6262,7 @@ export const useStore = create<StoreState>((set, get) => ({
           ? removedSectionId
           : null,
       }))
-      get().arrangeDwindleSections(true)
+      get().arrangeDwindleSections(true, null, removedSectionId)
     }
     if (wasFocused) {
       const previousId = getPreviousWindowId(
@@ -6328,10 +6331,7 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   moveAgentWindow(id, x, y) {
-    if (getSectionIdForWindow(get().windowSections, id)) {
-      get().arrangeDwindleSections(true, id)
-      return
-    }
+    if (arrangeSectionContainingWindow(get, id)) return
 
     if (get().autoArrangeOnCreate && get().autoArrangeMode === 'grid') {
       get().setAutoArrangeOnCreate(false)
@@ -6348,8 +6348,9 @@ export const useStore = create<StoreState>((set, get) => ({
   resizeAgentWindow(id, width, height) {
     const sectionResize = getDwindleSectionResizePatch(get(), id, width, height)
     if (sectionResize) {
+      const sectionId = getSectionIdForWindow(sectionResize, id)
       set({ windowSections: sectionResize })
-      get().arrangeDwindleSections(true, id)
+      get().arrangeDwindleSections(true, id, sectionId)
       return
     }
 
@@ -6543,7 +6544,7 @@ export const useStore = create<StoreState>((set, get) => ({
         : { sections: get().windowSections, sectionId: null as string | null }
     if (sectionAssignment.sectionId) {
       set({ windowSections: sectionAssignment.sections })
-      get().arrangeDwindleSections(true, previousFocusedId)
+      get().arrangeDwindleSections(true, previousFocusedId, sectionAssignment.sectionId)
       set({
         focusedTerminalId: null,
         focusedBrowserId: id,
@@ -6551,7 +6552,7 @@ export const useStore = create<StoreState>((set, get) => ({
         focusedAgentWindowId: null,
         canvas: { ...get().canvas, scale: 1 },
       })
-      get().snapToWindowSection(sectionAssignment.sectionId)
+      get().snapToWindowSection(sectionAssignment.sectionId, { preserveWindowFocus: true })
     } else if (get().autoArrangeOnCreate) {
       if (get().autoArrangeMode === 'dwindle') get().arrangeDwindleSections(true)
       else get().autoArrangeGrid(true)
@@ -6633,7 +6634,7 @@ export const useStore = create<StoreState>((set, get) => ({
           ? removedSectionId
           : null,
       }))
-      get().arrangeDwindleSections(true)
+      get().arrangeDwindleSections(true, null, removedSectionId)
     }
     if (shouldReturn) {
       get().persist()
@@ -6702,10 +6703,7 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   moveBrowser(id, x, y) {
-    if (getSectionIdForWindow(get().windowSections, id)) {
-      get().arrangeDwindleSections(true, id)
-      return
-    }
+    if (arrangeSectionContainingWindow(get, id)) return
 
     if (get().autoArrangeOnCreate && get().autoArrangeMode === 'grid') {
       get().setAutoArrangeOnCreate(false)
@@ -6720,8 +6718,9 @@ export const useStore = create<StoreState>((set, get) => ({
   resizeBrowser(id, width, height) {
     const sectionResize = getDwindleSectionResizePatch(get(), id, width, height)
     if (sectionResize) {
+      const sectionId = getSectionIdForWindow(sectionResize, id)
       set({ windowSections: sectionResize })
-      get().arrangeDwindleSections(true, id)
+      get().arrangeDwindleSections(true, id, sectionId)
       return
     }
 

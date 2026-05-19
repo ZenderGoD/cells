@@ -3972,9 +3972,16 @@ export class AgentSessionService extends EventEmitter {
       ...message,
       status: message.status === 'in_progress' ? 'failed' : message.status,
     }))
+    if (request.windowId !== sourceWindowId && this.runtimes.has(request.windowId)) {
+      await this.dispose(request.windowId)
+    }
     await persistSnapshotNow(snapshot)
     this.emitUpdate(snapshot)
 
+    if (request.windowId !== sourceWindowId && this.runtimes.has(request.windowId)) {
+      await this.dispose(request.windowId)
+      await persistSnapshotNow(snapshot)
+    }
     await this.ensure(request)
     await this.sendInternal(
       request.windowId,

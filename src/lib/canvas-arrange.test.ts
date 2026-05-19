@@ -2,8 +2,12 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { CanvasArrangeItem, CanvasArrangeSectionItem } from './canvas-arrange'
 
-const { filterUnsectionedArrangeItems, getGridArrangePositions, getTopLevelArrangeItems } =
-  await import(new URL('./canvas-arrange.ts', import.meta.url).href)
+const {
+  filterUnsectionedArrangeItems,
+  getExclusiveSectionAssignments,
+  getGridArrangePositions,
+  getTopLevelArrangeItems,
+} = await import(new URL('./canvas-arrange.ts', import.meta.url).href)
 
 test('getTopLevelArrangeItems treats sections as blocks and excludes their child windows', () => {
   const windows: CanvasArrangeItem[] = [
@@ -61,4 +65,16 @@ test('getGridArrangePositions preserves rows while centering the arranged grid',
       ['c', { x: 63.333, y: 140 }],
     ],
   )
+})
+
+test('getExclusiveSectionAssignments assigns a dragged window to only one section', () => {
+  const assignments = getExclusiveSectionAssignments(
+    [{ id: 'terminal-1', x: 80, y: 80, width: 80, height: 80 }],
+    [
+      { id: 'section-1', type: 'section', x: 0, y: 0, width: 180, height: 180, windowIds: [] },
+      { id: 'section-2', type: 'section', x: 60, y: 60, width: 180, height: 180, windowIds: [] },
+    ],
+  )
+
+  assert.deepEqual([...assignments.entries()], [['terminal-1', 'section-2']])
 })

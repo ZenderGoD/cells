@@ -3128,6 +3128,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const snapshotRef = useRef(snapshot)
   const windowIdRef = useRef(agentWindow.id)
   const activeElementPickerBrowserIdRef = useRef<string | null>(null)
+  const branchInFlightRef = useRef(false)
   const composerPersistTimerRef = useRef<number | null>(null)
   const pendingComposerPersistRef = useRef<{
     value: string
@@ -4369,6 +4370,8 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       const continuationAttachments = [...attachmentsRef.current]
       const currentReplyTo = replyToRef.current
       if (!continuation && continuationAttachments.length === 0) return
+      if (branchInFlightRef.current) return
+      branchInFlightRef.current = true
       const visibleValue = continuation || ATTACHMENTS_ONLY_TEXT
       const providerInput = buildBranchImportPrompt({
         sourceWindow: agentWindow,
@@ -4443,6 +4446,8 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         writeComposer(originalDraft, originalAttachments)
         setComposerReplyTarget(originalReplyTo)
         showToast('Failed to branch session', 'error')
+      } finally {
+        branchInFlightRef.current = false
       }
     },
     [agentWindow, setComposerReplyTarget, writeComposer],
@@ -4599,6 +4604,8 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     const pinned = [...attachmentsRef.current]
     const currentReplyTo = replyToRef.current
     if (!rawValue && pinned.length === 0) return
+    if (branchInFlightRef.current) return
+    branchInFlightRef.current = true
 
     const value = rawValue || ATTACHMENTS_ONLY_TEXT
     const store = useStore.getState()
@@ -4666,6 +4673,8 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         writeComposer(originalDraft, originalAttachments)
         setComposerReplyTarget(originalReplyTo)
         showToast('Failed to branch session', 'error')
+      } finally {
+        branchInFlightRef.current = false
       }
       return
     }
@@ -4705,6 +4714,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     window.setTimeout(() => {
       store.snapToAgentWindow(nextWindow.id)
     }, 0)
+    branchInFlightRef.current = false
   }, [agentWindow, setComposerReplyTarget, visibleSnapshot?.cwd, writeComposer])
 
   const unqueueMessage = useCallback(
@@ -5237,7 +5247,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         <div className="relative flex min-h-0 flex-1 flex-col">
           {sessionLastUpdatedAt ? (
             <div
-              className="pointer-events-none absolute left-3 top-2 z-10 flex justify-start"
+              className="pointer-events-none absolute left-3 right-auto top-2 z-10 flex justify-start"
               aria-live="polite"
             >
               <div

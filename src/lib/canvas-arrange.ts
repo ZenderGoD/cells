@@ -14,6 +14,14 @@ export interface CanvasArrangeSectionItem extends CanvasArrangeItem {
   windowIds: string[]
 }
 
+export interface CanvasArrangeWindowPosition {
+  id: string
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
 export function getSectionWindowIds(sections: Array<{ windowIds: string[] }>) {
   return new Set(sections.flatMap((section) => section.windowIds))
 }
@@ -31,6 +39,32 @@ export function getTopLevelArrangeItems<T extends CanvasArrangeItem>(
   sections: CanvasArrangeSectionItem[],
 ): Array<T | CanvasArrangeSectionItem> {
   return [...sections, ...filterUnsectionedArrangeItems(items, sections)]
+}
+
+export function getExclusiveSectionAssignments(
+  items: CanvasArrangeWindowPosition[],
+  sections: Array<Pick<CanvasArrangeSectionItem, 'id' | 'x' | 'y' | 'width' | 'height'>>,
+) {
+  const assignments = new Map<string, string>()
+
+  for (const item of items) {
+    const centerX = item.x + item.width / 2
+    const centerY = item.y + item.height / 2
+    for (let index = sections.length - 1; index >= 0; index -= 1) {
+      const section = sections[index]
+      if (
+        centerX >= section.x &&
+        centerX <= section.x + section.width &&
+        centerY >= section.y &&
+        centerY <= section.y + section.height
+      ) {
+        assignments.set(item.id, section.id)
+        break
+      }
+    }
+  }
+
+  return assignments
 }
 
 export function getGridArrangePositions(
