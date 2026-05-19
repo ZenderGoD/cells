@@ -3286,6 +3286,19 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const interruptMessageRef = useRef<QueuedMessage | null>(null)
   const queueEditingPausedRef = useRef(false)
   const resumeGatePausedRef = useRef(false)
+  const manualQueuedSendPausedRef = useRef(false)
+  const manualQueuedSendRestoreRef = useRef<{
+    message: QueuedMessage
+    index: number
+  } | null>(null)
+  const setManualQueuedSendPaused = useCallback(
+    (paused: boolean) => {
+      if (manualQueuedSendPausedRef.current === paused) return
+      manualQueuedSendPausedRef.current = paused
+      window.cells.agentSession.setQueueDrainPaused(agentWindow.id, 'manual-send', paused)
+    },
+    [agentWindow.id],
+  )
   useEffect(() => {
     const paused = editingIndex !== null || dragIndex !== null
     if (queueEditingPausedRef.current === paused) return
@@ -3305,6 +3318,9 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       }
       if (resumeGatePausedRef.current) {
         window.cells.agentSession.setQueueDrainPaused(agentWindow.id, 'resume-gate', false)
+      }
+      if (manualQueuedSendPausedRef.current) {
+        window.cells.agentSession.setQueueDrainPaused(agentWindow.id, 'manual-send', false)
       }
     },
     [agentWindow.id],
@@ -4798,8 +4814,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   }, [setComposerReplyTarget, writeComposer])
 
   const sendQueuedImmediately = useCallback(
-    (index: number) => {
-      const entry = queuedMessages[index]
+    (messageId: string) => {
+      const currentQueue = getQueuedMessagesSnapshot()
+      const index = currentQueue.findIndex((message) => message.id === messageId)
+      const entry = index >= 0 ? currentQueue[index] : null
       if (!entry) return
       if (editingIndex === index) {
         const restore = queuedEditRestoreRef.current
@@ -4809,17 +4827,20 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         writeComposer(restore?.input ?? '', restore?.attachments ?? [])
         setComposerReplyTarget(restore?.replyTo ?? null)
       }
+      setManualQueuedSendPaused(true)
+      manualQueuedSendRestoreRef.current = { message: entry, index }
       interruptMessageRef.current = { ...entry, mode: 'stop' }
-      setQueuedMessages((q) => q.filter((_, i) => i !== index))
+      setQueuedMessages((q) => q.filter((message) => message.id !== entry.id))
       setResumeGated(false)
       setMidTurnDetected(false)
       if (snapshotRef.current?.status === 'running') void handleStop()
     },
     [
       editingIndex,
+      getQueuedMessagesSnapshot,
       handleStop,
-      queuedMessages,
       setComposerReplyTarget,
+      setManualQueuedSendPaused,
       setQueuedMessages,
       writeComposer,
     ],
@@ -4839,8 +4860,11 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const sendingQueuedRef = useRef(false)
   const awaitingRunningRef = useRef(false)
   useEffect(() => {
-    if (snapshot?.status === 'running') awaitingRunningRef.current = false
-  }, [snapshot?.status])
+    if (snapshot?.status !== 'running') return
+    awaitingRunningRef.current = false
+    manualQueuedSendRestoreRef.current = null
+    setManualQueuedSendPaused(false)
+  }, [setManualQueuedSendPaused, snapshot?.status])
 
   const toggleQueuedMode = useCallback(
     (index: number) => {
@@ -4879,7 +4903,25 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     )
       .catch((err) => {
         console.error('[agent-chat] interrupt send failed', err)
-        interruptMessageRef.current = next
+        const restore = manualQueuedSendRestoreRef.current
+        if (restore?.message.id === next.id) {
+          manualQueuedSendRestoreRef.current = null
+          setQueuedMessages((queue) => {
+            if (queue.some((message) => message.id === restore.message.id)) return queue
+            const insertAt = Math.max(0, Math.min(restore.index, queue.length))
+            return [
+              ...queue.slice(0, insertAt),
+              {
+                ...restore.message,
+                mode: restore.message.mode === 'stop' ? 'after-turn' : restore.message.mode,
+              },
+              ...queue.slice(insertAt),
+            ]
+          })
+          setManualQueuedSendPaused(false)
+        } else {
+          interruptMessageRef.current = next
+        }
         awaitingRunningRef.current = false
       })
       .finally(() => {
@@ -5790,7 +5832,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                                   </div>
                                   <button
                                     type="button"
-                                    onClick={() => sendQueuedImmediately(i)}
+                                    onClick={(event) => {
+                                      event.stopPropagation()
+                                      sendQueuedImmediately(entry.id)
+                                    }}
                                     aria-label="Send queued message now"
                                     title="Send now"
                                     className="shrink-0 rounded p-0.5 text-muted-foreground/50 transition-colors hover:bg-foreground/10 hover:text-foreground"
@@ -5799,7 +5844,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                                   </button>
                                   <button
                                     type="button"
-                                    onClick={() => beginEditQueued(i)}
+                                    onClick={(event) => {
+                                      event.stopPropagation()
+                                      beginEditQueued(i)
+                                    }}
                                     aria-label="Edit queued message"
                                     title="Edit"
                                     className="shrink-0 rounded p-0.5 text-muted-foreground/50 transition-colors hover:bg-foreground/10 hover:text-foreground"
@@ -5808,7 +5856,10 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                                   </button>
                                   <button
                                     type="button"
-                                    onClick={() => unqueueMessage(i)}
+                                    onClick={(event) => {
+                                      event.stopPropagation()
+                                      unqueueMessage(i)
+                                    }}
                                     aria-label="Remove queued message"
                                     className="shrink-0 rounded p-0.5 text-muted-foreground/50 hover:bg-foreground/10 hover:text-foreground"
                                   >
