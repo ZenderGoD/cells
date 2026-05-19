@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import {
   Brain,
   Check,
-  ChevronDown,
   Gauge,
   Infinity as InfinityIcon,
   Shield,
@@ -19,6 +18,7 @@ import type {
 } from '@/types'
 import { Kbd } from '@/components/ui/kbd'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { resolveAgentModelId } from '@/lib/agent-model-selection'
 import { cn } from '@/lib/utils'
 
@@ -813,7 +813,6 @@ export function ModelPicker({
                 1M
               </span>
             ) : null}
-            <ChevronDown className="size-3 text-muted-foreground/70" />
           </button>
         }
       />
@@ -1008,7 +1007,6 @@ export function ThinkingPicker({ agent, model, value, onChange }: ThinkingPicker
             <span className="truncate font-medium">
               {THINKING_LEVEL_LABEL[effective ?? current.defaultEffort]}
             </span>
-            <ChevronDown className="size-3 text-muted-foreground/70" />
           </button>
         }
       />
@@ -1063,25 +1061,37 @@ export function FastModeToggle({ agent, value, onChange }: FastModeToggleProps) 
   if (agent !== 'codex') return null
   const active = value === true
   return (
-    <button
-      type="button"
-      onClick={() => onChange(!active)}
-      className={cn(
-        'inline-flex h-7 min-w-0 shrink-0 items-center gap-1.5 rounded-[8px] px-2 text-[11px] transition-colors',
-        active
-          ? 'bg-emerald-400/14 text-emerald-100 ring-1 ring-emerald-300/20 hover:bg-emerald-400/18'
-          : 'bg-foreground/5 text-foreground/85 hover:bg-foreground/10',
-      )}
-      title={
-        active
-          ? 'Fast mode on: Codex uses low reasoning effort on each turn'
-          : 'Fast mode off: Codex uses the selected thinking effort'
-      }
-      aria-pressed={active}
-    >
-      <Zap className={cn('size-3.5', active ? 'text-emerald-300' : 'text-muted-foreground/75')} />
-      <span className="truncate font-medium">Fast</span>
-    </button>
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={() => onChange(!active)}
+            className={cn(
+              'inline-flex size-7 shrink-0 items-center justify-center rounded-[8px] transition-colors',
+              active
+                ? 'bg-emerald-400/14 text-emerald-100 ring-1 ring-emerald-300/20 hover:bg-emerald-400/18'
+                : 'bg-foreground/5 text-foreground/85 hover:bg-foreground/10',
+            )}
+            aria-label={
+              active
+                ? 'Disable Codex fast mode'
+                : 'Enable Codex fast mode with low reasoning effort'
+            }
+            aria-pressed={active}
+          >
+            <Zap
+              className={cn('size-3.5', active ? 'text-emerald-300' : 'text-muted-foreground/75')}
+            />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="top">
+          {active
+            ? 'Fast mode on: Codex uses low reasoning effort'
+            : 'Fast mode off: Codex uses selected thinking'}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   )
 }
 
@@ -1246,7 +1256,6 @@ export function PermissionPicker({ value, onChange }: PermissionPickerProps) {
           >
             <Icon className={cn('size-3.5', current.tint)} />
             <span className="truncate font-medium">{current.short}</span>
-            <ChevronDown className="size-3 text-muted-foreground/70" />
           </button>
         }
       />

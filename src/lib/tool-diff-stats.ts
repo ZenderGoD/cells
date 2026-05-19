@@ -77,6 +77,34 @@ function countLines(text: string): number {
   return text.split('\n').length
 }
 
+function firstString(input: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = input[key]
+    if (typeof value === 'string') return value
+  }
+  return ''
+}
+
+function getEditFilePath(input: Record<string, unknown>): string | null {
+  return (
+    firstString(input, [
+      'file_path',
+      'filePath',
+      'target_file',
+      'targetFile',
+      'targetPath',
+      'path',
+      'notebook_path',
+      'notebookPath',
+    ]) || null
+  )
+}
+
+function withChangedFileFallback(stats: DiffStats, changedFiles: number): DiffStats {
+  if (stats.additions > 0 || stats.deletions > 0 || changedFiles === 0) return stats
+  return { ...stats, changedFiles }
+}
+
 // Cap matches `MAX_DIFF_LINES` in session-diffs-panel — keeps LCS from hanging
 // on pathologically large replacements. Past the cap we fall back to "all new
 // lines are additions, all old lines are deletions", which matches the naive
@@ -335,16 +363,25 @@ export function computeEditWriteDiffStats(
   if (!input) return null
   const title = toolName.replace(/^mcp__[^_]+__/, '')
   if (!EDIT_TOOLS.has(title)) return null
+  const changedFiles = getEditFilePath(input) ? 1 : 0
 
   if (title === 'Write') {
-    const content = typeof input.content === 'string' ? input.content : ''
-    return { additions: countLines(content), deletions: 0 }
+    const content = firstString(input, ['content', 'file_content', 'fileContent', 'contents'])
+    return withChangedFileFallback({ additions: countLines(content), deletions: 0 }, changedFiles)
   }
 
   if (title === 'Edit') {
-    const oldStr = typeof input.old_string === 'string' ? input.old_string : ''
-    const newStr = typeof input.new_string === 'string' ? input.new_string : ''
-    return lcsLineCounts(oldStr, newStr)
+    const oldStr = firstString(input, ['old_string', 'oldString', 'old', 'original'])
+    const newStr = firstString(input, [
+      'new_string',
+      'newString',
+      'new',
+      'replacement',
+      'edit',
+      'code_edit',
+      'codeEdit',
+    ])
+    return withChangedFileFallback(lcsLineCounts(oldStr, newStr), changedFiles)
   }
 
   if (title === 'MultiEdit') {
@@ -353,18 +390,26 @@ export function computeEditWriteDiffStats(
     let deletions = 0
     for (const raw of edits) {
       const edit = (raw ?? {}) as Record<string, unknown>
-      const oldStr = typeof edit.old_string === 'string' ? edit.old_string : ''
-      const newStr = typeof edit.new_string === 'string' ? edit.new_string : ''
+      const oldStr = firstString(edit, ['old_string', 'oldString', 'old', 'original'])
+      const newStr = firstString(edit, [
+        'new_string',
+        'newString',
+        'new',
+        'replacement',
+        'edit',
+        'code_edit',
+        'codeEdit',
+      ])
       const counts = lcsLineCounts(oldStr, newStr)
       additions += counts.additions
       deletions += counts.deletions
     }
-    return { additions, deletions }
+    return withChangedFileFallback({ additions, deletions }, changedFiles)
   }
 
   if (title === 'NotebookEdit') {
-    const newSource = typeof input.new_source === 'string' ? input.new_source : ''
-    return { additions: countLines(newSource), deletions: 0 }
+    const newSource = firstString(input, ['new_source', 'newSource', 'source', 'content'])
+    return withChangedFileFallback({ additions: countLines(newSource), deletions: 0 }, changedFiles)
   }
 
   return null
@@ -469,12 +514,7 @@ export function groupDiffsByFile(messages: AgentSessionMessage[]): FileDiffStats
     if (!input) continue
     const title = message.title.replace(/^mcp__[^_]+__/, '')
     if (!EDIT_TOOLS.has(title)) continue
-    const filePath =
-      typeof input.file_path === 'string'
-        ? input.file_path
-        : typeof input.notebook_path === 'string'
-          ? input.notebook_path
-          : null
+    const filePath = getEditFilePath(input)
     if (!filePath) continue
     const stats = computeEditWriteDiffStats(title, input)
     if (!stats) continue
@@ -488,8 +528,16 @@ export function groupDiffsByFile(messages: AgentSessionMessage[]): FileDiffStats
     existing.deletions += stats.deletions
     if (title === 'Edit') {
       existing.edits.push({
-        oldString: typeof input.old_string === 'string' ? input.old_string : '',
-        newString: typeof input.new_string === 'string' ? input.new_string : '',
+        oldString: firstString(input, ['old_string', 'oldString', 'old', 'original']),
+        newString: firstString(input, [
+          'new_string',
+          'newString',
+          'new',
+          'replacement',
+          'edit',
+          'code_edit',
+          'codeEdit',
+        ]),
         toolId: message.id,
       })
     } else if (title === 'MultiEdit') {
@@ -497,15 +545,23 @@ export function groupDiffsByFile(messages: AgentSessionMessage[]): FileDiffStats
       for (const raw of edits) {
         const edit = (raw ?? {}) as Record<string, unknown>
         existing.edits.push({
-          oldString: typeof edit.old_string === 'string' ? edit.old_string : '',
-          newString: typeof edit.new_string === 'string' ? edit.new_string : '',
+          oldString: firstString(edit, ['old_string', 'oldString', 'old', 'original']),
+          newString: firstString(edit, [
+            'new_string',
+            'newString',
+            'new',
+            'replacement',
+            'edit',
+            'code_edit',
+            'codeEdit',
+          ]),
           toolId: message.id,
         })
       }
     } else if (title === 'Write') {
       existing.edits.push({
         oldString: '',
-        newString: typeof input.content === 'string' ? input.content : '',
+        newString: firstString(input, ['content', 'file_content', 'fileContent', 'contents']),
         toolId: message.id,
       })
     }

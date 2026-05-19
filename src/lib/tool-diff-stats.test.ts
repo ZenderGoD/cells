@@ -266,6 +266,46 @@ test('groupDiffsByFile uses LCS-based counts for Claude Edit', () => {
   assert.equal(files[0].deletions, 1)
 })
 
+test('diffStatsFromMessage keeps Cursor edit file changes visible without old/new strings', () => {
+  const stats = diffStatsFromMessage({
+    id: 'cursor-tool-1',
+    role: 'tool',
+    title: 'Edit',
+    text: 'Applied edit',
+    metadata: JSON.stringify({
+      target_file: 'src/app.ts',
+      instructions: 'Update the component',
+    }),
+  })
+
+  assert.deepEqual(stats, { additions: 0, deletions: 0, changedFiles: 1 })
+})
+
+test('groupDiffsByFile reads Cursor-style file path and edit aliases', () => {
+  const files = groupDiffsByFile([
+    {
+      id: 'cursor-tool-2',
+      role: 'tool',
+      title: 'Edit',
+      text: 'Applied edit',
+      metadata: JSON.stringify({
+        target_file: 'src/app.ts',
+        oldString: 'one\ntwo',
+        newString: 'one\nTWO\nthree',
+      }),
+    },
+  ])
+
+  assert.deepEqual(files, [
+    {
+      filePath: 'src/app.ts',
+      additions: 2,
+      deletions: 1,
+      edits: [{ oldString: 'one\ntwo', newString: 'one\nTWO\nthree', toolId: 'cursor-tool-2' }],
+    },
+  ])
+})
+
 test('sumDiffStats dedupes Codex File-changes within the same turn', () => {
   // Same turn (`t3-`), two `File changes` items: the second carries the
   // cumulative-for-turn diff (which already subsumes the first's changes).

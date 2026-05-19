@@ -5848,7 +5848,7 @@ export class AgentSessionService extends EventEmitter {
       if (existing) {
         existing.text = text || existing.text
         existing.status = data.success ? 'completed' : 'failed'
-        existing.metadata = text || existing.metadata || null
+        existing.metadata = existing.metadata || text || null
         existing.updatedAt = now()
         runtime.snapshot.updatedAt = now()
       } else {
@@ -6031,8 +6031,8 @@ export class AgentSessionService extends EventEmitter {
         id: `opencode-tool-${id}`,
         role: 'tool',
         title: cursorToolTitle(tool),
-        text: compactText(input),
-        metadata: output == null ? compactText(input) : compactText(output),
+        text: output == null ? compactText(input) : compactText(output),
+        metadata: compactText(input),
         status:
           statusValue === 'completed'
             ? 'completed'
@@ -6331,12 +6331,14 @@ export class AgentSessionService extends EventEmitter {
         const result = asRecord(payload.result)
         const success = result ? asRecord(result.success) : null
         const error = result ? asRecord(result.error) : null
+        const resultText = compactText(success ?? error ?? result ?? '', '')
         appendMessage(runtime.snapshot, {
           id: `cursor-tool-${callId.replace(/\s+/g, '-')}`,
           role: 'tool',
           title,
-          text: compactText(toolArgs),
-          metadata: compactText(success ?? error ?? result ?? toolArgs),
+          text:
+            subtype === 'completed' || subtype === 'failed' ? resultText : compactText(toolArgs),
+          metadata: compactText(toolArgs),
           status:
             subtype === 'completed'
               ? error
