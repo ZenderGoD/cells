@@ -2062,6 +2062,15 @@ function groupMessages(messages: AgentSessionMessage[]): ChatGroup[] {
   return finalizeTurnGroups(demoteInterimResponses(groups))
 }
 
+function getMessageListSignature(messages: AgentSessionMessage[]): string {
+  let checksum = 0
+  for (const message of messages) {
+    checksum = (checksum + message.id.length * 31 + message.text.length * 17) >>> 0
+    checksum = (checksum + (message.updatedAt ?? 0) + (message.status?.length ?? 0)) >>> 0
+  }
+  return `${messages.length}|${checksum}`
+}
+
 // Walks the grouped output and moves any "interim" assistant responses
 // (responses in a turn that is immediately followed by another turn) into
 // the next turn's `leadText`. The current turn keeps only its activities;
@@ -3723,6 +3732,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
 
   const messageStateRef = useRef(createEmptyStableListState<AgentSessionMessage>())
   const groupStateRef = useRef(createEmptyStableListState<ChatGroup>())
+  const groupedMessageSignatureRef = useRef<string | null>(null)
   const pendingSnapshotRef = useRef<AgentSessionSnapshot | null>(null)
   const pendingFrameRef = useRef<number | null>(null)
   // Remember the last derived status so we can detect the active→idle
@@ -3732,6 +3742,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   useEffect(() => {
     messageStateRef.current = createEmptyStableListState<AgentSessionMessage>()
     groupStateRef.current = createEmptyStableListState<ChatGroup>()
+    groupedMessageSignatureRef.current = null
   }, [agentWindow.id])
 
   useEffect(() => {
@@ -3744,18 +3755,22 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
         isUnchanged: isAgentSessionMessageUnchanged,
       })
       messageStateRef.current = nextMessageState
-      const nextGroupState = computeStableList(
-        groupMessages(nextMessageState.result),
-        groupStateRef.current,
-        {
-          getId: (group) => group.key,
-          isUnchanged: isChatGroupUnchanged,
-        },
-      )
-      groupStateRef.current = nextGroupState
+      const nextMessageSignature = getMessageListSignature(nextMessageState.result)
+      if (nextMessageSignature !== groupedMessageSignatureRef.current) {
+        const nextGroupState = computeStableList(
+          groupMessages(nextMessageState.result),
+          groupStateRef.current,
+          {
+            getId: (group) => group.key,
+            isUnchanged: isChatGroupUnchanged,
+          },
+        )
+        groupStateRef.current = nextGroupState
+        groupedMessageSignatureRef.current = nextMessageSignature
+        setGroups(nextGroupState.result)
+      }
       setSnapshot(next)
       setMessages(nextMessageState.result)
-      setGroups(nextGroupState.result)
       // First snapshot after mount: detect recovered mid-turn resumes so the
       // drain effect stays gated until the user presses Continue. We only do
       // this for sessions restored from disk after an app restart — normal

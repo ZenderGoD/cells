@@ -58,6 +58,13 @@ import {
   sanitizeImportedClaudeUserText,
 } from '../src/lib/agent-session-title'
 
+const MAX_PERSISTED_AGENT_MESSAGES = 800
+const MAX_AGENT_MESSAGE_TEXT_CHARS = 120_000
+const MAX_AGENT_SNAPSHOT_TEXT_CHARS = 6_000_000
+const TRUNCATED_MESSAGE_SUFFIX =
+  '\n\n[Cells truncated this stored message because it was too large to render efficiently.]'
+const PRUNED_HISTORY_MESSAGE_ID = 'compaction-cells-pruned-history'
+
 // Maps Cells's portable 5-tier thinking level onto each backend's primitive.
 // Mirrors Craft's THINKING_TO_EFFORT — ../craft-agents-oss/packages/shared/src/agent/thinking-levels.ts.
 //   Claude — uses adaptive thinking config + effort ('off' → disabled).
@@ -2604,6 +2611,123 @@ function cloneSnapshot(snapshot: AgentSessionSnapshot): AgentSessionSnapshot {
   }
 }
 
+function truncateAgentMessageText(text: string): string {
+  if (text.length <= MAX_AGENT_MESSAGE_TEXT_CHARS) return text
+  const keepChars = Math.max(0, MAX_AGENT_MESSAGE_TEXT_CHARS - TRUNCATED_MESSAGE_SUFFIX.length)
+  return `${text.slice(0, keepChars)}${TRUNCATED_MESSAGE_SUFFIX}`
+}
+
+function parsePrunedHistoryMetadata(message: AgentSessionMessage | undefined): {
+  omittedCount: number
+  omittedChars: number
+} | null {
+  if (!message || message.id !== PRUNED_HISTORY_MESSAGE_ID || !message.metadata) return null
+  try {
+    const parsed = JSON.parse(message.metadata)
+    const omittedCount = Number(parsed?.omittedCount)
+    const omittedChars = Number(parsed?.omittedChars)
+    if (!Number.isFinite(omittedCount) || !Number.isFinite(omittedChars)) return null
+    return {
+      omittedCount: Math.max(0, Math.trunc(omittedCount)),
+      omittedChars: Math.max(0, Math.trunc(omittedChars)),
+    }
+  } catch {
+    return null
+  }
+}
+
+function makePrunedHistoryMessage(
+  omittedCount: number,
+  omittedChars: number,
+  timestamp = now(),
+): AgentSessionMessage {
+  const message = `${omittedCount.toLocaleString()} older ${
+    omittedCount === 1 ? 'message was' : 'messages were'
+  } hidden to keep this session responsive. Omitted stored text: ${omittedChars.toLocaleString()} characters.`
+  return {
+    id: PRUNED_HISTORY_MESSAGE_ID,
+    role: 'compaction',
+    text: message,
+    metadata: JSON.stringify({ kind: 'cells-pruned-history', omittedCount, omittedChars }),
+    status: 'completed',
+    startedAt: timestamp,
+    updatedAt: timestamp,
+  }
+}
+
+function compactAgentMessagesForStorage(messages: AgentSessionMessage[]): AgentSessionMessage[] {
+  if (messages.length === 0) return messages
+
+  const existingPrunedMetadata = parsePrunedHistoryMetadata(messages[0])
+  let nextMessages = existingPrunedMetadata ? messages.slice(1) : messages
+  let omittedCount = 0
+  let omittedChars = 0
+  let changed = false
+  let prunedTimestamp = messages[0]?.updatedAt ?? now()
+
+  if (existingPrunedMetadata) {
+    omittedCount += existingPrunedMetadata.omittedCount
+    omittedChars += existingPrunedMetadata.omittedChars
+  }
+
+  const retainedMessageLimit =
+    nextMessages.length > MAX_PERSISTED_AGENT_MESSAGES
+      ? MAX_PERSISTED_AGENT_MESSAGES - 1
+      : MAX_PERSISTED_AGENT_MESSAGES
+  if (nextMessages.length > retainedMessageLimit) {
+    const dropped = nextMessages.slice(0, nextMessages.length - retainedMessageLimit)
+    omittedCount += dropped.length
+    omittedChars += dropped.reduce((sum, message) => sum + message.text.length, 0)
+    nextMessages = nextMessages.slice(-retainedMessageLimit)
+    prunedTimestamp = dropped[0]?.updatedAt ?? prunedTimestamp
+    changed = true
+  }
+
+  let runningChars = 0
+  const retained: AgentSessionMessage[] = []
+  for (let index = nextMessages.length - 1; index >= 0; index -= 1) {
+    const message = nextMessages[index]
+    const truncatedText = truncateAgentMessageText(message.text)
+    const nextSize = runningChars + truncatedText.length
+    if (retained.length > 0 && nextSize > MAX_AGENT_SNAPSHOT_TEXT_CHARS) {
+      omittedCount += index + 1
+      omittedChars += nextMessages
+        .slice(0, index + 1)
+        .reduce((sum, candidate) => sum + candidate.text.length, 0)
+      changed = true
+      break
+    }
+    runningChars = nextSize
+    if (truncatedText === message.text) {
+      retained.push(message)
+    } else {
+      changed = true
+      retained.push({ ...message, text: truncatedText })
+    }
+  }
+
+  if (!changed && !existingPrunedMetadata) return messages
+  retained.reverse()
+  if (omittedCount > 0) {
+    const marker = makePrunedHistoryMessage(omittedCount, omittedChars, prunedTimestamp)
+    if (
+      !changed &&
+      existingPrunedMetadata &&
+      messages[0]?.text === marker.text &&
+      messages[0]?.metadata === marker.metadata
+    ) {
+      return messages
+    }
+    return [marker, ...retained]
+  }
+  return retained
+}
+
+function compactAgentSnapshotForStorage(snapshot: AgentSessionSnapshot): AgentSessionSnapshot {
+  const messages = compactAgentMessagesForStorage(snapshot.messages)
+  return messages === snapshot.messages ? snapshot : { ...snapshot, messages }
+}
+
 function upsertMessage(messages: AgentSessionMessage[], next: AgentSessionMessage) {
   const index = messages.findIndex((message) => message.id === next.id)
   if (index >= 0) {
@@ -2624,9 +2748,11 @@ function appendMessage(snapshot: AgentSessionSnapshot, message: AgentSessionMess
   const timestamp = message.updatedAt ?? now()
   upsertMessage(snapshot.messages, {
     ...message,
+    text: truncateAgentMessageText(message.text),
     startedAt: message.startedAt ?? timestamp,
     updatedAt: timestamp,
   })
+  snapshot.messages = compactAgentMessagesForStorage(snapshot.messages)
   if (
     (message.role === 'user' || snapshot.messages.length === 1) &&
     isPlaceholderAgentSessionTitle(snapshot.agent, snapshot.title)
@@ -3035,21 +3161,23 @@ function loadPersistedSnapshot(windowId: string): AgentSessionSnapshot | null {
     // stale-session errors, process-killed errors, etc. If the user cares
     // about the failure they'll see it happen live; stale bubbles from a
     // previous app run are just noise.
-    const messages = (parsed.messages as AgentSessionMessage[])
-      .filter((m) => {
-        if (m.role !== 'error') return true
-        const t = typeof m.text === 'string' ? m.text : ''
-        return !(
-          t.includes('No conversation found with session ID') ||
-          t.includes('session has expired') ||
-          t.includes('session not found') ||
-          t.includes('exited with code 143') ||
-          t.includes('exited with code 137') ||
-          t.includes('aborted by user') ||
-          t.includes('Operation aborted')
-        )
-      })
-      .map((m) => (m.status === 'in_progress' ? { ...m, status: 'completed' as const } : m))
+    const messages = compactAgentMessagesForStorage(
+      (parsed.messages as AgentSessionMessage[])
+        .filter((m) => {
+          if (m.role !== 'error') return true
+          const t = typeof m.text === 'string' ? m.text : ''
+          return !(
+            t.includes('No conversation found with session ID') ||
+            t.includes('session has expired') ||
+            t.includes('session not found') ||
+            t.includes('exited with code 143') ||
+            t.includes('exited with code 137') ||
+            t.includes('aborted by user') ||
+            t.includes('Operation aborted')
+          )
+        })
+        .map((m) => (m.status === 'in_progress' ? { ...m, status: 'completed' as const } : m)),
+    )
     return {
       ...(parsed as AgentSessionSnapshot),
       status: 'idle',
@@ -3081,12 +3209,13 @@ function getPersistDebounceMs(snapshot: AgentSessionSnapshot) {
 }
 
 async function persistSnapshotNow(snapshot: AgentSessionSnapshot) {
+  const compacted = compactAgentSnapshotForStorage(snapshot)
   const file = getPersistPath(snapshot.windowId)
   const tmp = `${file}.tmp`
-  const serialized = JSON.stringify(snapshot)
+  const serialized = JSON.stringify(compacted)
   await fs.writeFile(tmp, serialized, 'utf8')
   await fs.rename(tmp, file)
-  await persistSummaryNow(buildSavedSessionSummary(snapshot))
+  await persistSummaryNow(buildSavedSessionSummary(compacted))
 }
 
 async function persistSummaryNow(summary: SavedAgentSessionSummary) {
@@ -3719,7 +3848,7 @@ export class AgentSessionService extends EventEmitter {
       usage: persisted?.usage ?? null,
       pendingApproval: null,
     }
-    snapshot.messages = loadNativeImportMessages(request, snapshot)
+    snapshot.messages = compactAgentMessagesForStorage(loadNativeImportMessages(request, snapshot))
     if (snapshot.messages.length > 0) {
       snapshot.updatedAt =
         snapshot.messages[snapshot.messages.length - 1]?.updatedAt ?? snapshot.updatedAt
@@ -3729,6 +3858,9 @@ export class AgentSessionService extends EventEmitter {
       isPlaceholderAgentSessionTitle(snapshot.agent, snapshot.title)
     ) {
       snapshot.title = inferAgentSessionTitle(snapshot.agent, snapshot.messages)
+    }
+    if (persisted) {
+      schedulePersist(snapshot)
     }
 
     if (request.agent === 'claude') {
@@ -6479,6 +6611,10 @@ export class AgentSessionService extends EventEmitter {
   }
 
   private emitUpdate(snapshot: AgentSessionSnapshot) {
+    const compacted = compactAgentSnapshotForStorage(snapshot)
+    if (compacted !== snapshot) {
+      snapshot.messages = compacted.messages
+    }
     schedulePersist(snapshot)
     this.emit('update', cloneSnapshot(snapshot))
   }
