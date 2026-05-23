@@ -612,7 +612,7 @@ textarea[data-ghostty] {
     transparent 100%
   );
   background-size: 200% 100%;
-  animation: shimmer 1.5s ease-in-out infinite;
+  animation: shimmer 2.4s steps(36) infinite;
   pointer-events: none;
   border-radius: inherit;
 }
@@ -626,7 +626,7 @@ textarea[data-ghostty] {
   }
 }
 .animate-border-trace rect {
-  animation: border-trace 2.5s linear infinite;
+  animation: border-trace 3.5s steps(48) infinite;
 }
 
 .agent-window-color-frame {
@@ -743,11 +743,24 @@ textarea[data-ghostty] {
 }
 
 .animate-agent-window-status-edge {
-  animation: agent-window-status-edge 1.6s ease-in-out infinite;
+  animation: none;
 }
 
 .animate-agent-window-status-done {
   animation: agent-window-status-done 1.35s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.app-shell .animate-pulse {
+  animation-duration: 3s;
+  animation-timing-function: steps(12);
+}
+
+.app-shell[data-window-focused='false'] .animate-pulse,
+.app-shell[data-window-focused='false'] .animate-shimmer::after,
+.app-shell[data-window-focused='false'] .animate-border-trace rect,
+.app-shell[data-window-focused='false'] .animate-agent-window-status-edge,
+.app-shell[data-window-focused='false'] .spinner-cube {
+  animation-play-state: paused;
 }
 
 @layer base {

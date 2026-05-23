@@ -835,7 +835,11 @@ function MainApp() {
 
   if (!initialized) {
     return (
-      <div className="app-shell h-full flex items-center justify-center" style={shellStyle}>
+      <div
+        className="app-shell h-full flex items-center justify-center"
+        style={shellStyle}
+        data-window-focused={windowFocused ? 'true' : 'false'}
+      >
         <p className="text-xs text-muted-foreground/40">Loading...</p>
         {showDimOverlay && <UnfocusedOverlay onDismiss={() => setWindowFocused(true)} />}
       </div>
@@ -847,6 +851,7 @@ function MainApp() {
       <div
         className="app-shell h-full ring-1 ring-terminal-active/30 rounded-lg overflow-hidden"
         style={shellStyle}
+        data-window-focused={windowFocused ? 'true' : 'false'}
       >
         <AgentQueueReporter />
         <Onboarding />
@@ -867,6 +872,7 @@ function MainApp() {
     <div
       className="app-shell h-full flex flex-col ring-1 ring-terminal-active/30 rounded-lg overflow-hidden"
       style={shellStyle}
+      data-window-focused={windowFocused ? 'true' : 'false'}
     >
       <AgentQueueReporter />
       <AnimatedTitleBarSlot position="top" show={!titleBarHidden && titleBarPosition === 'top'} />
