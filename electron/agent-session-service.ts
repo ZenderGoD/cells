@@ -39,6 +39,7 @@ import type {
   AgentSessionRequest,
   AgentSessionSnapshot,
   AgentThinkingLevel,
+  CodexThreadGoal,
   PendingAgentApproval,
   RecentAgentSessionSummary,
   SavedAgentSessionSummary,
@@ -57,6 +58,11 @@ import {
   isPlaceholderAgentSessionTitle,
   sanitizeImportedClaudeUserText,
 } from '../src/lib/agent-session-title'
+import {
+  formatCodexGoalSummary,
+  parseCodexGoalCommand,
+  type CodexGoalCommand,
+} from '../src/lib/codex-goal-command'
 
 const MAX_PERSISTED_AGENT_MESSAGES = 800
 const MAX_AGENT_MESSAGE_TEXT_CHARS = 120_000
@@ -707,6 +713,32 @@ function asNonEmptyString(value: unknown): string | null {
 function asNonEmptyText(value: unknown): string | null {
   if (typeof value !== 'string') return null
   return value.length > 0 ? value : null
+}
+
+function asCodexThreadGoal(value: unknown): CodexThreadGoal | null {
+  const goal = asRecord(value)
+  if (!goal) return null
+  const threadId = asNonEmptyString(goal.threadId)
+  const objective = asNonEmptyString(goal.objective)
+  const status = asNonEmptyString(goal.status)
+  if (
+    !threadId ||
+    !objective ||
+    !status ||
+    !['active', 'paused', 'blocked', 'usageLimited', 'budgetLimited', 'complete'].includes(status)
+  ) {
+    return null
+  }
+  return {
+    threadId,
+    objective,
+    status: status as CodexThreadGoal['status'],
+    tokenBudget: typeof goal.tokenBudget === 'number' ? goal.tokenBudget : null,
+    tokensUsed: typeof goal.tokensUsed === 'number' ? goal.tokensUsed : 0,
+    timeUsedSeconds: typeof goal.timeUsedSeconds === 'number' ? goal.timeUsedSeconds : 0,
+    createdAt: typeof goal.createdAt === 'number' ? goal.createdAt : 0,
+    updatedAt: typeof goal.updatedAt === 'number' ? goal.updatedAt : 0,
+  }
 }
 
 function parseJsonRecord(text: string): Record<string, unknown> | null {
@@ -3847,6 +3879,7 @@ export class AgentSessionService extends EventEmitter {
       // across restarts (a fresh turn will overwrite it on the next 'result').
       usage: persisted?.usage ?? null,
       pendingApproval: null,
+      codexGoal: persisted?.codexGoal ?? null,
     }
     snapshot.messages = compactAgentMessagesForStorage(loadNativeImportMessages(request, snapshot))
     if (snapshot.messages.length > 0) {
@@ -4099,6 +4132,7 @@ export class AgentSessionService extends EventEmitter {
       pendingPlanApproval: null,
       pendingQuestion: null,
       codexPlan: null,
+      codexGoal: null,
     }
     snapshot.messages = snapshot.messages.map((message) => ({
       ...message,
@@ -4205,6 +4239,14 @@ export class AgentSessionService extends EventEmitter {
     // underlying CLI session for the next turn.
     if (runtime.closed) {
       runtime = await this.reopenRuntime(runtime)
+    }
+
+    if (runtime.kind === 'codex') {
+      const goalCommand = parseCodexGoalCommand(providerInput)
+      if (goalCommand) {
+        await this.runCodexGoalCommand(runtime, goalCommand)
+        return
+      }
     }
 
     const rewrittenInput = rewriteAgentComposerMentions(providerInput, (kind, value) =>
@@ -4448,6 +4490,98 @@ export class AgentSessionService extends EventEmitter {
       runtime.snapshot.status = 'error'
       runtime.snapshot.error = err instanceof Error ? err.message : String(err)
       this.emitUpdate(runtime.snapshot)
+      throw err
+    }
+  }
+
+  private async runCodexGoalCommand(
+    runtime: CodexRuntime,
+    command: CodexGoalCommand,
+  ): Promise<void> {
+    const threadId = runtime.providerThreadId ?? runtime.snapshot.codexThreadId
+    if (!threadId) throw new Error('Codex thread is not ready yet')
+    if (runtime.turnPromise) {
+      throw new Error('/goal is unavailable while Codex is processing the previous turn')
+    }
+
+    const appendGoalMessage = (
+      title: string,
+      text: string,
+      options: { status?: AgentSessionSnapshot['status']; error?: string | null } = {},
+    ) => {
+      appendMessage(runtime.snapshot, {
+        id: `${runtime.snapshot.windowId}-goal-${now()}`,
+        role: 'system',
+        title,
+        text,
+        status: options.status === 'error' ? 'failed' : 'completed',
+        updatedAt: now(),
+      })
+      runtime.snapshot.status = options.status ?? 'idle'
+      runtime.snapshot.error = options.error ?? null
+      runtime.snapshot.updatedAt = now()
+      this.emitUpdate(runtime.snapshot)
+    }
+
+    const readGoal = async () => {
+      const response = asRecord(
+        await runtime.client.request('thread/goal/get', {
+          threadId,
+        }),
+      )
+      const goal = asCodexThreadGoal(response?.goal)
+      runtime.snapshot.codexGoal = goal
+      return goal
+    }
+
+    log('codex.goal.command', {
+      windowId: runtime.snapshot.windowId,
+      threadId,
+      kind: command.kind,
+    })
+
+    try {
+      if (command.kind === 'show') {
+        appendGoalMessage('Goal', formatCodexGoalSummary(await readGoal()))
+        return
+      }
+
+      if (command.kind === 'clear') {
+        await runtime.client.request('thread/goal/clear', { threadId })
+        runtime.snapshot.codexGoal = null
+        appendGoalMessage('Goal cleared', 'No goal is set for this Codex thread.')
+        return
+      }
+
+      if (command.kind === 'set-status') {
+        const response = asRecord(
+          await runtime.client.request('thread/goal/set', {
+            threadId,
+            status: command.status,
+          }),
+        )
+        const goal = asCodexThreadGoal(response?.goal)
+        runtime.snapshot.codexGoal = goal
+        appendGoalMessage(
+          command.status === 'active' ? 'Goal resumed' : 'Goal paused',
+          formatCodexGoalSummary(goal),
+        )
+        return
+      }
+
+      const response = asRecord(
+        await runtime.client.request('thread/goal/set', {
+          threadId,
+          objective: command.objective,
+          status: 'active',
+        }),
+      )
+      const goal = asCodexThreadGoal(response?.goal)
+      runtime.snapshot.codexGoal = goal
+      appendGoalMessage('Goal set', formatCodexGoalSummary(goal))
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      appendGoalMessage('Goal command failed', message, { status: 'error', error: message })
       throw err
     }
   }
@@ -5605,6 +5739,17 @@ export class AgentSessionService extends EventEmitter {
       const threadId = asNonEmptyString(thread?.id) ?? asNonEmptyString(params?.threadId)
       runtime.providerThreadId = threadId ?? runtime.providerThreadId
       runtime.snapshot.codexThreadId = threadId ?? runtime.snapshot.codexThreadId
+      return
+    }
+
+    if (method === 'thread/goal/updated') {
+      const goal = asCodexThreadGoal(params?.goal)
+      if (goal) runtime.snapshot.codexGoal = goal
+      return
+    }
+
+    if (method === 'thread/goal/cleared') {
+      runtime.snapshot.codexGoal = null
       return
     }
 

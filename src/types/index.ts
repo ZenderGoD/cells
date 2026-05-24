@@ -618,6 +618,25 @@ export interface CodexPlanSnapshot {
   updatedAt: number
 }
 
+export type CodexGoalStatus =
+  | 'active'
+  | 'paused'
+  | 'blocked'
+  | 'usageLimited'
+  | 'budgetLimited'
+  | 'complete'
+
+export interface CodexThreadGoal {
+  threadId: string
+  objective: string
+  status: CodexGoalStatus
+  tokenBudget: number | null
+  tokensUsed: number
+  timeUsedSeconds: number
+  createdAt: number
+  updatedAt: number
+}
+
 export interface AgentSessionSnapshot {
   windowId: string
   agent: AgentSessionName
@@ -642,6 +661,7 @@ export interface AgentSessionSnapshot {
   pendingQuestion?: PendingQuestionApproval | null
   pendingApproval?: PendingAgentApproval | null
   codexPlan?: CodexPlanSnapshot | null
+  codexGoal?: CodexThreadGoal | null
 }
 
 export interface SavedAgentSessionSummary {
