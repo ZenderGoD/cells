@@ -8,7 +8,13 @@ export function hasPinnedTitleBarProjects(projects: Project[]): boolean {
 
 export function getTitleBarProjects(projects: Project[], activeProjectId?: string | null) {
   const pinned = projects.filter((project) => project.titleBarPinned === true)
-  if (pinned.length > 0) return pinned
+  if (pinned.length > 0) {
+    const activeProject = activeProjectId
+      ? projects.find((project) => project.id === activeProjectId)
+      : null
+    if (!activeProject || pinned.some((project) => project.id === activeProject.id)) return pinned
+    return [...pinned, activeProject]
+  }
 
   const autoVisible = projects.filter((project) => !project.hiddenFromTitleBar)
   if (projects.length <= TITLE_BAR_AUTO_PROJECT_LIMIT) return autoVisible

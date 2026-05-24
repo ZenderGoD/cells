@@ -12,7 +12,7 @@
  * This is the opposite of typical list conventions — double-check any .sort()
  * calls to ensure they follow this rule.
  */
-import React, { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
+import React, { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from 'react'
 import {
   Globe,
   Plus,
@@ -69,6 +69,10 @@ import {
   CELLS_TOGGLE_COMMAND_PALETTE_EVENT,
 } from '@/lib/cells-shortcuts'
 import type { SavedAgentSessionSummary } from '@/types'
+
+const MAX_RENDERED_RECENT_FILES = 24
+const MAX_RENDERED_SHELL_HISTORY = 15
+const MAX_RENDERED_SAVED_SESSIONS = 24
 
 const AGENT_OPTIONS = [
   { id: 'claude', label: 'Claude Code' },
@@ -477,14 +481,18 @@ export function CommandPalette() {
   )
   const selectionMode = useStore((s) => s.selectionMode)
   const selectedNodeIds = useStore((s) => s.selectedNodeIds)
-  const availableAgents = AGENT_OPTIONS.filter(({ id }) => agents[id] === true).map(
-    ({ id, label }) => ({
-      id,
-      label,
-      detected: true,
-    }),
+  const availableAgents = useMemo(
+    () =>
+      AGENT_OPTIONS.filter(({ id }) => agents[id] === true).map(({ id, label }) => ({
+        id,
+        label,
+        detected: true,
+      })),
+    [agents],
   )
-  const wordCount = search.trim().split(/\s+/).filter(Boolean).length
+  const trimmedSearch = search.trim()
+  const searchQuery = trimmedSearch.toLowerCase()
+  const wordCount = trimmedSearch.split(/\s+/).filter(Boolean).length
   const isPromptMode = wordCount > 10
   // Determine which catch-all group appears at the bottom (closest to input = default selected).
   // Uses per-project usage counts first, then falls back to lastCommandAction, then heuristic.
@@ -516,41 +524,47 @@ export function CommandPalette() {
             : 'run'
 
   // Check if there are shell history matches to hide catch-all options when history matches exist
-  const hasShellHistoryMatches =
-    shellHistory.length > 0 &&
-    (() => {
-      const query = search.trim().toLowerCase()
-      const filtered = query
-        ? shellHistory.filter((cmd) => cmd.toLowerCase().includes(query))
-        : shellHistory.slice(0, 15)
-      return filtered.length > 0
-    })()
+  const filteredShellHistory = useMemo(() => {
+    if (shellHistory.length === 0) return []
+    if (!searchQuery) return shellHistory.slice(0, MAX_RENDERED_SHELL_HISTORY)
+
+    const matches: string[] = []
+    for (const command of shellHistory) {
+      if (command.toLowerCase().includes(searchQuery)) {
+        matches.push(command)
+        if (matches.length >= MAX_RENDERED_SHELL_HISTORY) break
+      }
+    }
+    return matches
+  }, [searchQuery, shellHistory])
+
+  const renderedRecentFiles = useMemo(
+    () => recentFiles.slice(0, MAX_RENDERED_RECENT_FILES),
+    [recentFiles],
+  )
 
   // Does the current search match any "real" item (terminal, browser, project,
   // agent window, worktree, or one of the fixed actions)? If yes, we suppress
   // the catch-all "Search for" / "Run in Terminal" fallbacks — they exist to
   // give the user something to click when nothing else matches, but if an
   // actual palette item lines up with the query, we don't need the noise.
-  const hasCoreMatches = (() => {
-    const q = search.trim().toLowerCase()
-    if (!q) return true // empty search → show the idle palette, not fallbacks
+  const hasCoreMatches = useMemo(() => {
+    if (!searchQuery) return true // empty search → show the idle palette, not fallbacks
     const fuzzyMatch = (value: string) => {
       const v = value.toLowerCase()
-      if (v.includes(q)) return true
+      if (v.includes(searchQuery)) return true
       let j = 0
-      for (let i = 0; i < v.length && j < q.length; i += 1) {
-        if (v[i] === q[j]) j += 1
+      for (let i = 0; i < v.length && j < searchQuery.length; i += 1) {
+        if (v[i] === searchQuery[j]) j += 1
       }
-      return j === q.length
+      return j === searchQuery.length
     }
     const candidates: string[] = [
       ...terminals.map((t) => t.customTitle || t.title || ''),
       ...browsers.map((b) => `${b.title ?? ''} ${b.url ?? ''}`),
       ...textEditors.map((editor) => `${editor.title ?? ''} ${editor.filePath ?? ''}`),
       ...agentWindows.map((a) => a.customTitle || a.title || ''),
-      ...savedSessions.map(
-        (session) => `${session.title ?? ''} ${session.cwd ?? ''} ${session.lastMessageText ?? ''}`,
-      ),
+      ...savedSessions.map((session) => `${session.title ?? ''} ${session.cwd ?? ''}`),
       ...projects.map((p) => p.name || ''),
       ...availableAgents.map(({ label }) => `New ${label} window`),
       // Fixed Actions entries — keep aligned with the Actions CommandGroup
@@ -566,13 +580,32 @@ export function CommandPalette() {
       'Create Section',
     ]
     return candidates.some((label) => label && fuzzyMatch(label))
-  })()
+  }, [
+    agentWindows,
+    availableAgents,
+    browsers,
+    projects,
+    savedSessions,
+    searchQuery,
+    terminals,
+    textEditors,
+  ])
 
-  const openAgentWindowIds = new Set(
-    projects.flatMap((project) => (project.agentWindows ?? []).map((window) => window.id)),
+  const openAgentWindowIds = useMemo(
+    () => new Set(projects.flatMap((project) => (project.agentWindows ?? []).map((w) => w.id))),
+    [projects],
   )
-  const closedSavedSessions = savedSessions.filter(
-    (session) => !openAgentWindowIds.has(session.windowId),
+  const closedSavedSessions = useMemo(
+    () =>
+      savedSessions
+        .filter((session) => !openAgentWindowIds.has(session.windowId))
+        .filter((session) => {
+          if (!searchQuery) return true
+          const haystack = `${session.agent} ${session.title ?? ''} ${session.cwd ?? ''}`
+          return haystack.toLowerCase().includes(searchQuery)
+        })
+        .slice(0, MAX_RENDERED_SAVED_SESSIONS),
+    [openAgentWindowIds, savedSessions, searchQuery],
   )
 
   const addAttachments = useCallback(async (paths: string[]) => {
@@ -1133,37 +1166,29 @@ export function CommandPalette() {
               ))}
             </CommandGroup>
 
-            {shellHistory.length > 0 &&
-              (() => {
-                const query = search.trim().toLowerCase()
-                const filtered = query
-                  ? shellHistory.filter((cmd) => cmd.toLowerCase().includes(query))
-                  : shellHistory.slice(0, 15)
-                if (filtered.length === 0) return null
-                return (
-                  <>
-                    <CommandSeparator />
-                    <CommandGroup heading="Shell History">
-                      {filtered.slice(0, 15).map((cmd) => (
-                        <CommandItem
-                          key={`history-${cmd}`}
-                          value={`shell-history ${cmd}`}
-                          onSelect={() => runAsTerminalCommand(cmd)}
-                        >
-                          <TerminalSquare className="text-muted-foreground" />
-                          <span className="truncate font-mono text-xs">{cmd}</span>
-                        </CommandItem>
-                      ))}
-                    </CommandGroup>
-                  </>
-                )
-              })()}
+            {filteredShellHistory.length > 0 && (
+              <>
+                <CommandSeparator />
+                <CommandGroup heading="Shell History">
+                  {filteredShellHistory.map((cmd) => (
+                    <CommandItem
+                      key={`history-${cmd}`}
+                      value={`shell-history ${cmd}`}
+                      onSelect={() => runAsTerminalCommand(cmd)}
+                    >
+                      <TerminalSquare className="text-muted-foreground" />
+                      <span className="truncate font-mono text-xs">{cmd}</span>
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              </>
+            )}
 
-            {recentFiles.length > 0 && (
+            {renderedRecentFiles.length > 0 && (
               <>
                 <CommandSeparator />
                 <CommandGroup heading="Recent Files">
-                  {recentFiles.map((f) => {
+                  {renderedRecentFiles.map((f) => {
                     const Icon = f.source === 'screenshot' ? Camera : Download
                     const isAttached = attachments.some((a) => a.path === f.path)
                     return (
@@ -1267,7 +1292,7 @@ export function CommandPalette() {
                   {closedSavedSessions.map((session) => (
                     <CommandItem
                       key={session.windowId}
-                      value={`saved-session ${session.agent} ${session.title} ${session.cwd ?? ''} ${session.lastMessageText ?? ''}`}
+                      value={`saved-session ${session.agent} ${session.title} ${session.cwd ?? ''}`}
                       onSelect={() =>
                         runAction(() =>
                           useStore.getState().addAgentWindow(session.agent, {
@@ -1597,7 +1622,9 @@ export function CommandPalette() {
                             )
                           }
                           if (group === 'agent') {
-                            if (sortedAgents.length === 0 || hasShellHistoryMatches) return null
+                            if (sortedAgents.length === 0 || filteredShellHistory.length > 0) {
+                              return null
+                            }
                             return (
                               <React.Fragment key="agent">
                                 <CommandSeparator />
