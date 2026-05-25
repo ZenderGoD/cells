@@ -32,10 +32,13 @@
     "dev": "pnpm prepare:terminal-bundles && node scripts/dev.mjs",
     "dev:raw": "CELLS_DEV_ROOT=\"${CELLS_DEV_ROOT:-$HOME/.cells-dev}\" vite",
     "prepare:terminal-bundles": "pnpm prepare:zellij-bundle && pnpm prepare:tmux-bundle",
-    "prepare:terminal-bundles:release": "pnpm prepare:zellij-bundle && pnpm prepare:tmux-bundle:release",
+    "prepare:terminal-bundles:release": "pnpm prepare:terminal-bundles:release:mac",
+    "prepare:terminal-bundles:release:mac": "pnpm prepare:zellij-bundle && pnpm prepare:tmux-bundle:release:mac",
+    "prepare:terminal-bundles:release:linux": "CELLS_ZELLIJ_TARGETS=linux-x64,linux-arm64 pnpm prepare:zellij-bundle && pnpm prepare:tmux-bundle:release:linux",
     "prepare:zellij-bundle": "node scripts/prepare-zellij-bundle.mjs",
     "prepare:tmux-bundle": "node scripts/prepare-tmux-bundle.mjs",
-    "prepare:tmux-bundle:release": "CELLS_TMUX_TARGETS=darwin-arm64,darwin-x64 CELLS_TMUX_REQUIRE_TARGETS=1 node scripts/prepare-tmux-bundle.mjs",
+    "prepare:tmux-bundle:release:mac": "CELLS_TMUX_TARGETS=darwin-arm64,darwin-x64 CELLS_TMUX_REQUIRE_TARGETS=1 node scripts/prepare-tmux-bundle.mjs",
+    "prepare:tmux-bundle:release:linux": "CELLS_TMUX_TARGETS=linux-x64,linux-arm64 CELLS_TMUX_REQUIRE_TARGETS=1 node scripts/prepare-tmux-bundle.mjs",
     "prepare:mcp-server": "CI=true pnpm --dir mcp-server install --frozen-lockfile && pnpm --dir mcp-server build",
     "typecheck:mcp-server": "CI=true pnpm --dir mcp-server install --frozen-lockfile && pnpm --dir mcp-server typecheck",
     "build": "pnpm prepare:mcp-server && pnpm prepare:terminal-bundles && pnpm typecheck && pnpm build:vite",
@@ -49,6 +52,7 @@
     "postinstall": "electron-builder install-app-deps",
     "pack": "pnpm prepare:mcp-server && pnpm prepare:terminal-bundles:release && pnpm typecheck && pnpm build:vite && electron-builder --dir",
     "release": "pnpm prepare:mcp-server && pnpm prepare:terminal-bundles:release && pnpm typecheck && pnpm build:vite && electron-builder --publish always",
+    "release:linux": "pnpm prepare:mcp-server && pnpm prepare:terminal-bundles:release:linux && pnpm typecheck && pnpm build:vite && electron-builder --linux --x64 --arm64 --publish always",
     "release:local": "pnpm prepare:mcp-server && pnpm prepare:terminal-bundles:release && pnpm typecheck && pnpm build:vite && electron-builder",
     "changeset": "changeset",
     "version": "changeset version",
@@ -84,10 +88,13 @@
       "**/node_modules/@anthropic-ai/claude-agent-sdk/vendor/**",
       "**/node_modules/koffi/build/**/*.node",
       "**/node_modules/@openai/codex-darwin-*/vendor/**",
+      "**/node_modules/@openai/codex-linux-*/vendor/**",
       "**/node_modules/@cursor/sdk-darwin-*/bin/**",
+      "**/node_modules/@cursor/sdk-linux-*/bin/**",
       "**/node_modules/@github/copilot/prebuilds/**",
       "**/node_modules/@github/copilot/ripgrep/bin/**",
       "**/node_modules/@github/copilot-darwin-*/copilot",
+      "**/node_modules/@github/copilot-linux-*/copilot",
       "**/node_modules/sqlite3/**/*.node"
     ],
     "extraResources": [
@@ -176,6 +183,71 @@
       "darkModeSupport": true,
       "hardenedRuntime": true,
       "gatekeeperAssess": false
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "rpm",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "tar.gz",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "resources/icon.png",
+      "category": "Development",
+      "maintainer": "Raj Sharma <r@raj.how>",
+      "synopsis": "Infinite desktop workspace for terminals, browsers, and agent workflows.",
+      "description": "Cells is an Electron desktop workspace for arranging terminals, browser panes, and agent workflows on an infinite canvas.",
+      "executableName": "cells",
+      "artifactName": "${productName}-${version}-${os}-${arch}.${ext}"
+    },
+    "deb": {
+      "depends": [
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libuuid1",
+        "libsecret-1-0"
+      ]
+    },
+    "rpm": {
+      "depends": [
+        "gtk3",
+        "libnotify",
+        "nss",
+        "libXScrnSaver",
+        "libXtst",
+        "xdg-utils",
+        "at-spi2-atk",
+        "libuuid",
+        "libsecret"
+      ]
     },
     "dmg": {
       "title": "Cells",
@@ -273,7 +345,8 @@
     ],
     "supportedArchitectures": {
       "os": [
-        "darwin"
+        "darwin",
+        "linux"
       ],
       "cpu": [
         "x64",

@@ -1,6 +1,6 @@
 # Cells
 
-Cells is a desktop workspace for arranging terminals and browser panes on an infinite canvas. It is built with Electron, React, Vite, and `ghostty-web`, and is currently focused on local macOS workflows.
+Cells is a desktop workspace for arranging terminals and browser panes on an infinite canvas. It is built with Electron, React, Vite, and `ghostty-web`, and is currently focused on local macOS and Linux workflows.
 
 <img src="docs/screenshots/hero-banner.png" alt="Cells project bar showing multiple projects and node icons" width="100%">
 
@@ -81,15 +81,15 @@ Navigate between nodes on the canvas with configurable Ctrl+Tab snapping — no 
 
 Cells is early-stage software. Expect fast iteration, rough edges, and occasional breaking changes between tagged releases.
 
-The app currently ships macOS release artifacts. Development on other platforms may work in places, but macOS is the maintained target today.
+The app ships macOS release artifacts plus Linux AppImage, deb, rpm, and tarball artifacts for `x64` and `arm64`. See [Linux Packaging](docs/linux-packaging.md) for Ubuntu, Nix/NixOS, and Gentoo repository packaging notes.
 
 ## Requirements
 
 - Node.js 24 or newer
 - pnpm 10 or newer
-- macOS for the supported desktop experience
+- macOS or Linux for the supported desktop experience
 
-If native dependency rebuilds fail during install, install the Xcode Command Line Tools and retry.
+If native dependency rebuilds fail during install on macOS, install the Xcode Command Line Tools and retry. On Linux, install the standard compiler toolchain and Electron runtime libraries for your distro.
 
 ## Getting Started
 
@@ -110,7 +110,7 @@ Useful commands:
 
 ## Releasing
 
-Tagged pushes that match `v*` trigger the GitHub release workflow and build macOS artifacts. Changesets are used for release notes and version tracking.
+Tagged pushes that match `v*` trigger the GitHub release workflow and build macOS and Linux artifacts. Changesets are used for release notes and version tracking.
 
 ## Contributing
 

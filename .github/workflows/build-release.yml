@@ -16,7 +16,18 @@ permissions:
 
 jobs:
   release:
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            package_script: release
+            artifact_glob: 'release/*.{dmg,zip,yml}'
+          - os: ubuntu-latest
+            package_script: release:linux
+            artifact_glob: 'release/*.{AppImage,deb,rpm,tar.gz,yml}'
+
+    runs-on: ${{ matrix.os }}
 
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
@@ -38,6 +49,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build and release
+        if: runner.os == 'macOS'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_LINK: ${{ secrets.CSC_LINK }}
@@ -70,9 +82,16 @@ jobs:
               --issuer "$APPLE_API_ISSUER"
             export APPLE_API_KEY="$APPLE_API_KEY_PATH"
           fi
-          pnpm release
+          pnpm ${{ matrix.package_script }}
+
+      - name: Build and release Linux
+        if: runner.os == 'Linux'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: pnpm ${{ matrix.package_script }}
 
       - name: Generate release notes
+        if: runner.os == 'macOS'
         id: notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -175,6 +194,7 @@ jobs:
           NODE
 
       - name: Update GitHub Release
+        if: runner.os == 'macOS'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
@@ -191,8 +211,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          # Find and upload all built artifacts (dmg, zip, latest-mac.yml)
-          for file in release/*.{dmg,zip,yml}; do
+          # Find and upload all built artifacts for this runner.
+          for file in ${{ matrix.artifact_glob }}; do
             if [ -f "$file" ]; then
               echo "Uploading artifact: $(basename "$file")"
               gh release upload "$RELEASE_TAG" "$file" --repo "$GITHUB_REPOSITORY" --clobber
