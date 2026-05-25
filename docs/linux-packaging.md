@@ -4,8 +4,8 @@ Cells publishes Linux release artifacts for `x64` and `arm64`:
 
 - `Cells-<version>-linux-<arch>.AppImage`
 - `Cells-<version>-linux-<arch>.deb`
-- `Cells-<version>-linux-<arch>.rpm`
 - `Cells-<version>-linux-<arch>.tar.gz`
+- `Cells-<version>-linux-x86_64.rpm`
 
 The `.deb` is the recommended artifact for Ubuntu and Debian-based systems. The tarball is the recommended upstream source for distro package repositories such as Nixpkgs and Gentoo overlays because it is stable, explicit, and does not run package-manager maintainer scripts from another distro.
 
@@ -18,7 +18,7 @@ pnpm install --frozen-lockfile
 pnpm release:linux
 ```
 
-`pnpm release:linux` builds the app, bundles Linux `zellij` and `tmux` binaries for `x64` and `arm64`, and emits AppImage, deb, rpm, and tarball artifacts in `release/`.
+`pnpm release:linux` builds the app, bundles Linux `zellij` and `tmux` binaries for `x64` and `arm64`, and emits AppImage, deb, tarball, and x64 rpm artifacts in `release/`.
 
 To build only the host architecture while developing packaging changes:
 
