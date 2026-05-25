@@ -1,6 +1,6 @@
 {
   "name": "cells",
-  "version": "0.1.190",
+  "version": "0.1.191",
   "private": true,
   "type": "module",
   "author": "Raj Sharma <r@raj.how>",
@@ -117,46 +117,229 @@
     ],
     "fileAssociations": [
       {
-        "ext": [
-          "txt",
-          "text",
-          "md",
-          "markdown",
-          "json",
-          "jsonc",
-          "js",
-          "jsx",
-          "ts",
-          "tsx",
-          "css",
-          "scss",
-          "html",
-          "xml",
-          "yml",
-          "yaml",
-          "toml",
-          "ini",
-          "env",
-          "sh",
-          "bash",
-          "zsh",
-          "py",
-          "rb",
-          "go",
-          "rs",
-          "java",
-          "c",
-          "h",
-          "cpp",
-          "hpp",
-          "cs",
-          "swift",
-          "kt",
-          "kts",
-          "sql",
-          "graphql",
-          "gql"
-        ],
+        "ext": "txt",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "text",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "md",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "markdown",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "json",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "jsonc",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "js",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "jsx",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "ts",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "tsx",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "css",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "scss",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "html",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "xml",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "yml",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "yaml",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "toml",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "ini",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "env",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "sh",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "bash",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "zsh",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "py",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "rb",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "go",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "rs",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "java",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "c",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "h",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "cpp",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "hpp",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "cs",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "swift",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "kt",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "kts",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "sql",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "graphql",
+        "name": "Text and Source Files",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": "gql",
         "name": "Text and Source Files",
         "role": "Editor",
         "rank": "Alternate"
