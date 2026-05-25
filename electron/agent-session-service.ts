@@ -2794,6 +2794,23 @@ function appendMessage(snapshot: AgentSessionSnapshot, message: AgentSessionMess
   snapshot.updatedAt = now()
 }
 
+function appendUserTurnMessage(
+  snapshot: AgentSessionSnapshot,
+  windowId: string,
+  text: string,
+  attachments?: string[],
+  replyTo?: AgentReplyReference | null,
+) {
+  appendMessage(snapshot, {
+    id: `${windowId}-user-${now()}`,
+    role: 'user',
+    text,
+    attachments: attachments && attachments.length > 0 ? attachments : undefined,
+    replyTo: replyTo ?? null,
+    updatedAt: now(),
+  })
+}
+
 function appendQuestionAnswerMessage(
   snapshot: AgentSessionSnapshot,
   windowId: string,
@@ -4244,6 +4261,16 @@ export class AgentSessionService extends EventEmitter {
     if (runtime.kind === 'codex') {
       const goalCommand = parseCodexGoalCommand(providerInput)
       if (goalCommand) {
+        appendUserTurnMessage(
+          runtime.snapshot,
+          windowId,
+          visibleInput.trim(),
+          attachments?.filter((p): p is string => typeof p === 'string' && p.length > 0),
+          replyTo,
+        )
+        runtime.snapshot.status = 'running'
+        runtime.snapshot.error = null
+        this.emitUpdate(runtime.snapshot)
         await this.runCodexGoalCommand(runtime, goalCommand)
         return
       }
@@ -4284,14 +4311,7 @@ export class AgentSessionService extends EventEmitter {
       runtime.liveContextUsageUpdatedThisTurn = false
     }
 
-    appendMessage(runtime.snapshot, {
-      id: `${windowId}-user-${now()}`,
-      role: 'user',
-      text: userText,
-      attachments: normalizedAttachments.length > 0 ? normalizedAttachments : undefined,
-      replyTo: replyTo ?? null,
-      updatedAt: now(),
-    })
+    appendUserTurnMessage(runtime.snapshot, windowId, userText, normalizedAttachments, replyTo)
     runtime.snapshot.status = 'running'
     runtime.snapshot.error = null
     this.emitUpdate(runtime.snapshot)
