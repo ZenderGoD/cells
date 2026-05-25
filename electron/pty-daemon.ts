@@ -74,7 +74,12 @@ if (!backendSupport.ok) {
 const MICROBATCH_DELAY_MS = 4
 const MICROBATCH_MAX_BYTES = 64 * 1024
 
-const pendingData = new Map<string, string>()
+type PendingTerminalData = {
+  chunks: string[]
+  length: number
+}
+
+const pendingData = new Map<string, PendingTerminalData>()
 let flushTimer: ReturnType<typeof setTimeout> | null = null
 
 function scheduleFlush() {
@@ -84,28 +89,30 @@ function scheduleFlush() {
 
 function flushPendingData() {
   flushTimer = null
-  for (const [termId, data] of pendingData) {
+  for (const [termId, pending] of pendingData) {
     const sub = subscribers.get(termId)
     if (sub) {
-      sendBinaryData(sub, termId, data)
+      sendBinaryData(sub, termId, pending.chunks.join(''))
     }
   }
   pendingData.clear()
 }
 
 function bufferTerminalData(termId: string, data: string) {
-  const existing = pendingData.get(termId)
-  const merged = existing ? existing + data : data
-  pendingData.set(termId, merged)
+  const pending = pendingData.get(termId)
+  const next = pending ?? { chunks: [], length: 0 }
+  next.chunks.push(data)
+  next.length += data.length
+  pendingData.set(termId, next)
 
   // Flush immediately if accumulated data is large enough —
   // no point adding latency when there's already a big chunk to send.
-  if (merged.length >= MICROBATCH_MAX_BYTES) {
+  if (next.length >= MICROBATCH_MAX_BYTES) {
     // Flush only this terminal's buffer; leave others to the timer.
     pendingData.delete(termId)
     const sub = subscribers.get(termId)
     if (sub) {
-      sendBinaryData(sub, termId, merged)
+      sendBinaryData(sub, termId, next.chunks.join(''))
     }
   } else {
     scheduleFlush()
@@ -125,12 +132,12 @@ const sessionManager = createTerminalSessionManager(BACKEND, STATE_DIR, {
 
     // Flush any buffered data before sending the exit event so the client
     // sees the final output before the terminal disappears.
-    const buffered = pendingData.get(termId)
-    if (buffered) {
+    const pending = pendingData.get(termId)
+    if (pending) {
       pendingData.delete(termId)
       const sub = subscribers.get(termId)
       if (sub) {
-        sendBinaryData(sub, termId, buffered)
+        sendBinaryData(sub, termId, pending.chunks.join(''))
       }
     }
 

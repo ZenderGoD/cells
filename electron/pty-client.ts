@@ -26,6 +26,7 @@ export class PtyDaemonClient {
   >()
   /** Buffer for incoming socket data (binary + JSON mix). */
   private recvBuf: Buffer<ArrayBufferLike> = Buffer.alloc(0)
+  private recvOffset = 0
   private _connected = false
 
   private dataCallback: ((termId: string, data: string) => void) | null = null
@@ -56,7 +57,7 @@ export class PtyDaemonClient {
       })
 
       socket.on('data', (chunk: Buffer) => {
-        this.recvBuf = this.recvBuf.length === 0 ? chunk : Buffer.concat([this.recvBuf, chunk])
+        this.appendRecvChunk(chunk)
         this.drainRecvBuffer()
       })
 
@@ -69,34 +70,40 @@ export class PtyDaemonClient {
    * lines as they become available.
    */
   private drainRecvBuffer() {
-    while (this.recvBuf.length > 0) {
-      if (this.recvBuf[0] === BINARY_DATA_MARKER) {
+    while (this.recvOffset < this.recvBuf.length) {
+      if (this.recvBuf[this.recvOffset] === BINARY_DATA_MARKER) {
         // Binary data frame: [0x02][uint16 termIdLen][termId][uint32 dataLen][data]
         const MIN_HEADER = 1 + 2 // marker + termId length
-        if (this.recvBuf.length < MIN_HEADER) return // need more bytes
-        const termIdLen = this.recvBuf.readUInt16BE(1)
+        if (this.remainingRecvBytes() < MIN_HEADER) return // need more bytes
+        const termIdLen = this.recvBuf.readUInt16BE(this.recvOffset + 1)
         const fullHeader = MIN_HEADER + termIdLen + 4 // + data length field
-        if (this.recvBuf.length < fullHeader) return
-        const dataLen = this.recvBuf.readUInt32BE(MIN_HEADER + termIdLen)
+        if (this.remainingRecvBytes() < fullHeader) return
+        const dataLen = this.recvBuf.readUInt32BE(this.recvOffset + MIN_HEADER + termIdLen)
         const totalLen = fullHeader + dataLen
-        if (this.recvBuf.length < totalLen) return
+        if (this.remainingRecvBytes() < totalLen) return
 
-        const termId = this.recvBuf.toString('utf-8', MIN_HEADER, MIN_HEADER + termIdLen)
-        const data = this.recvBuf.toString('utf-8', fullHeader, totalLen)
-        this.recvBuf = this.recvBuf.subarray(totalLen)
+        const frameStart = this.recvOffset
+        const termId = this.recvBuf.toString(
+          'utf-8',
+          frameStart + MIN_HEADER,
+          frameStart + MIN_HEADER + termIdLen,
+        )
+        const data = this.recvBuf.toString('utf-8', frameStart + fullHeader, frameStart + totalLen)
+        this.recvOffset += totalLen
         this.dataCallback?.(termId, data)
       } else {
         // JSON line — scan for newline delimiter
-        const nlIdx = this.recvBuf.indexOf(0x0a) // '\n'
+        const nlIdx = this.recvBuf.indexOf(0x0a, this.recvOffset) // '\n'
         if (nlIdx === -1) return // incomplete line, wait for more data
-        const line = this.recvBuf.toString('utf-8', 0, nlIdx)
-        this.recvBuf = this.recvBuf.subarray(nlIdx + 1)
+        const line = this.recvBuf.toString('utf-8', this.recvOffset, nlIdx)
+        this.recvOffset = nlIdx + 1
         if (!line.trim()) continue
         try {
           this.handleMessage(JSON.parse(line))
         } catch {}
       }
     }
+    this.compactRecvBuffer()
   }
 
   disconnect(): void {
@@ -246,6 +253,32 @@ export class PtyDaemonClient {
   }
 
   // ---------- Internals ----------
+
+  private appendRecvChunk(chunk: Buffer) {
+    if (this.remainingRecvBytes() === 0) {
+      this.recvBuf = chunk
+      this.recvOffset = 0
+      return
+    }
+
+    this.compactRecvBuffer()
+    this.recvBuf = Buffer.concat([this.recvBuf, chunk])
+  }
+
+  private remainingRecvBytes() {
+    return this.recvBuf.length - this.recvOffset
+  }
+
+  private compactRecvBuffer() {
+    if (this.recvOffset === 0) return
+    if (this.recvOffset >= this.recvBuf.length) {
+      this.recvBuf = Buffer.alloc(0)
+      this.recvOffset = 0
+      return
+    }
+    this.recvBuf = this.recvBuf.subarray(this.recvOffset)
+    this.recvOffset = 0
+  }
 
   private handleMessage(msg: any) {
     if (msg.type === 'response') {

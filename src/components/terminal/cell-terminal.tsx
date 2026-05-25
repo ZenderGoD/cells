@@ -45,6 +45,7 @@ const TERMINAL_SEARCH_MATCH_LIMIT = 2_000
 const TERMINAL_ATTACH_RETRY_DELAYS_MS = [0, 250, 1000] as const
 const TERMINAL_SETUP_RETRY_DELAY_MS = 1_200
 const SERVER_OWNED_ATTACH_RECOVERY_DELAYS_MS = [800, 1600] as const
+const TERMINAL_WRITE_FRAME_BYTES = 128 * 1024
 const SERVER_OWNED_WHEEL_HANDLED_KEY = '__cellsServerOwnedWheelHandled'
 const SERVER_OWNED_MOUSE_FLUSH_MS = 16
 const SERVER_OWNED_MOUSE_HANDLED_KEY = '__cellsServerOwnedMouseHandled'
@@ -1574,19 +1575,30 @@ function reportTerminalSizeIfChanged(termId: string, fitAddon: FitAddon | null) 
   window.cells.terminal.resize(termId, dims.cols, dims.rows)
 }
 
-let _repaintRaf = 0
-let _repaintTimer = 0
+const repaintJobs = new WeakMap<Terminal, { raf: number; timer: number; secondRaf: number }>()
+
 function forceTerminalRepaint(term: Terminal) {
-  if (_repaintRaf) cancelAnimationFrame(_repaintRaf)
-  if (_repaintTimer) clearTimeout(_repaintTimer)
-  _repaintRaf = requestAnimationFrame(() => {
-    _repaintRaf = 0
+  const previous = repaintJobs.get(term)
+  if (previous?.raf) cancelAnimationFrame(previous.raf)
+  if (previous?.timer) clearTimeout(previous.timer)
+  if (previous?.secondRaf) cancelAnimationFrame(previous.secondRaf)
+
+  const job = { raf: 0, timer: 0, secondRaf: 0 }
+  job.raf = requestAnimationFrame(() => {
+    job.raf = 0
     forceTerminalFullRender(term)
   })
-  _repaintTimer = window.setTimeout(() => {
-    _repaintTimer = 0
-    requestAnimationFrame(() => forceTerminalFullRender(term))
+  job.timer = window.setTimeout(() => {
+    job.timer = 0
+    job.secondRaf = requestAnimationFrame(() => {
+      job.secondRaf = 0
+      forceTerminalFullRender(term)
+      if (job.raf === 0 && job.timer === 0 && job.secondRaf === 0) {
+        repaintJobs.delete(term)
+      }
+    })
   }, 32)
+  repaintJobs.set(term, job)
 }
 
 function getTerminalCanvas(term: Terminal, container: HTMLElement) {
@@ -2865,7 +2877,9 @@ export function CellTerminal({
       // the Canvas2D renderer paints stale content over them.  Batching into
       // one write per frame gives the WASM state machine a single consistent
       // chunk so scroll events and dirty flags are handled atomically.
-      let writeBuf = ''
+      let writeChunks: string[] = []
+      let writeChunkStart = 0
+      let writeBytes = 0
       let writeRaf = 0
       beginTerminalReplay(term)
       transientCleanups = cleanups
@@ -2904,9 +2918,45 @@ export function CellTerminal({
       }
       const flushWrites = () => {
         writeRaf = 0
-        if (!writeBuf) return
-        const chunk = writeBuf
-        writeBuf = ''
+        if (writeBytes <= 0) return
+
+        let chunk: string
+        if (writeBytes <= TERMINAL_WRITE_FRAME_BYTES) {
+          chunk =
+            writeChunkStart === 0
+              ? writeChunks.join('')
+              : writeChunks.slice(writeChunkStart).join('')
+          writeChunks = []
+          writeChunkStart = 0
+          writeBytes = 0
+        } else {
+          const selected: string[] = []
+          let selectedBytes = 0
+          while (
+            writeChunkStart < writeChunks.length &&
+            selectedBytes < TERMINAL_WRITE_FRAME_BYTES
+          ) {
+            const next = writeChunks[writeChunkStart]
+            if (next === undefined) break
+            const remaining = TERMINAL_WRITE_FRAME_BYTES - selectedBytes
+            if (next.length <= remaining) {
+              selected.push(next)
+              selectedBytes += next.length
+              writeChunkStart += 1
+              continue
+            }
+            selected.push(next.slice(0, remaining))
+            writeChunks[writeChunkStart] = next.slice(remaining)
+            selectedBytes += remaining
+          }
+          chunk = selected.join('')
+          writeBytes -= chunk.length
+          if (writeChunkStart > 64 && writeChunkStart * 2 > writeChunks.length) {
+            writeChunks = writeChunks.slice(writeChunkStart)
+            writeChunkStart = 0
+          }
+          if (writeBytes > 0) writeRaf = requestAnimationFrame(flushWrites)
+        }
 
         // If the user has scrolled up past the threshold, preserve their
         // viewport position instead of letting writeInternal snap to bottom.
@@ -2955,11 +3005,17 @@ export function CellTerminal({
             writeRaf = 0
           }
           // Flush any remaining buffered data so nothing is lost
-          if (writeBuf) {
-            term.write(writeBuf)
-            perfBytes += writeBuf.length
+          if (writeBytes > 0) {
+            const pending =
+              writeChunkStart === 0
+                ? writeChunks.join('')
+                : writeChunks.slice(writeChunkStart).join('')
+            term.write(pending)
+            perfBytes += pending.length
             perfWriteCalls += 1
-            writeBuf = ''
+            writeChunks = []
+            writeChunkStart = 0
+            writeBytes = 0
           }
           reportTerminalPerf()
         },
@@ -3020,7 +3076,8 @@ export function CellTerminal({
             }
 
             // Accumulate data and schedule a single flush per frame
-            writeBuf += nextChunk
+            writeChunks.push(nextChunk)
+            writeBytes += nextChunk.length
             if (!writeRaf) writeRaf = requestAnimationFrame(flushWrites)
           }
         }),
@@ -3132,7 +3189,8 @@ export function CellTerminal({
 
       const replayChunk = finishTerminalReplay(term)
       if (replayChunk) {
-        writeBuf += replayChunk
+        writeChunks.push(replayChunk)
+        writeBytes += replayChunk.length
         if (!writeRaf) writeRaf = requestAnimationFrame(flushWrites)
       }
 

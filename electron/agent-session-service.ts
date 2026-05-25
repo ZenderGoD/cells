@@ -16,10 +16,9 @@ import { app, shell } from 'electron'
 import {
   forkSession,
   query,
-  unstable_v2_createSession,
-  unstable_v2_resumeSession,
+  type Query as ClaudeQuery,
   type SDKMessage,
-  type SDKSession,
+  type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk'
 import { Cursor, type SDKModel as CursorSDKModel } from '@cursor/sdk'
 import {
@@ -148,7 +147,6 @@ const CLAUDE_CONTEXT_1M_BETA = 'context-1m-2025-08-07' as const
 // leave the session idle so the user can take over — avoids pinning a model
 // that's genuinely stuck in a loop.
 const CLAUDE_AUTO_CONTINUE_CAP = 3
-const CLAUDE_IDLE_STREAM_BACKOFF_MS = 250
 const CODEX_INTERRUPT_REQUEST_TIMEOUT_MS = 5_000
 const CODEX_INTERRUPT_GRACE_MS = 30_000
 const AGENT_SESSION_DEBUG = process.env.CELLS_AGENT_SESSION_DEBUG === '1'
@@ -2058,9 +2056,7 @@ async function resolveSessionModelId(
  * We call `query()` in streaming-input mode with an async iterable that
  * never yields — that spawns the Claude Code subprocess and gives us access
  * to the `Query.supportedModels()` control method, but no user message is
- * ever sent so the turn budget isn't touched. The `SDKSession` we use for
- * real sessions (unstable_v2_*) doesn't expose control methods, which is why
- * we drop to the lower-level `query()` here. Results are cached for 5
+ * ever sent so the turn budget isn't touched. Results are cached for 5
  * minutes so opening the picker repeatedly doesn't respawn the CLI.
  */
 export async function listClaudeModels(): Promise<ClaudeModelInfo[]> {
@@ -2361,7 +2357,7 @@ type CopilotApprovalResolver = (result: CopilotPermissionRequestResult) => void
 
 interface ClaudeRuntime extends RuntimeBase {
   kind: 'claude'
-  session: SDKSession
+  session: ClaudeQuery
   streamPromise: Promise<void>
   /** Monotonic token for the currently active Claude stream consumer. When a
    *  stop/reopen happens quickly, the previous stream can still unwind with an
@@ -2409,6 +2405,31 @@ interface ClaudeRuntime extends RuntimeBase {
     originalInput: Record<string, unknown>
     resolve: QuestionApprovalResolver
   } | null
+}
+
+async function* createIdleClaudeInput(): AsyncIterable<SDKUserMessage> {
+  await new Promise<never>(() => {})
+  yield* []
+}
+
+function buildClaudeUserMessage(text: string): SDKUserMessage {
+  return {
+    type: 'user',
+    parent_tool_use_id: null,
+    message: {
+      role: 'user',
+      content: text,
+    },
+  }
+}
+
+async function sendClaudeMessage(session: ClaudeQuery, message: string | SDKUserMessage) {
+  const userMessage = typeof message === 'string' ? buildClaudeUserMessage(message) : message
+  await session.streamInput(
+    (async function* () {
+      yield userMessage
+    })(),
+  )
 }
 
 interface CodexRuntime extends RuntimeBase {
@@ -3952,9 +3973,13 @@ export class AgentSessionService extends EventEmitter {
         permissionMode: claudePermission,
       })
       const session = this.withCwd(request.cwd, () =>
-        request.claudeSessionId
-          ? unstable_v2_resumeSession(request.claudeSessionId!, sessionOptions)
-          : unstable_v2_createSession(sessionOptions),
+        query({
+          prompt: createIdleClaudeInput(),
+          options: {
+            ...sessionOptions,
+            ...(request.claudeSessionId ? { resume: request.claudeSessionId } : {}),
+          },
+        }),
       )
 
       const runtime: ClaudeRuntime = {
@@ -4321,7 +4346,7 @@ export class AgentSessionService extends EventEmitter {
       try {
         if (imageAttachments.length > 0) {
           const blocks = await buildClaudeImageBlocks(imageAttachments)
-          await runtime.session.send({
+          await sendClaudeMessage(runtime.session, {
             type: 'user',
             parent_tool_use_id: null,
             message: {
@@ -4330,7 +4355,7 @@ export class AgentSessionService extends EventEmitter {
             },
           })
         } else {
-          await runtime.session.send(providerText)
+          await sendClaudeMessage(runtime.session, providerText)
         }
         log('send.claude.dispatched', { windowId })
       } catch (err) {
@@ -5350,7 +5375,7 @@ export class AgentSessionService extends EventEmitter {
     pending.resolve({ decision })
   }
 
-  // The v2 SDK drops the `cwd` option from SDKSessionOptions (see
+  // The Claude SDK does not expose a `cwd` option in query options (see
   // node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs — the `hz` class
   // constructs its ProcessTransport without forwarding cwd). To make the
   // spawned `claude` CLI run in the user's selected project directory, we
@@ -6725,9 +6750,13 @@ export class AgentSessionService extends EventEmitter {
       }
       const sessionId = runtime.snapshot.claudeSessionId
       const session = this.withCwd(req.cwd, () =>
-        sessionId
-          ? unstable_v2_resumeSession(sessionId, sessionOptions)
-          : unstable_v2_createSession(sessionOptions),
+        query({
+          prompt: createIdleClaudeInput(),
+          options: {
+            ...sessionOptions,
+            ...(sessionId ? { resume: sessionId } : {}),
+          },
+        }),
       )
       runtime.session = session
       runtime.closed = false
@@ -6792,37 +6821,21 @@ export class AgentSessionService extends EventEmitter {
   private async consumeClaudeStream(runtime: ClaudeRuntime, streamGeneration: number) {
     const windowId = runtime.snapshot.windowId
     log('claude.stream.start', { windowId, streamGeneration })
-    // The v2 SDK's `session.stream()` returns AFTER THE FIRST `result` event —
-    // see node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs (`if(yield $,$.type==="result")return`).
-    // That means a single for-await loop only drains one turn. We have to
-    // restart the loop for every subsequent send() or the next turn's events
-    // are never consumed and the UI hangs at "thinking".
     let totalCount = 0
     try {
-      while (!runtime.closed) {
-        let count = 0
-        for await (const event of runtime.session.stream()) {
-          if (streamGeneration !== runtime.streamGeneration) {
-            log('claude.stream.stale-event', { windowId, count, totalCount, streamGeneration })
-            return
-          }
-          if (runtime.closed) {
-            log('claude.stream.broken-by-close', { windowId, count, totalCount })
-            return
-          }
-          count += 1
-          totalCount += 1
-          log('claude.event', { windowId, n: totalCount, ...summarizeEvent(event) })
-          this.handleClaudeEvent(runtime, event)
-          this.emitUpdate(runtime.snapshot)
+      for await (const event of runtime.session) {
+        if (streamGeneration !== runtime.streamGeneration) {
+          log('claude.stream.stale-event', { windowId, totalCount, streamGeneration })
+          return
         }
-        if (count > 0) {
-          log('claude.stream.turn-end', { windowId, count, totalCount, streamGeneration })
-        } else {
-          await new Promise((resolve) => setTimeout(resolve, CLAUDE_IDLE_STREAM_BACKOFF_MS))
+        if (runtime.closed) {
+          log('claude.stream.broken-by-close', { windowId, totalCount })
+          return
         }
-        // Loop back around — the next stream() call will block on the shared
-        // queryIterator until the user sends another message.
+        totalCount += 1
+        log('claude.event', { windowId, n: totalCount, ...summarizeEvent(event) })
+        this.handleClaudeEvent(runtime, event)
+        this.emitUpdate(runtime.snapshot)
       }
       log('claude.stream.end', { windowId, totalCount, streamGeneration })
     } catch (error) {
@@ -7622,7 +7635,7 @@ export class AgentSessionService extends EventEmitter {
     runtime.snapshot.error = null
     this.emitUpdate(runtime.snapshot)
     try {
-      await runtime.session.send('continue')
+      await sendClaudeMessage(runtime.session, 'continue')
     } catch (err) {
       log('claude.auto-continue.error', {
         windowId: runtime.snapshot.windowId,
