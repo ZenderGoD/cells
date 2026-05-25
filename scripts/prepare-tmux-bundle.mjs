@@ -256,8 +256,22 @@ async function ensureTarget(targetKey) {
   }
 
   const sourceBinary = resolveSourceBinary(targetKey)
-  const downloadedBottle = sourceBinary ? null : await fetchBottleBinary(targetKey)
-  const resolvedSourceBinary = sourceBinary || downloadedBottle?.binaryPath || null
+  let sourceVersion = null
+  if (sourceBinary) {
+    sourceVersion = readTmuxVersion(sourceBinary)
+    if (sourceVersion && compareTmuxVersions(sourceVersion, MINIMUM_VERSION) < 0) {
+      console.log(
+        `[prepare-tmux] ${sourceBinary} is too old for ${targetKey} (${sourceVersion}); trying a bottle`,
+      )
+    }
+  }
+
+  const useSourceBinary =
+    sourceBinary &&
+    sourceVersion &&
+    compareTmuxVersions(sourceVersion, MINIMUM_VERSION) >= 0
+  const downloadedBottle = useSourceBinary ? null : await fetchBottleBinary(targetKey)
+  const resolvedSourceBinary = useSourceBinary ? sourceBinary : downloadedBottle?.binaryPath || null
   if (!resolvedSourceBinary) {
     if (REQUIRE_TARGETS) {
       throw new Error(
@@ -273,7 +287,7 @@ async function ensureTarget(targetKey) {
     )
   }
 
-  const version = downloadedBottle?.version || readTmuxVersion(resolvedSourceBinary)
+  const version = downloadedBottle?.version || sourceVersion || readTmuxVersion(resolvedSourceBinary)
   if (!version) {
     throw new Error(`Failed to read tmux version from ${resolvedSourceBinary}`)
   }
