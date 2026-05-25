@@ -1,6 +1,6 @@
 {
   "name": "cells",
-  "version": "0.1.192",
+  "version": "0.1.193",
   "private": true,
   "type": "module",
   "author": "Raj Sharma <r@raj.how>",
@@ -387,13 +387,6 @@
           "target": "rpm",
           "arch": [
             "x64"
-          ]
-        },
-        {
-          "target": "tar.gz",
-          "arch": [
-            "x64",
-            "arm64"
           ]
         }
       ],

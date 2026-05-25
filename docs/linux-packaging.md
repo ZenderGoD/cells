@@ -4,10 +4,9 @@ Cells publishes Linux release artifacts for `x64` and `arm64`:
 
 - `Cells-<version>-linux-<arch>.AppImage`
 - `Cells-<version>-linux-<arch>.deb`
-- `Cells-<version>-linux-<arch>.tar.gz`
 - `Cells-<version>-linux-x86_64.rpm`
 
-The `.deb` is the recommended artifact for Ubuntu and Debian-based systems. The tarball is the recommended upstream source for distro package repositories such as Nixpkgs and Gentoo overlays because it is stable, explicit, and does not run package-manager maintainer scripts from another distro.
+The `.deb` is the recommended artifact for Ubuntu and Debian-based systems. The AppImage is the recommended upstream binary input for distro package repositories such as Nixpkgs and Gentoo overlays because it is self-contained and does not run package-manager maintainer scripts from another distro.
 
 ## Build Locally
 
@@ -18,7 +17,7 @@ pnpm install --frozen-lockfile
 pnpm release:linux
 ```
 
-`pnpm release:linux` builds the app, bundles Linux `zellij` and `tmux` binaries for `x64` and `arm64`, and emits AppImage, deb, tarball, and x64 rpm artifacts in `release/`.
+`pnpm release:linux` builds the app, bundles Linux `zellij` and `tmux` binaries for `x64` and `arm64`, and emits AppImage, deb, and x64 rpm artifacts in `release/`.
 
 To build only the host architecture while developing packaging changes:
 
@@ -38,12 +37,12 @@ Users can install the release `.deb` directly:
 sudo apt install ./Cells-<version>-linux-x64.deb
 ```
 
-For an apt repository or PPA, publish the upstream `.deb` or rebuild it from a source package. A minimal source-package flow is:
+For an apt repository or PPA, publish the upstream `.deb` or rebuild it from a source checkout. A minimal source-package flow is:
 
 ```bash
-mkdir -p cells_<version>
-tar --strip-components=1 -xf cells-<version>.tar.gz -C cells_<version>
+git clone https://github.com/xrehpicx/cells.git cells_<version>
 cd cells_<version>
+git checkout v<version>
 pnpm install --frozen-lockfile
 pnpm release:linux
 ```
@@ -62,7 +61,7 @@ The generated deb declares the Electron runtime libraries Cells needs:
 
 ## Nix and NixOS
 
-Use the Linux tarball as the packaged binary input. This derivation is suitable for a Nixpkgs package or an overlay:
+Use the Linux AppImage as the packaged binary input. This derivation is suitable for a Nixpkgs package or an overlay:
 
 ```nix
 { appimageTools
@@ -103,7 +102,7 @@ For `aarch64-linux`, change the artifact name to `Cells-${version}-linux-arm64.A
 
 ## Gentoo
 
-Use the Linux tarball in an overlay ebuild. This skeleton installs the prebuilt app under `/opt/cells` and exposes `/usr/bin/cells`:
+Use the Linux AppImage in an overlay ebuild. This skeleton installs the prebuilt AppImage under `/opt/cells` and exposes `/usr/bin/cells`:
 
 ```bash
 EAPI=8
@@ -111,8 +110,8 @@ EAPI=8
 DESCRIPTION="Infinite desktop workspace for terminals, browsers, and agent workflows"
 HOMEPAGE="https://github.com/xrehpicx/cells"
 SRC_URI="
-  amd64? ( https://github.com/xrehpicx/cells/releases/download/v${PV}/Cells-${PV}-linux-x64.tar.gz -> ${P}-amd64.tar.gz )
-  arm64? ( https://github.com/xrehpicx/cells/releases/download/v${PV}/Cells-${PV}-linux-arm64.tar.gz -> ${P}-arm64.tar.gz )
+  amd64? ( https://github.com/xrehpicx/cells/releases/download/v${PV}/Cells-${PV}-linux-x86_64.AppImage -> ${P}-amd64.AppImage )
+  arm64? ( https://github.com/xrehpicx/cells/releases/download/v${PV}/Cells-${PV}-linux-arm64.AppImage -> ${P}-arm64.AppImage )
 "
 
 LICENSE="Apache-2.0"
@@ -124,6 +123,7 @@ RDEPEND="
   dev-libs/nss
   gnome-base/librsvg
   sys-apps/dbus
+  sys-fs/fuse:0
   x11-libs/gtk+:3
   x11-libs/libnotify
   x11-libs/libXtst
@@ -134,10 +134,12 @@ S="${WORKDIR}"
 
 src_install() {
   local appdir="/opt/cells"
-  insinto "${appdir}"
-  doins -r .
-  fperms +x "${appdir}/cells"
-  dosym "${appdir}/cells" /usr/bin/cells
+  local image
+  use amd64 && image="${DISTDIR}/${P}-amd64.AppImage"
+  use arm64 && image="${DISTDIR}/${P}-arm64.AppImage"
+  exeinto "${appdir}"
+  newexe "${image}" cells.AppImage
+  dosym "${appdir}/cells.AppImage" /usr/bin/cells
 }
 ```
 

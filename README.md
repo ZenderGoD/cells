@@ -81,7 +81,7 @@ Navigate between nodes on the canvas with configurable Ctrl+Tab snapping — no 
 
 Cells is early-stage software. Expect fast iteration, rough edges, and occasional breaking changes between tagged releases.
 
-The app ships macOS release artifacts plus Linux AppImage, deb, and tarball artifacts for `x64` and `arm64`, with an x64 rpm for rpm-based repositories. See [Linux Packaging](docs/linux-packaging.md) for Ubuntu, Nix/NixOS, and Gentoo repository packaging notes.
+The app ships macOS release artifacts plus Linux AppImage and deb artifacts for `x64` and `arm64`, with an x64 rpm for rpm-based repositories. See [Linux Packaging](docs/linux-packaging.md) for Ubuntu, Nix/NixOS, and Gentoo repository packaging notes.
 
 ## Requirements
 
