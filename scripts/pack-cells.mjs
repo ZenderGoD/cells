@@ -134,6 +134,8 @@ async function updatePlist(plistPath) {
     ['CFBundleName', appName],
     ['CFBundleIdentifier', 'com.cells.app'],
     ['CFBundleIconFile', 'cells.icns'],
+    ['CFBundleShortVersionString', appVersion],
+    ['CFBundleVersion', appVersion],
   ]
   for (const [key, value] of updates) {
     await run('plutil', ['-replace', key, '-string', value, plistPath])

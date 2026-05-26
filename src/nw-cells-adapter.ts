@@ -783,6 +783,10 @@ function getRealHomeDir() {
   return nodeProcess?.env.HOME || ''
 }
 
+function getUserHomeDir() {
+  return getRealHomeDir() || getHomeDir()
+}
+
 function getShellPath() {
   const require = getNodeRequire()
   if (!require) return '/bin/zsh'
@@ -827,6 +831,7 @@ function cleanTerminalEnv() {
   if (realXdgDataHome) nodeEnv.XDG_DATA_HOME = realXdgDataHome
   if (realXdgCacheHome) nodeEnv.XDG_CACHE_HOME = realXdgCacheHome
   if (realXdgStateHome) nodeEnv.XDG_STATE_HOME = realXdgStateHome
+  nodeEnv.PATH = buildNwUserPathEnv()
   nodeEnv.TERM = 'xterm-256color'
   nodeEnv.COLORTERM = 'truecolor'
   nodeEnv.TERM_PROGRAM = nodeEnv.TERM_PROGRAM || 'ghostty'
@@ -877,14 +882,15 @@ function commandExists(command: string) {
     }
   }
   if (getNodeProcess()?.platform === 'win32') return execFileStatus('where', [command]).ok
-  return execFileStatus('/bin/sh', ['-lc', `command -v ${shellQuote(command)}`]).ok
+  return resolveNwCommand(command) !== null
 }
 
 function resolveAgentBinary(agent: AgentSessionName) {
   const custom = customAgentPaths[agent]?.trim()
-  if (custom) return commandExists(custom) ? custom : null
+  if (custom) return resolveNwCommand(custom)
   for (const candidate of AGENT_BINARY_CANDIDATES[agent] ?? [agent]) {
-    if (commandExists(candidate)) return candidate
+    const resolved = resolveNwCommand(candidate)
+    if (resolved) return resolved
   }
   return null
 }
@@ -1848,7 +1854,19 @@ function getNwAppVersion() {
   return '0.0.0'
 }
 
+function isNwDevelopmentBuild() {
+  const process = getNodeProcess()
+  return Boolean(process?.env.CELLS_REPO_ROOT) || getNwAppVersion() === '0.0.0'
+}
+
 function getNwUpdaterSupport() {
+  if (!isNwDevelopmentBuild()) {
+    return {
+      enabled: false,
+      reason: 'manual-install-required',
+      message: 'Install updates from the latest signed Cells DMG on GitHub Releases.',
+    }
+  }
   return {
     enabled: false,
     reason: 'development-build',
@@ -2014,36 +2032,80 @@ function nwShellQuote(value: string) {
 
 function buildNwUserPathEnv() {
   const path = requireNode<typeof import('node:path')>('node:path')
+  const home = getUserHomeDir()
   const entries = [
     getNodeProcess()?.env.PATH ?? '',
     '/opt/homebrew/bin',
+    '/opt/homebrew/sbin',
     '/usr/local/bin',
+    '/usr/local/sbin',
     '/usr/bin',
     '/bin',
-    path.join(getHomeDir(), '.local/bin'),
-    path.join(getHomeDir(), '.cargo/bin'),
-    path.join(getHomeDir(), 'go/bin'),
+    '/usr/sbin',
+    '/sbin',
+    path.join(home, '.local/bin'),
+    path.join(home, '.cargo/bin'),
+    path.join(home, 'go/bin'),
+    path.join(home, '.bun/bin'),
+    path.join(home, '.npm-global/bin'),
+    path.join(home, '.volta/bin'),
+    path.join(home, 'Library/pnpm'),
+    '/Applications/Codex.app/Contents/Resources',
   ]
   return [...new Set(entries.flatMap((entry) => entry.split(path.delimiter)).filter(Boolean))].join(
     path.delimiter,
   )
 }
 
+function buildNwUserEnv(extra: Record<string, string | undefined> = {}) {
+  const path = requireNode<typeof import('node:path')>('node:path')
+  const process = getNodeProcess()
+  const env = { ...(process?.env ?? {}) } as Record<string, string>
+  const home = getUserHomeDir()
+  if (home) {
+    env.HOME = home
+    env.XDG_CONFIG_HOME =
+      process?.env.CELLS_REAL_XDG_CONFIG_HOME?.trim() || path.join(home, '.config')
+    env.XDG_DATA_HOME =
+      process?.env.CELLS_REAL_XDG_DATA_HOME?.trim() || path.join(home, '.local/share')
+    env.XDG_CACHE_HOME = process?.env.CELLS_REAL_XDG_CACHE_HOME?.trim() || path.join(home, '.cache')
+    env.XDG_STATE_HOME =
+      process?.env.CELLS_REAL_XDG_STATE_HOME?.trim() || path.join(home, '.local/state')
+  }
+  env.PATH = buildNwUserPathEnv()
+  env.TERM = env.TERM && env.TERM !== 'dumb' ? env.TERM : 'xterm-256color'
+  env.COLORTERM = env.COLORTERM || 'truecolor'
+  for (const [key, value] of Object.entries(extra)) {
+    if (value != null) env[key] = value
+  }
+  return env
+}
+
 function resolveNwCommand(command: string) {
   const childProcess = requireNode<typeof import('node:child_process')>('node:child_process')
   const path = requireNode<typeof import('node:path')>('node:path')
+  const fs = requireNode<typeof import('node:fs')>('node:fs')
+  if (command.includes('/')) {
+    const resolved = path.resolve(command.replace(/^~(?=$|\/)/, getUserHomeDir()))
+    try {
+      fs.accessSync(resolved, fs.constants.X_OK)
+      return resolved
+    } catch {
+      return null
+    }
+  }
   const process = getNodeProcess()
   const shell = process?.env.SHELL || '/bin/zsh'
   try {
     const output = childProcess
       .execFileSync(shell, ['-lc', `command -v -- ${nwShellQuote(command)}`], {
         encoding: 'utf8',
-        env: { ...(process?.env ?? {}), PATH: buildNwUserPathEnv() },
+        env: buildNwUserEnv(),
         timeout: 1500,
       })
       .trim()
       .split('\n')[0]
-    return output && path.isAbsolute(output) ? output : null
+    return output && path.isAbsolute(output) && fs.existsSync(output) ? output : null
   } catch {
     return null
   }
@@ -2093,10 +2155,9 @@ class NwLspServer {
     private readonly onDiagnostics: (payload: EditorLspDiagnosticsPayload) => void,
   ) {
     const childProcess = requireNode<typeof import('node:child_process')>('node:child_process')
-    const process = getNodeProcess()
     this.process = childProcess.spawn(commandPath, args, {
       cwd: rootPath,
-      env: { ...(process?.env ?? {}), PATH: buildNwUserPathEnv() },
+      env: buildNwUserEnv({ PWD: rootPath }),
       stdio: ['pipe', 'pipe', 'pipe'],
     })
     this.process.stdout.on('data', (chunk: Buffer) => this.consume(chunk))
@@ -2900,6 +2961,194 @@ function buildAgentArgs(agent: AgentSessionName, input: string) {
   }
 }
 
+type NwAgentAuthStatus = {
+  agent: AgentSessionName
+  binaryPath: string | null
+  authenticated: boolean | 'unknown'
+  account?: string | null
+}
+
+type NwCapturedCommandResult = {
+  stdout: string
+  stderr: string
+  code: number | null
+  signal: NodeJS.Signals | null
+}
+
+const ANSI_COLOR_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, 'g')
+
+function appendBoundedOutput(current: string, next: string, max = 16_000) {
+  return (current + next).slice(-max)
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null
+}
+
+function asString(value: unknown) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
+function parseJsonRecord(text: string) {
+  const trimmed = text.trim()
+  if (!trimmed) return null
+  const candidates = [trimmed]
+  const firstBrace = trimmed.indexOf('{')
+  const lastBrace = trimmed.lastIndexOf('}')
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    candidates.push(trimmed.slice(firstBrace, lastBrace + 1))
+  }
+  for (const candidate of candidates) {
+    try {
+      return asRecord(JSON.parse(candidate))
+    } catch {}
+  }
+  return null
+}
+
+async function runNwCapturedCommand(
+  binary: string,
+  args: string[],
+  options: {
+    timeoutMs?: number
+    cwd?: string | null
+    env?: Record<string, string | undefined>
+  } = {},
+): Promise<NwCapturedCommandResult> {
+  const childProcess = requireNode<typeof import('node:child_process')>('node:child_process')
+  const timeoutMs = options.timeoutMs ?? 5_000
+  return await new Promise<NwCapturedCommandResult>((resolve, reject) => {
+    let stdout = ''
+    let stderr = ''
+    let settled = false
+    let child: import('node:child_process').ChildProcess
+    try {
+      child = childProcess.spawn(binary, args, {
+        cwd: options.cwd ?? (getUserHomeDir() || undefined),
+        env: buildNwUserEnv({ NO_COLOR: '1', FORCE_COLOR: '0', ...options.env }),
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+    } catch (error) {
+      reject(error)
+      return
+    }
+    const finish = (result: NwCapturedCommandResult | Error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (result instanceof Error) reject(result)
+      else resolve(result)
+    }
+    const timer = window.setTimeout(() => {
+      try {
+        child.kill('SIGKILL')
+      } catch {}
+      finish(new Error(`${binary} ${args.join(' ')} timed out`))
+    }, timeoutMs)
+    child.stdout?.setEncoding('utf8')
+    child.stderr?.setEncoding('utf8')
+    child.stdout?.on('data', (chunk: string) => {
+      stdout = appendBoundedOutput(stdout, chunk)
+    })
+    child.stderr?.on('data', (chunk: string) => {
+      stderr = appendBoundedOutput(stderr, chunk)
+    })
+    child.on('error', (error) => finish(error instanceof Error ? error : new Error(String(error))))
+    child.on('close', (code, signal) => finish({ stdout, stderr, code, signal }))
+  })
+}
+
+async function probeNwAgentAuth(agent: AgentSessionName): Promise<NwAgentAuthStatus> {
+  const binaryPath = resolveAgentBinary(agent)
+  if (!binaryPath) return { agent, binaryPath: null, authenticated: false, account: null }
+  try {
+    if (agent === 'claude') {
+      const result = await runNwCapturedCommand(binaryPath, ['auth', 'status'])
+      const payload = parseJsonRecord(`${result.stdout}\n${result.stderr}`)
+      const loggedIn = payload && typeof payload.loggedIn === 'boolean' ? payload.loggedIn : null
+      return {
+        agent,
+        binaryPath,
+        authenticated: loggedIn ?? 'unknown',
+        account: asString(payload?.email),
+      }
+    }
+    if (agent === 'codex') {
+      const result = await runNwCapturedCommand(binaryPath, ['login', 'status'])
+      const output = `${result.stdout}\n${result.stderr}`.replace(ANSI_COLOR_RE, '')
+      return {
+        agent,
+        binaryPath,
+        authenticated:
+          result.code === 0 && /logged in|authenticated|chatgpt|api key/i.test(output)
+            ? true
+            : /not logged|not authenticated|login required|missing credentials/i.test(output)
+              ? false
+              : 'unknown',
+        account: null,
+      }
+    }
+    if (agent === 'cursor') {
+      const result = await runNwCapturedCommand(binaryPath, ['status', '--format', 'json'])
+      const payload = parseJsonRecord(`${result.stdout}\n${result.stderr}`)
+      const userInfo = asRecord(payload?.userInfo)
+      const status = asString(payload?.status)
+      const authenticated =
+        payload && typeof payload.isAuthenticated === 'boolean'
+          ? payload.isAuthenticated
+          : status === 'authenticated'
+            ? true
+            : status === 'unauthenticated'
+              ? false
+              : 'unknown'
+      return {
+        agent,
+        binaryPath,
+        authenticated,
+        account: asString(userInfo?.email),
+      }
+    }
+    if (agent === 'opencode') {
+      const result = await runNwCapturedCommand(binaryPath, ['auth', 'list'])
+      const output = `${result.stdout}\n${result.stderr}`.replace(ANSI_COLOR_RE, '')
+      return {
+        agent,
+        binaryPath,
+        authenticated:
+          /\bcredentials?\b/i.test(output) && !/\b0 credentials?\b/i.test(output)
+            ? true
+            : /not logged in|no credentials|login/i.test(output)
+              ? false
+              : 'unknown',
+        account: null,
+      }
+    }
+    return { agent, binaryPath, authenticated: 'unknown', account: null }
+  } catch {
+    return { agent, binaryPath, authenticated: 'unknown', account: null }
+  }
+}
+
+function getAgentLoginCommand(agent: AgentSessionName) {
+  const binary = resolveAgentBinary(agent)
+  const fallback = AGENT_LOGIN_COMMANDS[agent] ?? getAgentBinary(agent)
+  if (!binary) return fallback
+  switch (agent) {
+    case 'claude':
+      return `${shellQuote(binary)}`
+    case 'codex':
+      return `${shellQuote(binary)} login`
+    case 'cursor':
+      return `${shellQuote(binary)} login`
+    case 'opencode':
+      return `${shellQuote(binary)} auth login`
+    default:
+      return fallback
+  }
+}
+
 function appendAgentError(snapshot: AgentSessionSnapshot, message: string) {
   snapshot.status = 'error'
   snapshot.error = message
@@ -2921,8 +3170,8 @@ function runAgentTurn(snapshot: AgentSessionSnapshot, input: string) {
   let child: import('node:child_process').ChildProcess
   try {
     child = childProcess.spawn(command, args, {
-      cwd: snapshot.cwd ?? getHomeDir(),
-      env: getNodeProcess()?.env,
+      cwd: snapshot.cwd ?? (getUserHomeDir() || getHomeDir()),
+      env: buildNwUserEnv(snapshot.cwd ? { PWD: snapshot.cwd } : {}),
       stdio: ['ignore', 'pipe', 'pipe'],
     })
   } catch (error) {
@@ -3551,15 +3800,8 @@ export function installNwCellsAdapter() {
       notifyQueuedStart: (windowId) => {
         void showNwNotification('Queued agent turn starting', windowId, { playSound: false })
       },
-      getAuth: async (agent: AgentSessionName) => {
-        const binaryPath = resolveAgentBinary(agent)
-        return {
-          agent,
-          binaryPath,
-          authenticated: binaryPath ? 'unknown' : false,
-        }
-      },
-      getLoginCommand: async (agent) => AGENT_LOGIN_COMMANDS[agent] ?? getAgentBinary(agent),
+      getAuth: async (agent: AgentSessionName) => probeNwAgentAuth(agent),
+      getLoginCommand: async (agent) => getAgentLoginCommand(agent),
       startLogin: async (agent) => {
         const command = await window.cells.agentSession.getLoginCommand(agent)
         agentLoginEvent.emit({

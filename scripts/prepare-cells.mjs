@@ -7,6 +7,7 @@ const require = createRequire(import.meta.url)
 const runtimeDir = path.join(root, 'cells-runtime')
 const outDir = path.join(root, 'dist-cells')
 const resourcesDir = path.join(root, 'resources')
+const rootPackageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
 
 function copyEntry(src, dest) {
   if (!fs.existsSync(src)) return false
@@ -44,7 +45,14 @@ function copyNodePtyRuntime() {
   }
 }
 
-fs.copyFileSync(path.join(runtimeDir, 'cells-package.json'), path.join(outDir, 'package.json'))
+const runtimePackageJson = JSON.parse(
+  fs.readFileSync(path.join(runtimeDir, 'cells-package.json'), 'utf8'),
+)
+runtimePackageJson.version = rootPackageJson.version || runtimePackageJson.version || '0.0.0'
+fs.writeFileSync(
+  path.join(outDir, 'package.json'),
+  `${JSON.stringify(runtimePackageJson, null, 2)}\n`,
+)
 fs.copyFileSync(path.join(outDir, 'cells-runtime', 'cells.html'), path.join(outDir, 'cells.html'))
 fs.copyFileSync(path.join(resourcesDir, 'icon.png'), path.join(outDir, 'icon.png'))
 fs.copyFileSync(path.join(resourcesDir, 'icon.icns'), path.join(outDir, 'icon.icns'))

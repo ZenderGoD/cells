@@ -318,7 +318,13 @@ async function stageSmokeSdkApp() {
   const plistPath = path.join(smokeAppPath, 'Contents', 'Info.plist')
   await runQuiet('plutil', ['-replace', 'CFBundleDisplayName', '-string', 'Cells Smoke', plistPath])
   await runQuiet('plutil', ['-replace', 'CFBundleName', '-string', 'Cells Smoke', plistPath])
-  await runQuiet('plutil', ['-replace', 'CFBundleIdentifier', '-string', 'com.cells.app.smoke', plistPath])
+  await runQuiet('plutil', [
+    '-replace',
+    'CFBundleIdentifier',
+    '-string',
+    'com.cells.app.smoke',
+    plistPath,
+  ])
   await runQuiet('plutil', ['-replace', 'CFBundleIconFile', '-string', 'cells.icns', plistPath])
 
   appPath = smokeAppPath
@@ -446,6 +452,14 @@ async function main() {
   fs.mkdirSync(smokeChromiumProfileDir, { recursive: true })
   const manifestPath = path.join(appPath, 'Contents', 'Resources', 'app.nw', 'package.json')
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+  const expectedVersion = JSON.parse(
+    fs.readFileSync(path.join(root, 'package.json'), 'utf8'),
+  ).version
+  if (manifest.version !== expectedVersion) {
+    throw new Error(
+      `Staged app manifest version mismatch: expected ${expectedVersion}, got ${manifest.version}`,
+    )
+  }
   const chromiumArgs = String(manifest['chromium-args'] ?? '')
     .split(/\s+/)
     .filter(Boolean)
@@ -1173,6 +1187,54 @@ async function main() {
     )
     if (!agentApi.ok) throw new Error(`Agent API parity smoke failed: ${JSON.stringify(agentApi)}`)
 
+    const agentAuth = await cdpEval(
+      page.webSocketDebuggerUrl,
+      `new Promise(async (resolve) => {
+        const fs = window.require('node:fs')
+        const os = window.require('node:os')
+        const path = window.require('node:path')
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cells-nw-agent-auth-'))
+        const writeBin = (name, body) => {
+          const filePath = path.join(dir, name)
+          fs.writeFileSync(filePath, body, { mode: 0o755 })
+          return filePath
+        }
+        const codex = writeBin('codex', '#!/bin/sh\\nif [ "$1" = "login" ] && [ "$2" = "status" ]; then echo "Logged in using ChatGPT"; exit 0; fi\\necho "$@"\\n')
+        const claude = writeBin('claude', '#!/bin/sh\\nif [ "$1" = "auth" ] && [ "$2" = "status" ]; then echo "{\\\\\\"loggedIn\\\\\\":true,\\\\\\"email\\\\\\":\\\\\\"smoke@example.test\\\\\\"}"; exit 0; fi\\necho "$@"\\n')
+        const cursor = writeBin('cursor-agent', '#!/bin/sh\\nif [ "$1" = "status" ]; then echo "{\\\\\\"status\\\\\\":\\\\\\"authenticated\\\\\\",\\\\\\"isAuthenticated\\\\\\":true,\\\\\\"userInfo\\\\\\":{\\\\\\"email\\\\\\":\\\\\\"smoke@example.test\\\\\\"}}"; exit 0; fi\\necho "$@"\\n')
+        const opencode = writeBin('opencode', '#!/bin/sh\\nif [ "$1" = "auth" ] && [ "$2" = "list" ]; then echo "Credentials"; echo "1 credentials"; exit 0; fi\\necho "$@"\\n')
+        try {
+          await window.cells.agent.setCustomPaths({ codex, claude, cursor, opencode })
+          const [available, claudeAuth, codexAuth, cursorAuth, opencodeAuth] = await Promise.all([
+            window.cells.agent.checkAvailable({}, {}),
+            window.cells.agentSession.getAuth('claude'),
+            window.cells.agentSession.getAuth('codex'),
+            window.cells.agentSession.getAuth('cursor'),
+            window.cells.agentSession.getAuth('opencode')
+          ])
+          resolve({
+            ok:
+              available.claude === true &&
+              available.codex === true &&
+              available.cursor === true &&
+              available.opencode === true &&
+              claudeAuth.authenticated === true &&
+              codexAuth.authenticated === true &&
+              cursorAuth.authenticated === true &&
+              opencodeAuth.authenticated === true,
+            available,
+            statuses: { claude: claudeAuth, codex: codexAuth, cursor: cursorAuth, opencode: opencodeAuth }
+          })
+        } catch (error) {
+          resolve({ ok: false, error: error instanceof Error ? error.message : String(error) })
+        } finally {
+          fs.rmSync(dir, { recursive: true, force: true })
+        }
+      })`,
+      10_000,
+    )
+    if (!agentAuth.ok) throw new Error(`Agent auth smoke failed: ${JSON.stringify(agentAuth)}`)
+
     const agentResponses = await cdpEval(
       page.webSocketDebuggerUrl,
       `new Promise(async (resolve) => {
@@ -1285,7 +1347,7 @@ async function main() {
             off()
             resolve({
               ok:
-                /^\\d+\\.\\d+\\.\\d+/.test(version) &&
+                version === ${JSON.stringify(expectedVersion)} &&
                 support?.enabled === false &&
                 support?.reason === 'development-build' &&
                 statusEvents.length >= 3 &&
@@ -1763,6 +1825,7 @@ process.stdin.on('data', (chunk) => {
           terminal,
           agent: { ok: agent.ok },
           agentApi,
+          agentAuth,
           agentResponses,
           mcpInstall,
           updater,
