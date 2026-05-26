@@ -8,6 +8,7 @@ import { URL } from 'node:url'
 const cscLink = process.env.CSC_LINK?.trim()
 const cscPassword = process.env.CSC_KEY_PASSWORD ?? ''
 const githubEnv = process.env.GITHUB_ENV
+const requireSigning = process.env.CELLS_REQUIRE_SIGNING === '1'
 
 function appendGithubEnv(key, value) {
   if (!githubEnv || !value) return
@@ -54,6 +55,9 @@ function findIdentity(keychainPath) {
 }
 
 if (!cscLink) {
+  if (requireSigning) {
+    throw new Error('CSC_LINK is required for this Cells release build.')
+  }
   console.log('CSC_LINK is not set; Cells will be ad-hoc signed for local packaging.')
   process.exit(0)
 }

@@ -18,6 +18,7 @@ const artifactPath = path.join(outDir, artifactName)
 const dmgName = `${appName}-${appVersion}-mac-${process.arch}.dmg`
 const dmgPath = path.join(outDir, dmgName)
 const entitlementsPath = path.join(root, 'resources', 'mac-entitlements.plist')
+const requireNotarization = process.env.CELLS_REQUIRE_NOTARIZATION === '1'
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -92,6 +93,11 @@ async function notarizeAppIfConfigured() {
   const profile = process.env.CELLS_NOTARY_PROFILE?.trim()
   const identity = process.env.CELLS_CODESIGN_IDENTITY?.trim() || '-'
   if (!profile || identity === '-') {
+    if (requireNotarization) {
+      throw new Error(
+        'CELLS_NOTARY_PROFILE and CELLS_CODESIGN_IDENTITY are required for this Cells release build.',
+      )
+    }
     console.log(
       'Skipping notarization; CELLS_NOTARY_PROFILE or signing identity is not configured.',
     )
@@ -146,11 +152,32 @@ async function signDmgIfPossible() {
 async function notarizeDmgIfConfigured() {
   const profile = process.env.CELLS_NOTARY_PROFILE?.trim()
   const identity = process.env.CELLS_CODESIGN_IDENTITY?.trim() || '-'
-  if (!profile || identity === '-') return
+  if (!profile || identity === '-') {
+    if (requireNotarization) {
+      throw new Error(
+        'CELLS_NOTARY_PROFILE and CELLS_CODESIGN_IDENTITY are required to notarize the Cells DMG.',
+      )
+    }
+    return
+  }
 
   await run('xcrun', ['notarytool', 'submit', dmgPath, '--keychain-profile', profile, '--wait'])
   await run('xcrun', ['stapler', 'staple', dmgPath])
   await run('xcrun', ['stapler', 'validate', dmgPath])
+}
+
+async function assessGatekeeperIfRequired() {
+  if (!requireNotarization) return
+  await run('spctl', ['-a', '-vv', '--type', 'execute', stagedApp])
+  await run('spctl', [
+    '-a',
+    '-vv',
+    '--type',
+    'open',
+    '--context',
+    'context:primary-signature',
+    dmgPath,
+  ])
 }
 
 if (process.platform !== 'darwin')
@@ -180,6 +207,7 @@ await createDmg()
 await signDmgIfPossible()
 await notarizeDmgIfConfigured()
 await run('hdiutil', ['verify', dmgPath])
+await assessGatekeeperIfRequired()
 
 console.log(`Staged ${appName} at ${path.relative(root, stagedApp)}`)
 console.log(`Created artifact ${path.relative(root, artifactPath)}`)

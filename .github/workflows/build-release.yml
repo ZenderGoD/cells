@@ -39,6 +39,7 @@ jobs:
 
       - name: Prepare macOS signing
         env:
+          CELLS_REQUIRE_SIGNING: '1'
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -68,12 +69,14 @@ jobs:
               --issuer "$APPLE_API_ISSUER"
             echo "CELLS_NOTARY_PROFILE=cells-ci-notary" >> "$GITHUB_ENV"
           else
-            echo "Apple notarization credentials are not configured; packaging will skip notarization."
+            echo "Apple notarization credentials are required for Cells release builds."
+            exit 1
           fi
 
       - name: Package Cells
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CELLS_REQUIRE_NOTARIZATION: '1'
         run: pnpm pack:cells
 
       - name: Generate release notes
