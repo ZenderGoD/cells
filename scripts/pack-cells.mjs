@@ -84,7 +84,9 @@ fs.copyFileSync(path.join(root, 'resources', 'icon.icns'), path.join(resourcesDi
 
 await updatePlist(path.join(stagedApp, 'Contents', 'Info.plist'))
 await run('ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', stagedApp, artifactPath])
+await run('node', ['scripts/generate-cells-update-metadata.mjs'])
 
 console.log(`Staged ${appName} at ${path.relative(root, stagedApp)}`)
 console.log(`Created artifact ${path.relative(root, artifactPath)}`)
+console.log(`Created updater metadata release/latest-mac.yml`)
 console.log(`Run it with: open ${JSON.stringify(stagedApp)}`)

@@ -165,8 +165,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          # Find and upload all built artifacts for this runner.
-          for file in release/*.zip; do
+          # Find and upload all built artifacts and updater metadata for this runner.
+          for file in release/*.zip release/latest-mac.yml; do
             if [ -f "$file" ]; then
               echo "Uploading artifact: $(basename "$file")"
               gh release upload "$RELEASE_TAG" "$file" --repo "$GITHUB_REPOSITORY" --clobber
