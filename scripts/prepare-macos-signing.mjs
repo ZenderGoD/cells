@@ -1,7 +1,9 @@
 import { execFileSync } from 'node:child_process'
+import { Buffer } from 'node:buffer'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { URL } from 'node:url'
 
 const cscLink = process.env.CSC_LINK?.trim()
 const cscPassword = process.env.CSC_KEY_PASSWORD ?? ''
