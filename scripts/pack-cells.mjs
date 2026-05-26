@@ -40,6 +40,73 @@ function run(command, args, options = {}) {
   })
 }
 
+function runCapture(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: root,
+      shell: process.platform === 'win32',
+      ...options,
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout?.on('data', (chunk) => {
+      stdout += chunk
+      process.stdout.write(chunk)
+    })
+    child.stderr?.on('data', (chunk) => {
+      stderr += chunk
+      process.stderr.write(chunk)
+    })
+    child.on('error', reject)
+    child.on('exit', (code, signal) => {
+      const output = `${stdout}\n${stderr}`.trim()
+      if (signal) {
+        const error = new Error(`${command} exited with signal ${signal}`)
+        error.output = output
+        reject(error)
+        return
+      }
+      if (code === 0) {
+        resolve({ stdout, stderr, output })
+        return
+      }
+      const error = new Error(`${command} exited with code ${code}`)
+      error.output = output
+      reject(error)
+    })
+  })
+}
+
+async function printNotaryLog(submissionId, profile) {
+  if (!submissionId) return
+  console.log(`Fetching Apple notary log for submission ${submissionId}.`)
+  await run('xcrun', ['notarytool', 'log', submissionId, '--keychain-profile', profile]).catch(
+    (error) => {
+      console.error(`Unable to fetch Apple notary log: ${error.message}`)
+    },
+  )
+}
+
+async function submitForNotarization(filePath, profile, label) {
+  const { output } = await runCapture('xcrun', [
+    'notarytool',
+    'submit',
+    filePath,
+    '--keychain-profile',
+    profile,
+    '--wait',
+    '--output-format',
+    'json',
+  ])
+  const result = JSON.parse(output)
+  console.log(`Apple notarization ${label}: ${result.status} (${result.id})`)
+  if (result.status !== 'Accepted') {
+    await printNotaryLog(result.id, profile)
+    throw new Error(`Apple notarization failed for ${label}: ${result.status}`)
+  }
+  return result
+}
+
 async function ensureNwRuntime() {
   const packageJson = require.resolve(`${nwPackageName}/package.json`)
   const nwPackageDir = path.dirname(packageJson)
@@ -107,7 +174,7 @@ async function notarizeAppIfConfigured() {
   const notaryZip = path.join(outDir, `${appName}-${appVersion}-notary.zip`)
   fs.rmSync(notaryZip, { force: true })
   await run('ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', stagedApp, notaryZip])
-  await run('xcrun', ['notarytool', 'submit', notaryZip, '--keychain-profile', profile, '--wait'])
+  await submitForNotarization(notaryZip, profile, `${appName}.app`)
   await run('xcrun', ['stapler', 'staple', stagedApp])
   await run('xcrun', ['stapler', 'validate', stagedApp])
   fs.rmSync(notaryZip, { force: true })
@@ -161,7 +228,7 @@ async function notarizeDmgIfConfigured() {
     return
   }
 
-  await run('xcrun', ['notarytool', 'submit', dmgPath, '--keychain-profile', profile, '--wait'])
+  await submitForNotarization(dmgPath, profile, `${appName}.dmg`)
   await run('xcrun', ['stapler', 'staple', dmgPath])
   await run('xcrun', ['stapler', 'validate', dmgPath])
 }
