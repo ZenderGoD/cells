@@ -15,6 +15,9 @@ const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 
 const appVersion = packageJson.version || '0.0.0'
 const artifactName = `${appName}-${appVersion}-mac-${process.arch}.zip`
 const artifactPath = path.join(outDir, artifactName)
+const dmgName = `${appName}-${appVersion}-mac-${process.arch}.dmg`
+const dmgPath = path.join(outDir, dmgName)
+const entitlementsPath = path.join(root, 'resources', 'mac-entitlements.plist')
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -65,6 +68,91 @@ async function updatePlist(plistPath) {
   }
 }
 
+async function signApp() {
+  const identity = process.env.CELLS_CODESIGN_IDENTITY?.trim() || '-'
+  const keychain = process.env.CELLS_CODESIGN_KEYCHAIN?.trim()
+  const args = ['--force', '--deep', '--sign', identity]
+
+  if (identity !== '-') {
+    args.push('--timestamp', '--options', 'runtime', '--entitlements', entitlementsPath)
+    if (keychain) args.push('--keychain', keychain)
+  }
+
+  args.push(stagedApp)
+  await run('codesign', args)
+  await run('codesign', ['--verify', '--deep', '--strict', '--verbose=2', stagedApp])
+  console.log(
+    identity === '-'
+      ? 'Ad-hoc signed Cells.app for local packaging.'
+      : `Signed Cells.app with identity ${identity}.`,
+  )
+}
+
+async function notarizeAppIfConfigured() {
+  const profile = process.env.CELLS_NOTARY_PROFILE?.trim()
+  const identity = process.env.CELLS_CODESIGN_IDENTITY?.trim() || '-'
+  if (!profile || identity === '-') {
+    console.log(
+      'Skipping notarization; CELLS_NOTARY_PROFILE or signing identity is not configured.',
+    )
+    return
+  }
+
+  const notaryZip = path.join(outDir, `${appName}-${appVersion}-notary.zip`)
+  fs.rmSync(notaryZip, { force: true })
+  await run('ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', stagedApp, notaryZip])
+  await run('xcrun', ['notarytool', 'submit', notaryZip, '--keychain-profile', profile, '--wait'])
+  await run('xcrun', ['stapler', 'staple', stagedApp])
+  await run('xcrun', ['stapler', 'validate', stagedApp])
+  fs.rmSync(notaryZip, { force: true })
+}
+
+async function createDmg() {
+  const dmgRoot = path.join(outDir, 'dmg-root')
+  fs.rmSync(dmgRoot, { recursive: true, force: true })
+  fs.rmSync(dmgPath, { force: true })
+  fs.mkdirSync(dmgRoot, { recursive: true })
+  fs.cpSync(stagedApp, path.join(dmgRoot, `${appName}.app`), {
+    recursive: true,
+    verbatimSymlinks: true,
+  })
+  fs.symlinkSync('/Applications', path.join(dmgRoot, 'Applications'))
+  await run('hdiutil', [
+    'create',
+    '-volname',
+    appName,
+    '-srcfolder',
+    dmgRoot,
+    '-ov',
+    '-format',
+    'UDZO',
+    dmgPath,
+  ])
+  fs.rmSync(dmgRoot, { recursive: true, force: true })
+}
+
+async function signDmgIfPossible() {
+  const identity = process.env.CELLS_CODESIGN_IDENTITY?.trim() || '-'
+  const keychain = process.env.CELLS_CODESIGN_KEYCHAIN?.trim()
+  if (identity === '-') return
+
+  const args = ['--force', '--sign', identity, '--timestamp']
+  if (keychain) args.push('--keychain', keychain)
+  args.push(dmgPath)
+  await run('codesign', args)
+  await run('codesign', ['--verify', '--verbose=2', dmgPath])
+}
+
+async function notarizeDmgIfConfigured() {
+  const profile = process.env.CELLS_NOTARY_PROFILE?.trim()
+  const identity = process.env.CELLS_CODESIGN_IDENTITY?.trim() || '-'
+  if (!profile || identity === '-') return
+
+  await run('xcrun', ['notarytool', 'submit', dmgPath, '--keychain-profile', profile, '--wait'])
+  await run('xcrun', ['stapler', 'staple', dmgPath])
+  await run('xcrun', ['stapler', 'validate', dmgPath])
+}
+
 if (process.platform !== 'darwin')
   throw new Error('pack:cells currently stages a macOS .app bundle only.')
 
@@ -74,7 +162,8 @@ const nwApp = await ensureNwRuntime()
 fs.mkdirSync(outDir, { recursive: true })
 fs.rmSync(stagedApp, { recursive: true, force: true })
 fs.rmSync(artifactPath, { force: true })
-fs.cpSync(nwApp, stagedApp, { recursive: true })
+fs.rmSync(dmgPath, { force: true })
+fs.cpSync(nwApp, stagedApp, { recursive: true, verbatimSymlinks: true })
 
 const resourcesDir = path.join(stagedApp, 'Contents', 'Resources')
 const appNwDir = path.join(resourcesDir, 'app.nw')
@@ -83,10 +172,17 @@ fs.cpSync(path.join(root, 'dist-cells'), appNwDir, { recursive: true })
 fs.copyFileSync(path.join(root, 'resources', 'icon.icns'), path.join(resourcesDir, 'cells.icns'))
 
 await updatePlist(path.join(stagedApp, 'Contents', 'Info.plist'))
+await signApp()
+await notarizeAppIfConfigured()
 await run('ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', stagedApp, artifactPath])
 await run('node', ['scripts/generate-cells-update-metadata.mjs'])
+await createDmg()
+await signDmgIfPossible()
+await notarizeDmgIfConfigured()
+await run('hdiutil', ['verify', dmgPath])
 
 console.log(`Staged ${appName} at ${path.relative(root, stagedApp)}`)
 console.log(`Created artifact ${path.relative(root, artifactPath)}`)
+console.log(`Created artifact ${path.relative(root, dmgPath)}`)
 console.log(`Created updater metadata release/latest-mac.yml`)
 console.log(`Run it with: open ${JSON.stringify(stagedApp)}`)
