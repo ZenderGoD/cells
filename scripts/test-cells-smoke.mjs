@@ -404,6 +404,34 @@ async function waitForRuntimeSnapshot(wsUrl) {
   throw new Error('Timed out waiting for Cells runtime shell.')
 }
 
+async function waitForPinnedRuntime(wsUrl, expectedId, expectedType) {
+  let lastError = null
+  for (let i = 0; i < 30; i += 1) {
+    try {
+      const runtime = await cdpEval(
+        wsUrl,
+        `(() => ({
+          runtime: window.cellsRuntime,
+          pinnedId: window.cells?.app?.getPinnedId?.() ?? null,
+          pinnedType: window.cells?.app?.getPinnedType?.() ?? null
+        }))()`,
+      )
+      if (
+        runtime.runtime === 'nw' &&
+        runtime.pinnedId === expectedId &&
+        runtime.pinnedType === expectedType
+      ) {
+        return runtime
+      }
+    } catch (error) {
+      lastError = error
+    }
+    await wait(500)
+  }
+  if (lastError) throw lastError
+  throw new Error(`Timed out waiting for pinned ${expectedType} runtime ${expectedId}.`)
+}
+
 async function main() {
   if (process.platform !== 'darwin') {
     throw new Error('test:cells:smoke currently verifies the staged macOS Cells.app bundle.')
@@ -521,13 +549,10 @@ async function main() {
         target.url.includes('pinned=nw-popout-terminal-smoke'),
       'terminal popout page',
     )
-    const pinnedRuntime = await cdpEval(
+    const pinnedRuntime = await waitForPinnedRuntime(
       pinnedTerminal.webSocketDebuggerUrl,
-      `(() => ({
-        runtime: window.cellsRuntime,
-        pinnedId: window.cells.app.getPinnedId(),
-        pinnedType: window.cells.app.getPinnedType()
-      }))()`,
+      'nw-popout-terminal-smoke',
+      'terminal',
     )
     if (pinnedRuntime.runtime !== 'nw') throw new Error('Pinned window did not load Cells runtime.')
     if (pinnedRuntime.pinnedId !== 'nw-popout-terminal-smoke') {
@@ -574,13 +599,10 @@ async function main() {
         target.url.includes('pinned=nw-popout-agent-smoke'),
       'agent popout page',
     )
-    const pinnedAgentRuntime = await cdpEval(
+    const pinnedAgentRuntime = await waitForPinnedRuntime(
       pinnedAgent.webSocketDebuggerUrl,
-      `(() => ({
-        runtime: window.cellsRuntime,
-        pinnedId: window.cells.app.getPinnedId(),
-        pinnedType: window.cells.app.getPinnedType()
-      }))()`,
+      'nw-popout-agent-smoke',
+      'agent',
     )
     if (pinnedAgentRuntime.runtime !== 'nw') {
       throw new Error('Pinned agent window did not load Cells runtime.')
