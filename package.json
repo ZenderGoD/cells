@@ -44,7 +44,7 @@
     "prepare:mcp-server": "CI=true pnpm --dir mcp-server install --frozen-lockfile && pnpm --dir mcp-server build",
     "typecheck:mcp-server": "CI=true pnpm --dir mcp-server install --frozen-lockfile && pnpm --dir mcp-server typecheck",
     "build": "pnpm build:cells",
-    "build:cells": "tsc --noEmit --project tsconfig.json && vite build --config cells-runtime/vite.cells.config.ts && node scripts/prepare-cells.mjs",
+    "build:cells": "tsc --noEmit --project tsconfig.json && node --max-old-space-size=4096 ./node_modules/vite/bin/vite.js build --config cells-runtime/vite.cells.config.ts && node scripts/prepare-cells.mjs",
     "build:legacy-electron": "pnpm prepare:mcp-server && pnpm prepare:terminal-bundles && pnpm typecheck:app && pnpm typecheck:legacy-electron && pnpm build:vite",
     "build:vite": "node --max-old-space-size=4096 ./node_modules/vite/bin/vite.js build",
     "typecheck": "pnpm typecheck:app",
