@@ -1308,6 +1308,7 @@ export interface CellsAPI {
     onCloseTerminal(callback: () => void): () => void
     onShortcut(callback: (payload: AppShortcutPayload) => void): () => void
     toggleMaximize(): Promise<void>
+    toggleFullscreen(): Promise<void>
     resizeToFit(width: number, height: number): Promise<void>
     pinWindow(
       id: string,
@@ -1367,5 +1368,7 @@ export interface CellsAPI {
 declare global {
   interface Window {
     cells: CellsAPI
+    cellsRuntime?: 'electron' | 'nw'
+    require?: NodeRequire
   }
 }

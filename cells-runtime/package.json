@@ -1,0 +1,19 @@
+{
+  "name": "cells-runtime-lab",
+  "version": "0.0.0",
+  "private": true,
+  "main": "index.html",
+  "nodejs": true,
+  "icon": "icon.png",
+  "chromium-args": "--remote-debugging-port=9223 --enable-experimental-extension-apis --disable-features=DisableLoadExtensionCommandLineSwitch",
+  "window": {
+    "title": "Cells Runtime Extension Lab",
+    "width": 1320,
+    "height": 860,
+    "min_width": 960,
+    "min_height": 640,
+    "position": "center",
+    "icon": "icon.png",
+    "show": true
+  }
+}

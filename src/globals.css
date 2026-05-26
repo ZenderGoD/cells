@@ -763,6 +763,33 @@ textarea[data-ghostty] {
   animation-play-state: paused;
 }
 
+/* The native runtime's frameless macOS window can become GPU-bound with many
+ * translucent layers. Keep the main workspace responsive by avoiding compositor-
+ * heavy effects in that runtime. */
+.cells-runtime-nw .backdrop-blur,
+.cells-runtime-nw .backdrop-blur-sm,
+.cells-runtime-nw .backdrop-blur-md,
+.cells-runtime-nw .backdrop-blur-lg,
+.cells-runtime-nw .backdrop-blur-xl,
+.cells-runtime-nw .backdrop-blur-2xl,
+.cells-runtime-nw .backdrop-blur-3xl,
+.cells-runtime-nw [class*='backdrop-blur-['] {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+.cells-runtime-nw .animate-shimmer::after,
+.cells-runtime-nw .animate-border-trace rect,
+.cells-runtime-nw .animate-agent-window-status-edge,
+.cells-runtime-nw .spinner-cube {
+  animation: none !important;
+}
+
+.cells-runtime-nw [style*='filter: blur'],
+.cells-runtime-nw [style*='filter:blur'] {
+  filter: none !important;
+}
+
 @layer base {
   * {
     @apply border-border;
@@ -776,6 +803,27 @@ textarea[data-ghostty] {
     @apply font-sans;
     background: transparent !important;
   }
+}
+
+html.cells-runtime-nw {
+  --window-surface-opacity: 1 !important;
+  --canvas-surface-opacity: 1 !important;
+  --canvas-grid-opacity: 0.22 !important;
+  --color-canvas: oklch(0.09 0.003 285.9) !important;
+}
+
+html.cells-runtime-nw.light {
+  --color-canvas: oklch(0.95 0.002 286) !important;
+}
+
+html.cells-runtime-nw,
+html.cells-runtime-nw body,
+html.cells-runtime-nw #root {
+  background: var(--background) !important;
+}
+
+html.cells-runtime-nw .app-shell {
+  background: var(--background) !important;
 }
 
 /* Honour prefers-reduced-motion for decorative loops that Tailwind / custom

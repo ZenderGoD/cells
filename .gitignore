@@ -1,6 +1,8 @@
 node_modules/
 dist/
 dist-electron/
+dist-runtime-lab/
+dist-cells/
 /release/
 resources/vendor/zellij/
 *.tgz

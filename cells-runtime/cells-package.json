@@ -1,0 +1,21 @@
+{
+  "name": "cells",
+  "version": "0.0.0",
+  "private": true,
+  "main": "cells.html",
+  "nodejs": true,
+  "icon": "icon.png",
+  "permissions": ["management"],
+  "chromium-args": "--remote-debugging-port=9224 --enable-experimental-extension-apis --disable-features=DisableLoadExtensionCommandLineSwitch",
+  "window": {
+    "title": "Cells",
+    "width": 1440,
+    "height": 940,
+    "min_width": 980,
+    "min_height": 680,
+    "position": "center",
+    "frame": false,
+    "icon": "icon.png",
+    "show": true
+  }
+}

@@ -3029,6 +3029,11 @@ ipcMain.handle('app:toggle-maximize', () => {
   }
 })
 
+ipcMain.handle('app:toggle-fullscreen', () => {
+  if (!mainWindow) return
+  mainWindow.setFullScreen(!mainWindow.isFullScreen())
+})
+
 ipcMain.handle('app:resize-to-fit', (_event, width: number, height: number) => {
   if (!mainWindow) return
   mainWindow.setContentSize(Math.round(width), Math.round(height), true)

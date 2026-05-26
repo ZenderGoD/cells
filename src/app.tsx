@@ -132,7 +132,10 @@ function MainApp() {
       setOverlayOpen: s.setOverlayOpen,
     })),
   )
-  const shellStyle = buildWindowAppearanceStyle({ windowOpacity, useTransparentWindow })
+  const shellStyle =
+    window.cellsRuntime === 'nw'
+      ? buildWindowAppearanceStyle({ windowOpacity: 100, useTransparentWindow: false })
+      : buildWindowAppearanceStyle({ windowOpacity, useTransparentWindow })
   const activeProjectId = useStore((s) => s.activeProjectId)
   const focusedAgentWindowId = useStore((s) => s.focusedAgentWindowId)
   const suppressWindowFocusTerminalRefocusRef = useRef(false)
@@ -304,7 +307,7 @@ function MainApp() {
     })
   }, [])
 
-  const showDimOverlay = dimWhenUnfocused && !windowFocused
+  const showDimOverlay = window.cellsRuntime !== 'nw' && dimWhenUnfocused && !windowFocused
 
   const runCanvasZoomCommand = useCallback((command: 'fit' | 'in' | 'out') => {
     const state = useStore.getState()

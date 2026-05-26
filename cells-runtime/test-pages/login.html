@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Cells NW.js Login Probe</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: system-ui, sans-serif;
+        background: #f8fafc;
+        color: #111827;
+      }
+      form {
+        display: grid;
+        gap: 12px;
+        max-width: 360px;
+        padding: 32px;
+      }
+      label {
+        display: grid;
+        gap: 5px;
+      }
+      input {
+        height: 34px;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        padding: 0 10px;
+        font: inherit;
+      }
+      #password-manager-probe {
+        color: #0f766e;
+      }
+    </style>
+  </head>
+  <body>
+    <form>
+      <h1>Login Probe</h1>
+      <label>
+        Email
+        <input autocomplete="username" name="email" type="email" />
+      </label>
+      <label>
+        Password
+        <input autocomplete="current-password" name="password" type="password" />
+      </label>
+      <button type="button">Sign in</button>
+      <p id="password-manager-probe">Password-manager-style marker pending.</p>
+    </form>
+  </body>
+</html>

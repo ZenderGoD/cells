@@ -547,7 +547,7 @@ export function AppSettings({ open, onOpenChange }: AppSettingsProps) {
                           className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-[11px] transition-colors hover:bg-muted/40"
                         >
                           <div className="flex min-w-0 flex-col items-start gap-0.5 text-left">
-                            <span className="text-foreground">Use translucent Electron window</span>
+                            <span className="text-foreground">Use translucent app window</span>
                             <span className="text-[10px] text-muted-foreground/40">
                               Keep this off for the lowest GPU and WindowServer load. Applies after
                               restart.
@@ -1968,6 +1968,8 @@ function ThemePreviewButton({
   return (
     <button
       type="button"
+      data-theme-key={themeKey}
+      aria-label={`Use ${theme.name} theme`}
       aria-pressed={selected}
       onClick={onClick}
       className={cn(

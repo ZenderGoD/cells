@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "Cells NW DNR Probe",
+  "version": "0.0.1",
+  "description": "Blocks the Cells NW prototype marker script using declarativeNetRequest.",
+  "permissions": ["declarativeNetRequest"],
+  "host_permissions": ["<all_urls>"],
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "ruleset_1",
+        "enabled": true,
+        "path": "rules.json"
+      }
+    ]
+  }
+}

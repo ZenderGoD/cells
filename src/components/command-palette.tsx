@@ -1964,7 +1964,9 @@ export function CommandPalette() {
         </Command>
       </CommandDialog>
 
-      <AppSettings open={showSettingsRaw} onOpenChange={setShowSettings} />
+      {showSettingsRaw ? (
+        <AppSettings open={showSettingsRaw} onOpenChange={setShowSettings} />
+      ) : null}
       <NewProjectDialog open={showNewProjectRaw} onOpenChange={setShowNewProject} />
       {showOpenFileRaw ? <OpenFileDialog open onOpenChange={setShowOpenFile} /> : null}
     </>

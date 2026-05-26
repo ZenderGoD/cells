@@ -1025,10 +1025,10 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
     requestAnimationFrame(() => window.dispatchEvent(new Event('terminal-refocus')))
   }, [closeTerminalFind])
 
-  const toggleMaximizeFromTitleBar = useCallback((event: MouseEvent<HTMLElement>) => {
+  const toggleFullscreenFromTitleBar = useCallback((event: MouseEvent<HTMLElement>) => {
     event.preventDefault()
     event.stopPropagation()
-    void window.cells.app.toggleMaximize()
+    void window.cells.app.toggleFullscreen()
   }, [])
 
   const handleTitleBarDoubleClick = useCallback(
@@ -1047,9 +1047,9 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
       ) {
         return
       }
-      toggleMaximizeFromTitleBar(event)
+      toggleFullscreenFromTitleBar(event)
     },
-    [toggleMaximizeFromTitleBar],
+    [toggleFullscreenFromTitleBar],
   )
 
   const openPickedFilesInEditor = useCallback(async () => {
@@ -1584,12 +1584,12 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
           <div className="flex-1" />
         )}
 
-        {/* Empty title bar spacer - keeps double-click maximize responsive. */}
+        {/* Empty title bar spacer - keeps double-click fullscreen responsive. */}
         {!embedded && (
           <div
-            className="flex-1 no-drag"
+            className="flex-1"
             data-titlebar-empty-space="true"
-            onDoubleClick={toggleMaximizeFromTitleBar}
+            onDoubleClick={toggleFullscreenFromTitleBar}
           />
         )}
 
@@ -2179,7 +2179,7 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
         )}
       </div>
 
-      <AppSettings open={showSettings} onOpenChange={setShowSettings} />
+      {showSettings ? <AppSettings open={showSettings} onOpenChange={setShowSettings} /> : null}
       <NewProjectDialog open={showNewProject} onOpenChange={setShowNewProject} />
     </>
   )

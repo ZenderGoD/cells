@@ -1,9 +1,6 @@
 name: release
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       tag:
@@ -16,18 +13,7 @@ permissions:
 
 jobs:
   release:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-            package_script: release
-            artifact_glob: 'release/*.{dmg,zip,yml}'
-          - os: ubuntu-latest
-            package_script: release:linux
-            artifact_glob: 'release/*.{AppImage,deb,rpm,tar.gz,yml}'
-
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-latest
 
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
@@ -48,50 +34,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build and release
-        if: runner.os == 'macOS'
+      - name: Package Cells
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: |
-          if [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; then
-            echo "Using Apple ID notarization credentials"
-            xcrun notarytool store-credentials "cells-ci-notary" \
-              --apple-id "$APPLE_ID" \
-              --team-id "$APPLE_TEAM_ID" \
-              --password "$APPLE_APP_SPECIFIC_PASSWORD"
-            unset APPLE_API_KEY APPLE_API_KEY_CONTENT APPLE_API_KEY_ID APPLE_API_ISSUER
-          else
-            APPLE_API_KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
-            printf '%s' "$APPLE_API_KEY_CONTENT" > "$APPLE_API_KEY_PATH"
-            chmod 600 "$APPLE_API_KEY_PATH"
-            echo "APPLE_API_KEY_PATH bytes: $(wc -c < "$APPLE_API_KEY_PATH")"
-            echo "APPLE_API_KEY_PATH first line: $(head -n 1 "$APPLE_API_KEY_PATH")"
-            echo "APPLE_API_KEY_PATH last line: $(tail -n 1 "$APPLE_API_KEY_PATH")"
-            openssl pkey -in "$APPLE_API_KEY_PATH" -noout >/dev/null
-            xcrun notarytool store-credentials "cells-ci-notary" \
-              --key "$APPLE_API_KEY_PATH" \
-              --key-id "$APPLE_API_KEY_ID" \
-              --issuer "$APPLE_API_ISSUER"
-            export APPLE_API_KEY="$APPLE_API_KEY_PATH"
-          fi
-          pnpm ${{ matrix.package_script }}
-
-      - name: Build and release Linux
-        if: runner.os == 'Linux'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: pnpm ${{ matrix.package_script }}
+        run: pnpm pack:cells
 
       - name: Generate release notes
-        if: runner.os == 'macOS'
         id: notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -194,11 +142,17 @@ jobs:
           NODE
 
       - name: Update GitHub Release
-        if: runner.os == 'macOS'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --draft \
+              --title "${RELEASE_TAG#v}" \
+              --notes-file release-notes.md
+          fi
           gh release edit "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --draft=false \
@@ -212,7 +166,7 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           # Find and upload all built artifacts for this runner.
-          for file in ${{ matrix.artifact_glob }}; do
+          for file in release/*.zip; do
             if [ -f "$file" ]; then
               echo "Uploading artifact: $(basename "$file")"
               gh release upload "$RELEASE_TAG" "$file" --repo "$GITHUB_REPOSITORY" --clobber

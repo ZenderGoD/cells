@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Cells NW.js Probe Page</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: system-ui, sans-serif;
+        background: #f7fafc;
+        color: #111827;
+      }
+      main {
+        max-width: 760px;
+        padding: 32px;
+      }
+      code {
+        background: #e5e7eb;
+        border-radius: 4px;
+        padding: 2px 5px;
+      }
+      #content-script-status {
+        margin-top: 16px;
+        padding: 12px;
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Cells NW.js Probe Page</h1>
+      <p>This controlled page receives extension probes and loads the DNR marker URL.</p>
+      <p>Cookie: <code id="cookie-output"></code></p>
+      <div id="content-script-status">Content script marker pending.</div>
+      <div id="network-status">Network marker pending.</div>
+    </main>
+    <script>
+      document.getElementById('cookie-output').textContent = document.cookie || '(none)'
+
+      const params = new URLSearchParams(location.search)
+      const blocked = params.get('blocked')
+      if (blocked) {
+        const script = document.createElement('script')
+        script.src = blocked
+        script.onload = () => {
+          window.__cellsNwBlockedScriptLoaded = true
+          document.getElementById('network-status').textContent = 'Blocked marker script executed.'
+          console.log(
+            'CELLS_NW_PROBE:' +
+              JSON.stringify({
+                source: 'cells-nw-probe',
+                kind: 'network',
+                detail: 'blocked marker script executed',
+              }),
+          )
+        }
+        script.onerror = () => {
+          window.__cellsNwBlockedScriptLoaded = false
+          document.getElementById('network-status').textContent =
+            'Blocked marker script failed to load.'
+          console.log(
+            'CELLS_NW_PROBE:' +
+              JSON.stringify({
+                source: 'cells-nw-probe',
+                kind: 'network',
+                detail: 'blocked marker script failed to load',
+              }),
+          )
+        }
+        document.head.appendChild(script)
+      }
+    </script>
+  </body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "Cells NW Content Script Probe",
+  "version": "0.0.1",
+  "description": "Minimal content script and login-form probe.",
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content-script.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

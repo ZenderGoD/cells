@@ -3,9 +3,41 @@ import { ArrowUpRight, EyeOff, Globe, WifiOff } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { hasPrimaryModifier } from '@/lib/keyboard-shortcuts'
 import { useStore } from '@/lib/store'
-import type { BrowserNode as BrowserNodeType, BrowserViewFailure } from '@/types'
+import type {
+  BrowserElementSelection,
+  BrowserNode as BrowserNodeType,
+  BrowserViewFailure,
+} from '@/types'
 import { useShallow } from 'zustand/react/shallow'
 import { hapticBuzz } from '@/lib/haptics'
+
+interface NwWebviewElement extends HTMLElement {
+  src: string
+  back?: () => void
+  forward?: () => void
+  reload?: () => void
+  canGoBack?: () => boolean
+  canGoForward?: () => boolean
+  getUrl?: () => string
+  getTitle?: () => string
+  executeScript?: (
+    details: { code: string } | string,
+    callback?: (result: unknown[]) => void,
+  ) => void
+  setZoom?: (factor: number) => void
+  setZoomFactor?: (factor: number) => void
+}
+
+declare global {
+  namespace JSX {
+    interface IntrinsicElements {
+      webview: React.DetailedHTMLProps<React.HTMLAttributes<HTMLElement>, HTMLElement> & {
+        src?: string
+        partition?: string
+      }
+    }
+  }
+}
 
 const MIN_W = 400
 const MIN_H = 300
@@ -16,6 +48,14 @@ const HIBERNATE_DELAY_MS = 15_000
 const MAX_WARM_HIDDEN_BROWSERS = 2
 const BROWSER_CREATE_RETRY_DELAY_MS = 1_200
 const BROWSER_CREATE_TIMEOUT_MS = 8_000
+const NW_PICKER_SELECTED_MARKER = '[cells-nw-picker-selected]'
+const NW_PICKER_CANCELLED_MARKER = '[cells-nw-picker-cancelled]'
+const NW_SHORTCUT_MARKER = '[cells-nw-shortcut]'
+const NW_WHEEL_MARKER = '[cells-nw-wheel]'
+const NW_CONTEXT_MENU_MARKER = '[cells-nw-context-menu]'
+const NW_OVERSCROLL_MARKER = '[cells-nw-overscroll]'
+const NW_URL_MARKER = '[cells-nw-url]'
+const NW_NEW_WINDOW_MARKER = '[cells-nw-new-window]'
 
 type Edge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
 
@@ -125,8 +165,10 @@ export function BrowserNode({
   const [canGoBack, setCanGoBack] = useState(false)
   const [canGoForward, setCanGoForward] = useState(false)
   const [transitionHidden, setTransitionHidden] = useState(false)
+  const [nwKeepAlive, setNwKeepAlive] = useState(false)
   const prevFocusedRef = useRef(isFocused)
   const contentRef = useRef<HTMLDivElement>(null)
+  const nwWebviewRef = useRef<NwWebviewElement | null>(null)
   const createdRef = useRef(false)
   const lastBoundsRef = useRef({ x: 0, y: 0, width: 0, height: 0 })
   const lastZoomRef = useRef(-1)
@@ -235,8 +277,42 @@ export function BrowserNode({
     }
   }, [browser.id, hibernateView, isFocused])
 
+  const isNwRuntime = window.cellsRuntime === 'nw'
+  const nwCanMountWebview = isNwRuntime && Boolean(activeProjectId) && !offline && !failure
+  const nwShouldHaveLiveWebview = nwCanMountWebview && (isFocused || nwKeepAlive)
+
+  useEffect(() => {
+    if (!isNwRuntime) return
+    if (isFocused && nwCanMountWebview) {
+      setNwKeepAlive(true)
+      return
+    }
+    if (offline || failure || !createdRef.current) {
+      setNwKeepAlive(false)
+      return
+    }
+    const timer = window.setTimeout(() => setNwKeepAlive(false), 30_000)
+    return () => window.clearTimeout(timer)
+  }, [failure, isFocused, isNwRuntime, nwCanMountWebview, offline])
+
   // Create or unpark WebContentsView only when the browser is focused.
   useEffect(() => {
+    if (isNwRuntime) {
+      if (!nwShouldHaveLiveWebview) {
+        if (createdRef.current) {
+          createdRef.current = false
+          setViewReady(false)
+          setIsLoading(false)
+        }
+        return
+      }
+      if (createdRef.current) return
+      createdRef.current = true
+      setViewReady(true)
+      setFailure(null)
+      setSuspended(false)
+      return
+    }
     if (!activeProjectId || !isFocused || createdRef.current || createInFlightRef.current) return
     clearHibernateTimer()
     clearCreateRetryTimer()
@@ -318,10 +394,857 @@ export function BrowserNode({
     createAttempt,
     hydrateBrowserState,
     isFocused,
+    isNwRuntime,
+    nwShouldHaveLiveWebview,
     resetNativeViewMetrics,
   ])
 
   useEffect(() => {
+    if (!isNwRuntime) return
+    const webview = nwWebviewRef.current
+    if (!webview) return
+
+    const emit = (detail: Record<string, unknown>) => {
+      window.dispatchEvent(
+        new CustomEvent('cells-nw-browser-event', { detail: { browserId: browser.id, ...detail } }),
+      )
+    }
+    const getUrl = () => webview.getUrl?.() || webview.src || browser.url
+    const getTitle = () => webview.getTitle?.() || browser.title || getUrl()
+    const initialHistory =
+      initialHistoryRef.current?.entries?.length && initialHistoryRef.current.activeIndex >= 0
+        ? {
+            entries: initialHistoryRef.current.entries.map((entry) => ({
+              url: entry.url,
+              title: entry.title || entry.url,
+            })),
+            activeIndex: Math.min(
+              Math.max(0, initialHistoryRef.current.activeIndex),
+              initialHistoryRef.current.entries.length - 1,
+            ),
+          }
+        : {
+            entries: [{ url: getUrl(), title: getTitle() }],
+            activeIndex: 0,
+          }
+    const historyRef = { current: initialHistory }
+    const syncHistory = (url: string, title: string, mode: 'push' | 'replace' = 'push') => {
+      const normalizedTitle = title || url
+      const current = historyRef.current
+      const active = current.entries[current.activeIndex]
+      if (mode === 'replace' && active) {
+        current.entries[current.activeIndex] = { url, title: normalizedTitle }
+      } else if (active?.url === url) {
+        current.entries[current.activeIndex] = { url, title: normalizedTitle }
+      } else {
+        current.entries = current.entries.slice(0, current.activeIndex + 1)
+        current.entries.push({ url, title: normalizedTitle })
+        current.activeIndex = current.entries.length - 1
+      }
+      if (current.entries.length > 100) {
+        const trim = current.entries.length - 100
+        current.entries = current.entries.slice(trim)
+        current.activeIndex = Math.max(0, current.activeIndex - trim)
+      }
+      return current
+    }
+    const getHistoryEntries = () => historyRef.current.entries
+    const getHistoryActiveIndex = () => historyRef.current.activeIndex
+    const canHistoryGoBack = () => Boolean(webview.canGoBack?.()) || getHistoryActiveIndex() > 0
+    const canHistoryGoForward = () =>
+      Boolean(webview.canGoForward?.()) || getHistoryActiveIndex() < getHistoryEntries().length - 1
+    const applyHistoryStep = (delta: -1 | 1) => {
+      const current = historyRef.current
+      const nextIndex = current.activeIndex + delta
+      if (nextIndex < 0 || nextIndex >= current.entries.length) return null
+      current.activeIndex = nextIndex
+      return current.entries[nextIndex] ?? null
+    }
+    const emitNav = () =>
+      emit({
+        kind: 'nav',
+        url: getUrl(),
+        title: getTitle(),
+        canGoBack: canHistoryGoBack(),
+        canGoForward: canHistoryGoForward(),
+        historyEntries: getHistoryEntries(),
+        activeIndex: getHistoryActiveIndex(),
+      })
+
+    const runWebviewScript = (code: string) =>
+      new Promise<unknown>((resolve) => {
+        if (typeof webview.executeScript !== 'function') {
+          resolve(null)
+          return
+        }
+
+        let settled = false
+        let fallbackTimer: number | null = null
+        const finish = (result: unknown[] | null) => {
+          if (settled) return
+          settled = true
+          if (fallbackTimer !== null) window.clearTimeout(fallbackTimer)
+          resolve(result?.[0] ?? null)
+        }
+        fallbackTimer = window.setTimeout(() => {
+          try {
+            webview.executeScript?.(code, (result) => finish(result))
+            window.setTimeout(() => finish(null), 800)
+          } catch {
+            finish(null)
+          }
+        }, 500)
+
+        try {
+          webview.executeScript({ code }, (result) => finish(result))
+        } catch {
+          window.clearTimeout(fallbackTimer)
+          try {
+            webview.executeScript(code, (result) => finish(result))
+            window.setTimeout(() => finish(null), 800)
+          } catch {
+            finish(null)
+          }
+        }
+      })
+    const capturePageMetadata = async () => {
+      const result = await runWebviewScript(`(() => {
+        const themeMeta = document.querySelector('meta[name="theme-color"]');
+        const icon =
+          document.querySelector('link[rel~="icon"]') ||
+          document.querySelector('link[rel="shortcut icon"]') ||
+          document.querySelector('link[rel="apple-touch-icon"]');
+        return {
+          url: location.href,
+          title: document.title || location.href,
+          themeColor: themeMeta && themeMeta.content ? themeMeta.content : null,
+          faviconUrl: icon && icon.href ? icon.href : null,
+        };
+      })()`)
+      if (!result || typeof result !== 'object') return
+      const metadata = result as {
+        url?: unknown
+        title?: unknown
+        themeColor?: unknown
+        faviconUrl?: unknown
+      }
+      if (typeof metadata.title === 'string' || typeof metadata.url === 'string') {
+        emit({
+          kind: 'title',
+          title: typeof metadata.title === 'string' ? metadata.title : getTitle(),
+          url: typeof metadata.url === 'string' ? metadata.url : getUrl(),
+        })
+      }
+      if (typeof metadata.themeColor === 'string' || metadata.themeColor === null) {
+        emit({ kind: 'theme-color', themeColor: metadata.themeColor })
+      }
+      if (typeof metadata.faviconUrl === 'string' || metadata.faviconUrl === null) {
+        emit({ kind: 'favicon', faviconUrl: metadata.faviconUrl })
+      }
+    }
+    const installShortcutBridge = () =>
+      runWebviewScript(`
+        (() => {
+          if (window.__cellsNwShortcutBridgeInstalled) return true;
+          window.__cellsNwShortcutBridgeInstalled = true;
+          const marker = ${JSON.stringify(NW_SHORTCUT_MARKER)};
+          const isMac = /Mac|iPhone|iPad|iPod/.test(navigator.platform);
+          const keyMatches = (event, key, code) => String(event.key || '').toLowerCase() === key || (code && event.code === code);
+          const primary = (event) => isMac ? event.metaKey : event.ctrlKey;
+          const zoomIn = (event) => keyMatches(event, '+') || keyMatches(event, '=') || keyMatches(event, 'add') || event.code === 'Equal' || event.code === 'NumpadAdd';
+          const zoomOut = (event) => keyMatches(event, '-') || keyMatches(event, '_') || keyMatches(event, 'subtract') || event.code === 'Minus' || event.code === 'NumpadSubtract';
+          const match = (event) => {
+            if (isMac && event.ctrlKey && !event.metaKey && !event.altKey) {
+              if (!event.shiftKey && keyMatches(event, 'a', 'KeyA')) return 'toggle-project-switcher';
+              if (!event.shiftKey && keyMatches(event, 's', 'KeyS')) return 'toggle-selection-mode';
+              if (keyMatches(event, 'tab', 'Tab')) return event.shiftKey ? 'window-cycle-back' : 'window-cycle-forward';
+              if (event.code === 'Backquote') return event.shiftKey ? 'project-cycle-back' : 'project-cycle-forward';
+              return null;
+            }
+            if (event.altKey || !primary(event)) return null;
+            if (event.shiftKey) {
+              if (keyMatches(event, 't', 'KeyT')) return 'restore-last-closed';
+              if (keyMatches(event, 'p', 'KeyP')) return 'toggle-pin-focused';
+              if (keyMatches(event, 'c', 'KeyC')) return 'copy-browser-url';
+              if (keyMatches(event, 's', 'KeyS')) return 'toggle-title-bar-position';
+              if (keyMatches(event, 'o', 'KeyO')) return 'zoom-to-fit-all';
+              if (keyMatches(event, 'enter', 'Enter') || event.code === 'NumpadEnter') return 'resize-focused-to-fit-viewport';
+              if (keyMatches(event, '0', 'Digit0') || event.code === 'Numpad0') return 'resize-window-to-fit-focused';
+            }
+            if (keyMatches(event, 't', 'KeyT')) return 'toggle-command-palette';
+            if (keyMatches(event, ',', 'Comma')) return 'open-settings';
+            if (keyMatches(event, 'o', 'KeyO')) return 'zoom-to-fit-all';
+            if (keyMatches(event, 'w', 'KeyW')) return 'close-window';
+            if (keyMatches(event, 'q', 'KeyQ')) return 'quit-app';
+            if (keyMatches(event, 'r', 'KeyR')) return 'reload-focused';
+            if (keyMatches(event, '[', 'BracketLeft')) return 'browser-back';
+            if (keyMatches(event, ']', 'BracketRight')) return 'browser-forward';
+            if (keyMatches(event, 'l', 'KeyL')) return 'open-browser-location';
+            if (keyMatches(event, 's', 'KeyS')) return 'toggle-title-bar-hidden';
+            if (keyMatches(event, 'enter', 'Enter') || event.code === 'NumpadEnter') return 'snap-focused-window';
+            if (keyMatches(event, 'arrowleft', 'ArrowLeft')) return 'snap-left';
+            if (keyMatches(event, 'arrowright', 'ArrowRight')) return 'snap-right';
+            if (keyMatches(event, 'arrowup', 'ArrowUp')) return 'snap-up';
+            if (keyMatches(event, 'arrowdown', 'ArrowDown')) return 'snap-down';
+            if (keyMatches(event, 'h', 'KeyH')) return 'snap-left';
+            if (keyMatches(event, 'j', 'KeyJ')) return 'snap-down';
+            if (keyMatches(event, 'k', 'KeyK')) return 'snap-up';
+            if (keyMatches(event, '0', 'Digit0') || event.code === 'Numpad0') return 'zoom-to-fit-focused';
+            if (zoomIn(event)) return 'zoom-focused-window-in';
+            if (zoomOut(event)) return 'zoom-focused-window-out';
+            return null;
+          };
+          document.addEventListener('keydown', (event) => {
+            const command = match(event);
+            if (!command) return;
+            event.preventDefault();
+            event.stopPropagation();
+            if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
+            console.log(marker + JSON.stringify({ command }));
+          }, true);
+          return true;
+        })()
+      `)
+    const installWheelBridge = () =>
+      runWebviewScript(`
+        (() => {
+          if (window.__cellsNwWheelBridgeInstalled) return true;
+          window.__cellsNwWheelBridgeInstalled = true;
+          const marker = ${JSON.stringify(NW_WHEEL_MARKER)};
+          const overscrollMarker = ${JSON.stringify(NW_OVERSCROLL_MARKER)};
+          let accDelta = 0;
+          let direction = null;
+          let phase = 'idle';
+          let resetTimer = null;
+          const threshold = 220;
+          const scrollingElement = () => document.scrollingElement || document.documentElement;
+          const isAtLeftEdge = () => {
+            const el = scrollingElement();
+            return !el || el.scrollLeft <= 0;
+          };
+          const isAtRightEdge = () => {
+            const el = scrollingElement();
+            return !el || el.scrollLeft + window.innerWidth >= el.scrollWidth - 1;
+          };
+          const emitOverscroll = (progress, nextDirection, commit) => {
+            console.log(overscrollMarker + JSON.stringify({ progress, direction: nextDirection, commit: Boolean(commit) }));
+          };
+          const resetGesture = () => {
+            if (phase === 'overscrolling' || phase === 'committed') emitOverscroll(0, null, false);
+            accDelta = 0;
+            direction = null;
+            phase = 'idle';
+          };
+          document.addEventListener('wheel', (event) => {
+            if (event.metaKey || event.ctrlKey || event.shiftKey) {
+              console.log(marker + JSON.stringify({
+                deltaX: event.deltaX || 0,
+                deltaY: event.deltaY || 0,
+                ctrlKey: Boolean(event.ctrlKey),
+                metaKey: Boolean(event.metaKey),
+                shiftKey: Boolean(event.shiftKey),
+                clientX: event.clientX || 0,
+                clientY: event.clientY || 0,
+              }));
+              return;
+            }
+
+            if (phase === 'committed') {
+              if (resetTimer) clearTimeout(resetTimer);
+              resetTimer = setTimeout(resetGesture, 60);
+              return;
+            }
+            if (Math.abs(event.deltaX) < Math.abs(event.deltaY) * 1.5 && phase !== 'overscrolling') return;
+
+            if (resetTimer) clearTimeout(resetTimer);
+            const atLeft = isAtLeftEdge();
+            const atRight = isAtRightEdge();
+            const forceEdgeGesture = Math.abs(event.deltaX) >= threshold && Math.abs(event.deltaY) < 4;
+            if ((atLeft || forceEdgeGesture) && event.deltaX < 0) {
+              if (direction === 'forward' && phase === 'overscrolling') return;
+              if (direction === 'forward') resetGesture();
+              direction = 'back';
+              phase = 'overscrolling';
+              accDelta = Math.min(accDelta + Math.abs(event.deltaX), threshold * 1.3);
+            } else if ((atRight || forceEdgeGesture) && event.deltaX > 0) {
+              if (direction === 'back' && phase === 'overscrolling') return;
+              if (direction === 'back') resetGesture();
+              direction = 'forward';
+              phase = 'overscrolling';
+              accDelta = Math.min(accDelta + Math.abs(event.deltaX), threshold * 1.3);
+            } else if (phase === 'overscrolling') {
+              accDelta = Math.max(0, accDelta - Math.abs(event.deltaX) * 2);
+              if (accDelta <= 0) {
+                resetGesture();
+                return;
+              }
+            } else {
+              phase = 'scrolling';
+              return;
+            }
+
+            const progress = accDelta / threshold;
+            emitOverscroll(progress, direction, false);
+            resetTimer = setTimeout(() => {
+              if (phase !== 'overscrolling') return;
+              if (progress >= 1 && direction) {
+                emitOverscroll(progress, direction, true);
+                phase = 'committed';
+                resetTimer = setTimeout(resetGesture, 80);
+              } else {
+                resetGesture();
+              }
+            }, 80);
+          }, { passive: true, capture: true });
+          return true;
+        })()
+      `)
+    const installNavigationBridge = () =>
+      runWebviewScript(`
+        (() => {
+          if (window.__cellsNwNavigationBridgeInstalled) return true;
+          window.__cellsNwNavigationBridgeInstalled = true;
+          const urlMarker = ${JSON.stringify(NW_URL_MARKER)};
+          const newWindowMarker = ${JSON.stringify(NW_NEW_WINDOW_MARKER)};
+          let lastUrl = location.href;
+          const reportUrl = () => {
+            const url = location.href;
+            if (url === lastUrl) return;
+            lastUrl = url;
+            console.log(urlMarker + JSON.stringify({ url, title: document.title || url }));
+          };
+          window.addEventListener('hashchange', reportUrl, true);
+          window.addEventListener('popstate', reportUrl, true);
+          const originalPushState = history.pushState;
+          const originalReplaceState = history.replaceState;
+          history.pushState = function(...args) {
+            const result = originalPushState.apply(this, args);
+            setTimeout(reportUrl, 0);
+            return result;
+          };
+          history.replaceState = function(...args) {
+            const result = originalReplaceState.apply(this, args);
+            setTimeout(reportUrl, 0);
+            return result;
+          };
+          document.addEventListener('click', (event) => {
+            if (event.defaultPrevented || event.button !== 0) return;
+            const link = event.target && typeof event.target.closest === 'function' ? event.target.closest('a[href]') : null;
+            if (!link) return;
+            const target = String(link.target || '').toLowerCase();
+            if (target && target !== '_self') {
+              event.preventDefault();
+              console.log(newWindowMarker + JSON.stringify({ url: link.href }));
+            }
+          }, true);
+          const originalOpen = window.open;
+          window.__cellsNwReportNewWindow = (url) => {
+            if (url) console.log(newWindowMarker + JSON.stringify({ url: String(url) }));
+          };
+          window.open = function(url, target, features) {
+            window.__cellsNwReportNewWindow(url);
+            return originalOpen ? originalOpen.call(window, url, target, features) : null;
+          };
+          return true;
+        })()
+      `)
+    const installContextMenuBridge = () =>
+      runWebviewScript(`
+        (() => {
+          if (window.__cellsNwContextMenuBridgeInstalled) return true;
+          window.__cellsNwContextMenuBridgeInstalled = true;
+          const marker = ${JSON.stringify(NW_CONTEXT_MENU_MARKER)};
+          const nearest = (target, selector) => {
+            if (!target || typeof target.closest !== 'function') return null;
+            try { return target.closest(selector); } catch { return null; }
+          };
+          const normalize = (value, limit) => {
+            const text = String(value || '').replace(/\\s+/g, ' ').trim();
+            return text.length > limit ? text.slice(0, limit) + '...' : text;
+          };
+          document.addEventListener('contextmenu', (event) => {
+            const target = event.target;
+            const link = nearest(target, 'a[href]');
+            const image = nearest(target, 'img[src], image[href]');
+            const editable = nearest(target, 'input, textarea, [contenteditable=""], [contenteditable="true"]');
+            const payload = {
+              x: event.clientX || 0,
+              y: event.clientY || 0,
+              linkUrl: link ? link.href : null,
+              linkText: link ? normalize(link.innerText || link.textContent || link.href, 160) : null,
+              imageUrl: image ? (image.currentSrc || image.src || image.href?.baseVal || null) : null,
+              isEditable: Boolean(editable),
+              selectionText: normalize(String(window.getSelection ? window.getSelection() : ''), 500),
+            };
+            console.log(marker + JSON.stringify(payload));
+          }, true);
+          return true;
+        })()
+      `)
+    const buildElementPickerScript = (targetAgentWindowId: string | null) => `
+      (() => {
+        const selectedMarker = ${JSON.stringify(NW_PICKER_SELECTED_MARKER)};
+        const cancelledMarker = ${JSON.stringify(NW_PICKER_CANCELLED_MARKER)};
+        const targetAgentWindowId = ${JSON.stringify(targetAgentWindowId)};
+        if (window.__cellsNwElementPickerCancel) window.__cellsNwElementPickerCancel(false);
+        const state = { hovered: null, previousCursor: document.documentElement.style.cursor, previousUserSelect: document.documentElement.style.userSelect };
+        const truncate = (value, limit) => {
+          const text = String(value || '');
+          return text.length > limit ? text.slice(0, limit) + '...' : text;
+        };
+        const normalize = (value, limit) => truncate(String(value || '').replace(/\\s+/g, ' ').trim(), limit);
+        const cssEscape = (value) => window.CSS && CSS.escape ? CSS.escape(value) : String(value).replace(/[^a-zA-Z0-9_-]/g, (char) => '\\\\' + char);
+        const attrEscape = (value) => String(value).replace(/\\\\/g, '\\\\\\\\').replace(/"/g, '\\\\"');
+        const matches = (selector, element) => {
+          try { return document.querySelector(selector) === element; } catch { return false; }
+        };
+        const selectorPart = (element) => {
+          const tag = element.tagName.toLowerCase();
+          if (element.id) return tag + '#' + cssEscape(element.id);
+          for (const attr of ['data-testid', 'data-test', 'data-cy', 'aria-label', 'name', 'title']) {
+            const value = element.getAttribute(attr);
+            if (value) return tag + '[' + attr + '="' + attrEscape(truncate(value, 120)) + '"]';
+          }
+          let part = tag + Array.from(element.classList || []).filter((name) => /^[a-zA-Z_-][a-zA-Z0-9_-]*$/.test(name)).slice(0, 2).map((name) => '.' + cssEscape(name)).join('');
+          const parent = element.parentElement;
+          if (parent) {
+            const siblings = Array.from(parent.children).filter((child) => child.tagName === element.tagName);
+            if (siblings.length > 1) part += ':nth-of-type(' + (siblings.indexOf(element) + 1) + ')';
+          }
+          return part;
+        };
+        const selectorFor = (element) => {
+          if (element.id) {
+            const idSelector = '#' + cssEscape(element.id);
+            if (matches(idSelector, element)) return idSelector;
+          }
+          const parts = [];
+          let current = element;
+          while (current && current.nodeType === Node.ELEMENT_NODE && parts.length < 8) {
+            parts.unshift(selectorPart(current));
+            const selector = parts.join(' > ');
+            if (matches(selector, element)) return selector;
+            if (current === document.documentElement) break;
+            current = current.parentElement;
+          }
+          return parts.join(' > ');
+        };
+        const targetElement = (event) => {
+          const path = typeof event.composedPath === 'function' ? event.composedPath() : null;
+          const target = path && path.length ? path[0] : event.target;
+          if (target instanceof Element) return target;
+          return target instanceof Node ? target.parentElement : null;
+        };
+        const attrs = (element) => {
+          const result = {};
+          for (const attr of Array.from(element.attributes || []).slice(0, 32)) {
+            const name = attr.name.toLowerCase();
+            if (name === 'style' || name === 'value' || name.startsWith('on')) continue;
+            result[name] = truncate(attr.value || '', 1000);
+          }
+          return result;
+        };
+        const payloadFor = (element) => {
+          const rect = element.getBoundingClientRect();
+          return {
+            url: location.href,
+            title: document.title || '',
+            tagName: element.tagName.toLowerCase(),
+            selector: selectorFor(element),
+            text: normalize(element.innerText || element.textContent || '', 4000),
+            outerHtml: truncate(element.outerHTML || '', 8000),
+            attributes: attrs(element),
+            rect: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) },
+            href: typeof element.href === 'string' ? element.href : null,
+            src: typeof element.src === 'string' ? element.src : null,
+            alt: element.getAttribute('alt'),
+            role: element.getAttribute('role'),
+          };
+        };
+        const box = document.createElement('div');
+        box.dataset.cellsElementPicker = 'true';
+        box.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0;pointer-events:none;box-sizing:border-box;border:2px solid rgb(125,211,252);border-radius:6px;background:rgba(14,165,233,.12);box-shadow:0 0 0 1px rgba(2,132,199,.45),0 12px 36px rgba(8,47,73,.22);z-index:2147483647;display:none';
+        const label = document.createElement('div');
+        label.dataset.cellsElementPicker = 'true';
+        label.textContent = 'Click an element to send it to chat. Esc cancels.';
+        label.style.cssText = 'position:fixed;left:50%;top:12px;transform:translateX(-50%);pointer-events:none;box-sizing:border-box;max-width:min(520px,calc(100vw - 24px));border:1px solid rgba(255,255,255,.16);border-radius:8px;background:rgba(15,23,42,.92);color:white;font:12px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:7px 10px;box-shadow:0 10px 32px rgba(0,0,0,.26);z-index:2147483647';
+        (document.body || document.documentElement).appendChild(box);
+        (document.body || document.documentElement).appendChild(label);
+        const absorb = (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
+        };
+        const update = (element) => {
+          if (!element || element.closest('[data-cells-element-picker="true"]')) return;
+          state.hovered = element;
+          const rect = element.getBoundingClientRect();
+          box.style.display = 'block';
+          box.style.transform = 'translate(' + Math.max(0, Math.round(rect.left)) + 'px,' + Math.max(0, Math.round(rect.top)) + 'px)';
+          box.style.width = Math.max(0, Math.round(rect.width)) + 'px';
+          box.style.height = Math.max(0, Math.round(rect.height)) + 'px';
+        };
+        const cleanup = (notifyCancel) => {
+          document.removeEventListener('pointermove', onMove, true);
+          document.removeEventListener('mousemove', onMove, true);
+          document.removeEventListener('pointerdown', onDown, true);
+          document.removeEventListener('mousedown', onDown, true);
+          document.removeEventListener('click', onClick, true);
+          document.removeEventListener('contextmenu', onContext, true);
+          document.removeEventListener('keydown', onKey, true);
+          window.removeEventListener('scroll', onViewport, true);
+          window.removeEventListener('resize', onViewport, true);
+          box.remove();
+          label.remove();
+          document.documentElement.style.cursor = state.previousCursor || '';
+          document.documentElement.style.userSelect = state.previousUserSelect || '';
+          delete window.__cellsNwElementPickerCancel;
+          if (notifyCancel) console.log(cancelledMarker + JSON.stringify({ targetAgentWindowId }));
+        };
+        function onMove(event) { update(targetElement(event)); }
+        function onDown(event) { update(targetElement(event)); absorb(event); }
+        function onClick(event) {
+          const element = targetElement(event) || state.hovered;
+          absorb(event);
+          cleanup(false);
+          if (element) console.log(selectedMarker + JSON.stringify({ targetAgentWindowId, selection: payloadFor(element) }));
+          else console.log(cancelledMarker + JSON.stringify({ targetAgentWindowId }));
+        }
+        function onKey(event) { if (event.key === 'Escape') { absorb(event); cleanup(true); } }
+        function onContext(event) { absorb(event); cleanup(true); }
+        function onViewport() { if (state.hovered) update(state.hovered); }
+        window.__cellsNwElementPickerCancel = cleanup;
+        document.addEventListener('pointermove', onMove, true);
+        document.addEventListener('mousemove', onMove, true);
+        document.addEventListener('pointerdown', onDown, true);
+        document.addEventListener('mousedown', onDown, true);
+        document.addEventListener('click', onClick, true);
+        document.addEventListener('contextmenu', onContext, true);
+        document.addEventListener('keydown', onKey, true);
+        window.addEventListener('scroll', onViewport, true);
+        window.addEventListener('resize', onViewport, true);
+        document.documentElement.style.cursor = 'crosshair';
+        document.documentElement.style.userSelect = 'none';
+        update(document.elementFromPoint(Math.max(0, window.innerWidth / 2), Math.max(0, window.innerHeight / 2)));
+        return true;
+      })()
+    `
+    const handleLoadStart = () => emit({ kind: 'loading', loading: true, url: getUrl() })
+    const handleLoadStop = () => {
+      const url = getUrl()
+      const title = getTitle()
+      const history = syncHistory(url, title)
+      setIsLoading(false)
+      setViewReady(true)
+      setFailure(null)
+      updateBrowserUrl(browser.id, url)
+      updateBrowserTitle(browser.id, title)
+      emit({ kind: 'loading', loading: false, url, title })
+      emit({
+        kind: 'url',
+        url,
+        title,
+        canGoBack: canHistoryGoBack(),
+        canGoForward: canHistoryGoForward(),
+        historyEntries: history.entries,
+        activeIndex: history.activeIndex,
+      })
+      emit({ kind: 'title', url, title })
+      emitNav()
+      void installShortcutBridge()
+      void installWheelBridge()
+      void installContextMenuBridge()
+      void installNavigationBridge()
+      void capturePageMetadata()
+    }
+    const handleAbort = () => {
+      const failure = {
+        kind: 'load-failed' as const,
+        message: 'NW.js webview navigation failed.',
+        url: getUrl(),
+      }
+      setFailure(failure)
+      emit({ kind: 'failure', failure })
+    }
+    const handleNewWindow = (event: Event) => {
+      const targetUrl = (event as { targetUrl?: string }).targetUrl
+      if (targetUrl) emit({ kind: 'new-window', url: targetUrl })
+    }
+    const handleFocus = () => {
+      window.dispatchEvent(new Event('cells-nw-webview-focused'))
+      emit({ kind: 'focus' })
+    }
+    const handleWebviewPointer = () => {
+      window.dispatchEvent(new Event('cells-nw-webview-focused'))
+    }
+    const handleConsoleMessage = (event: Event) => {
+      const message = String((event as { message?: string }).message ?? '')
+      if (message.startsWith(NW_PICKER_SELECTED_MARKER)) {
+        try {
+          const payload = JSON.parse(message.slice(NW_PICKER_SELECTED_MARKER.length)) as {
+            targetAgentWindowId?: string | null
+            selection?: BrowserElementSelection
+          }
+          if (payload.selection) {
+            emit({
+              kind: 'element-selected',
+              targetAgentWindowId: payload.targetAgentWindowId ?? null,
+              selection: payload.selection,
+            })
+          }
+        } catch {}
+        return
+      }
+      if (message.startsWith(NW_PICKER_CANCELLED_MARKER)) {
+        try {
+          const payload = JSON.parse(message.slice(NW_PICKER_CANCELLED_MARKER.length)) as {
+            targetAgentWindowId?: string | null
+          }
+          emit({
+            kind: 'element-picker-cancelled',
+            targetAgentWindowId: payload.targetAgentWindowId ?? null,
+          })
+        } catch {
+          emit({ kind: 'element-picker-cancelled', targetAgentWindowId: null })
+        }
+        return
+      }
+      if (message.startsWith(NW_SHORTCUT_MARKER)) {
+        try {
+          const payload = JSON.parse(message.slice(NW_SHORTCUT_MARKER.length)) as {
+            command?: string
+          }
+          if (payload.command) emit({ kind: 'shortcut', command: payload.command })
+        } catch {}
+        return
+      }
+      if (message.startsWith(NW_WHEEL_MARKER)) {
+        try {
+          const payload = JSON.parse(message.slice(NW_WHEEL_MARKER.length)) as {
+            deltaX?: unknown
+            deltaY?: unknown
+            ctrlKey?: unknown
+            metaKey?: unknown
+            shiftKey?: unknown
+            clientX?: unknown
+            clientY?: unknown
+          }
+          emit({
+            kind: 'canvas-wheel',
+            gesture: {
+              deltaX: typeof payload.deltaX === 'number' ? payload.deltaX : 0,
+              deltaY: typeof payload.deltaY === 'number' ? payload.deltaY : 0,
+              ctrlKey: Boolean(payload.ctrlKey),
+              metaKey: Boolean(payload.metaKey),
+              shiftKey: Boolean(payload.shiftKey),
+              clientX: typeof payload.clientX === 'number' ? payload.clientX : 0,
+              clientY: typeof payload.clientY === 'number' ? payload.clientY : 0,
+            },
+          })
+        } catch {}
+        return
+      }
+      if (message.startsWith(NW_CONTEXT_MENU_MARKER)) {
+        try {
+          const payload = JSON.parse(message.slice(NW_CONTEXT_MENU_MARKER.length)) as {
+            x?: unknown
+            y?: unknown
+            linkUrl?: unknown
+            linkText?: unknown
+            imageUrl?: unknown
+            isEditable?: unknown
+            selectionText?: unknown
+          }
+          emit({
+            kind: 'context-menu',
+            x: typeof payload.x === 'number' ? payload.x : 0,
+            y: typeof payload.y === 'number' ? payload.y : 0,
+            linkUrl: typeof payload.linkUrl === 'string' ? payload.linkUrl : null,
+            linkText: typeof payload.linkText === 'string' ? payload.linkText : null,
+            imageUrl: typeof payload.imageUrl === 'string' ? payload.imageUrl : null,
+            isEditable: Boolean(payload.isEditable),
+            selectionText: typeof payload.selectionText === 'string' ? payload.selectionText : '',
+          })
+        } catch {}
+        return
+      }
+      if (message.startsWith(NW_OVERSCROLL_MARKER)) {
+        try {
+          const payload = JSON.parse(message.slice(NW_OVERSCROLL_MARKER.length)) as {
+            progress?: unknown
+            direction?: unknown
+            commit?: unknown
+          }
+          emit({
+            kind: 'overscroll',
+            progress: typeof payload.progress === 'number' ? payload.progress : 0,
+            direction: typeof payload.direction === 'string' ? payload.direction : null,
+            commit: Boolean(payload.commit),
+          })
+        } catch {}
+        return
+      }
+      if (message.startsWith(NW_URL_MARKER)) {
+        try {
+          const payload = JSON.parse(message.slice(NW_URL_MARKER.length)) as {
+            url?: unknown
+            title?: unknown
+          }
+          if (typeof payload.url === 'string') {
+            const title = typeof payload.title === 'string' ? payload.title : payload.url
+            const history = syncHistory(payload.url, title)
+            emit({
+              kind: 'url',
+              url: payload.url,
+              title,
+              canGoBack: canHistoryGoBack(),
+              canGoForward: canHistoryGoForward(),
+              historyEntries: history.entries,
+              activeIndex: history.activeIndex,
+            })
+          }
+        } catch {}
+        return
+      }
+      if (message.startsWith(NW_NEW_WINDOW_MARKER)) {
+        try {
+          const payload = JSON.parse(message.slice(NW_NEW_WINDOW_MARKER.length)) as {
+            url?: unknown
+          }
+          if (typeof payload.url === 'string') emit({ kind: 'new-window', url: payload.url })
+        } catch {}
+      }
+    }
+    const handleCommand = (event: Event) => {
+      const detail = (event as CustomEvent).detail ?? {}
+      if (detail.browserId !== browser.id) return
+      switch (detail.command) {
+        case 'navigate':
+          if (typeof detail.url === 'string') webview.src = detail.url
+          break
+        case 'back':
+          applyHistoryStep(-1)
+          if (typeof webview.back === 'function' && Boolean(webview.canGoBack?.())) {
+            webview.back()
+          } else {
+            const entry = historyRef.current.entries[historyRef.current.activeIndex]
+            if (entry) webview.src = entry.url
+          }
+          break
+        case 'forward':
+          applyHistoryStep(1)
+          if (typeof webview.forward === 'function' && Boolean(webview.canGoForward?.())) {
+            webview.forward()
+          } else {
+            const entry = historyRef.current.entries[historyRef.current.activeIndex]
+            if (entry) webview.src = entry.url
+          }
+          break
+        case 'reload':
+          webview.reload?.()
+          break
+        case 'focus':
+          window.dispatchEvent(new Event('cells-nw-webview-focused'))
+          webview.focus()
+          emit({ kind: 'focus' })
+          break
+        case 'devtools':
+          try {
+            window.require?.('nw.gui')?.Window?.get?.()?.showDevTools?.(webview)
+          } catch {}
+          break
+        case 'inspect':
+          try {
+            if (
+              typeof detail.x === 'number' &&
+              typeof detail.y === 'number' &&
+              typeof (
+                webview as NwWebviewElement & {
+                  inspectElementAt?: (x: number, y: number) => void
+                }
+              ).inspectElementAt === 'function'
+            ) {
+              ;(
+                webview as NwWebviewElement & { inspectElementAt: (x: number, y: number) => void }
+              ).inspectElementAt(detail.x, detail.y)
+            } else {
+              window.require?.('nw.gui')?.Window?.get?.()?.showDevTools?.(webview)
+            }
+          } catch {}
+          break
+        case 'zoom':
+          if (typeof detail.factor === 'number') {
+            try {
+              if (typeof webview.setZoomFactor === 'function') webview.setZoomFactor(detail.factor)
+              else if (typeof webview.setZoom === 'function') webview.setZoom(detail.factor)
+            } catch {}
+          }
+          break
+        case 'picker-start':
+          void runWebviewScript(
+            buildElementPickerScript(
+              typeof detail.targetAgentWindowId === 'string' ? detail.targetAgentWindowId : null,
+            ),
+          )
+          break
+        case 'picker-cancel':
+          void runWebviewScript(
+            'window.__cellsNwElementPickerCancel && window.__cellsNwElementPickerCancel(true)',
+          )
+          break
+        case 'script':
+          if (typeof detail.code === 'string') void runWebviewScript(detail.code)
+          break
+        case 'destroy':
+          webview.src = 'about:blank'
+          break
+        case 'park':
+          webview.style.visibility = 'hidden'
+          break
+        case 'create':
+          webview.style.visibility = ''
+          break
+      }
+    }
+
+    webview.addEventListener('loadstart', handleLoadStart)
+    webview.addEventListener('loadstop', handleLoadStop)
+    webview.addEventListener('loadabort', handleAbort)
+    webview.addEventListener('newwindow', handleNewWindow)
+    webview.addEventListener('focus', handleFocus)
+    webview.addEventListener('mousedown', handleWebviewPointer)
+    webview.addEventListener('pointerdown', handleWebviewPointer)
+    webview.addEventListener('consolemessage', handleConsoleMessage)
+    window.addEventListener('cells-nw-browser-command', handleCommand)
+
+    const initialHydrateTimer = window.setTimeout(() => {
+      handleLoadStop()
+    }, 250)
+
+    return () => {
+      window.clearTimeout(initialHydrateTimer)
+      webview.removeEventListener('loadstart', handleLoadStart)
+      webview.removeEventListener('loadstop', handleLoadStop)
+      webview.removeEventListener('loadabort', handleAbort)
+      webview.removeEventListener('newwindow', handleNewWindow)
+      webview.removeEventListener('focus', handleFocus)
+      webview.removeEventListener('mousedown', handleWebviewPointer)
+      webview.removeEventListener('pointerdown', handleWebviewPointer)
+      webview.removeEventListener('consolemessage', handleConsoleMessage)
+      window.removeEventListener('cells-nw-browser-command', handleCommand)
+    }
+  }, [
+    browser.id,
+    browser.title,
+    browser.url,
+    isNwRuntime,
+    updateBrowserTitle,
+    updateBrowserUrl,
+    viewReady,
+  ])
+
+  useEffect(() => {
+    if (isNwRuntime) return
     if (!isFocused || viewReady || failure || offline || suspended) return
     const timer = window.setTimeout(() => {
       if (!isFocusedRef.current || viewReady) return
@@ -350,6 +1273,7 @@ export function BrowserNode({
     clearCreateRetryTimer,
     failure,
     isFocused,
+    isNwRuntime,
     offline,
     resetNativeViewMetrics,
     suspended,
@@ -357,6 +1281,7 @@ export function BrowserNode({
   ])
 
   useEffect(() => {
+    if (isNwRuntime) return
     const entry = warmBrowserEntries.get(browser.id)
     if (entry) {
       entry.isFocused = isFocused
@@ -375,7 +1300,7 @@ export function BrowserNode({
       trimWarmBrowsers()
     }, HIBERNATE_DELAY_MS)
     return clearHibernateTimer
-  }, [browser.id, clearHibernateTimer, isFocused])
+  }, [browser.id, clearHibernateTimer, isFocused, isNwRuntime])
 
   useEffect(() => {
     return () => {
@@ -389,12 +1314,12 @@ export function BrowserNode({
         )
       if (browserStillExists) {
         window.cells.browser.setVisible(browser.id, false)
-        void window.cells.browser.park(browser.id).catch(() => {})
+        if (!isNwRuntime) void window.cells.browser.park(browser.id).catch(() => {})
         return
       }
-      void hibernateView('teardown')
+      if (!isNwRuntime) void hibernateView('teardown')
     }
-  }, [browser.id, clearCreateRetryTimer, clearHibernateTimer, hibernateView])
+  }, [browser.id, clearCreateRetryTimer, clearHibernateTimer, hibernateView, isNwRuntime])
 
   // Detect network loss — hide native view and auto-reload when back online
   useEffect(() => {
@@ -514,10 +1439,12 @@ export function BrowserNode({
     return () => window.removeEventListener('resize', onResize)
   }, [])
 
-  const nativeViewBlocked =
-    overlayOpen || offline || !!failure || dragModeActive || suspended || transitionHidden
+  const nativeViewBlocked = isNwRuntime
+    ? offline || !!failure
+    : overlayOpen || offline || !!failure || dragModeActive || suspended || transitionHidden
 
   useEffect(() => {
+    if (isNwRuntime) return
     if (!viewReady || !isFocused) {
       window.cells.browser.setVisible(browser.id, false)
       return
@@ -586,6 +1513,7 @@ export function BrowserNode({
     windowSize.width,
     titleBarHidden,
     titleBarPosition,
+    isNwRuntime,
   ])
 
   useEffect(() => {
@@ -812,7 +1740,15 @@ export function BrowserNode({
           </svg>
         )}
         {/* Placeholder shown when native view is hidden */}
-        {(!isFocused || !viewReady || nativeViewBlocked) && (
+        {isNwRuntime && nwShouldHaveLiveWebview && viewReady && (
+          <webview
+            ref={nwWebviewRef as React.RefObject<HTMLElement>}
+            src={browser.url || 'https://example.com'}
+            partition={`persist:nw-${activeProjectId ?? 'default'}`}
+            className="absolute inset-0 z-0 h-full w-full bg-white"
+          />
+        )}
+        {(!isNwRuntime || !nwShouldHaveLiveWebview || !viewReady || nativeViewBlocked) && (
           <div className="w-full h-full flex flex-col items-center justify-center gap-2 px-5 text-center">
             {offline ? (
               <WifiOff className="w-8 h-8 text-muted-foreground/30" />
