@@ -69,7 +69,7 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write 'src/**/*.{ts,tsx}' 'electron/**/*.ts'",
     "format:check": "prettier --check 'src/**/*.{ts,tsx}' 'electron/**/*.ts'",
-    "prepare": "git config core.hooksPath .githooks"
+    "prepare": "git rev-parse --git-dir >/dev/null 2>&1 && git config core.hooksPath .githooks || true"
   },
   "lint-staged": {
     "src/**/*.{ts,tsx}": "prettier --write",
