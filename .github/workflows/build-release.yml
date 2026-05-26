@@ -22,10 +22,16 @@ jobs:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
     steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ inputs.tag || github.ref_name }}
-          fetch-depth: 0 # Full history for changelog generation
+      - name: Download source
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -fsSL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/tarball/$RELEASE_TAG" \
+            -o "$RUNNER_TEMP/source.tar.gz"
+          tar -xzf "$RUNNER_TEMP/source.tar.gz" --strip-components=1
 
       - name: Enable pnpm
         run: |
@@ -85,39 +91,36 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          PREV_TAG=$(
-            git tag --merged HEAD --sort=-v:refname \
-              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
-              | grep -Fxv "$RELEASE_TAG" \
-              | head -n 1 \
-              || true
-          )
-
-          # Changelog — feature/fix commits only (skip release/merge commits)
-          if [ -n "$PREV_TAG" ]; then
-            CHANGELOG=$(git log --pretty=format:"- %s" "$PREV_TAG"..HEAD \
-              | grep -v '^- release:' \
-              | grep -v '^- Merge' \
-              || echo "- Maintenance and bug fixes")
-          else
-            CHANGELOG=$(git log --pretty=format:"- %s" \
-              | grep -v '^- release:' \
-              | grep -v '^- Merge' \
-              || echo "- Initial release")
-          fi
-
-          printf '%s\n' "$CHANGELOG" > changelog.md
-          export PREV_TAG
-
           node <<'NODE'
           const { execFileSync } = require("node:child_process");
-          const { readFileSync, writeFileSync } = require("node:fs");
+          const { writeFileSync } = require("node:fs");
 
-          const prevTag = process.env.PREV_TAG?.trim();
           const repo = process.env.GITHUB_REPOSITORY;
           const refName = process.env.RELEASE_TAG;
           const sha = process.env.GITHUB_SHA;
-          const changelog = readFileSync("changelog.md", "utf8").trim() || "- Maintenance and bug fixes";
+          const releases = JSON.parse(
+            execFileSync("gh", [
+              "release",
+              "list",
+              "--repo",
+              repo,
+              "--exclude-drafts",
+              "--exclude-pre-releases",
+              "--limit",
+              "50",
+              "--json",
+              "tagName",
+            ], { encoding: "utf8" }),
+          );
+          const semver = /^v\d+\.\d+\.\d+$/;
+          const prevTag =
+            releases
+              .map((release) => release.tagName)
+              .filter((tag) => semver.test(tag) && tag !== refName)
+              .sort((a, b) =>
+                b.localeCompare(a, undefined, { numeric: true, sensitivity: "base" }),
+              )[0] ?? "";
+
           const fullChangelogUrl = prevTag
             ? `https://github.com/${repo}/compare/${prevTag}...${refName}`
             : `https://github.com/${repo}/commits/${sha}`;
@@ -130,6 +133,14 @@ jobs:
             execFileSync("gh", ["api", endpoint], { encoding: "utf8" }),
           );
           const commits = Array.isArray(response) ? response : response.commits ?? [];
+          const changelogItems = commits
+            .map((commit) => commit.commit?.message?.split("\n")[0]?.trim())
+            .filter(Boolean)
+            .filter((message) => !message.startsWith("release:") && !message.startsWith("Merge"))
+            .map((message) => `- ${message}`);
+          const changelog = changelogItems.length
+            ? changelogItems.join("\n")
+            : "- Maintenance and bug fixes";
 
           const contributors = [];
           const seen = new Set();
