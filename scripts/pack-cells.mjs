@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { Buffer } from 'node:buffer'
 import { createRequire } from 'node:module'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -19,6 +20,9 @@ const dmgName = `${appName}-${appVersion}-mac-${process.arch}.dmg`
 const dmgPath = path.join(outDir, dmgName)
 const entitlementsPath = path.join(root, 'resources', 'mac-entitlements.plist')
 const requireNotarization = process.env.CELLS_REQUIRE_NOTARIZATION === '1'
+const machOMagicValues = new Set([
+  0xfeedface, 0xcefaedfe, 0xfeedfacf, 0xcffaedfe, 0xcafebabe, 0xbebafeca, 0xcafebabf, 0xbfbafeca,
+])
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -136,12 +140,68 @@ async function updatePlist(plistPath) {
   }
 }
 
+function isMachO(filePath) {
+  const buffer = Buffer.alloc(4)
+  let fd
+  try {
+    fd = fs.openSync(filePath, 'r')
+    const bytesRead = fs.readSync(fd, buffer, 0, 4, 0)
+    if (bytesRead < 4) return false
+    return (
+      machOMagicValues.has(buffer.readUInt32BE(0)) || machOMagicValues.has(buffer.readUInt32LE(0))
+    )
+  } catch {
+    return false
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd)
+  }
+}
+
+function collectMachOFiles(dir) {
+  const files = []
+  const stack = [dir]
+
+  while (stack.length > 0) {
+    const current = stack.pop()
+    if (!current) continue
+
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const entryPath = path.join(current, entry.name)
+      if (entry.isSymbolicLink()) continue
+      if (entry.isDirectory()) {
+        stack.push(entryPath)
+        continue
+      }
+      if (entry.isFile() && isMachO(entryPath)) {
+        files.push(entryPath)
+      }
+    }
+  }
+
+  return files.sort((a, b) => b.length - a.length || a.localeCompare(b))
+}
+
+async function signNestedMachOFiles(identity, keychain) {
+  if (identity === '-') return
+
+  const files = collectMachOFiles(stagedApp)
+  for (const file of files) {
+    const args = ['--force', '--sign', identity, '--timestamp', '--options', 'runtime']
+    if (keychain) args.push('--keychain', keychain)
+    args.push(file)
+    await run('codesign', args)
+  }
+
+  console.log(`Signed ${files.length} nested Mach-O files with identity ${identity}.`)
+}
+
 async function signApp() {
   const identity = process.env.CELLS_CODESIGN_IDENTITY?.trim() || '-'
   const keychain = process.env.CELLS_CODESIGN_KEYCHAIN?.trim()
   const args = ['--force', '--deep', '--sign', identity]
 
   if (identity !== '-') {
+    await signNestedMachOFiles(identity, keychain)
     args.push('--timestamp', '--options', 'runtime', '--entitlements', entitlementsPath)
     if (keychain) args.push('--keychain', keychain)
   }
