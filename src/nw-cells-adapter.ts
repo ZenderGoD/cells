@@ -1012,7 +1012,8 @@ function getStatePath() {
   ) {
     return path.join(realHomeDir, '.cells-dev', 'home', '.cells', 'state.json')
   }
-  return path.join(getHomeDir(), '.cells-nw', 'state.json')
+  const productionHomeDir = getRealHomeDir() || os.homedir() || getHomeDir()
+  return path.join(productionHomeDir, '.cells', 'state.json')
 }
 
 function getExtensionsMetaPath() {
