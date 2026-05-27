@@ -1859,6 +1859,95 @@ function isNwDevelopmentBuild() {
   return Boolean(process?.env.CELLS_REPO_ROOT) || getNwAppVersion() === '0.0.0'
 }
 
+let nwGatekeeperRepairPromise: Promise<void> | null = null
+
+function getNwAppBundlePath() {
+  const process = getNodeProcess()
+  if (process?.platform !== 'darwin') return null
+  const execPath = process.execPath
+  const marker = '.app/Contents/MacOS/'
+  const markerIndex = execPath.indexOf(marker)
+  if (markerIndex < 0) return null
+  return execPath.slice(0, markerIndex + '.app'.length)
+}
+
+function clearMacQuarantine(
+  targetPath: string | null | undefined,
+  recursive = false,
+  timeoutMs = 2_000,
+) {
+  const process = getNodeProcess()
+  if (process?.platform !== 'darwin' || !targetPath) return
+  const fs = requireNode<typeof import('node:fs')>('node:fs')
+  const childProcess = requireNode<typeof import('node:child_process')>('node:child_process')
+  try {
+    if (!fs.existsSync(targetPath)) return
+  } catch {
+    return
+  }
+  try {
+    childProcess.execFileSync(
+      '/usr/bin/xattr',
+      [recursive ? '-dr' : '-d', 'com.apple.quarantine', targetPath],
+      { stdio: 'ignore', timeout: timeoutMs },
+    )
+  } catch {}
+}
+
+function clearMacQuarantineForExecutable(executablePath: string) {
+  const path = requireNode<typeof import('node:path')>('node:path')
+  const fs = requireNode<typeof import('node:fs')>('node:fs')
+  const resolved = executablePath.includes('/')
+    ? path.resolve(executablePath)
+    : resolveNwCommand(executablePath)
+  if (!resolved) return
+  clearMacQuarantine(resolved)
+  try {
+    const realPath = fs.realpathSync(resolved)
+    if (realPath !== resolved) clearMacQuarantine(realPath)
+  } catch {}
+}
+
+function clearOpenTuiTempQuarantine() {
+  const process = getNodeProcess()
+  if (process?.platform !== 'darwin') return
+  const fs = requireNode<typeof import('node:fs')>('node:fs')
+  const os = requireNode<typeof import('node:os')>('node:os')
+  const path = requireNode<typeof import('node:path')>('node:path')
+  let entries: string[]
+  try {
+    entries = fs.readdirSync(os.tmpdir())
+  } catch {
+    return
+  }
+  for (const entry of entries) {
+    if (!/^\.[0-9a-f]{16}-[0-9a-f]{8}\.dylib$/i.test(entry)) continue
+    const filePath = path.join(os.tmpdir(), entry)
+    try {
+      if (!fs.statSync(filePath).isFile()) continue
+    } catch {
+      continue
+    }
+    clearMacQuarantine(filePath)
+  }
+}
+
+function ensureNwGatekeeperRepair() {
+  const process = getNodeProcess()
+  if (process?.platform !== 'darwin') return Promise.resolve()
+  nwGatekeeperRepairPromise ??= Promise.resolve().then(() => {
+    clearMacQuarantine(getNwAppBundlePath(), true, 10_000)
+    clearOpenTuiTempQuarantine()
+  })
+  return nwGatekeeperRepairPromise
+}
+
+function scheduleNwGatekeeperRepair() {
+  const process = getNodeProcess()
+  if (process?.platform !== 'darwin') return
+  window.setTimeout(() => void ensureNwGatekeeperRepair(), 1_000)
+}
+
 function getNwUpdaterSupport() {
   if (!isNwDevelopmentBuild()) {
     return {
@@ -2894,7 +2983,7 @@ function maybeDrainNwAgentQueue(windowId: string) {
     }),
   )
   emitAgentSnapshot(snapshot)
-  runAgentTurn(snapshot, next.text)
+  void runAgentTurn(snapshot, next.text)
 }
 
 function getAgentBinary(agent: AgentSessionName) {
@@ -3017,6 +3106,8 @@ async function runNwCapturedCommand(
     env?: Record<string, string | undefined>
   } = {},
 ): Promise<NwCapturedCommandResult> {
+  await ensureNwGatekeeperRepair()
+  clearMacQuarantineForExecutable(binary)
   const childProcess = requireNode<typeof import('node:child_process')>('node:child_process')
   const timeoutMs = options.timeoutMs ?? 5_000
   return await new Promise<NwCapturedCommandResult>((resolve, reject) => {
@@ -3111,6 +3202,10 @@ async function probeNwAgentAuth(agent: AgentSessionName): Promise<NwAgentAuthSta
       }
     }
     if (agent === 'opencode') {
+      const customPath = customAgentPaths.opencode?.trim()
+      if (!customPath) {
+        return { agent, binaryPath, authenticated: 'unknown', account: null }
+      }
       const result = await runNwCapturedCommand(binaryPath, ['auth', 'list'])
       const output = `${result.stdout}\n${result.stderr}`.replace(ANSI_COLOR_RE, '')
       return {
@@ -3156,7 +3251,7 @@ function appendAgentError(snapshot: AgentSessionSnapshot, message: string) {
   emitAgentSnapshot(snapshot)
 }
 
-function runAgentTurn(snapshot: AgentSessionSnapshot, input: string) {
+async function runAgentTurn(snapshot: AgentSessionSnapshot, input: string) {
   const childProcess = requireNode<typeof import('node:child_process')>('node:child_process')
   const command = getAgentBinary(snapshot.agent)
   const args = buildAgentArgs(snapshot.agent, input)
@@ -3169,6 +3264,8 @@ function runAgentTurn(snapshot: AgentSessionSnapshot, input: string) {
 
   let child: import('node:child_process').ChildProcess
   try {
+    await ensureNwGatekeeperRepair()
+    clearMacQuarantineForExecutable(command)
     child = childProcess.spawn(command, args, {
       cwd: snapshot.cwd ?? (getUserHomeDir() || getHomeDir()),
       env: buildNwUserEnv(snapshot.cwd ? { PWD: snapshot.cwd } : {}),
@@ -3449,6 +3546,7 @@ export function installNwCellsAdapter() {
   setupMainNwWindowLifecycle()
   installNwShortcutMenu()
   setupNwSmokeHooks()
+  scheduleNwGatekeeperRepair()
 
   window.addEventListener('focus', () => {
     if (nwAppBlurTimer !== null) {
@@ -3720,7 +3818,7 @@ export function installNwCellsAdapter() {
         }
         const snapshot = createAgentSnapshot(request)
         emitAgentSnapshot(snapshot)
-        if (request.initialPrompt?.trim()) runAgentTurn(snapshot, request.initialPrompt.trim())
+        if (request.initialPrompt?.trim()) void runAgentTurn(snapshot, request.initialPrompt.trim())
         return snapshot
       },
       subscribeUpdates: async () => {},
@@ -3738,7 +3836,7 @@ export function installNwCellsAdapter() {
           }),
         )
         emitAgentSnapshot(snapshot)
-        runAgentTurn(snapshot, input)
+        void runAgentTurn(snapshot, input)
       },
       branchFrom: async (
         _sourceWindowId,

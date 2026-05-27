@@ -188,6 +188,7 @@ async function updatePlist(plistPath) {
   for (const [key, value] of updates) {
     await run('plutil', ['-replace', key, '-string', value, plistPath])
   }
+  await run('plutil', ['-replace', 'LSFileQuarantineEnabled', '-bool', 'false', plistPath])
 }
 
 async function stageMacDevApp(nwAppPath) {

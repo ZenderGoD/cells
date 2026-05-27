@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import os from 'node:os'
@@ -289,6 +289,24 @@ async function runQuiet(command, args) {
   })
 }
 
+function readPlistRaw(plistPath, key) {
+  const result = spawnSync('plutil', ['-extract', key, 'raw', plistPath], {
+    cwd: root,
+    encoding: 'utf8',
+  })
+  if (result.status !== 0) {
+    throw new Error(`Unable to read ${key} from ${plistPath}: ${result.stderr}`)
+  }
+  return result.stdout.trim()
+}
+
+function assertBundleQuarantineDisabled(bundlePath) {
+  const value = readPlistRaw(path.join(bundlePath, 'Contents', 'Info.plist'), 'LSFileQuarantineEnabled')
+  if (value !== 'false') {
+    throw new Error(`${bundlePath} must set LSFileQuarantineEnabled=false, got ${value || '(empty)'}`)
+  }
+}
+
 async function ensureSdkRuntime() {
   const packageJson = require.resolve('nw/package.json')
   const nwPackageDir = path.dirname(packageJson)
@@ -326,6 +344,13 @@ async function stageSmokeSdkApp() {
     plistPath,
   ])
   await runQuiet('plutil', ['-replace', 'CFBundleIconFile', '-string', 'cells.icns', plistPath])
+  await runQuiet('plutil', [
+    '-replace',
+    'LSFileQuarantineEnabled',
+    '-bool',
+    'false',
+    plistPath,
+  ])
 
   appPath = smokeAppPath
   executablePath = path.join(appPath, 'Contents', 'MacOS', 'nwjs')
@@ -445,6 +470,8 @@ async function main() {
 
   await run('pnpm', ['pack:cells'])
   await stageSmokeSdkApp()
+  assertBundleQuarantineDisabled(releaseAppPath)
+  assertBundleQuarantineDisabled(smokeAppPath)
 
   fs.rmSync(smokeStateDir, { recursive: true, force: true })
   fs.mkdirSync(smokeStateDir, { recursive: true })
