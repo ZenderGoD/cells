@@ -503,6 +503,38 @@ async function main() {
     ].join('\n'),
     'utf8',
   )
+  const smokeCodexNativeDir = path.join(smokeStateDir, 'codex-native')
+  fs.mkdirSync(smokeCodexNativeDir, { recursive: true })
+  const smokeCodexNativeDbPath = path.join(smokeCodexNativeDir, 'state_5.sqlite')
+  const smokeCodexNativeThreadId = 'nw-smoke-native-codex-thread'
+  const smokeCodexNativeRolloutPath = path.join(smokeCodexNativeDir, 'rollout.jsonl')
+  fs.writeFileSync(
+    smokeCodexNativeRolloutPath,
+    `${JSON.stringify({
+      type: 'response_item',
+      timestamp: new Date().toISOString(),
+      payload: {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'NW native Codex recent session smoke' }],
+      },
+    })}\n`,
+    'utf8',
+  )
+  const sqliteStatus = spawnSync(
+    'sqlite3',
+    [
+      smokeCodexNativeDbPath,
+      [
+        'create table threads(id text, title text, cwd text, updated_at integer, created_at integer, rollout_path text);',
+        `insert into threads values('${smokeCodexNativeThreadId}', 'NW Native Codex Smoke', '${root.replace(/'/g, "''")}', ${Date.now()}, ${Date.now()}, '${smokeCodexNativeRolloutPath.replace(/'/g, "''")}');`,
+      ].join(' '),
+    ],
+    { encoding: 'utf8' },
+  )
+  if (sqliteStatus.status !== 0) {
+    throw new Error(`sqlite3 setup failed: ${sqliteStatus.stderr || sqliteStatus.error?.message}`)
+  }
   const manifestPath = path.join(appPath, 'Contents', 'Resources', 'app.nw', 'package.json')
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
   const expectedVersion = JSON.parse(
@@ -540,6 +572,7 @@ async function main() {
       CELLS_NW_CONTEXT_MENU_TEST_MODE: '1',
       CELLS_NW_UPDATER_TEST_MODE: '1',
       CELLS_NW_UPDATE_FEED_URL: pathToFileURL(smokeUpdateFeedPath).toString(),
+      CELLS_CODEX_STATE_DB: smokeCodexNativeDbPath,
     },
   })
 
@@ -1404,6 +1437,38 @@ rl.on('line', (line) => {
       throw new Error(`Agent response parity smoke failed: ${JSON.stringify(agentResponses)}`)
     }
 
+    const agentRecentSessions = await cdpEval(
+      page.webSocketDebuggerUrl,
+      `new Promise(async (resolve) => {
+        try {
+          const recent = await window.cells.agentSession.listRecentSessions('codex', 80)
+          const saved = await window.cells.agentSession.listSavedSessions()
+          resolve({
+            ok:
+              recent.some((session) =>
+                session.origin === 'cells' &&
+                session.windowId === 'nw-agent-smoke' &&
+                session.sourceLabel === 'Cells'
+              ) &&
+              recent.some((session) =>
+                session.origin === 'native' &&
+                session.codexThreadId === ${JSON.stringify(smokeCodexNativeThreadId)} &&
+                session.sourceLabel === 'Codex CLI'
+              ) &&
+              saved.some((session) => session.windowId === 'nw-agent-smoke'),
+            recent: recent.slice(0, 12),
+            saved: saved.slice(0, 12)
+          })
+        } catch (error) {
+          resolve({ ok: false, error: error instanceof Error ? error.message : String(error) })
+        }
+      })`,
+      5000,
+    )
+    if (!agentRecentSessions.ok) {
+      throw new Error(`Agent recent sessions smoke failed: ${JSON.stringify(agentRecentSessions)}`)
+    }
+
     const mcpInstall = await cdpEval(
       page.webSocketDebuggerUrl,
       `new Promise(async (resolve) => {
@@ -1958,6 +2023,7 @@ process.stdin.on('data', (chunk) => {
           agentApi,
           agentAuth,
           agentResponses,
+          agentRecentSessions,
           mcpInstall,
           updater,
           perf: {

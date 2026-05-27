@@ -5139,7 +5139,7 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     if (hasMessages) return
     let cancelled = false
     window.cells.agentSession
-      .listRecentSessions(agentWindow.agent, 8)
+      .listRecentSessions(agentWindow.agent, 500)
       .then((sessions) => {
         if (!cancelled) setRecentSessions(sessions)
       })

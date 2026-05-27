@@ -5,6 +5,7 @@ import type {
   AgentSessionRequest,
   AgentSessionSnapshot,
   AppShortcutPayload,
+  RecentAgentSessionSummary,
   AgentMentionSearchResult,
   AgentContextLength,
   AgentNotificationContext,
@@ -28,6 +29,7 @@ import type {
   ProjectsState,
   ProjectFileSearchResult,
   RendererPerfSample,
+  SavedAgentSessionSummary,
   TerminalExitDetails,
   TerminalProcessInfo,
   TerminalPerfSample,
@@ -36,6 +38,7 @@ import type {
 } from './types'
 import type { CellsShortcutCommand } from './lib/cells-shortcuts'
 import { sanitizeQueuedMessages } from './lib/agent-session-queue'
+import { sanitizeImportedClaudeUserText } from './lib/agent-session-title'
 import { useStore } from './lib/store'
 
 type Listener<T extends (...args: any[]) => void> = T
@@ -1036,6 +1039,617 @@ function getExtensionsDir() {
   if (!statePath) return null
   const path = requireNode<typeof import('node:path')>('node:path')
   return path.join(path.dirname(statePath), 'extensions')
+}
+
+const MAX_NW_PERSISTED_AGENT_MESSAGES = 800
+const MAX_NW_AGENT_MESSAGE_TEXT_CHARS = 120_000
+const NW_TRUNCATED_AGENT_MESSAGE_SUFFIX =
+  '\n\n[Cells truncated this stored message because it was too large to render efficiently.]'
+const DEFAULT_NW_RECENT_SESSION_LIMIT = 80
+const MAX_NW_RECENT_SESSION_LIMIT = 500
+const MAX_NW_NATIVE_CLAUDE_SCAN = 1000
+
+const agentPersistTimers = new Map<string, number>()
+
+function getNwAgentPersistDirCandidates() {
+  const path = requireNode<typeof import('node:path')>('node:path')
+  const explicit = getNodeProcess()?.env.CELLS_AGENT_SESSIONS_DIR?.trim()
+  const statePath = getStatePath()
+  const realHome = getRealHomeDir() || getHomeDir()
+  const candidates = [
+    explicit || null,
+    getNodeProcess()?.env.CELLS_STATE_FILE && statePath
+      ? path.join(path.dirname(statePath), 'agent-sessions')
+      : null,
+    realHome
+      ? path.join(realHome, 'Library', 'Application Support', 'Cells', 'agent-sessions')
+      : null,
+    realHome ? path.join(realHome, '.cells', 'agent-sessions') : null,
+  ].filter((value): value is string => Boolean(value))
+  return Array.from(new Set(candidates))
+}
+
+function getNwAgentPersistDir() {
+  return getNwAgentPersistDirCandidates()[0] ?? null
+}
+
+function getNwAgentPersistPath(windowId: string) {
+  const path = requireNode<typeof import('node:path')>('node:path')
+  const dir = getNwAgentPersistDir()
+  return dir ? path.join(dir, `${windowId}.json`) : null
+}
+
+function getNwAgentPersistMetaPath(windowId: string) {
+  const path = requireNode<typeof import('node:path')>('node:path')
+  const dir = getNwAgentPersistDir()
+  return dir ? path.join(dir, `${windowId}.meta.json`) : null
+}
+
+function truncateNwAgentMessageText(text: string) {
+  if (text.length <= MAX_NW_AGENT_MESSAGE_TEXT_CHARS) return text
+  const keepChars = Math.max(
+    0,
+    MAX_NW_AGENT_MESSAGE_TEXT_CHARS - NW_TRUNCATED_AGENT_MESSAGE_SUFFIX.length,
+  )
+  return `${text.slice(0, keepChars)}${NW_TRUNCATED_AGENT_MESSAGE_SUFFIX}`
+}
+
+function compactNwAgentSnapshotForStorage(snapshot: AgentSessionSnapshot): AgentSessionSnapshot {
+  let messages = snapshot.messages.map((message) => ({
+    ...message,
+    text: truncateNwAgentMessageText(message.text),
+    status: message.status === 'in_progress' ? ('completed' as const) : message.status,
+  }))
+  if (messages.length > MAX_NW_PERSISTED_AGENT_MESSAGES) {
+    messages = messages.slice(-MAX_NW_PERSISTED_AGENT_MESSAGES)
+  }
+  return {
+    ...snapshot,
+    status: 'idle',
+    error: null,
+    pendingPlanApproval: null,
+    pendingQuestion: null,
+    pendingApproval: null,
+    codexPlan: null,
+    messages,
+  }
+}
+
+function buildNwSavedSessionSummary(snapshot: AgentSessionSnapshot): SavedAgentSessionSummary {
+  let lastMessageText: string | null = null
+  for (let i = snapshot.messages.length - 1; i >= 0; i -= 1) {
+    const text = snapshot.messages[i]?.text?.trim()
+    if (text) {
+      lastMessageText = text
+      break
+    }
+  }
+  return {
+    windowId: snapshot.windowId,
+    agent: snapshot.agent,
+    title: snapshot.title,
+    cwd: snapshot.cwd ?? null,
+    claudeSessionId: snapshot.claudeSessionId ?? null,
+    codexThreadId: snapshot.codexThreadId ?? null,
+    cursorAgentId: snapshot.cursorAgentId ?? null,
+    cursorRunId: snapshot.cursorRunId ?? null,
+    copilotSessionId: snapshot.copilotSessionId ?? null,
+    opencodeSessionId: snapshot.opencodeSessionId ?? null,
+    model: snapshot.usage?.model ?? null,
+    updatedAt: snapshot.updatedAt,
+    messageCount: snapshot.messages.length,
+    lastMessageText,
+  }
+}
+
+function isSavedAgentSessionSummary(value: unknown): value is SavedAgentSessionSummary {
+  const summary = value as Partial<SavedAgentSessionSummary> | null
+  return (
+    !!summary &&
+    typeof summary.windowId === 'string' &&
+    (summary.agent === 'claude' ||
+      summary.agent === 'codex' ||
+      summary.agent === 'cursor' ||
+      summary.agent === 'copilot' ||
+      summary.agent === 'opencode') &&
+    typeof summary.title === 'string' &&
+    typeof summary.updatedAt === 'number' &&
+    typeof summary.messageCount === 'number'
+  )
+}
+
+function loadNwPersistedSummaryFromDir(
+  dir: string,
+  windowId: string,
+): SavedAgentSessionSummary | null {
+  const fs = requireNode<typeof import('node:fs')>('node:fs')
+  const path = requireNode<typeof import('node:path')>('node:path')
+  const file = path.join(dir, `${windowId}.meta.json`)
+  if (!fs.existsSync(file)) return null
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'))
+    if (!isSavedAgentSessionSummary(parsed) || parsed.windowId !== windowId) return null
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+function loadNwPersistedSnapshotFromDir(
+  dir: string,
+  windowId: string,
+): AgentSessionSnapshot | null {
+  const fs = requireNode<typeof import('node:fs')>('node:fs')
+  const path = requireNode<typeof import('node:path')>('node:path')
+  const file = path.join(dir, `${windowId}.json`)
+  if (!fs.existsSync(file)) return null
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<AgentSessionSnapshot>
+    if (!parsed || parsed.windowId !== windowId || !Array.isArray(parsed.messages)) return null
+    return {
+      ...(parsed as AgentSessionSnapshot),
+      status: 'idle',
+      error: null,
+      pendingPlanApproval: null,
+      pendingQuestion: null,
+      pendingApproval: null,
+      codexPlan: null,
+      messages: parsed.messages.map((message) => ({
+        ...message,
+        status: message.status === 'in_progress' ? ('completed' as const) : message.status,
+      })),
+    }
+  } catch {
+    return null
+  }
+}
+
+function loadNwPersistedSnapshot(windowId: string): AgentSessionSnapshot | null {
+  for (const dir of getNwAgentPersistDirCandidates()) {
+    const snapshot = loadNwPersistedSnapshotFromDir(dir, windowId)
+    if (snapshot) return snapshot
+  }
+  return null
+}
+
+function persistNwAgentSnapshotNow(snapshot: AgentSessionSnapshot) {
+  const fs = requireNode<typeof import('node:fs')>('node:fs')
+  const path = requireNode<typeof import('node:path')>('node:path')
+  const snapshotPath = getNwAgentPersistPath(snapshot.windowId)
+  const metaPath = getNwAgentPersistMetaPath(snapshot.windowId)
+  if (!snapshotPath || !metaPath) return
+  const compacted = compactNwAgentSnapshotForStorage(snapshot)
+  fs.mkdirSync(path.dirname(snapshotPath), { recursive: true })
+  fs.writeFileSync(`${snapshotPath}.tmp`, JSON.stringify(compacted), 'utf8')
+  fs.renameSync(`${snapshotPath}.tmp`, snapshotPath)
+  fs.writeFileSync(`${metaPath}.tmp`, JSON.stringify(buildNwSavedSessionSummary(compacted)), 'utf8')
+  fs.renameSync(`${metaPath}.tmp`, metaPath)
+}
+
+function scheduleNwAgentSnapshotPersist(snapshot: AgentSessionSnapshot) {
+  const existing = agentPersistTimers.get(snapshot.windowId)
+  if (existing) window.clearTimeout(existing)
+  const snapshotCopy: AgentSessionSnapshot = {
+    ...snapshot,
+    messages: snapshot.messages.map((message) => ({ ...message })),
+  }
+  const timer = window.setTimeout(
+    () => {
+      agentPersistTimers.delete(snapshot.windowId)
+      try {
+        persistNwAgentSnapshotNow(snapshotCopy)
+      } catch (error) {
+        console.warn('[nw] failed to persist agent session', error)
+      }
+    },
+    snapshot.messages.length > 100 ? 1000 : 250,
+  )
+  agentPersistTimers.set(snapshot.windowId, timer)
+}
+
+function listNwSavedSessions(): SavedAgentSessionSummary[] {
+  const fs = requireNode<typeof import('node:fs')>('node:fs')
+  const path = requireNode<typeof import('node:path')>('node:path')
+  const byWindowId = new Map<string, SavedAgentSessionSummary>()
+
+  for (const dir of getNwAgentPersistDirCandidates()) {
+    let entries: string[]
+    try {
+      entries = fs.readdirSync(dir)
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      if (!entry.endsWith('.json') || entry.endsWith('.meta.json')) continue
+      const windowId = path.basename(entry, '.json')
+      const summary =
+        loadNwPersistedSummaryFromDir(dir, windowId) ??
+        (() => {
+          const snapshot = loadNwPersistedSnapshotFromDir(dir, windowId)
+          return snapshot ? buildNwSavedSessionSummary(snapshot) : null
+        })()
+      if (!summary) continue
+      if (
+        summary.messageCount <= 0 &&
+        !summary.claudeSessionId &&
+        !summary.codexThreadId &&
+        !summary.cursorAgentId &&
+        !summary.copilotSessionId &&
+        !summary.opencodeSessionId
+      ) {
+        continue
+      }
+      const existing = byWindowId.get(summary.windowId)
+      if (!existing || summary.updatedAt > existing.updatedAt)
+        byWindowId.set(summary.windowId, summary)
+    }
+  }
+
+  for (const snapshot of agentSessions.values()) {
+    byWindowId.set(snapshot.windowId, buildNwSavedSessionSummary(snapshot))
+  }
+
+  return [...byWindowId.values()].sort((a, b) => b.updatedAt - a.updatedAt)
+}
+
+function toNwTimestampMs(value: number | null | undefined) {
+  if (!value || !Number.isFinite(value)) return Date.now()
+  return value < 1_000_000_000_000 ? value * 1000 : value
+}
+
+function parseNwTimestampLike(value: unknown) {
+  if (typeof value === 'number') return toNwTimestampMs(value)
+  if (typeof value !== 'string' || !value.trim()) return Date.now()
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : Date.now()
+}
+
+function summarizeNwSessionText(value: string | null | undefined, fallback: string) {
+  const trimmed = value?.replace(/\s+/g, ' ').trim()
+  if (!trimmed) return fallback
+  return trimmed.length > 120 ? `${trimmed.slice(0, 117)}...` : trimmed
+}
+
+function flattenNwClaudeText(message: unknown) {
+  const content = Array.isArray((message as { content?: unknown } | null)?.content)
+    ? (message as { content: unknown[] }).content
+    : []
+  return content
+    .map((item) => {
+      const block = item as { type?: unknown; text?: unknown }
+      return block?.type === 'text' && typeof block.text === 'string' ? block.text : ''
+    })
+    .filter(Boolean)
+    .join('\n\n')
+    .trim()
+}
+
+function flattenNwClaudeUserText(message: unknown) {
+  const content = (message as { content?: unknown } | null)?.content
+  if (typeof content === 'string') return content.trim()
+  return flattenNwClaudeText(message)
+}
+
+function flattenNwCodexMessageText(content: unknown): string {
+  if (typeof content === 'string') return content.trim()
+  if (!Array.isArray(content)) return ''
+  return content
+    .map((part) => {
+      const item = part as { type?: unknown; text?: unknown }
+      return typeof item.text === 'string' &&
+        (item.type === 'input_text' || item.type === 'output_text' || item.type == null)
+        ? item.text
+        : ''
+    })
+    .filter(Boolean)
+    .join('\n\n')
+    .trim()
+}
+
+function getNwClaudeNativeProjectsDir() {
+  const path = requireNode<typeof import('node:path')>('node:path')
+  const explicit = getNodeProcess()?.env.CELLS_CLAUDE_PROJECTS_DIR?.trim()
+  if (explicit) return explicit
+  return path.join(getRealHomeDir() || getHomeDir(), '.claude', 'projects')
+}
+
+function getNwCodexNativeStateDb() {
+  const path = requireNode<typeof import('node:path')>('node:path')
+  const explicit = getNodeProcess()?.env.CELLS_CODEX_STATE_DB?.trim()
+  if (explicit) return explicit
+  return path.join(getRealHomeDir() || getHomeDir(), '.codex', 'state_5.sqlite')
+}
+
+function collectNwClaudeNativeSessionFiles(rootDir = getNwClaudeNativeProjectsDir()) {
+  const fs = requireNode<typeof import('node:fs')>('node:fs')
+  const path = requireNode<typeof import('node:path')>('node:path')
+  if (!fs.existsSync(rootDir)) return [] as Array<{ filePath: string; updatedAt: number }>
+  const files: Array<{ filePath: string; updatedAt: number }> = []
+  const stack = [rootDir]
+  while (stack.length > 0 && files.length < MAX_NW_NATIVE_CLAUDE_SCAN) {
+    const current = stack.pop()
+    if (!current) break
+    let entries: string[]
+    try {
+      entries = fs.readdirSync(current)
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      const absolutePath = path.join(current, entry)
+      let stat: ReturnType<typeof fs.statSync>
+      try {
+        stat = fs.statSync(absolutePath)
+      } catch {
+        continue
+      }
+      if (stat.isDirectory()) {
+        if (entry !== 'subagents') stack.push(absolutePath)
+        continue
+      }
+      if (stat.isFile() && entry.endsWith('.jsonl'))
+        files.push({ filePath: absolutePath, updatedAt: stat.mtimeMs })
+      if (files.length >= MAX_NW_NATIVE_CLAUDE_SCAN) break
+    }
+  }
+  return files.sort((a, b) => b.updatedAt - a.updatedAt)
+}
+
+function readNwClaudeNativeSessionSummary(filePath: string): RecentAgentSessionSummary | null {
+  const fs = requireNode<typeof import('node:fs')>('node:fs')
+  const path = requireNode<typeof import('node:path')>('node:path')
+  const sessionId = path.basename(filePath, '.jsonl')
+  try {
+    const lines = fs.readFileSync(filePath, 'utf8').split('\n')
+    let cwd: string | null = null
+    let title: string | null = null
+    let lastUserText: string | null = null
+    for (const rawLine of lines) {
+      const line = rawLine.trim()
+      if (!line) continue
+      const parsed = JSON.parse(line) as { cwd?: unknown; type?: unknown; message?: unknown }
+      if (!cwd && typeof parsed.cwd === 'string' && parsed.cwd.trim()) cwd = parsed.cwd
+      const userText = sanitizeImportedClaudeUserText(flattenNwClaudeUserText(parsed.message))
+      if (parsed.type === 'user' && userText) {
+        const summary = summarizeNwSessionText(userText, `Claude session ${sessionId.slice(0, 8)}`)
+        if (!title) title = summary
+        lastUserText = summary
+      }
+      if (cwd && title && lastUserText) break
+    }
+    return {
+      origin: 'native',
+      windowId: null,
+      nativeId: sessionId,
+      agent: 'claude',
+      title: title ?? `Claude session ${sessionId.slice(0, 8)}`,
+      cwd,
+      claudeSessionId: sessionId,
+      codexThreadId: null,
+      model: null,
+      updatedAt: toNwTimestampMs(fs.statSync(filePath).mtimeMs),
+      messageCount: null,
+      lastMessageText: lastUserText,
+      sourceLabel: 'Claude Code',
+    }
+  } catch {
+    return null
+  }
+}
+
+function findNwClaudeNativeSessionFile(sessionId: string) {
+  return (
+    collectNwClaudeNativeSessionFiles().find(
+      (entry) =>
+        requireNode<typeof import('node:path')>('node:path').basename(entry.filePath, '.jsonl') ===
+        sessionId,
+    )?.filePath ?? null
+  )
+}
+
+function readNwClaudeNativeSessionMessages(filePath: string): AgentSessionMessage[] {
+  const fs = requireNode<typeof import('node:fs')>('node:fs')
+  try {
+    return fs
+      .readFileSync(filePath, 'utf8')
+      .split('\n')
+      .map((line, index): AgentSessionMessage | null => {
+        const trimmed = line.trim()
+        if (!trimmed) return null
+        const parsed = JSON.parse(trimmed) as {
+          type?: unknown
+          uuid?: unknown
+          timestamp?: unknown
+          isSidechain?: unknown
+          message?: unknown
+        }
+        if (parsed.isSidechain) return null
+        const updatedAt = parseNwTimestampLike(parsed.timestamp)
+        if (parsed.type === 'user') {
+          const text = sanitizeImportedClaudeUserText(flattenNwClaudeUserText(parsed.message))
+          if (!text) return null
+          return {
+            id: typeof parsed.uuid === 'string' ? parsed.uuid : `claude-import-user-${index}`,
+            role: 'user',
+            text,
+            status: 'completed',
+            updatedAt,
+          }
+        }
+        if (parsed.type === 'assistant') {
+          const text = flattenNwClaudeText(parsed.message)
+          if (!text) return null
+          return {
+            id: typeof parsed.uuid === 'string' ? parsed.uuid : `claude-import-assistant-${index}`,
+            role: 'assistant',
+            text,
+            status: 'completed',
+            updatedAt,
+          }
+        }
+        return null
+      })
+      .filter((message): message is AgentSessionMessage => message !== null)
+  } catch {
+    return []
+  }
+}
+
+function readNwSqliteRows(dbPath: string, queryText: string) {
+  const fs = requireNode<typeof import('node:fs')>('node:fs')
+  const childProcess = requireNode<typeof import('node:child_process')>('node:child_process')
+  if (!fs.existsSync(dbPath)) return [] as string[][]
+  try {
+    const result = childProcess.spawnSync('sqlite3', ['-separator', '\t', dbPath, queryText], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 1500,
+    })
+    const output = result.stdout?.trim()
+    if (result.status !== 0 || !output) return []
+    return output
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => line.split('\t'))
+  } catch {
+    return []
+  }
+}
+
+function lookupNwCodexRolloutPath(threadId: string): string | null {
+  const escaped = threadId.replace(/'/g, "''")
+  const rows = readNwSqliteRows(
+    getNwCodexNativeStateDb(),
+    `select rollout_path from threads where id = '${escaped}' limit 1`,
+  )
+  return rows[0]?.[0] || null
+}
+
+function readNwCodexNativeSessionMessages(threadId: string): AgentSessionMessage[] {
+  const fs = requireNode<typeof import('node:fs')>('node:fs')
+  const rolloutPath = lookupNwCodexRolloutPath(threadId)
+  if (!rolloutPath || !fs.existsSync(rolloutPath)) return []
+  try {
+    return fs
+      .readFileSync(rolloutPath, 'utf8')
+      .split('\n')
+      .map((line, index): AgentSessionMessage | null => {
+        const trimmed = line.trim()
+        if (!trimmed) return null
+        const parsed = JSON.parse(trimmed) as {
+          type?: unknown
+          timestamp?: unknown
+          payload?: Record<string, unknown>
+        }
+        if (parsed.type !== 'response_item') return null
+        const payload = parsed.payload ?? {}
+        if (payload.type !== 'message') return null
+        const role = typeof payload.role === 'string' ? payload.role : null
+        const text = sanitizeImportedClaudeUserText(flattenNwCodexMessageText(payload.content))
+        if (!text || role === 'developer' || role === 'system') return null
+        const updatedAt = parseNwTimestampLike(parsed.timestamp)
+        return {
+          id: `codex-import-${role ?? 'message'}-${threadId}-${index}`,
+          role: role === 'assistant' ? 'assistant' : 'user',
+          text,
+          status: 'completed',
+          updatedAt,
+        }
+      })
+      .filter((message): message is AgentSessionMessage => message !== null)
+  } catch {
+    return []
+  }
+}
+
+function listNwCodexNativeSessions(limit: number): RecentAgentSessionSummary[] {
+  const rows = readNwSqliteRows(
+    getNwCodexNativeStateDb(),
+    `select id, coalesce(replace(replace(title, char(10), ' '), char(13), ' '), ''), coalesce(cwd, ''), updated_at, created_at from threads order by updated_at desc limit ${Math.max(limit, 1)}`,
+  )
+  return rows.map(([id, title, cwd, updatedAt, createdAt]) => ({
+    origin: 'native',
+    windowId: null,
+    nativeId: id || null,
+    agent: 'codex',
+    title: summarizeNwSessionText(title, id ? `Codex session ${id.slice(0, 8)}` : 'Codex session'),
+    cwd: cwd || null,
+    claudeSessionId: null,
+    codexThreadId: id || null,
+    model: null,
+    updatedAt: toNwTimestampMs(Number.parseInt(updatedAt || createdAt || '0', 10)),
+    messageCount: null,
+    lastMessageText: null,
+    sourceLabel: 'Codex CLI',
+  }))
+}
+
+function loadNwNativeImportMessages(
+  request: AgentSessionRequest,
+  snapshot: AgentSessionSnapshot,
+): AgentSessionMessage[] {
+  if (snapshot.messages.length > 0) return snapshot.messages
+  if (request.agent === 'claude' && snapshot.claudeSessionId) {
+    const filePath = findNwClaudeNativeSessionFile(snapshot.claudeSessionId)
+    return filePath ? readNwClaudeNativeSessionMessages(filePath) : snapshot.messages
+  }
+  if (request.agent === 'codex' && snapshot.codexThreadId) {
+    return readNwCodexNativeSessionMessages(snapshot.codexThreadId)
+  }
+  return snapshot.messages
+}
+
+function listNwRecentSessions(agent: AgentSessionName, limit = DEFAULT_NW_RECENT_SESSION_LIMIT) {
+  const normalizedLimit = Math.max(1, Math.min(limit, MAX_NW_RECENT_SESSION_LIMIT))
+  const cellsSessions = listNwSavedSessions()
+    .filter((session) => session.agent === agent)
+    .map<RecentAgentSessionSummary>((session) => ({
+      origin: 'cells',
+      windowId: session.windowId,
+      nativeId: null,
+      agent: session.agent,
+      title: session.title,
+      cwd: session.cwd ?? null,
+      claudeSessionId: session.claudeSessionId ?? null,
+      codexThreadId: session.codexThreadId ?? null,
+      cursorAgentId: session.cursorAgentId ?? null,
+      cursorRunId: session.cursorRunId ?? null,
+      copilotSessionId: session.copilotSessionId ?? null,
+      opencodeSessionId: session.opencodeSessionId ?? null,
+      model: session.model ?? null,
+      updatedAt: session.updatedAt,
+      messageCount: session.messageCount,
+      lastMessageText: session.lastMessageText ?? null,
+      sourceLabel: 'Cells',
+    }))
+
+  const nativeSessions =
+    agent === 'claude'
+      ? collectNwClaudeNativeSessionFiles()
+          .map((entry) => readNwClaudeNativeSessionSummary(entry.filePath))
+          .filter((session): session is RecentAgentSessionSummary => session !== null)
+      : agent === 'codex'
+        ? listNwCodexNativeSessions(Math.max(normalizedLimit * 4, 80))
+        : []
+
+  const seen = new Set<string>()
+  return [...cellsSessions, ...nativeSessions]
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .filter((session) => {
+      const dedupeKey =
+        session.claudeSessionId ||
+        session.codexThreadId ||
+        session.cursorAgentId ||
+        session.copilotSessionId ||
+        session.opencodeSessionId ||
+        session.nativeId ||
+        session.windowId ||
+        session.title
+      if (seen.has(dedupeKey)) return false
+      seen.add(dedupeKey)
+      return true
+    })
+    .slice(0, normalizedLimit)
 }
 
 function readExtensionsState(): ExtensionsState {
@@ -3285,7 +3899,10 @@ function createAgentMessage(
 
 function createAgentSnapshot(request: AgentSessionRequest): AgentSessionSnapshot {
   const now = Date.now()
-  const messages: AgentSessionMessage[] = []
+  const persisted = loadNwPersistedSnapshot(request.windowId)
+  const messages: AgentSessionMessage[] = request.initialPrompt?.trim()
+    ? []
+    : (persisted?.messages ?? [])
   if (request.initialPrompt?.trim()) {
     messages.push(
       createAgentMessage('user', request.initialPrompt.trim(), {
@@ -3294,54 +3911,42 @@ function createAgentSnapshot(request: AgentSessionRequest): AgentSessionSnapshot
       }),
     )
   }
-  return {
+  const snapshot: AgentSessionSnapshot = {
     windowId: request.windowId,
     agent: request.agent,
-    title: request.title || `${request.agent} session`,
-    cwd: request.cwd ?? getHomeDir() ?? null,
+    title: request.title || persisted?.title || `${request.agent} session`,
+    cwd: request.cwd ?? persisted?.cwd ?? getHomeDir() ?? null,
+    restoredFromPersist: Boolean(persisted),
     status: 'idle',
     error: null,
-    claudeSessionId: request.claudeSessionId ?? null,
-    codexThreadId: request.codexThreadId ?? null,
-    cursorAgentId: request.cursorAgentId ?? null,
-    cursorRunId: request.cursorRunId ?? null,
-    copilotSessionId: request.copilotSessionId ?? null,
-    opencodeSessionId: request.opencodeSessionId ?? null,
-    updatedAt: now,
+    claudeSessionId: request.claudeSessionId ?? persisted?.claudeSessionId ?? null,
+    codexThreadId: request.codexThreadId ?? persisted?.codexThreadId ?? null,
+    cursorAgentId: request.cursorAgentId ?? persisted?.cursorAgentId ?? null,
+    cursorRunId: request.cursorRunId ?? persisted?.cursorRunId ?? null,
+    copilotSessionId: request.copilotSessionId ?? persisted?.copilotSessionId ?? null,
+    opencodeSessionId: request.opencodeSessionId ?? persisted?.opencodeSessionId ?? null,
+    updatedAt: persisted?.updatedAt ?? now,
     messages,
-    usage: null,
+    usage: persisted?.usage ?? null,
     pendingPlanApproval: null,
     pendingQuestion: null,
     pendingApproval: null,
     codexPlan: null,
-    codexGoal: null,
+    codexGoal: persisted?.codexGoal ?? null,
   }
+  snapshot.messages = loadNwNativeImportMessages(request, snapshot)
+  if (snapshot.messages.length > 0) {
+    snapshot.updatedAt =
+      snapshot.messages[snapshot.messages.length - 1]?.updatedAt ?? snapshot.updatedAt
+  }
+  return snapshot
 }
 
 function emitAgentSnapshot(snapshot: AgentSessionSnapshot) {
   snapshot.updatedAt = Date.now()
   agentSessions.set(snapshot.windowId, snapshot)
   agentUpdate.emit({ ...snapshot, messages: [...snapshot.messages] })
-}
-
-function summarizeAgentSnapshot(snapshot: AgentSessionSnapshot) {
-  const lastMessage = [...snapshot.messages].reverse().find((message) => message.text?.trim())
-  return {
-    windowId: snapshot.windowId,
-    agent: snapshot.agent,
-    title: snapshot.title,
-    cwd: snapshot.cwd ?? null,
-    claudeSessionId: snapshot.claudeSessionId ?? null,
-    codexThreadId: snapshot.codexThreadId ?? null,
-    cursorAgentId: snapshot.cursorAgentId ?? null,
-    cursorRunId: snapshot.cursorRunId ?? null,
-    copilotSessionId: snapshot.copilotSessionId ?? null,
-    opencodeSessionId: snapshot.opencodeSessionId ?? null,
-    model: null,
-    updatedAt: snapshot.updatedAt,
-    messageCount: snapshot.messages.length,
-    lastMessageText: lastMessage?.text ?? null,
-  }
+  scheduleNwAgentSnapshotPersist(snapshot)
 }
 
 function appendAgentSystemMessage(snapshot: AgentSessionSnapshot, text: string) {
@@ -5479,21 +6084,9 @@ export function installNwCellsAdapter() {
       listCursorModels: async () => NW_CURSOR_MODELS,
       listCopilotModels: async () => NW_COPILOT_MODELS,
       listOpencodeModels: async () => NW_OPENCODE_MODELS,
-      listSavedSessions: async () =>
-        [...agentSessions.values()]
-          .map(summarizeAgentSnapshot)
-          .sort((a, b) => b.updatedAt - a.updatedAt),
-      listRecentSessions: async (agent, limit = 20) =>
-        [...agentSessions.values()]
-          .filter((snapshot) => snapshot.agent === agent)
-          .map((snapshot) => ({
-            ...summarizeAgentSnapshot(snapshot),
-            origin: 'cells' as const,
-            nativeId: null,
-            sourceLabel: 'Cells session',
-          }))
-          .sort((a, b) => b.updatedAt - a.updatedAt)
-          .slice(0, limit),
+      listSavedSessions: async () => listNwSavedSessions(),
+      listRecentSessions: async (agent, limit = DEFAULT_NW_RECENT_SESSION_LIMIT) =>
+        listNwRecentSessions(agent, limit),
       onLoginEvent: agentLoginEvent.on,
       onUpdate: agentUpdate.on,
       onQueueUpdate: agentQueueUpdate.on,
