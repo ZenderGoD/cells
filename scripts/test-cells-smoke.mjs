@@ -1,8 +1,10 @@
 import { spawn, spawnSync } from 'node:child_process'
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 const root = process.cwd()
 const require = createRequire(import.meta.url)
@@ -477,6 +479,30 @@ async function main() {
   fs.mkdirSync(smokeStateDir, { recursive: true })
   const smokeChromiumProfileDir = path.join(smokeStateDir, 'chromium')
   fs.mkdirSync(smokeChromiumProfileDir, { recursive: true })
+  const smokeUpdateVersion = '999.0.0'
+  const smokeUpdateFeedDir = path.join(smokeStateDir, 'update-feed')
+  fs.mkdirSync(smokeUpdateFeedDir, { recursive: true })
+  const smokeUpdateAssetName = `Cells-${smokeUpdateVersion}-mac-arm64.zip`
+  const smokeUpdateAssetPath = path.join(smokeUpdateFeedDir, smokeUpdateAssetName)
+  fs.writeFileSync(smokeUpdateAssetPath, 'cells smoke update archive', 'utf8')
+  const smokeUpdateAsset = fs.readFileSync(smokeUpdateAssetPath)
+  const smokeUpdateSha512 = crypto.createHash('sha512').update(smokeUpdateAsset).digest('base64')
+  const smokeUpdateFeedPath = path.join(smokeUpdateFeedDir, 'latest-mac.yml')
+  fs.writeFileSync(
+    smokeUpdateFeedPath,
+    [
+      `version: ${smokeUpdateVersion}`,
+      'files:',
+      `  - url: ${smokeUpdateAssetName}`,
+      `    sha512: ${smokeUpdateSha512}`,
+      `    size: ${smokeUpdateAsset.length}`,
+      `path: ${smokeUpdateAssetName}`,
+      `sha512: ${smokeUpdateSha512}`,
+      `releaseDate: '2099-01-01T00:00:00.000Z'`,
+      '',
+    ].join('\n'),
+    'utf8',
+  )
   const manifestPath = path.join(appPath, 'Contents', 'Resources', 'app.nw', 'package.json')
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
   const expectedVersion = JSON.parse(
@@ -512,6 +538,8 @@ async function main() {
       CELLS_REPO_ROOT: root,
       CELLS_STATE_FILE: smokeStatePath,
       CELLS_NW_CONTEXT_MENU_TEST_MODE: '1',
+      CELLS_NW_UPDATER_TEST_MODE: '1',
+      CELLS_NW_UPDATE_FEED_URL: pathToFileURL(smokeUpdateFeedPath).toString(),
     },
   })
 
@@ -1123,7 +1151,64 @@ async function main() {
         const marker = 'CELLS_BETA_AGENT_PROBE_' + Date.now()
         const updates = []
         try {
-          await window.cells.agent.setCustomPaths({ codex: '/bin/echo' })
+          const fs = window.require('node:fs')
+          const os = window.require('node:os')
+          const path = window.require('node:path')
+          const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cells-nw-codex-app-server-'))
+          const codex = path.join(dir, 'codex')
+          fs.writeFileSync(codex, ${JSON.stringify(`#!/usr/bin/env node
+if (process.argv[2] === 'login' && process.argv[3] === 'status') {
+  console.log('Logged in using ChatGPT')
+  process.exit(0)
+}
+if (process.argv[2] !== 'app-server') {
+  console.log(process.argv.slice(2).join(' '))
+  process.exit(0)
+}
+const readline = require('node:readline')
+let turn = 0
+const rl = readline.createInterface({ input: process.stdin })
+function write(message) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\\n')
+}
+function textFromInput(input) {
+  if (!Array.isArray(input)) return ''
+  return input.map((item) => item && item.type === 'text' ? item.text || '' : '').join(' ')
+}
+rl.on('line', (line) => {
+  let message
+  try { message = JSON.parse(line) } catch { return }
+  if (message.method === 'initialize') {
+    write({ id: message.id, result: {} })
+    return
+  }
+  if (message.method === 'initialized') return
+  if (message.method === 'thread/start' || message.method === 'thread/resume') {
+    const thread = { id: message.params?.threadId || 'nw-smoke-codex-thread' }
+    write({ id: message.id, result: { thread } })
+    write({ method: 'thread/started', params: { thread } })
+    return
+  }
+  if (message.method === 'turn/start') {
+    turn += 1
+    const turnObj = { id: 'nw-smoke-turn-' + turn, status: 'completed' }
+    const item = {
+      id: 'nw-smoke-agent-message-' + turn,
+      type: 'agentMessage',
+      text: 'app-server ' + textFromInput(message.params?.input),
+      status: 'completed'
+    }
+    write({ id: message.id, result: { turn: turnObj } })
+    write({ method: 'turn/started', params: { turn: turnObj } })
+    write({ method: 'item/started', params: { item: { ...item, status: 'in_progress' } } })
+    write({ method: 'item/agentMessage/delta', params: { itemId: item.id, delta: item.text } })
+    write({ method: 'item/completed', params: { item } })
+    write({ method: 'turn/completed', params: { turn: turnObj } })
+  }
+})
+`)} , { mode: 0o755 })
+          window.__cellsNwSmokeCodexPath = codex
+          await window.cells.agent.setCustomPaths({ codex })
           const unsubscribe = window.cells.agentSession.onUpdate((snapshot) => {
             if (snapshot.windowId !== windowId) return
             updates.push({
@@ -1256,6 +1341,9 @@ async function main() {
           resolve({ ok: false, error: error instanceof Error ? error.message : String(error) })
         } finally {
           fs.rmSync(dir, { recursive: true, force: true })
+          if (window.__cellsNwSmokeCodexPath) {
+            await window.cells.agent.setCustomPaths({ codex: window.__cellsNwSmokeCodexPath })
+          }
         }
       })`,
       10_000,
@@ -1366,27 +1454,40 @@ async function main() {
             window.cells.updater.getVersion(),
             window.cells.updater.getSupport()
           ])
+          const ready = new Promise((resolveReady) => {
+            const timeout = setTimeout(() => resolveReady(false), 5000)
+            const offReady = window.cells.updater.onStatus((status, info) => {
+              if (status !== 'ready' && status !== 'error') return
+              clearTimeout(timeout)
+              offReady()
+              resolveReady({ status, info })
+            })
+          })
           await window.cells.updater.check()
-          await window.cells.updater.download()
           await window.cells.updater.setAutoUpdate(true)
-          const installed = await window.cells.updater.install()
+          const readyEvent = await ready
           setTimeout(() => {
             off()
             resolve({
               ok:
                 version === ${JSON.stringify(expectedVersion)} &&
-                support?.enabled === false &&
-                support?.reason === 'development-build' &&
-                statusEvents.length >= 3 &&
-                statusEvents.every((event) =>
-                  event.status === 'unsupported' &&
-                  event.info?.reason === 'development-build'
+                support?.enabled === true &&
+                readyEvent?.status === 'ready' &&
+                readyEvent?.info?.version === ${JSON.stringify(smokeUpdateVersion)} &&
+                statusEvents.some((event) => event.status === 'checking') &&
+                statusEvents.some((event) =>
+                  event.status === 'available' &&
+                  event.info?.version === ${JSON.stringify(smokeUpdateVersion)}
                 ) &&
-                installed === false,
+                statusEvents.some((event) => event.status === 'downloading') &&
+                statusEvents.some((event) =>
+                  event.status === 'ready' &&
+                  event.info?.version === ${JSON.stringify(smokeUpdateVersion)}
+                ),
               version,
               support,
               statusEvents,
-              installed
+              readyEvent
             })
           }, 100)
         } catch (error) {
@@ -1581,6 +1682,9 @@ process.stdin.on('data', (chunk) => {
           queueUpdates.push(update.queuedMessages.length)
         })
         try {
+          if (window.__cellsNwSmokeCodexPath) {
+            await window.cells.agent.setCustomPaths({ codex: window.__cellsNwSmokeCodexPath })
+          }
           window.cells.agentSession.reportQueues([{
             windowId,
             request: {

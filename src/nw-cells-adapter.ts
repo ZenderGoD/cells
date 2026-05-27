@@ -307,9 +307,11 @@ const terminalLaunches = new Map<
 >()
 const agentSessions = new Map<string, AgentSessionSnapshot>()
 const agentProcesses = new Map<string, import('node:child_process').ChildProcess>()
+const agentRequests = new Map<string, AgentSessionRequest>()
 const agentQueues = new Map<string, QueuedAgentMessage[]>()
 const agentQueueRequests = new Map<string, AgentSessionRequest>()
 const agentQueuePauseReasons = new Map<string, Set<string>>()
+const codexRuntimes = new Map<string, NwCodexRuntime>()
 const pinnedWindows = new Map<string, NwWindowHandle>()
 const pinnedWindowTypes = new Map<string, PinnedWindowType>()
 const pinnedUnpinNotified = new Set<string>()
@@ -1271,7 +1273,7 @@ function createDefaultState(): ProjectsState {
     searchEngine: 'https://www.google.com/search?q=%s',
     homePage: 'https://example.com',
     terminalLinkTarget: 'browser',
-    autoUpdate: false,
+    autoUpdate: true,
     hasSeenOnboardingGuide: true,
   }
 }
@@ -1948,23 +1950,470 @@ function scheduleNwGatekeeperRepair() {
   window.setTimeout(() => void ensureNwGatekeeperRepair(), 1_000)
 }
 
+type NwUpdateMetadata = {
+  version: string
+  assetUrl: string
+  assetName: string
+  sha512: string
+  size: number | null
+  releaseDate: string | null
+}
+
+type NwDownloadedUpdate = {
+  metadata: NwUpdateMetadata
+  filePath: string
+}
+
+const NW_UPDATE_CHECK_DELAY = 15_000
+const NW_UPDATE_CHECK_INTERVAL = 5 * 60_000
+const NW_UPDATE_FEED_URL =
+  'https://github.com/xrehpicx/cells/releases/latest/download/latest-mac.yml'
+
+let pendingNwUpdate: NwUpdateMetadata | null = null
+let downloadedNwUpdate: NwDownloadedUpdate | null = null
+let nwUpdateDownloadPromise: Promise<void> | null = null
+let nwAutoUpdateInitialTimer: number | null = null
+let nwAutoUpdateRecurringTimer: number | null = null
+
 function getNwUpdaterSupport() {
-  if (!isNwDevelopmentBuild()) {
+  const process = getNodeProcess()
+  if (process?.platform !== 'darwin') {
     return {
       enabled: false,
-      reason: 'manual-install-required',
-      message: 'Install updates from the latest signed Cells DMG on GitHub Releases.',
+      reason: 'unsupported-platform',
+      message: 'Auto-update is currently available for packaged macOS Cells releases.',
     }
   }
-  return {
-    enabled: false,
-    reason: 'development-build',
-    message: 'Auto-update is only available in packaged Cells releases.',
+  const testMode = process?.env.CELLS_NW_UPDATER_TEST_MODE === '1'
+  if (isNwDevelopmentBuild() && !testMode) {
+    return {
+      enabled: false,
+      reason: 'development-build',
+      message: 'Auto-update is only available in packaged Cells releases.',
+    }
   }
+  const appBundlePath = getNwAppBundlePath()
+  if (!appBundlePath) {
+    return {
+      enabled: false,
+      reason: 'missing-app-bundle',
+      message: 'Auto-update requires Cells to run from a macOS app bundle.',
+    }
+  }
+  if (!testMode && appBundlePath.startsWith('/Volumes/')) {
+    return {
+      enabled: false,
+      reason: 'read-only-app-location',
+      message: 'Move Cells to Applications before using auto-update.',
+    }
+  }
+  if (!testMode) {
+    const childProcess = requireNode<typeof import('node:child_process')>('node:child_process')
+    const result = childProcess.spawnSync('codesign', ['-dv', process?.execPath ?? ''], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`
+    if (/Signature=adhoc/i.test(output) || /TeamIdentifier=not set/i.test(output)) {
+      return {
+        enabled: false,
+        reason: 'unsigned-macos-build',
+        message: 'Auto-update requires a signed and notarized macOS build.',
+      }
+    }
+  }
+  return { enabled: true }
 }
 
 function emitNwUpdaterUnsupported() {
   updaterStatus.emit('unsupported', getNwUpdaterSupport())
+}
+
+function getNwUpdateFeedUrl() {
+  const process = getNodeProcess()
+  return process?.env.CELLS_NW_UPDATE_FEED_URL?.trim() || NW_UPDATE_FEED_URL
+}
+
+function getNwUpdateDir(version?: string | null) {
+  const path = requireNode<typeof import('node:path')>('node:path')
+  const statePath = getStatePath()
+  const baseDir = statePath ? path.dirname(statePath) : path.join(getHomeDir(), '.cells')
+  return path.join(baseDir, 'updates', version || 'pending')
+}
+
+function cleanNwYamlScalar(value: string) {
+  const trimmed = value.trim()
+  if (
+    (trimmed.startsWith("'") && trimmed.endsWith("'")) ||
+    (trimmed.startsWith('"') && trimmed.endsWith('"'))
+  ) {
+    return trimmed.slice(1, -1)
+  }
+  return trimmed
+}
+
+function parseNwUpdateMetadata(text: string, metadataUrl: string): NwUpdateMetadata {
+  const scalar = (key: string) => {
+    const match = text.match(new RegExp(`^${key}:\\s*(.+)$`, 'm'))
+    return match ? cleanNwYamlScalar(match[1]) : null
+  }
+  const version = scalar('version')
+  const assetPath = scalar('path') ?? text.match(/^\s+-\s+url:\s*(.+)$/m)?.[1]
+  const sha512 = scalar('sha512')
+  if (!version || !assetPath || !sha512) {
+    throw new Error('Update metadata is missing version, path, or sha512.')
+  }
+  const assetName = cleanNwYamlScalar(assetPath)
+  const sizeText = scalar('size') ?? text.match(/^\s+size:\s*(\d+)$/m)?.[1] ?? null
+  const size = sizeText ? Number.parseInt(sizeText, 10) : null
+  return {
+    version,
+    assetUrl: new URL(assetName, metadataUrl).toString(),
+    assetName,
+    sha512,
+    size: Number.isFinite(size) ? size : null,
+    releaseDate: scalar('releaseDate'),
+  }
+}
+
+function compareNwVersions(a: string, b: string) {
+  const parse = (value: string) =>
+    value
+      .replace(/^v/i, '')
+      .split(/[.-]/)
+      .map((part) => Number.parseInt(part, 10))
+      .map((part) => (Number.isFinite(part) ? part : 0))
+  const left = parse(a)
+  const right = parse(b)
+  for (let i = 0; i < Math.max(left.length, right.length, 3); i += 1) {
+    const delta = (left[i] ?? 0) - (right[i] ?? 0)
+    if (delta !== 0) return delta
+  }
+  return 0
+}
+
+function fetchNwUrlBuffer(
+  url: string,
+  redirectCount = 0,
+): Promise<{ buffer: Buffer; finalUrl: string }> {
+  const fs = requireNode<typeof import('node:fs')>('node:fs')
+  const { fileURLToPath } = requireNode<typeof import('node:url')>('node:url')
+  const parsed = new URL(url)
+  if (parsed.protocol === 'file:') {
+    return Promise.resolve({ buffer: fs.readFileSync(fileURLToPath(parsed)), finalUrl: url })
+  }
+  if (redirectCount > 5) return Promise.reject(new Error('Too many update feed redirects.'))
+  const http = requireNode<typeof import('node:http')>('node:http')
+  const https = requireNode<typeof import('node:https')>('node:https')
+  const client = parsed.protocol === 'https:' ? https : http
+  return new Promise((resolve, reject) => {
+    const request = client.get(
+      url,
+      { headers: { 'User-Agent': `Cells/${getNwAppVersion()}` } },
+      (response) => {
+        const status = response.statusCode ?? 0
+        const location = response.headers.location
+        if (status >= 300 && status < 400 && location) {
+          response.resume()
+          fetchNwUrlBuffer(new URL(location, url).toString(), redirectCount + 1).then(
+            resolve,
+            reject,
+          )
+          return
+        }
+        if (status < 200 || status >= 300) {
+          response.resume()
+          reject(new Error(`Update request failed with HTTP ${status}.`))
+          return
+        }
+        const chunks: Buffer[] = []
+        response.on('data', (chunk: Buffer | string) => chunks.push(Buffer.from(chunk)))
+        response.on('end', () => resolve({ buffer: Buffer.concat(chunks), finalUrl: url }))
+      },
+    )
+    request.on('error', reject)
+    request.setTimeout(30_000, () => {
+      request.destroy(new Error('Update request timed out.'))
+    })
+  })
+}
+
+function downloadNwUrlToFile(
+  url: string,
+  destination: string,
+  onProgress?: (transferred: number, total: number | null) => void,
+  redirectCount = 0,
+): Promise<void> {
+  const fs = requireNode<typeof import('node:fs')>('node:fs')
+  const path = requireNode<typeof import('node:path')>('node:path')
+  const { fileURLToPath } = requireNode<typeof import('node:url')>('node:url')
+  const parsed = new URL(url)
+  fs.mkdirSync(path.dirname(destination), { recursive: true })
+  if (parsed.protocol === 'file:') {
+    const source = fileURLToPath(parsed)
+    const total = fs.statSync(source).size
+    fs.copyFileSync(source, destination)
+    onProgress?.(total, total)
+    return Promise.resolve()
+  }
+  if (redirectCount > 5) return Promise.reject(new Error('Too many update download redirects.'))
+  const http = requireNode<typeof import('node:http')>('node:http')
+  const https = requireNode<typeof import('node:https')>('node:https')
+  const client = parsed.protocol === 'https:' ? https : http
+  return new Promise((resolve, reject) => {
+    const request = client.get(
+      url,
+      { headers: { 'User-Agent': `Cells/${getNwAppVersion()}` } },
+      (response) => {
+        const status = response.statusCode ?? 0
+        const location = response.headers.location
+        if (status >= 300 && status < 400 && location) {
+          response.resume()
+          downloadNwUrlToFile(
+            new URL(location, url).toString(),
+            destination,
+            onProgress,
+            redirectCount + 1,
+          ).then(resolve, reject)
+          return
+        }
+        if (status < 200 || status >= 300) {
+          response.resume()
+          reject(new Error(`Update download failed with HTTP ${status}.`))
+          return
+        }
+        const totalHeader = response.headers['content-length']
+        const total = typeof totalHeader === 'string' ? Number.parseInt(totalHeader, 10) : null
+        let transferred = 0
+        const file = fs.createWriteStream(destination)
+        response.on('data', (chunk: Buffer | string) => {
+          transferred += Buffer.byteLength(chunk)
+          onProgress?.(transferred, total && Number.isFinite(total) ? total : null)
+        })
+        response.pipe(file)
+        file.on('finish', () => file.close(() => resolve()))
+        file.on('error', reject)
+      },
+    )
+    request.on('error', reject)
+    request.setTimeout(10 * 60_000, () => {
+      request.destroy(new Error('Update download timed out.'))
+    })
+  })
+}
+
+async function fetchNwUpdateMetadata() {
+  const result = await fetchNwUrlBuffer(getNwUpdateFeedUrl())
+  return parseNwUpdateMetadata(result.buffer.toString('utf8'), result.finalUrl)
+}
+
+function verifyNwUpdateArchive(filePath: string, metadata: NwUpdateMetadata) {
+  const fs = requireNode<typeof import('node:fs')>('node:fs')
+  const crypto = requireNode<typeof import('node:crypto')>('node:crypto')
+  const archive = fs.readFileSync(filePath)
+  const sha512 = crypto.createHash('sha512').update(archive).digest('base64')
+  if (sha512 !== metadata.sha512) throw new Error('Downloaded update failed checksum validation.')
+  if (metadata.size != null && archive.length !== metadata.size) {
+    throw new Error('Downloaded update size does not match metadata.')
+  }
+}
+
+function emitNwUpdateError(error: unknown) {
+  updaterStatus.emit('error', {
+    message: error instanceof Error ? error.message : String(error),
+  })
+}
+
+async function checkForNwAppUpdates(autoDownload = true) {
+  const support = getNwUpdaterSupport()
+  if (!support.enabled) {
+    emitNwUpdaterUnsupported()
+    return
+  }
+  updaterStatus.emit('checking')
+  try {
+    const metadata = await fetchNwUpdateMetadata()
+    if (compareNwVersions(metadata.version, getNwAppVersion()) <= 0) {
+      pendingNwUpdate = null
+      downloadedNwUpdate = null
+      updaterStatus.emit('up-to-date')
+      return
+    }
+    pendingNwUpdate = metadata
+    downloadedNwUpdate = null
+    updaterStatus.emit('available', {
+      version: metadata.version,
+      releaseDate: metadata.releaseDate,
+    })
+    if (autoDownload) void downloadNwUpdate()
+  } catch (error) {
+    emitNwUpdateError(error)
+  }
+}
+
+async function downloadNwUpdate() {
+  const support = getNwUpdaterSupport()
+  if (!support.enabled) {
+    emitNwUpdaterUnsupported()
+    return
+  }
+  if (downloadedNwUpdate) {
+    updaterStatus.emit('ready', { version: downloadedNwUpdate.metadata.version })
+    return
+  }
+  if (nwUpdateDownloadPromise) return nwUpdateDownloadPromise
+  if (!pendingNwUpdate) await checkForNwAppUpdates(false)
+  const metadata = pendingNwUpdate
+  if (!metadata) return
+  nwUpdateDownloadPromise = (async () => {
+    const path = requireNode<typeof import('node:path')>('node:path')
+    const fs = requireNode<typeof import('node:fs')>('node:fs')
+    const updateDir = getNwUpdateDir(metadata.version)
+    fs.rmSync(updateDir, { recursive: true, force: true })
+    fs.mkdirSync(updateDir, { recursive: true })
+    const filePath = path.join(updateDir, metadata.assetName)
+    updaterStatus.emit('downloading', { percent: 0, version: metadata.version })
+    await downloadNwUrlToFile(metadata.assetUrl, filePath, (transferred, total) => {
+      const denominator = total || metadata.size || transferred || 1
+      updaterStatus.emit('downloading', {
+        percent: Math.max(0, Math.min(100, Math.round((transferred / denominator) * 100))),
+        version: metadata.version,
+      })
+    })
+    verifyNwUpdateArchive(filePath, metadata)
+    downloadedNwUpdate = { metadata, filePath }
+    updaterStatus.emit('ready', { version: metadata.version })
+  })()
+    .catch((error) => {
+      downloadedNwUpdate = null
+      emitNwUpdateError(error)
+    })
+    .finally(() => {
+      nwUpdateDownloadPromise = null
+    })
+  return nwUpdateDownloadPromise
+}
+
+async function installNwUpdate() {
+  const support = getNwUpdaterSupport()
+  if (!support.enabled) {
+    emitNwUpdaterUnsupported()
+    return false
+  }
+  if (!downloadedNwUpdate) await downloadNwUpdate()
+  if (!downloadedNwUpdate) return false
+  const appBundlePath = getNwAppBundlePath()
+  if (!appBundlePath) return false
+
+  try {
+    const fs = requireNode<typeof import('node:fs')>('node:fs')
+    const path = requireNode<typeof import('node:path')>('node:path')
+    const childProcess = requireNode<typeof import('node:child_process')>('node:child_process')
+    const process = getNodeProcess()
+    const updateDir = getNwUpdateDir(downloadedNwUpdate.metadata.version)
+    const extractDir = path.join(updateDir, 'extracted')
+    const scriptPath = path.join(updateDir, 'install.sh')
+    const logPath = path.join(updateDir, 'install.log')
+    fs.rmSync(extractDir, { recursive: true, force: true })
+    fs.mkdirSync(extractDir, { recursive: true })
+    childProcess.execFileSync('/usr/bin/ditto', [
+      '-x',
+      '-k',
+      downloadedNwUpdate.filePath,
+      extractDir,
+    ])
+    const replacementAppPath = path.join(extractDir, 'Cells.app')
+    if (!fs.existsSync(replacementAppPath))
+      throw new Error('Update archive does not contain Cells.app.')
+
+    const script = `#!/bin/bash
+set -euo pipefail
+APP_PATH="$1"
+NEW_APP="$2"
+APP_PID="$3"
+LOG_PATH="$4"
+exec >>"$LOG_PATH" 2>&1
+for _ in $(seq 1 160); do
+  if ! kill -0 "$APP_PID" 2>/dev/null; then
+    break
+  fi
+  sleep 0.25
+done
+xattr -dr com.apple.quarantine "$NEW_APP" 2>/dev/null || true
+rm -rf "$APP_PATH.old"
+if [ -d "$APP_PATH" ]; then
+  mv "$APP_PATH" "$APP_PATH.old"
+fi
+if ! /usr/bin/ditto "$NEW_APP" "$APP_PATH"; then
+  rm -rf "$APP_PATH"
+  if [ -d "$APP_PATH.old" ]; then
+    mv "$APP_PATH.old" "$APP_PATH"
+  fi
+  exit 1
+fi
+xattr -dr com.apple.quarantine "$APP_PATH" 2>/dev/null || true
+/usr/bin/open "$APP_PATH"
+rm -rf "$APP_PATH.old" "$(dirname "$NEW_APP")"
+`
+    fs.writeFileSync(scriptPath, script, { mode: 0o755 })
+    updaterStatus.emit('installing')
+    childProcess
+      .spawn(
+        '/bin/bash',
+        [scriptPath, appBundlePath, replacementAppPath, String(process?.pid), logPath],
+        {
+          detached: true,
+          stdio: 'ignore',
+        },
+      )
+      .unref()
+    emitBeforeQuitOnce()
+    try {
+      requireNode<NwGui>('nw.gui').Window.get().close(true)
+    } catch {
+      window.close()
+    }
+    return true
+  } catch (error) {
+    emitNwUpdateError(error)
+    return false
+  }
+}
+
+function isNwAutoUpdateEnabled(): boolean {
+  try {
+    const fs = requireNode<typeof import('node:fs')>('node:fs')
+    const statePath = getStatePath()
+    if (statePath && fs.existsSync(statePath)) {
+      const state = JSON.parse(fs.readFileSync(statePath, 'utf8')) as { autoUpdate?: unknown }
+      return state.autoUpdate !== false
+    }
+  } catch {}
+  return true
+}
+
+function stopNwAutomaticUpdateChecks() {
+  if (nwAutoUpdateInitialTimer !== null) {
+    window.clearTimeout(nwAutoUpdateInitialTimer)
+    nwAutoUpdateInitialTimer = null
+  }
+  if (nwAutoUpdateRecurringTimer !== null) {
+    window.clearInterval(nwAutoUpdateRecurringTimer)
+    nwAutoUpdateRecurringTimer = null
+  }
+}
+
+function scheduleNwAutomaticUpdateChecks() {
+  stopNwAutomaticUpdateChecks()
+  if (!getNwUpdaterSupport().enabled || !isNwAutoUpdateEnabled()) return
+  nwAutoUpdateInitialTimer = window.setTimeout(() => {
+    nwAutoUpdateInitialTimer = null
+    void checkForNwAppUpdates(true)
+    nwAutoUpdateRecurringTimer = window.setInterval(
+      () => void checkForNwAppUpdates(true),
+      NW_UPDATE_CHECK_INTERVAL,
+    )
+  }, NW_UPDATE_CHECK_DELAY)
 }
 
 const nwPerfEvents: PerfEventRecord[] = []
@@ -2983,15 +3432,11 @@ function maybeDrainNwAgentQueue(windowId: string) {
     }),
   )
   emitAgentSnapshot(snapshot)
-  void runAgentTurn(snapshot, next.text)
+  void runAgentTurn(snapshot, next.text, next.attachments)
 }
 
 function getAgentBinary(agent: AgentSessionName) {
-  return (
-    (resolveAgentBinary(agent) ?? customAgentPaths[agent]?.trim()) ||
-    AGENT_BINARY_CANDIDATES[agent]?.[0] ||
-    agent
-  )
+  return resolveAgentBinary(agent) || AGENT_BINARY_CANDIDATES[agent]?.[0] || agent
 }
 
 function discoverRuntimeExtensionId(extension: ExtensionMeta) {
@@ -3064,6 +3509,60 @@ type NwCapturedCommandResult = {
   signal: NodeJS.Signals | null
 }
 
+type NwJsonRpcId = number | string
+
+type NwJsonRpcResponse = {
+  id?: NwJsonRpcId
+  result?: unknown
+  error?: { message?: string }
+}
+
+type NwCodexAppServerRequest = {
+  id: NwJsonRpcId
+  method: string
+  params?: unknown
+}
+
+type NwCodexAppServerNotification = {
+  method: string
+  params?: unknown
+}
+
+type NwCodexAppServerClient = {
+  request<TResult = unknown>(method: string, params?: Record<string, unknown>): Promise<TResult>
+  notify(method: string, params?: Record<string, unknown>): Promise<void>
+  close(): Promise<void>
+  isClosed(): boolean
+}
+
+type NwCodexRuntime = {
+  request: AgentSessionRequest
+  snapshot: AgentSessionSnapshot
+  client: NwCodexAppServerClient
+  providerThreadId: string | null
+  activeTurnId: string | null
+  turnCounter: number
+  turnPromise: Promise<void> | null
+  resolveTurn: (() => void) | null
+  rejectTurn: ((error: Error) => void) | null
+  pendingQuestion: {
+    questions: Array<{
+      id: string
+      question: string
+      header: string
+      options: Array<{ label: string; description: string }>
+      multiSelect: boolean
+    }>
+    resolve: (value: unknown) => void
+  } | null
+  pendingApproval: {
+    resolve: (value: unknown) => void
+  } | null
+  pendingPlanApproval: { plan: string } | null
+  currentTurnUnifiedDiff: string | null
+  closed: boolean
+}
+
 const ANSI_COLOR_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, 'g')
 
 function appendBoundedOutput(current: string, next: string, max = 16_000) {
@@ -3080,6 +3579,19 @@ function asString(value: unknown) {
   return typeof value === 'string' && value.trim() ? value.trim() : null
 }
 
+function asNonEmptyText(value: unknown) {
+  return typeof value === 'string' && value.length > 0 ? value : null
+}
+
+function compactNwText(value: unknown, fallback = '') {
+  if (typeof value === 'string') return value
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return fallback
+  }
+}
+
 function parseJsonRecord(text: string) {
   const trimmed = text.trim()
   if (!trimmed) return null
@@ -3093,6 +3605,317 @@ function parseJsonRecord(text: string) {
     try {
       return asRecord(JSON.parse(candidate))
     } catch {}
+  }
+  return null
+}
+
+function getDefaultNwCodexModel() {
+  return NW_CODEX_MODELS.find((model) => model.isDefault)?.id || 'gpt-5-codex'
+}
+
+function nwCodexThinkingEffort(
+  level: AgentSessionRequest['thinkingLevel'],
+  fastMode?: boolean | null,
+): 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' {
+  if (fastMode) return 'low'
+  switch (level) {
+    case 'off':
+      return 'minimal'
+    case 'low':
+      return 'low'
+    case 'high':
+      return 'high'
+    case 'max':
+    case 'xhigh':
+      return 'xhigh'
+    case 'medium':
+    default:
+      return 'medium'
+  }
+}
+
+function nwCodexApprovalPolicy(
+  mode: AgentSessionRequest['permissionMode'],
+): 'untrusted' | 'on-request' | 'never' {
+  if (mode === 'plan') return 'untrusted'
+  if (mode === 'ask' || !mode) return 'on-request'
+  return 'never'
+}
+
+function nwCodexThreadSandbox(mode: AgentSessionRequest['permissionMode']) {
+  if (mode === 'plan') return 'read-only' as const
+  if (mode === 'bypass') return 'danger-full-access' as const
+  return 'workspace-write' as const
+}
+
+function nwCodexTurnSandboxPolicy(mode: AgentSessionRequest['permissionMode']) {
+  if (mode === 'plan') {
+    return {
+      type: 'readOnly' as const,
+      networkAccess: true,
+      access: { type: 'fullAccess' as const },
+    }
+  }
+  if (mode === 'bypass') return { type: 'dangerFullAccess' as const }
+  return {
+    type: 'workspaceWrite' as const,
+    networkAccess: true,
+    readOnlyAccess: { type: 'fullAccess' as const },
+  }
+}
+
+function nwCodexInitializeParams() {
+  return {
+    clientInfo: {
+      name: 'cells',
+      title: 'Cells',
+      version: getNwAppVersion(),
+    },
+    capabilities: {
+      experimentalApi: true,
+    },
+  }
+}
+
+function nwCodexThreadStartParams(request: AgentSessionRequest) {
+  return {
+    cwd: request.cwd ?? undefined,
+    approvalPolicy: nwCodexApprovalPolicy(request.permissionMode),
+    sandbox: nwCodexThreadSandbox(request.permissionMode),
+    model: request.model || getDefaultNwCodexModel(),
+  }
+}
+
+function nwCodexTurnInput(agentText: string, imageAttachments: string[]) {
+  const input: Array<{ type: 'text'; text: string } | { type: 'localImage'; path: string }> = []
+  if (agentText.trim()) input.push({ type: 'text', text: agentText })
+  for (const filePath of imageAttachments) input.push({ type: 'localImage', path: filePath })
+  return input
+}
+
+function nwCodexTurnStartParams(
+  runtime: NwCodexRuntime,
+  input: string,
+  imageAttachments: string[],
+) {
+  const request = runtime.request
+  return {
+    threadId: runtime.providerThreadId ?? runtime.snapshot.codexThreadId,
+    input: nwCodexTurnInput(input, imageAttachments),
+    approvalPolicy: nwCodexApprovalPolicy(request.permissionMode),
+    sandboxPolicy: nwCodexTurnSandboxPolicy(request.permissionMode),
+    cwd: request.cwd ?? undefined,
+    model: request.model || getDefaultNwCodexModel(),
+    effort: nwCodexThinkingEffort(request.thinkingLevel, request.fastMode),
+    collaborationMode: {
+      mode: request.permissionMode === 'plan' ? 'plan' : 'default',
+      settings: {
+        model: request.model || getDefaultNwCodexModel(),
+        reasoning_effort: nwCodexThinkingEffort(request.thinkingLevel, request.fastMode),
+      },
+    },
+  }
+}
+
+function getNwAgentRequest(snapshot: AgentSessionSnapshot): AgentSessionRequest {
+  return (
+    agentRequests.get(snapshot.windowId) ?? {
+      windowId: snapshot.windowId,
+      agent: snapshot.agent,
+      title: snapshot.title,
+      cwd: snapshot.cwd ?? null,
+      initialPrompt: null,
+      claudeSessionId: snapshot.claudeSessionId ?? null,
+      codexThreadId: snapshot.codexThreadId ?? null,
+      cursorAgentId: snapshot.cursorAgentId ?? null,
+      cursorRunId: snapshot.cursorRunId ?? null,
+      copilotSessionId: snapshot.copilotSessionId ?? null,
+      opencodeSessionId: snapshot.opencodeSessionId ?? null,
+      model: null,
+      permissionMode: 'ask',
+      thinkingLevel: null,
+      fastMode: null,
+      contextLength: null,
+    }
+  )
+}
+
+function nwCodexMessageId(runtime: NwCodexRuntime, itemId: string) {
+  return `t${runtime.turnCounter}-${itemId}`
+}
+
+function upsertNwAgentMessage(snapshot: AgentSessionSnapshot, message: AgentSessionMessage) {
+  if (
+    (message.role === 'assistant' || message.role === 'user' || message.role === 'reasoning') &&
+    !message.text.trim()
+  ) {
+    return
+  }
+  const timestamp = message.updatedAt ?? Date.now()
+  const next = {
+    ...message,
+    startedAt: message.startedAt ?? timestamp,
+    updatedAt: timestamp,
+  }
+  const existingIndex = snapshot.messages.findIndex((entry) => entry.id === next.id)
+  if (existingIndex >= 0)
+    snapshot.messages[existingIndex] = { ...snapshot.messages[existingIndex], ...next }
+  else snapshot.messages.push(next)
+  snapshot.updatedAt = Date.now()
+}
+
+function appendNwCodexDelta(
+  runtime: NwCodexRuntime,
+  message: Pick<AgentSessionMessage, 'id' | 'role' | 'text' | 'title'>,
+) {
+  const existing = runtime.snapshot.messages.find((entry) => entry.id === message.id)
+  if (existing) {
+    existing.text = `${existing.text || ''}${message.text}`
+    existing.status = 'in_progress'
+    existing.updatedAt = Date.now()
+    runtime.snapshot.updatedAt = Date.now()
+    return
+  }
+  upsertNwAgentMessage(runtime.snapshot, {
+    id: message.id,
+    role: message.role,
+    title: message.title,
+    text: message.text,
+    status: 'in_progress',
+    startedAt: Date.now(),
+    updatedAt: Date.now(),
+  })
+}
+
+function nwCodexItemStatus(value: unknown): AgentSessionMessage['status'] {
+  if (value === 'failed') return 'failed'
+  if (value === 'completed' || value === 'interrupted' || value === 'cancelled') return 'completed'
+  return 'in_progress'
+}
+
+function nwCodexItemToMessage(item: Record<string, unknown>): AgentSessionMessage | null {
+  const itemId = asString(item.id)
+  const itemType = asString(item.type)
+  if (!itemId || !itemType) return null
+  const now = Date.now()
+  if (itemType === 'agentMessage') {
+    return {
+      id: itemId,
+      role: 'assistant',
+      text: asString(item.text) || '',
+      status: 'completed',
+      startedAt: now,
+      updatedAt: now,
+    }
+  }
+  if (itemType === 'reasoning') {
+    const summary = Array.isArray(item.summary)
+      ? item.summary.filter((value): value is string => typeof value === 'string')
+      : []
+    const content = Array.isArray(item.content)
+      ? item.content.filter((value): value is string => typeof value === 'string')
+      : []
+    return {
+      id: itemId,
+      role: 'reasoning',
+      title: 'Reasoning',
+      text: summary.join('\n\n').trim() || content.join('\n\n').trim(),
+      status: 'completed',
+      startedAt: now,
+      updatedAt: now,
+    }
+  }
+  if (itemType === 'commandExecution') {
+    return {
+      id: itemId,
+      role: 'tool',
+      title: asString(item.command) || 'Command',
+      text: asString(item.aggregatedOutput) || asString(item.command) || compactNwText(item),
+      status: nwCodexItemStatus(item.status),
+      metadata:
+        typeof item.exitCode === 'number'
+          ? `Exit ${item.exitCode}`
+          : asString(item.cwd) || 'Running command',
+      startedAt: now,
+      updatedAt: now,
+    }
+  }
+  if (itemType === 'fileChange') {
+    const changes = Array.isArray(item.changes) ? item.changes : []
+    return {
+      id: itemId,
+      role: 'tool',
+      title: 'File changes',
+      text: changes
+        .map((change) => {
+          const entry = asRecord(change)
+          if (!entry) return null
+          return `${asString(entry.kind) || 'change'}: ${asString(entry.path) || 'unknown'}`
+        })
+        .filter((value): value is string => Boolean(value))
+        .join('\n'),
+      status: nwCodexItemStatus(item.status),
+      startedAt: now,
+      updatedAt: now,
+    }
+  }
+  if (itemType === 'mcpToolCall') {
+    const error = asRecord(item.error)
+    return {
+      id: itemId,
+      role: 'tool',
+      title: `${asString(item.server) || 'mcp'}:${asString(item.tool) || 'tool'}`,
+      text:
+        asString(error?.message) ||
+        compactNwText(item.result ?? item.arguments, compactNwText(item)),
+      status: nwCodexItemStatus(item.status),
+      startedAt: now,
+      updatedAt: now,
+    }
+  }
+  if (itemType === 'dynamicToolCall' || itemType === 'collabAgentToolCall') {
+    return {
+      id: itemId,
+      role: 'tool',
+      title: asString(item.tool) || 'Tool call',
+      text: asString(item.prompt) || compactNwText(item.contentItems ?? item.arguments ?? item),
+      status: nwCodexItemStatus(item.status),
+      startedAt: now,
+      updatedAt: now,
+    }
+  }
+  if (itemType === 'webSearch') {
+    return {
+      id: itemId,
+      role: 'tool',
+      title: 'Web search',
+      text: asString(item.query) || '',
+      status: 'completed',
+      startedAt: now,
+      updatedAt: now,
+    }
+  }
+  if (itemType === 'plan') {
+    return {
+      id: itemId,
+      role: 'system',
+      title: 'Plan',
+      text: asString(item.text) || '',
+      status: 'completed',
+      startedAt: now,
+      updatedAt: now,
+    }
+  }
+  if (itemType === 'contextCompaction') {
+    const status = nwCodexItemStatus(item.status)
+    return {
+      id: itemId,
+      role: 'compaction',
+      text: status === 'completed' ? 'Context compacted' : 'Compacting context...',
+      status,
+      startedAt: now,
+      updatedAt: now,
+    }
   }
   return null
 }
@@ -3149,6 +3972,205 @@ async function runNwCapturedCommand(
     child.on('error', (error) => finish(error instanceof Error ? error : new Error(String(error))))
     child.on('close', (code, signal) => finish({ stdout, stderr, code, signal }))
   })
+}
+
+async function writeNwJsonLine(
+  child: import('node:child_process').ChildProcessWithoutNullStreams,
+  payload: unknown,
+) {
+  if (child.stdin.destroyed || !child.stdin.writable) throw new Error('stdin is not writable')
+  await new Promise<void>((resolve, reject) => {
+    child.stdin.write(`${JSON.stringify(payload)}\n`, 'utf8', (error) => {
+      if (error) reject(error)
+      else resolve()
+    })
+  })
+}
+
+async function createNwCodexAppServerSession(options: {
+  onNotification?: (notification: NwCodexAppServerNotification) => void | Promise<void>
+  onRequest?: (request: NwCodexAppServerRequest) => Promise<unknown>
+  onStderr?: (line: string) => void
+  onUnexpectedExit?: (error: Error) => void
+}): Promise<NwCodexAppServerClient> {
+  await ensureNwGatekeeperRepair()
+  const childProcess = requireNode<typeof import('node:child_process')>('node:child_process')
+  const binary = getAgentBinary('codex')
+  clearMacQuarantineForExecutable(binary)
+  const child = childProcess.spawn(binary, ['app-server'], {
+    env: buildNwUserEnv({ NO_COLOR: '1', FORCE_COLOR: '0' }),
+    stdio: ['pipe', 'pipe', 'pipe'],
+  }) as import('node:child_process').ChildProcessWithoutNullStreams
+
+  let buffer = ''
+  let stderr = ''
+  let stderrRemainder = ''
+  let nextId = 0
+  let closed = false
+  let exitError: Error | null = null
+  const pending = new Map<
+    NwJsonRpcId,
+    { resolve: (value: unknown) => void; reject: (error: Error) => void }
+  >()
+  let resolveExit: (() => void) | null = null
+  let rejectExit: ((error: Error) => void) | null = null
+  const exitPromise = new Promise<void>((resolve, reject) => {
+    resolveExit = resolve
+    rejectExit = reject
+  })
+
+  const rejectPending = (error: Error) => {
+    for (const request of pending.values()) request.reject(error)
+    pending.clear()
+  }
+
+  const writeErrorResponse = async (id: NwJsonRpcId, error: unknown) => {
+    const normalized = error instanceof Error ? error : new Error(String(error))
+    try {
+      await writeNwJsonLine(child, {
+        jsonrpc: '2.0',
+        id,
+        error: { code: -32603, message: normalized.message || 'codex app-server request failed' },
+      })
+    } catch {}
+  }
+
+  child.stdout.setEncoding('utf8')
+  child.stderr.setEncoding('utf8')
+  child.stdout.on('data', (chunk: string) => {
+    buffer += chunk
+    let newline = buffer.indexOf('\n')
+    while (newline !== -1) {
+      const line = buffer.slice(0, newline).trim()
+      buffer = buffer.slice(newline + 1)
+      newline = buffer.indexOf('\n')
+      if (!line) continue
+      let message: Record<string, unknown>
+      try {
+        message = JSON.parse(line) as Record<string, unknown>
+      } catch {
+        continue
+      }
+      const method = asString(message.method)
+      if (method) {
+        if (message.id != null) {
+          const request = {
+            id: message.id as NwJsonRpcId,
+            method,
+            params: message.params,
+          } satisfies NwCodexAppServerRequest
+          void Promise.resolve(options.onRequest?.(request))
+            .then(async (result) => {
+              if (!closed) await writeNwJsonLine(child, { jsonrpc: '2.0', id: request.id, result })
+            })
+            .catch(async (error) => writeErrorResponse(request.id, error))
+          continue
+        }
+        void Promise.resolve(options.onNotification?.({ method, params: message.params })).catch(
+          () => {},
+        )
+        continue
+      }
+      if (message.id == null) continue
+      const request = pending.get(message.id as NwJsonRpcId)
+      if (!request) continue
+      pending.delete(message.id as NwJsonRpcId)
+      const response = message as NwJsonRpcResponse
+      if (response.error) {
+        request.reject(new Error(response.error.message || `codex app-server request failed`))
+      } else {
+        request.resolve(response.result)
+      }
+    }
+  })
+  child.stderr.on('data', (chunk: string) => {
+    stderr = appendBoundedOutput(stderr, chunk, 4_000)
+    stderrRemainder += chunk
+    const lines = stderrRemainder.split('\n')
+    stderrRemainder = lines.pop() ?? ''
+    for (const line of lines) {
+      const trimmed = line.replace(/\r$/, '').trim()
+      if (trimmed) options.onStderr?.(trimmed)
+    }
+  })
+  child.on('error', (error) => {
+    if (closed) return
+    exitError = error instanceof Error ? error : new Error(String(error))
+    closed = true
+    rejectPending(exitError)
+    rejectExit?.(exitError)
+    options.onUnexpectedExit?.(exitError)
+  })
+  child.on('exit', (code, signal) => {
+    const alreadyClosed = closed
+    const detail = stderr.trim()
+    exitError =
+      exitError ||
+      new Error(
+        detail ||
+          (signal
+            ? `codex app-server exited via ${signal}`
+            : `codex app-server exited with code ${code ?? 'unknown'}`),
+      )
+    closed = true
+    rejectPending(exitError)
+    if (signal === null && code === 0) {
+      resolveExit?.()
+      return
+    }
+    rejectExit?.(exitError)
+    if (!alreadyClosed) options.onUnexpectedExit?.(exitError)
+  })
+
+  const client: NwCodexAppServerClient = {
+    request: async <TResult = unknown>(method: string, params: Record<string, unknown> = {}) => {
+      if (closed) throw exitError || new Error('codex app-server is closed')
+      const id = ++nextId
+      return await new Promise<TResult>((resolve, reject) => {
+        pending.set(id, {
+          resolve: resolve as (value: unknown) => void,
+          reject,
+        })
+        void writeNwJsonLine(child, { jsonrpc: '2.0', id, method, params }).catch((error) => {
+          pending.delete(id)
+          reject(error instanceof Error ? error : new Error(String(error)))
+        })
+      })
+    },
+    notify: async (method: string, params: Record<string, unknown> = {}) => {
+      if (closed) throw exitError || new Error('codex app-server is closed')
+      await writeNwJsonLine(child, { jsonrpc: '2.0', method, params })
+    },
+    close: async () => {
+      if (closed) {
+        try {
+          await exitPromise
+        } catch {}
+        return
+      }
+      closed = true
+      try {
+        child.kill('SIGTERM')
+      } catch {}
+      const forceKill = window.setTimeout(() => {
+        try {
+          child.kill('SIGKILL')
+        } catch {}
+      }, 1_000)
+      try {
+        await exitPromise
+      } catch {
+        // Ignore shutdown errors when Cells initiated the close.
+      } finally {
+        window.clearTimeout(forceKill)
+      }
+    },
+    isClosed: () => closed,
+  }
+
+  await client.request('initialize', nwCodexInitializeParams())
+  await client.notify('initialized', {})
+  return client
 }
 
 async function probeNwAgentAuth(agent: AgentSessionName): Promise<NwAgentAuthStatus> {
@@ -3244,6 +4266,392 @@ function getAgentLoginCommand(agent: AgentSessionName) {
   }
 }
 
+function buildNwCodexQuestionResponse(answers: Record<string, string[]>) {
+  const result: Record<string, { answers: string[] }> = {}
+  for (const [key, value] of Object.entries(answers)) result[key] = { answers: value }
+  return { answers: result }
+}
+
+function buildNwCodexPendingApproval(
+  kind: 'command' | 'file-change',
+  payload: Record<string, unknown>,
+) {
+  const command = asString(payload.command)
+  const cwd = asString(payload.cwd)
+  const grantRoot = asString(payload.grantRoot)
+  const reason = asString(payload.reason)
+  return {
+    kind,
+    title: kind === 'command' ? 'Approve command' : 'Approve file changes',
+    detail: kind === 'command' ? command || reason : grantRoot || reason,
+    reason,
+    command,
+    cwd,
+    grantRoot,
+    canApproveForSession: true,
+    createdAt: Date.now(),
+  }
+}
+
+async function handleNwCodexServerRequest(
+  runtime: NwCodexRuntime,
+  request: NwCodexAppServerRequest,
+) {
+  const payload = asRecord(request.params) ?? {}
+  if (request.method === 'item/tool/requestUserInput') {
+    const questions = (Array.isArray(payload.questions) ? payload.questions : [])
+      .map((value) => {
+        const item = asRecord(value)
+        const id = asString(item?.id)
+        const question = asString(item?.question)
+        if (!id || !question) return null
+        const options = (Array.isArray(item?.options) ? item.options : [])
+          .map((option) => {
+            const normalized = asRecord(option)
+            const label = asString(normalized?.label)
+            if (!label) return null
+            return { label, description: asString(normalized?.description) || '' }
+          })
+          .filter((option): option is { label: string; description: string } => option !== null)
+        return {
+          id,
+          question,
+          header: asString(item?.header) || '',
+          options,
+          multiSelect: false,
+        }
+      })
+      .filter(
+        (
+          question,
+        ): question is {
+          id: string
+          question: string
+          header: string
+          options: Array<{ label: string; description: string }>
+          multiSelect: boolean
+        } => question !== null,
+      )
+    return await new Promise((resolve) => {
+      runtime.pendingQuestion?.resolve(
+        buildNwCodexQuestionResponse(
+          Object.fromEntries(
+            runtime.pendingQuestion.questions.map((question) => [question.id, []]),
+          ),
+        ),
+      )
+      runtime.pendingQuestion = { questions, resolve }
+      runtime.snapshot.pendingQuestion = { questions, createdAt: Date.now() }
+      emitAgentSnapshot(runtime.snapshot)
+    })
+  }
+
+  if (
+    request.method === 'item/commandExecution/requestApproval' ||
+    request.method === 'item/fileChange/requestApproval'
+  ) {
+    const approval = buildNwCodexPendingApproval(
+      request.method === 'item/commandExecution/requestApproval' ? 'command' : 'file-change',
+      payload,
+    )
+    return await new Promise((resolve) => {
+      runtime.pendingApproval?.resolve({ decision: 'decline' })
+      runtime.pendingApproval = { resolve }
+      runtime.snapshot.pendingApproval = approval
+      emitAgentSnapshot(runtime.snapshot)
+    })
+  }
+
+  throw new Error(`Unsupported Codex app-server request: ${request.method}`)
+}
+
+function handleNwCodexNotification(
+  runtime: NwCodexRuntime,
+  notification: NwCodexAppServerNotification,
+) {
+  const method = notification.method
+  const params = asRecord(notification.params) ?? {}
+
+  if (method === 'thread/started') {
+    const thread = asRecord(params.thread)
+    const threadId = asString(thread?.id) ?? asString(params.threadId)
+    runtime.providerThreadId = threadId ?? runtime.providerThreadId
+    runtime.snapshot.codexThreadId = threadId ?? runtime.snapshot.codexThreadId
+    return
+  }
+
+  if (method === 'thread/tokenUsage/updated') {
+    const usage = asRecord(params.tokenUsage)
+    const last = asRecord(usage?.last)
+    const total = asRecord(usage?.total)
+    if (!last) return
+    const inputTokens = typeof last.inputTokens === 'number' ? last.inputTokens : 0
+    const outputTokens = typeof last.outputTokens === 'number' ? last.outputTokens : 0
+    const cachedInputTokens =
+      typeof last.cachedInputTokens === 'number' ? last.cachedInputTokens : 0
+    runtime.snapshot.usage = {
+      model: runtime.request.model || null,
+      inputTokens,
+      outputTokens,
+      cachedInputTokens,
+      contextWindow:
+        typeof usage?.modelContextWindow === 'number' ? Math.round(usage.modelContextWindow) : null,
+      usedTokens:
+        typeof last.totalTokens === 'number' ? last.totalTokens : inputTokens + outputTokens,
+      totalProcessedTokens:
+        typeof total?.totalTokens === 'number' ? total.totalTokens : inputTokens + outputTokens,
+      compactsAutomatically: true,
+      updatedAt: Date.now(),
+    }
+    return
+  }
+
+  if (method === 'turn/started') {
+    const turn = asRecord(params.turn)
+    runtime.turnCounter += 1
+    runtime.activeTurnId = asString(turn?.id) ?? runtime.activeTurnId
+    runtime.currentTurnUnifiedDiff = null
+    runtime.snapshot.status = 'running'
+    runtime.snapshot.error = null
+    runtime.snapshot.codexPlan = null
+    return
+  }
+
+  if (method === 'turn/plan/updated') {
+    const plan = Array.isArray(params.plan) ? params.plan : []
+    runtime.snapshot.codexPlan = {
+      items: plan
+        .map((value) => {
+          const item = asRecord(value)
+          const text = asString(item?.step)
+          if (!text) return null
+          return { text, completed: item?.status === 'completed' }
+        })
+        .filter((item): item is { text: string; completed: boolean } => item !== null),
+      updatedAt: Date.now(),
+    }
+    return
+  }
+
+  if (method === 'turn/diff/updated') {
+    const diff = asNonEmptyText(params.diff)
+    if (diff) runtime.currentTurnUnifiedDiff = diff
+    return
+  }
+
+  if (method === 'turn/completed') {
+    const turn = asRecord(params.turn)
+    const status = asString(turn?.status) ?? 'completed'
+    runtime.snapshot.status = status === 'failed' ? 'error' : 'idle'
+    runtime.snapshot.error =
+      status === 'failed' ? asString(asRecord(turn?.error)?.message) || 'Codex turn failed' : null
+    runtime.pendingApproval = null
+    runtime.snapshot.pendingApproval = null
+    runtime.snapshot.codexPlan = null
+    runtime.currentTurnUnifiedDiff = null
+    runtime.activeTurnId = null
+    for (const message of runtime.snapshot.messages) {
+      if (message.status === 'in_progress') {
+        message.status = message.role === 'error' ? 'failed' : 'completed'
+        message.updatedAt = Date.now()
+      }
+    }
+    if (runtime.snapshot.error) runtime.rejectTurn?.(new Error(runtime.snapshot.error))
+    else runtime.resolveTurn?.()
+    return
+  }
+
+  if (method === 'error') {
+    const message =
+      asString(params.message) || asString(asRecord(params.error)?.message) || 'Codex failed'
+    runtime.pendingApproval = null
+    runtime.snapshot.pendingApproval = null
+    runtime.snapshot.status = 'error'
+    runtime.snapshot.error = message
+    runtime.activeTurnId = null
+    runtime.rejectTurn?.(new Error(message))
+    return
+  }
+
+  if (method === 'item/agentMessage/delta') {
+    const itemId = asString(params.itemId)
+    const delta = asNonEmptyText(params.delta)
+    if (!itemId || !delta) return
+    appendNwCodexDelta(runtime, {
+      id: nwCodexMessageId(runtime, itemId),
+      role: 'assistant',
+      title: null,
+      text: delta,
+    })
+    return
+  }
+
+  if (method === 'item/reasoning/summaryTextDelta' || method === 'item/reasoning/textDelta') {
+    const itemId = asString(params.itemId)
+    const delta = asNonEmptyText(params.delta)
+    if (!itemId || !delta) return
+    appendNwCodexDelta(runtime, {
+      id: nwCodexMessageId(runtime, itemId),
+      role: 'reasoning',
+      title: 'Reasoning',
+      text: delta,
+    })
+    return
+  }
+
+  if (method === 'item/commandExecution/outputDelta' || method === 'item/fileChange/outputDelta') {
+    const itemId = asString(params.itemId)
+    const delta = asNonEmptyText(params.delta)
+    if (!itemId || !delta) return
+    appendNwCodexDelta(runtime, {
+      id: nwCodexMessageId(runtime, itemId),
+      role: 'tool',
+      title: method === 'item/fileChange/outputDelta' ? 'File changes' : 'Command',
+      text: delta,
+    })
+    return
+  }
+
+  if (method !== 'item/started' && method !== 'item/completed') return
+  const item = asRecord(params.item)
+  if (!item) return
+  const next = nwCodexItemToMessage(item)
+  if (!next) return
+  next.id = nwCodexMessageId(runtime, next.id)
+  if (method === 'item/started') next.status = 'in_progress'
+  if (
+    method === 'item/completed' &&
+    next.title === 'File changes' &&
+    runtime.currentTurnUnifiedDiff
+  )
+    next.metadata = runtime.currentTurnUnifiedDiff
+  if (method === 'item/completed' && next.title === 'Plan' && next.role === 'system') {
+    const planText = next.text.trim()
+    if (planText) {
+      runtime.pendingPlanApproval = { plan: planText }
+      runtime.snapshot.pendingPlanApproval = { plan: planText, createdAt: Date.now() }
+      return
+    }
+  }
+  upsertNwAgentMessage(runtime.snapshot, next)
+}
+
+async function ensureNwCodexRuntime(snapshot: AgentSessionSnapshot): Promise<NwCodexRuntime> {
+  const request = getNwAgentRequest(snapshot)
+  const existing = codexRuntimes.get(snapshot.windowId)
+  if (existing && !existing.closed && !existing.client.isClosed()) {
+    existing.request = { ...existing.request, ...request }
+    existing.snapshot = snapshot
+    return existing
+  }
+
+  const runtime: NwCodexRuntime = {
+    request,
+    snapshot,
+    client: null as unknown as NwCodexAppServerClient,
+    providerThreadId: snapshot.codexThreadId ?? null,
+    activeTurnId: null,
+    turnCounter: 0,
+    turnPromise: null,
+    resolveTurn: null,
+    rejectTurn: null,
+    pendingQuestion: null,
+    pendingApproval: null,
+    pendingPlanApproval: null,
+    currentTurnUnifiedDiff: null,
+    closed: false,
+  }
+  runtime.client = await createNwCodexAppServerSession({
+    onNotification: (notification) => {
+      handleNwCodexNotification(runtime, notification)
+      emitAgentSnapshot(runtime.snapshot)
+    },
+    onRequest: async (requestEvent) => await handleNwCodexServerRequest(runtime, requestEvent),
+    onUnexpectedExit: (error) => {
+      if (runtime.closed) return
+      runtime.closed = true
+      runtime.snapshot.status = 'error'
+      runtime.snapshot.error = error.message
+      runtime.rejectTurn?.(error)
+      emitAgentSnapshot(runtime.snapshot)
+    },
+    onStderr: (line) => {
+      if (/not inside a trusted directory|skip-git-repo-check/i.test(line)) {
+        runtime.snapshot.status = 'error'
+        runtime.snapshot.error = line
+        emitAgentSnapshot(runtime.snapshot)
+      }
+    },
+  })
+
+  const params = nwCodexThreadStartParams(request)
+  const resumeThreadId = snapshot.codexThreadId
+  try {
+    const response: { thread?: { id?: string } } = resumeThreadId
+      ? await runtime.client.request('thread/resume', { threadId: resumeThreadId, ...params })
+      : await runtime.client.request('thread/start', params)
+    const threadId = asString(response.thread?.id) ?? resumeThreadId
+    runtime.providerThreadId = threadId ?? null
+    snapshot.codexThreadId = threadId ?? null
+  } catch (error) {
+    if (!resumeThreadId) throw error
+    snapshot.codexThreadId = null
+    runtime.providerThreadId = null
+    const response: { thread?: { id?: string } } = await runtime.client.request(
+      'thread/start',
+      params,
+    )
+    const threadId = asString(response.thread?.id)
+    runtime.providerThreadId = threadId ?? null
+    snapshot.codexThreadId = threadId ?? null
+  }
+
+  codexRuntimes.set(snapshot.windowId, runtime)
+  return runtime
+}
+
+async function runNwCodexTurn(
+  snapshot: AgentSessionSnapshot,
+  input: string,
+  attachments: string[] = [],
+) {
+  snapshot.status = 'running'
+  snapshot.error = null
+  emitAgentSnapshot(snapshot)
+  let runtime: NwCodexRuntime
+  try {
+    runtime = await ensureNwCodexRuntime(snapshot)
+  } catch (error) {
+    appendAgentError(snapshot, error instanceof Error ? error.message : String(error))
+    return
+  }
+  if (runtime.turnPromise) {
+    appendAgentError(snapshot, 'Codex is still processing the previous turn.')
+    return
+  }
+  runtime.turnPromise = new Promise<void>((resolve, reject) => {
+    runtime.resolveTurn = resolve
+    runtime.rejectTurn = reject
+  }).finally(() => {
+    runtime.turnPromise = null
+    runtime.resolveTurn = null
+    runtime.rejectTurn = null
+  })
+  try {
+    const started: { turn?: { id?: string } } = await runtime.client.request('turn/start', {
+      ...nwCodexTurnStartParams(runtime, input, attachments),
+    })
+    runtime.activeTurnId = asString(started.turn?.id) ?? runtime.activeTurnId
+    await runtime.turnPromise
+  } catch (error) {
+    snapshot.status = 'error'
+    snapshot.error = error instanceof Error ? error.message : String(error)
+    appendAgentError(snapshot, snapshot.error)
+  } finally {
+    if (!snapshot.error) window.setTimeout(() => maybeDrainNwAgentQueue(snapshot.windowId), 0)
+  }
+}
+
 function appendAgentError(snapshot: AgentSessionSnapshot, message: string) {
   snapshot.status = 'error'
   snapshot.error = message
@@ -3251,7 +4659,16 @@ function appendAgentError(snapshot: AgentSessionSnapshot, message: string) {
   emitAgentSnapshot(snapshot)
 }
 
-async function runAgentTurn(snapshot: AgentSessionSnapshot, input: string) {
+async function runAgentTurn(
+  snapshot: AgentSessionSnapshot,
+  input: string,
+  attachments: string[] = [],
+) {
+  if (snapshot.agent === 'codex') {
+    await runNwCodexTurn(snapshot, input, attachments)
+    return
+  }
+
   const childProcess = requireNode<typeof import('node:child_process')>('node:child_process')
   const command = getAgentBinary(snapshot.agent)
   const args = buildAgentArgs(snapshot.agent, input)
@@ -3547,6 +4964,7 @@ export function installNwCellsAdapter() {
   installNwShortcutMenu()
   setupNwSmokeHooks()
   scheduleNwGatekeeperRepair()
+  scheduleNwAutomaticUpdateChecks()
 
   window.addEventListener('focus', () => {
     if (nwAppBlurTimer !== null) {
@@ -3813,9 +5231,15 @@ export function installNwCellsAdapter() {
       ensure: async (request) => {
         const existing = agentSessions.get(request.windowId)
         if (existing) {
+          agentRequests.set(request.windowId, {
+            ...getNwAgentRequest(existing),
+            ...request,
+            initialPrompt: null,
+          })
           emitAgentSnapshot(existing)
           return existing
         }
+        agentRequests.set(request.windowId, request)
         const snapshot = createAgentSnapshot(request)
         emitAgentSnapshot(snapshot)
         if (request.initialPrompt?.trim()) void runAgentTurn(snapshot, request.initialPrompt.trim())
@@ -3823,12 +5247,21 @@ export function installNwCellsAdapter() {
       },
       subscribeUpdates: async () => {},
       unsubscribeUpdates: async () => {},
-      send: async (windowId, input, attachments = [], _overrides, replyTo = null) => {
+      send: async (windowId, input, attachments = [], overrides, replyTo = null) => {
         const snapshot = agentSessions.get(windowId)
         if (!snapshot) throw new Error(`Missing agent session ${windowId}.`)
         if (snapshot.status === 'running') throw new Error('Agent session is already running.')
         const trimmed = input.trim()
         if (!trimmed && attachments.length === 0) return
+        const existingRequest = getNwAgentRequest(snapshot)
+        agentRequests.set(windowId, {
+          ...existingRequest,
+          ...overrides,
+          model: overrides?.model ?? existingRequest.model ?? null,
+          thinkingLevel: overrides?.thinkingLevel ?? existingRequest.thinkingLevel ?? null,
+          permissionMode: overrides?.permissionMode ?? existingRequest.permissionMode ?? null,
+          fastMode: overrides?.fastMode ?? existingRequest.fastMode ?? null,
+        })
         snapshot.messages.push(
           createAgentMessage('user', input, {
             attachments,
@@ -3836,7 +5269,7 @@ export function installNwCellsAdapter() {
           }),
         )
         emitAgentSnapshot(snapshot)
-        void runAgentTurn(snapshot, input)
+        void runAgentTurn(snapshot, input, attachments)
       },
       branchFrom: async (
         _sourceWindowId,
@@ -3849,6 +5282,7 @@ export function installNwCellsAdapter() {
       ) => {
         const snapshot = createAgentSnapshot(request)
         agentSessions.set(request.windowId, snapshot)
+        agentRequests.set(request.windowId, { ...request, ...overrides })
         emitAgentSnapshot(snapshot)
         await window.cells.agentSession.send(
           request.windowId,
@@ -3859,6 +5293,12 @@ export function installNwCellsAdapter() {
         )
       },
       close: async (windowId) => {
+        const codexRuntime = codexRuntimes.get(windowId)
+        if (codexRuntime) {
+          codexRuntime.closed = true
+          await codexRuntime.client.close().catch(() => {})
+          codexRuntimes.delete(windowId)
+        }
         const child = agentProcesses.get(windowId)
         if (child) {
           child.kill()
@@ -3873,11 +5313,13 @@ export function installNwCellsAdapter() {
       dispose: async (windowId) => {
         await window.cells.agentSession.close(windowId)
         agentSessions.delete(windowId)
+        agentRequests.delete(windowId)
       },
       reportQueues: (reports) => {
         for (const report of reports) {
           if (!report || report.windowId !== report.request?.windowId) continue
           agentQueueRequests.set(report.windowId, report.request)
+          agentRequests.set(report.windowId, report.request)
           setNwAgentQueue(report.windowId, report.queuedMessages)
           maybeDrainNwAgentQueue(report.windowId)
         }
@@ -3932,11 +5374,42 @@ export function installNwCellsAdapter() {
       },
       updatePermissionMode: async (windowId, mode) => {
         updateAgentQueueRequest(windowId, { permissionMode: mode })
+        const snapshot = agentSessions.get(windowId)
+        if (snapshot) {
+          const request = getNwAgentRequest(snapshot)
+          agentRequests.set(windowId, { ...request, permissionMode: mode })
+          const runtime = codexRuntimes.get(windowId)
+          if (runtime) runtime.request = { ...runtime.request, permissionMode: mode }
+        }
       },
       updateContextLength: async (windowId, length) => {
         updateAgentQueueRequest(windowId, { contextLength: length })
+        const snapshot = agentSessions.get(windowId)
+        if (snapshot)
+          agentRequests.set(windowId, { ...getNwAgentRequest(snapshot), contextLength: length })
       },
       respondPlan: async (windowId, decision, feedback) => {
+        const runtime = codexRuntimes.get(windowId)
+        const pending = runtime?.pendingPlanApproval
+        if (runtime && pending) {
+          runtime.pendingPlanApproval = null
+          runtime.snapshot.pendingPlanApproval = null
+          emitAgentSnapshot(runtime.snapshot)
+          if (decision === 'reject') {
+            if (feedback?.trim()) await window.cells.agentSession.send(windowId, feedback.trim())
+            return
+          }
+          const nextMode = decision === 'auto-accept' ? 'bypass' : 'ask'
+          await window.cells.agentSession.updatePermissionMode(windowId, nextMode)
+          const base = `PLEASE IMPLEMENT THIS PLAN:\n${pending.plan.trim()}`
+          await window.cells.agentSession.send(
+            windowId,
+            feedback?.trim()
+              ? `${base}\n\nAdditional guidance from the user: ${feedback.trim()}`
+              : base,
+          )
+          return
+        }
         clearAgentPendingState(
           windowId,
           'plan',
@@ -3944,6 +5417,41 @@ export function installNwCellsAdapter() {
         )
       },
       respondQuestion: async (windowId, answers, note) => {
+        const runtime = codexRuntimes.get(windowId)
+        const pending = runtime?.pendingQuestion
+        if (runtime && pending) {
+          const normalizedAnswers: Record<string, string[]> = {}
+          for (const question of pending.questions) {
+            normalizedAnswers[question.id] = (
+              answers?.[question.id] ??
+              answers?.[question.question] ??
+              []
+            ).filter(
+              (value): value is string => typeof value === 'string' && value.trim().length > 0,
+            )
+          }
+          const trimmedNote = note?.trim()
+          if (trimmedNote) {
+            const first = pending.questions[0]
+            if (first) {
+              normalizedAnswers[first.id] = [
+                ...(normalizedAnswers[first.id] ?? []),
+                `(user note: ${trimmedNote})`,
+              ]
+            }
+          }
+          runtime.pendingQuestion = null
+          runtime.snapshot.pendingQuestion = null
+          appendAgentSystemMessage(
+            runtime.snapshot,
+            answers || trimmedNote
+              ? 'Question response submitted.'
+              : 'Question response cancelled.',
+          )
+          pending.resolve(buildNwCodexQuestionResponse(normalizedAnswers))
+          emitAgentSnapshot(runtime.snapshot)
+          return
+        }
         const count = answers ? Object.keys(answers).length : 0
         clearAgentPendingState(
           windowId,
@@ -3954,6 +5462,16 @@ export function installNwCellsAdapter() {
         )
       },
       respondApproval: async (windowId, decision) => {
+        const runtime = codexRuntimes.get(windowId)
+        const pending = runtime?.pendingApproval
+        if (runtime && pending) {
+          runtime.pendingApproval = null
+          runtime.snapshot.pendingApproval = null
+          appendAgentSystemMessage(runtime.snapshot, `Approval response: ${decision}`)
+          pending.resolve({ decision })
+          emitAgentSnapshot(runtime.snapshot)
+          return
+        }
         clearAgentPendingState(windowId, 'approval', `Approval response: ${decision}`)
       },
       listCodexModels: async () => NW_CODEX_MODELS,
@@ -4087,12 +5605,17 @@ export function installNwCellsAdapter() {
     },
     updater: {
       getSupport: async () => getNwUpdaterSupport(),
-      check: async () => emitNwUpdaterUnsupported(),
-      download: async () => emitNwUpdaterUnsupported(),
-      install: async () => false,
+      check: async () => checkForNwAppUpdates(true),
+      download: async () => downloadNwUpdate(),
+      install: async () => installNwUpdate(),
       getVersion: async () => getNwAppVersion(),
       setAutoUpdate: async (enabled) => {
-        if (enabled) emitNwUpdaterUnsupported()
+        if (enabled) {
+          void checkForNwAppUpdates(true)
+          scheduleNwAutomaticUpdateChecks()
+        } else {
+          stopNwAutomaticUpdateChecks()
+        }
       },
       onStatus: updaterStatus.on,
     },
