@@ -78,6 +78,7 @@ import {
 import { AgentTurnCard } from './agent-turn-card'
 import { LoadingIndicator } from './agent-loading-indicator'
 import { SessionDiffsPanel } from './session-diffs-panel'
+import { AgentOverviewPopover } from './agent-overview-popover'
 import { InlineMentionMenu, useInlineMention } from './inline-mention-menu'
 import { sumDiffStats, hasDiffStats } from '@/lib/tool-diff-stats'
 import { createQueuedMessageId, sanitizeQueuedMessages } from '@/lib/agent-session-queue'
@@ -109,6 +110,15 @@ import { LegendList, type LegendListRef } from '@legendapp/list/react'
 
 interface AgentChatPanelProps {
   agentWindow: AgentWindowNode
+  isWindowFocused?: boolean
+  chromeActions?: {
+    title: string
+    isPinned: boolean
+    onRename: () => void
+    onClearConversation: () => void
+    onCloseSession: () => void
+    onTogglePin: () => void
+  }
 }
 
 // Copied and adapted from Craft Agents OSS:
@@ -1253,6 +1263,7 @@ function ComposerRichEditor({
   onChange,
   onKeyDown,
   onPasteImages,
+  onPasteAttachmentPaths,
   onRemoveImage,
 }: {
   editorRef: RefObject<HTMLDivElement | null>
@@ -1264,6 +1275,7 @@ function ComposerRichEditor({
   onChange: (value: string, cursorPosition: number) => void
   onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => void
   onPasteImages: (files: File[], insertOffset: number) => void
+  onPasteAttachmentPaths: (paths: string[], insertOffset: number) => void
   onRemoveImage: (path: string) => void
 }) {
   const renderedValueRef = useRef<string | null>(null)
@@ -1304,8 +1316,17 @@ function ComposerRichEditor({
     const root = editorRef.current
     if (!root) return
     const current = serializeComposerElement(root)
-    if (current !== value || renderedValueRef.current !== value) {
+    if (current !== value) {
+      const restoreSelectionOffset =
+        selectionOffset === null && document.activeElement === root
+          ? Math.min(getComposerSelectionOffset(root), value.length)
+          : null
       renderComposerValueInto(root, value, imageAttachments, thumbnailUrls)
+      renderedValueRef.current = value
+      if (restoreSelectionOffset !== null) {
+        setComposerSelectionOffset(root, restoreSelectionOffset)
+      }
+    } else if (renderedValueRef.current !== value) {
       renderedValueRef.current = value
     }
     if (selectionOffset !== null) {
@@ -1330,6 +1351,22 @@ function ComposerRichEditor({
       console.error('[agent-chat] paste plain text failed', err)
     }
   }, [editorRef, emitChange])
+
+  const pasteClipboardContents = useCallback(async () => {
+    const root = editorRef.current
+    if (!root) return
+    try {
+      const paths = await window.cells.app.pasteClipboardFiles()
+      if (paths && paths.length > 0) {
+        onPasteAttachmentPaths(paths, getComposerSelectionOffset(root))
+        return
+      }
+    } catch (err) {
+      console.error('[agent-chat] paste clipboard files failed', err)
+    }
+
+    await pastePlainText()
+  }, [editorRef, onPasteAttachmentPaths, pastePlainText])
 
   return (
     <div className="relative min-h-[72px] px-4 pt-3.5 pb-2">
@@ -1382,12 +1419,22 @@ function ComposerRichEditor({
             return
           }
 
+          const hasFileLikeClipboard =
+            (event.clipboardData?.files?.length ?? 0) > 0 ||
+            items.some((item) => item.kind === 'file') ||
+            Array.from(event.clipboardData?.types ?? []).some(
+              (type) => type === 'Files' || type === 'text/uri-list',
+            )
           const plainText = event.clipboardData?.getData('text/plain') ?? ''
-          if (!plainText) return
+          if (!plainText || hasFileLikeClipboard) {
+            event.preventDefault()
+            void pasteClipboardContents()
+            return
+          }
           event.preventDefault()
           if (insertPlainTextIntoComposer(editorRef.current, plainText)) emitChange()
         }}
-        className="scrollbar-hover min-h-[72px] max-h-[min(38vh,260px)] overflow-y-auto overscroll-contain whitespace-pre-wrap break-words text-[14px] leading-6 text-foreground outline-none [overflow-wrap:anywhere] [&_[data-image-chip-index]]:mx-0.5"
+        className="scrollbar-hover min-h-[72px] max-h-[min(38vh,260px)] select-text overflow-y-auto overscroll-contain whitespace-pre-wrap break-words text-[14px] leading-6 text-foreground outline-none [overflow-wrap:anywhere] [&_[data-image-chip-index]]:mx-0.5"
       />
     </div>
   )
@@ -3063,8 +3110,15 @@ const ChatTranscript = memo(function ChatTranscript({
   )
 })
 
-export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
+export function AgentChatPanel({
+  agentWindow,
+  isWindowFocused = true,
+  chromeActions,
+}: AgentChatPanelProps) {
   const reduceMotion = useReducedMotion()
+  const syncAgentWindowForChrome = useStore((state) => state.syncAgentWindow)
+  const requestCloseWindowForChrome = useStore((state) => state.requestCloseWindow)
+  const togglePinForChrome = useStore((state) => state.togglePin)
   const [snapshot, setSnapshot] = useState<AgentSessionSnapshot | null>(null)
   const [messages, setMessages] = useState<AgentSessionMessage[]>([])
   const [groups, setGroups] = useState<ChatGroup[]>([])
@@ -4261,24 +4315,32 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
     [agentWindow.id, flushPendingComposerPersist],
   )
 
+  const insertAttachmentPathsIntoComposer = useCallback(
+    (paths: string[], insertOffset = getComposerSelectionOffset(textareaRef.current)) => {
+      const sanitizedPaths = sanitizeComposerAttachments(paths)
+      if (sanitizedPaths.length === 0) return
+      const inserted = getImageTokenInsertResult(
+        inputRef.current,
+        insertOffset,
+        attachmentsRef.current,
+        sanitizedPaths,
+      )
+      writeComposer(inserted.value, [...attachmentsRef.current, ...sanitizedPaths], {
+        selectionOffset: inserted.offset,
+      })
+    },
+    [writeComposer],
+  )
+
   const pickAttachments = useCallback(async () => {
     try {
       const picked = await window.cells.app.pickFiles()
       if (!picked || picked.length === 0) return
-      const offset = getComposerSelectionOffset(textareaRef.current)
-      const inserted = getImageTokenInsertResult(
-        inputRef.current,
-        offset,
-        attachmentsRef.current,
-        picked,
-      )
-      writeComposer(inserted.value, [...attachmentsRef.current, ...picked], {
-        selectionOffset: inserted.offset,
-      })
+      insertAttachmentPathsIntoComposer(picked)
     } catch (err) {
       console.error('[agent-chat] pick files failed', err)
     }
-  }, [writeComposer])
+  }, [insertAttachmentPathsIntoComposer])
 
   const startBrowserElementPicker = useCallback(async () => {
     if (!browserPickTargetId) {
@@ -5280,6 +5342,51 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
   const showPendingLoader =
     isRunning &&
     (visibleGroups.length === 0 || visibleGroups[visibleGroups.length - 1].kind !== 'turn')
+  const resolvedChromeActions = useMemo(
+    () =>
+      chromeActions ?? {
+        title: agentWindow.customTitle || agentWindow.title,
+        isPinned: Boolean(agentWindow.pinned),
+        onRename: () => {
+          const next = window.prompt('Rename session', agentWindow.customTitle || agentWindow.title)
+          if (next === null) return
+          syncAgentWindowForChrome(agentWindow.id, { customTitle: next.trim() || null })
+        },
+        onClearConversation: () => {
+          void window.cells.agentSession
+            .dispose(agentWindow.id)
+            .then(() => {
+              syncAgentWindowForChrome(agentWindow.id, {
+                claudeSessionId: null,
+                codexThreadId: null,
+                cursorAgentId: null,
+                cursorRunId: null,
+                copilotSessionId: null,
+                opencodeSessionId: null,
+                error: null,
+                status: 'idle',
+              })
+            })
+            .catch((err: unknown) => console.error('[agent-chat] clear failed', err))
+        },
+        onCloseSession: () => {
+          void requestCloseWindowForChrome({ id: agentWindow.id, type: 'agent' })
+        },
+        onTogglePin: () => {
+          togglePinForChrome(agentWindow.id, 'agent')
+        },
+      },
+    [
+      agentWindow.customTitle,
+      agentWindow.id,
+      agentWindow.pinned,
+      agentWindow.title,
+      chromeActions,
+      requestCloseWindowForChrome,
+      syncAgentWindowForChrome,
+      togglePinForChrome,
+    ],
+  )
 
   return (
     <div
@@ -5301,6 +5408,16 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
       }}
     >
       <div className="relative flex min-w-0 flex-1 flex-col">
+        <AgentOverviewPopover
+          agentWindow={agentWindow}
+          snapshot={visibleSnapshot}
+          messages={visibleMessages}
+          sessionDiffStats={sessionDiffStats}
+          diffsPanelOpen={diffsPanelOpen}
+          isWindowFocused={isWindowFocused}
+          chromeActions={resolvedChromeActions}
+          onToggleDiffs={() => setSidePanel((v) => (v === 'diffs' ? null : 'diffs'))}
+        />
         <div className="relative flex min-h-0 flex-1 flex-col">
           {sessionLastUpdatedAt ? (
             <div
@@ -6010,18 +6127,11 @@ export function AgentChatPanel({ agentWindow }: AgentChatPanelProps) {
                         }
                       }
                       if (saved.length > 0) {
-                        const inserted = getImageTokenInsertResult(
-                          inputRef.current,
-                          insertOffset,
-                          attachmentsRef.current,
-                          saved,
-                        )
-                        writeComposer(inserted.value, [...attachmentsRef.current, ...saved], {
-                          selectionOffset: inserted.offset,
-                        })
+                        insertAttachmentPathsIntoComposer(saved, insertOffset)
                       }
                     })()
                   }}
+                  onPasteAttachmentPaths={insertAttachmentPathsIntoComposer}
                   onRemoveImage={removeAttachment}
                 />
                 <ComposerImagePreviewDialog

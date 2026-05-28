@@ -1,3 +1,8 @@
+// Deprecated legacy runtime.
+//
+// This browser preload is for Electron BrowserView/webContents plumbing only.
+// The active browser layer now lives in the NW.js runtime and webview adapter.
+// Keep changes here limited to explicit legacy Electron maintenance.
 import { ipcRenderer } from 'electron'
 
 // Detect horizontal overscroll gestures (trackpad swipe at scroll edge)

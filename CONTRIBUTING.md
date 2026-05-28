@@ -69,9 +69,10 @@ In the pull request description, include:
 
 ## Code Style
 
-- Follow the existing TypeScript, React, and Electron patterns already in the repo
+- Follow the existing TypeScript, React, and NW.js runtime patterns already in the repo
 - Prefer small, explicit components and state changes over broad abstractions
-- Keep platform-specific behavior clearly marked, especially around Electron and macOS-only features
+- Keep platform-specific behavior clearly marked, especially around NW.js, legacy Electron, and macOS-only features
+- Treat `electron/` as deprecated legacy runtime code. New product behavior should land in `cells-runtime/`, `src/nw-main.tsx`, `src/nw-cells-adapter.ts`, or shared `src/` modules.
 - Do not mix unrelated cleanup into a feature PR
 
 ## License

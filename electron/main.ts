@@ -1,3 +1,9 @@
+// Deprecated legacy runtime.
+//
+// Cells now ships and develops against the NW.js runtime by default. This file is
+// retained only for explicit legacy Electron scripts (`*:legacy-electron`) and
+// should not receive new product behavior. Put active runtime changes in
+// `cells-runtime/`, `src/nw-main.tsx`, and `src/nw-cells-adapter.ts` instead.
 import {
   app,
   BrowserWindow,

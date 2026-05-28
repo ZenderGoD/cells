@@ -1,3 +1,8 @@
+// Deprecated legacy runtime.
+//
+// This preload belongs to the old Electron path. The primary Cells runtime now
+// exposes its browser API from the NW.js adapter in `src/nw-cells-adapter.ts`.
+// Keep changes here limited to explicit legacy Electron maintenance.
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type {
   AgentPermissionMode,

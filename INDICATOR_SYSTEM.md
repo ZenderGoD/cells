@@ -5,12 +5,14 @@
 The indicator system now tracks real agent session state instead of guessing from CPU usage.
 
 **What was wrong before:**
+
 - Relied entirely on CPU polling (unreliable)
 - Ignored actual session IDs being passed to agents
 - No connection to real agent APIs
 - Made nonsensical state transitions
 
 **What changed:**
+
 - Session metadata (`claudeSessionId`, etc.) is now tracked
 - Process state monitoring provides real observable data
 - API integration is ready for all agent types
@@ -54,6 +56,7 @@ The indicator system now tracks real agent session state instead of guessing fro
 ### 1. EnhancedSessionTracker (`src/lib/enhanced-session-tracker.ts`)
 
 Main orchestrator that:
+
 - Registers agent sessions when launched
 - Listens to process state changes
 - Polls agent APIs for real status
@@ -61,13 +64,15 @@ Main orchestrator that:
 - Broadcasts status to UI
 
 ```typescript
-// Usage in electron/main.ts
+// Usage in runtime host code. Historically this lived in electron/main.ts,
+// but the Electron runtime is now deprecated; new wiring should use the NW.js
+// adapter/runtime host or shared modules.
 const tracker = new EnhancedSessionTracker()
 tracker.subscribe((termId, status) => broadcastTerminalStatus(termId, status))
 
 // When agent launches
 tracker.registerSession(termId, 'claude', {
-  sessionId: claudeSessionId,  // Actual session ID
+  sessionId: claudeSessionId, // Actual session ID
 })
 
 // When terminal process state changes
@@ -77,6 +82,7 @@ tracker.updateProcessState(termId, processInfo, cpuUsage, isForeground)
 ### 2. ProcessStateMonitor (`src/lib/process-state-monitor.ts`)
 
 Observes real process state:
+
 - Is the foreground process an agent?
 - What's its CPU usage?
 - How long since last activity?
@@ -91,6 +97,7 @@ This replaces the old broken CPU-based system with clean, observable state trans
 ### 3. Agent API Clients (`src/lib/agent-api-client.ts`)
 
 Placeholder for actual API integration:
+
 - `queryClaudeSessionStatus(sessionId)` - Query Claude API
 - `queryCodexSessionStatus(threadId)` - Query Codex API
 - `queryOpenCodeSessionStatus(sessionId)` - Query OpenCode API
@@ -101,6 +108,7 @@ Currently returns `null` (needs implementation), but process state fallback work
 ## State Flow
 
 ### Launch Phase
+
 ```
 User launches agent
     ↓
@@ -112,6 +120,7 @@ Status: WORKING (initial state)
 ```
 
 ### Running Phase
+
 ```
 Process is in foreground + CPU > threshold
     ↓
@@ -121,6 +130,7 @@ Status: WORKING
 ```
 
 ### Waiting Phase
+
 ```
 Process backgrounded OR idle for 3+ seconds
     ↓
@@ -130,6 +140,7 @@ Status: WAITING
 ```
 
 ### Completion Phase (explicit)
+
 ```
 Agent signals completion (must be wired up)
     ↓
@@ -141,6 +152,7 @@ Session auto-cleaned after 2s
 ```
 
 ### Error Phase (explicit)
+
 ```
 Agent signals error
     ↓
@@ -165,14 +177,11 @@ export async function queryClaudeSessionStatus(
     if (!apiKey) return null
 
     // Query Claude's session API
-    const response = await fetch(
-      `https://api.claude.ai/sessions/${sessionId}`,
-      {
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-        },
-      }
-    )
+    const response = await fetch(`https://api.claude.ai/sessions/${sessionId}`, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+      },
+    })
 
     if (!response.ok) return null
 
@@ -213,7 +222,8 @@ export async function queryClaudeSessionStatus(
 Wire up output parsing to call `markCompleted()`:
 
 ```typescript
-// In terminal component or electron side
+// In terminal component or runtime host side. Prefer the NW.js adapter/runtime
+// host for new work; Electron-side wiring is deprecated legacy code.
 window.cells.terminal.onData((termId, data) => {
   // Parse data for completion markers
   if (data.includes('claude> ') || data.includes('% ')) {
@@ -255,6 +265,7 @@ export async function queryCodexSessionStatus(
 ### Automated Testing
 
 The old `status-indicator.test.ts` still tests the presentation layer. Add tests for:
+
 - `enhanced-session-tracker.test.ts` - State transitions
 - `process-state-monitor.test.ts` - Process detection
 - Integration tests for API clients
@@ -262,12 +273,14 @@ The old `status-indicator.test.ts` still tests the presentation layer. Add tests
 ## Migration from Old System
 
 ✅ **Done:**
+
 - Removed `terminal-status-monitor.ts` (broken CPU polling)
 - Replaced with `EnhancedSessionTracker`
 - Process state monitoring now drives indicators
 - Session metadata is properly tracked
 
 **Still needed (optional):**
+
 - Implement actual API clients (currently no-op placeholders)
 - Wire up completion detection from terminal output
 - Add comprehensive tests
@@ -275,6 +288,7 @@ The old `status-indicator.test.ts` still tests the presentation layer. Add tests
 ## Source Attribution
 
 Indicators are tagged with their source:
+
 - `session:process` - From process state monitoring
 - `session:api:active` - From Claude API
 - `session:api:waiting` - From Codex API

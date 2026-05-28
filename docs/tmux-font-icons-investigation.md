@@ -83,7 +83,7 @@ The most reliable local workaround has been:
 
 1. quit Cells
 2. kill Cells-owned background processes
-3. clear the installed app's Chromium/Electron caches
+3. clear the installed app's Chromium/NW.js caches
 4. relaunch Cells
 
 This strongly suggests stale renderer/runtime state is part of the issue.
@@ -134,7 +134,7 @@ Result:
 
 - explicit `FontFace(...)` loading from bundled asset paths
 - `document.fonts.load(...)` using Nerd glyph samples
-- loading from binary font data through Electron IPC
+- loading from binary font data through Electron IPC, before Electron was deprecated
 - waiting on `document.fonts.ready` before terminal/app bootstrap
 - warm renderer reload attempts after startup
 
@@ -259,8 +259,10 @@ Based on the diagnostics so far, the issue is probably not primarily caused by:
 - `src/lib/webgl-terminal-renderer.ts:162` — `GlyphAtlas` class (caches glyphs permanently until `reset()`)
 - `src/lib/webgl-terminal-renderer.ts:144` — `isDoubleWidthGlyph()` (excludes PUA from double-width)
 - `src/lib/webgl-terminal-renderer.ts:453` — `remeasureFont()` (clears atlas and rebuilds)
-- `electron/tmux-shared.ts:223` — `buildPrivateTmuxConfig()` (tmux server options)
-- `electron/tmux-session-manager.ts:381` — `replaceAttachedClient()` (tmux client PTY setup)
+- `electron/tmux-shared.ts:223` — legacy Electron `buildPrivateTmuxConfig()` reference
+- `electron/tmux-session-manager.ts:381` — legacy Electron `replaceAttachedClient()` reference
+
+The `electron/` locations above are deprecated legacy runtime references. Active runtime fixes should prefer the NW.js path and shared terminal/session modules.
 
 ## Current Status
 

@@ -7,6 +7,12 @@ import path from 'path'
 import fs from 'fs'
 import os from 'os'
 
+// Deprecated legacy Electron build config.
+//
+// The default Cells runtime now builds through `cells-runtime/vite.cells.config.ts`
+// and launches/packages via `scripts/dev-cells.mjs` and `scripts/pack-cells.mjs`.
+// This config is kept only for explicit `*:legacy-electron` scripts.
+
 // IMPORTANT: The browser preload (electron/browser-preload.cjs) is a plain CJS
 // file that gets copied as-is — it must NOT be compiled by vite-plugin-electron.
 //

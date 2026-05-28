@@ -1,5 +1,12 @@
 # Linux Packaging
 
+> Status: stale legacy Electron packaging notes.
+>
+> Cells now uses the NW.js runtime as the primary development, packaging, and release path.
+> The Electron runtime and Electron Builder packaging are deprecated and are kept only behind
+> explicit `legacy-electron` scripts. This document is retained as historical guidance for the
+> old Linux package flow until NW.js Linux packaging is rebuilt.
+
 Cells publishes Linux release artifacts for `x64` and `arm64`:
 
 - `Cells-<version>-linux-<arch>.AppImage`
@@ -14,10 +21,10 @@ On Linux:
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm release:linux
+pnpm release:legacy-electron:linux
 ```
 
-`pnpm release:linux` builds the app, bundles Linux `zellij` and `tmux` binaries for `x64` and `arm64`, and emits AppImage, deb, and x64 rpm artifacts in `release/`.
+`pnpm release:legacy-electron:linux` builds the deprecated Electron app, bundles Linux `zellij` and `tmux` binaries for `x64` and `arm64`, and emits AppImage, deb, and x64 rpm artifacts in `release/`. This is not the active Cells runtime.
 
 To build only the host architecture while developing packaging changes:
 
@@ -25,7 +32,7 @@ To build only the host architecture while developing packaging changes:
 pnpm prepare:mcp-server
 pnpm prepare:terminal-bundles
 pnpm typecheck
-pnpm build:vite
+pnpm build:legacy-electron
 pnpm exec electron-builder --linux --publish never
 ```
 
@@ -44,10 +51,10 @@ git clone https://github.com/xrehpicx/cells.git cells_<version>
 cd cells_<version>
 git checkout v<version>
 pnpm install --frozen-lockfile
-pnpm release:linux
+pnpm release:legacy-electron:linux
 ```
 
-The generated deb declares the Electron runtime libraries Cells needs:
+The generated legacy Electron deb declares the runtime libraries that old package needs:
 
 - `libgtk-3-0`
 - `libnotify4`

@@ -1,6 +1,6 @@
 # Cells
 
-Cells is a desktop workspace for arranging terminals and browser panes on an infinite canvas. It is built with Electron, React, Vite, and `ghostty-web`, and is currently focused on local macOS and Linux workflows.
+Cells is a desktop workspace for arranging terminals and browser panes on an infinite canvas. It is built with NW.js, React, Vite, and `ghostty-web`, and is currently focused on local macOS and Linux workflows. The old Electron runtime is deprecated and kept only behind explicit `legacy-electron` scripts.
 
 <img src="docs/screenshots/hero-banner.png" alt="Cells project bar showing multiple projects and node icons" width="100%">
 
@@ -89,7 +89,7 @@ The app ships macOS release artifacts plus Linux AppImage and deb artifacts for 
 - pnpm 10 or newer
 - macOS or Linux for the supported desktop experience
 
-If native dependency rebuilds fail during install on macOS, install the Xcode Command Line Tools and retry. On Linux, install the standard compiler toolchain and Electron runtime libraries for your distro.
+If native dependency rebuilds fail during install on macOS, install the Xcode Command Line Tools and retry. On Linux, install the standard compiler toolchain and Chromium/NW.js runtime libraries for your distro.
 
 ## Getting Started
 
@@ -107,6 +107,10 @@ Useful commands:
 - `pnpm typecheck`
 - `pnpm build`
 - `pnpm changeset`
+
+### Legacy Electron runtime
+
+The Electron runtime remains in the repo for old-package maintenance and comparison, but it is no longer the primary app runtime. Use `pnpm dev`, `pnpm build`, `pnpm pack`, and `pnpm release` for the NW.js Cells app. Electron is only reachable through explicit commands such as `pnpm dev:legacy-electron`, `pnpm build:legacy-electron`, and `pnpm pack:legacy-electron`.
 
 ## Releasing
 

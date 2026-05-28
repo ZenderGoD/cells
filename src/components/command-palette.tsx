@@ -12,7 +12,15 @@
  * This is the opposite of typical list conventions — double-check any .sort()
  * calls to ensure they follow this rule.
  */
-import React, { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from 'react'
+import React, {
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  useRef,
+  startTransition,
+  type ReactNode,
+} from 'react'
 import {
   Globe,
   Plus,
@@ -73,6 +81,9 @@ import type { SavedAgentSessionSummary } from '@/types'
 const MAX_RENDERED_RECENT_FILES = 24
 const MAX_RENDERED_SHELL_HISTORY = 15
 const MAX_RENDERED_SAVED_SESSIONS = 24
+const MAX_RENDERED_WINDOWS = 18
+const MAX_RENDERED_PROJECTS = 12
+const MAX_RENDERED_WORKTREES = 8
 
 const AGENT_OPTIONS = [
   { id: 'claude', label: 'Claude Code' },
@@ -81,6 +92,43 @@ const AGENT_OPTIONS = [
   { id: 'copilot', label: 'GitHub Copilot' },
   { id: 'opencode', label: 'OpenCode' },
 ] as const
+
+type PaletteAgentId = (typeof AGENT_OPTIONS)[number]['id']
+
+const DEFAULT_AGENT_AVAILABILITY: Record<PaletteAgentId, boolean> = {
+  claude: false,
+  codex: false,
+  cursor: false,
+  copilot: false,
+  opencode: false,
+}
+
+function fuzzyMatch(value: string, query: string) {
+  const normalizedValue = value.toLowerCase()
+  if (normalizedValue.includes(query)) return true
+  let j = 0
+  for (let i = 0; i < normalizedValue.length && j < query.length; i += 1) {
+    if (normalizedValue[i] === query[j]) j += 1
+  }
+  return j === query.length
+}
+
+function filterVisibleItems<T>(
+  items: T[],
+  query: string,
+  getLabel: (item: T) => string,
+  limit: number,
+) {
+  if (!query) return items.slice(0, limit)
+  const matches: T[] = []
+  for (const item of items) {
+    if (fuzzyMatch(getLabel(item), query)) {
+      matches.push(item)
+      if (matches.length >= limit) break
+    }
+  }
+  return matches
+}
 
 interface Attachment {
   path: string
@@ -334,21 +382,6 @@ function DynamicCommandInput({
 }: React.ComponentProps<typeof CommandInput> & { multiline?: boolean; searchText?: string }) {
   const selectedValue = useCommandState((state) => state.value) ?? ''
   const prefix = searchText ? matchInputPrefix(searchText) : null
-  const [selectedIconHtml, setSelectedIconHtml] = useState<string | null>(null)
-
-  // Generic fallback: read the icon SVG from the currently selected item in the DOM.
-  // This covers all item types (actions, themes, terminals, browsers, etc.) without
-  // needing an explicit value→icon map for every item.
-  // Uses useLayoutEffect to read synchronously after React commits, avoiding flicker.
-  useEffect(() => {
-    if (!searchText?.trim()) return
-    const raf = requestAnimationFrame(() => {
-      const el = document.querySelector('[cmdk-item][data-selected="true"]')
-      const svg = el?.querySelector(':scope > svg')
-      setSelectedIconHtml(svg ? svg.outerHTML : null)
-    })
-    return () => cancelAnimationFrame(raf)
-  }, [searchText, selectedValue])
 
   // Empty input → no contextual icon. The selected row's icon (e.g. agent
   // crab from the "Start a session" group) was leaking into the placeholder
@@ -395,16 +428,6 @@ function DynamicCommandInput({
     icon = <TerminalSquare className="size-4 shrink-0 opacity-70" />
   }
 
-  // Fallback to the DOM-read icon for any other item type (actions, themes, etc.)
-  if (!icon && selectedIconHtml) {
-    icon = (
-      <span
-        className="flex size-4 shrink-0 opacity-70 [&>svg]:size-4"
-        dangerouslySetInnerHTML={{ __html: selectedIconHtml }}
-      />
-    )
-  }
-
   return <CommandInput multiline icon={icon} {...props} />
 }
 
@@ -439,7 +462,7 @@ export function CommandPalette() {
   const [showNewProjectRaw, setShowNewProjectRaw] = useState(false)
   const [showOpenFileRaw, setShowOpenFileRaw] = useState(false)
   const [search, setSearch] = useState('')
-  const [agents, setAgents] = useState<Record<string, boolean>>({})
+  const [agents, setAgents] = useState<Record<PaletteAgentId, boolean>>(DEFAULT_AGENT_AVAILABILITY)
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [recentFiles, setRecentFiles] = useState<
     Array<{ path: string; name: string; mtime: number; source: string }>
@@ -483,12 +506,14 @@ export function CommandPalette() {
   const selectedNodeIds = useStore((s) => s.selectedNodeIds)
   const availableAgents = useMemo(
     () =>
-      AGENT_OPTIONS.filter(({ id }) => agents[id] === true).map(({ id, label }) => ({
-        id,
-        label,
-        detected: true,
-      })),
-    [agents],
+      AGENT_OPTIONS.filter(({ id }) => enabledAgents[id] !== false && agents[id] === true).map(
+        ({ id, label }) => ({
+          id,
+          label,
+          detected: true,
+        }),
+      ),
+    [agents, enabledAgents],
   )
   const trimmedSearch = search.trim()
   const searchQuery = trimmedSearch.toLowerCase()
@@ -542,6 +567,68 @@ export function CommandPalette() {
     () => recentFiles.slice(0, MAX_RENDERED_RECENT_FILES),
     [recentFiles],
   )
+  const renderedBrowsers = useMemo(
+    () =>
+      filterVisibleItems(
+        browsers,
+        searchQuery,
+        (browser) => `${browser.title ?? ''} ${browser.url ?? ''}`,
+        MAX_RENDERED_WINDOWS,
+      ),
+    [browsers, searchQuery],
+  )
+  const renderedTextEditors = useMemo(
+    () =>
+      filterVisibleItems(
+        textEditors,
+        searchQuery,
+        (editor) => `${editor.title ?? ''} ${editor.filePath ?? ''}`,
+        MAX_RENDERED_WINDOWS,
+      ),
+    [searchQuery, textEditors],
+  )
+  const renderedTerminals = useMemo(
+    () =>
+      filterVisibleItems(
+        terminals,
+        searchQuery,
+        (terminal) => terminal.customTitle || terminal.title || '',
+        MAX_RENDERED_WINDOWS,
+      ),
+    [searchQuery, terminals],
+  )
+  const renderedProjects = useMemo(
+    () =>
+      filterVisibleItems(
+        projects,
+        searchQuery,
+        (project) => `${project.name ?? ''} ${project.path ?? ''}`,
+        MAX_RENDERED_PROJECTS,
+      ),
+    [projects, searchQuery],
+  )
+  const nonBareWorktrees = useMemo(
+    () => worktrees.filter((worktree) => !worktree.isBare),
+    [worktrees],
+  )
+  const renderedWorktrees = useMemo(
+    () =>
+      filterVisibleItems(
+        nonBareWorktrees,
+        searchQuery,
+        (worktree) => `${getWorktreeName(worktree)} ${worktree.branch ?? ''} ${worktree.path}`,
+        MAX_RENDERED_WORKTREES,
+      ),
+    [nonBareWorktrees, searchQuery],
+  )
+  const terminalIdSet = useMemo(
+    () => new Set(terminals.map((terminal) => terminal.id)),
+    [terminals],
+  )
+  const openAgentWindowIds = useMemo(
+    () => new Set(projects.flatMap((project) => (project.agentWindows ?? []).map((w) => w.id))),
+    [projects],
+  )
 
   // Does the current search match any "real" item (terminal, browser, project,
   // agent window, worktree, or one of the fixed actions)? If yes, we suppress
@@ -550,22 +637,17 @@ export function CommandPalette() {
   // actual palette item lines up with the query, we don't need the noise.
   const hasCoreMatches = useMemo(() => {
     if (!searchQuery) return true // empty search → show the idle palette, not fallbacks
-    const fuzzyMatch = (value: string) => {
-      const v = value.toLowerCase()
-      if (v.includes(searchQuery)) return true
-      let j = 0
-      for (let i = 0; i < v.length && j < searchQuery.length; i += 1) {
-        if (v[i] === searchQuery[j]) j += 1
-      }
-      return j === searchQuery.length
-    }
+    const savedSessionMatches = savedSessions.some((session) => {
+      if (openAgentWindowIds.has(session.windowId)) return false
+      return fuzzyMatch(`${session.agent} ${session.title ?? ''} ${session.cwd ?? ''}`, searchQuery)
+    })
     const candidates: string[] = [
-      ...terminals.map((t) => t.customTitle || t.title || ''),
-      ...browsers.map((b) => `${b.title ?? ''} ${b.url ?? ''}`),
-      ...textEditors.map((editor) => `${editor.title ?? ''} ${editor.filePath ?? ''}`),
-      ...agentWindows.map((a) => a.customTitle || a.title || ''),
-      ...savedSessions.map((session) => `${session.title ?? ''} ${session.cwd ?? ''}`),
-      ...projects.map((p) => p.name || ''),
+      ...renderedTerminals.map((t) => t.customTitle || t.title || ''),
+      ...renderedBrowsers.map((b) => `${b.title ?? ''} ${b.url ?? ''}`),
+      ...renderedTextEditors.map((editor) => `${editor.title ?? ''} ${editor.filePath ?? ''}`),
+      ...agentWindows.slice(0, MAX_RENDERED_WINDOWS).map((a) => a.customTitle || a.title || ''),
+      ...renderedProjects.map((p) => `${p.name ?? ''} ${p.path ?? ''}`),
+      ...renderedWorktrees.map((w) => `${getWorktreeName(w)} ${w.branch ?? ''} ${w.path}`),
       ...availableAgents.map(({ label }) => `New ${label} window`),
       // Fixed Actions entries — keep aligned with the Actions CommandGroup
       // below (Quit/Kill/New Project/Install MCP/Extensions/Settings).
@@ -579,22 +661,22 @@ export function CommandPalette() {
       'Settings',
       'Create Section',
     ]
-    return candidates.some((label) => label && fuzzyMatch(label))
+    return (
+      savedSessionMatches || candidates.some((label) => label && fuzzyMatch(label, searchQuery))
+    )
   }, [
     agentWindows,
     availableAgents,
-    browsers,
-    projects,
+    openAgentWindowIds,
+    renderedBrowsers,
+    renderedProjects,
+    renderedTerminals,
+    renderedTextEditors,
+    renderedWorktrees,
     savedSessions,
     searchQuery,
-    terminals,
-    textEditors,
   ])
 
-  const openAgentWindowIds = useMemo(
-    () => new Set(projects.flatMap((project) => (project.agentWindows ?? []).map((w) => w.id))),
-    [projects],
-  )
   const closedSavedSessions = useMemo(
     () =>
       savedSessions
@@ -648,15 +730,19 @@ export function CommandPalette() {
 
   // Sort agents by per-project usage count: most used LAST (= closest to input = most relevant).
   // Falls back to lastUsedAgent for first-time usage within a project.
-  const sortedAgents = [...availableAgents].sort((a, b) => {
-    const countA = commandActionCounts[`agent-${a.id}`] ?? 0
-    const countB = commandActionCounts[`agent-${b.id}`] ?? 0
-    if (countA !== countB) return countA - countB // higher count → later (bottom)
-    // Tie-break: lastUsedAgent goes last
-    if (a.id === lastUsedAgent) return 1
-    if (b.id === lastUsedAgent) return -1
-    return 0
-  })
+  const sortedAgents = useMemo(
+    () =>
+      [...availableAgents].sort((a, b) => {
+        const countA = commandActionCounts[`agent-${a.id}`] ?? 0
+        const countB = commandActionCounts[`agent-${b.id}`] ?? 0
+        if (countA !== countB) return countA - countB // higher count → later (bottom)
+        // Tie-break: lastUsedAgent goes last
+        if (a.id === lastUsedAgent) return 1
+        if (b.id === lastUsedAgent) return -1
+        return 0
+      }),
+    [availableAgents, commandActionCounts, lastUsedAgent],
+  )
 
   const getAgentCommandLabel = (agent: (typeof AGENT_OPTIONS)[number]['id']) => {
     const alias = agentAliases[agent]?.trim()
@@ -703,42 +789,70 @@ export function CommandPalette() {
   }, [setShowSettings, togglePalette])
 
   useEffect(() => {
-    if (open) {
-      Promise.all([
-        window.cells.agent
-          .checkAvailable(agentAliases, agentPaths)
-          .catch((): Record<string, boolean> => ({})),
-        Promise.allSettled(AGENT_OPTIONS.map(({ id }) => window.cells.agentSession.getAuth(id))),
-      ]).then(([detected, authResults]) => {
-        const authByAgent = new Map(
-          authResults
-            .map((result) => (result.status === 'fulfilled' ? result.value : null))
-            .filter((status): status is NonNullable<typeof status> => Boolean(status))
-            .map((status) => [status.agent, status] as const),
-        )
-        const merged: Record<string, boolean> = {}
-        for (const { id } of AGENT_OPTIONS) {
-          const override = enabledAgents[id]
-          const auth = authByAgent.get(id)
-          const installed = detected[id] === true || Boolean(auth?.binaryPath)
-          const authenticated = auth?.authenticated === true
-          merged[id] = override === false ? false : installed && authenticated
+    if (!open) return
+    let cancelled = false
+
+    setAgents((prev) => {
+      let changed = false
+      const next = { ...prev }
+      for (const { id } of AGENT_OPTIONS) {
+        if (next[id] !== false) {
+          next[id] = false
+          changed = true
         }
-        setAgents(merged)
+      }
+      return changed ? next : prev
+    })
+
+    Promise.all([
+      window.cells.agent
+        .checkAvailable(agentAliases, agentPaths)
+        .catch((): Record<string, boolean> => ({})),
+      Promise.allSettled(AGENT_OPTIONS.map(({ id }) => window.cells.agentSession.getAuth(id))),
+    ]).then(([detected, authResults]) => {
+      if (cancelled) return
+      const authByAgent = new Map(
+        authResults
+          .map((result) => (result.status === 'fulfilled' ? result.value : null))
+          .filter((status): status is NonNullable<typeof status> => Boolean(status))
+          .map((status) => [status.agent, status] as const),
+      )
+      const merged = { ...DEFAULT_AGENT_AVAILABILITY }
+      for (const { id } of AGENT_OPTIONS) {
+        const override = enabledAgents[id]
+        const auth = authByAgent.get(id)
+        const installed = detected[id] === true || Boolean(auth?.binaryPath)
+        const authenticated = auth?.authenticated === true
+        merged[id] = override === false ? false : installed && authenticated
+      }
+      startTransition(() => setAgents(merged))
+    })
+    useStore.getState().refreshWorktrees()
+    window.cells.app
+      .getShellHistory()
+      .then((history) => {
+        if (!cancelled) setShellHistory(history)
       })
-      useStore.getState().refreshWorktrees()
+      .catch(() => {})
+    window.cells.agentSession
+      .listSavedSessions()
+      .then((sessions) => {
+        if (!cancelled) setSavedSessions(sessions)
+      })
+      .catch(() => {})
+
+    const recentFilesTimer = window.setTimeout(() => {
       window.cells.app
         .listRecentFiles()
-        .then(setRecentFiles)
+        .then((files) => {
+          if (!cancelled) setRecentFiles(files)
+        })
         .catch(() => {})
-      window.cells.app
-        .getShellHistory()
-        .then(setShellHistory)
-        .catch(() => {})
-      window.cells.agentSession
-        .listSavedSessions()
-        .then(setSavedSessions)
-        .catch(() => {})
+    }, 200)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(recentFilesTimer)
     }
   }, [open, agentAliases, agentPaths, enabledAgents])
 
@@ -834,7 +948,19 @@ export function CommandPalette() {
       }
     })
     return () => cancelAnimationFrame(raf)
-  }, [search, open])
+  }, [
+    search,
+    open,
+    sortedAgents.length,
+    filteredShellHistory.length,
+    renderedRecentFiles.length,
+    renderedBrowsers.length,
+    renderedTextEditors.length,
+    renderedTerminals.length,
+    renderedProjects.length,
+    renderedWorktrees.length,
+    closedSavedSessions.length,
+  ])
 
   const handleOpenChange = (o: boolean) => {
     setOpen(o)
@@ -963,7 +1089,9 @@ export function CommandPalette() {
         {sortedAgents.map((entry) => {
           const { id, label } = entry
           const detected =
-            'detected' in entry ? (entry as { detected: boolean }).detected : agents[id] === true
+            'detected' in entry
+              ? (entry as { detected: boolean | null }).detected
+              : agents[id] === true
           return (
             <CommandItem
               key={id}
@@ -996,7 +1124,7 @@ export function CommandPalette() {
                         ? `New ${label} window`
                         : `New ${label} Terminal`}
               </span>
-              {!detected ? (
+              {detected === false ? (
                 <span className="ml-auto text-[10px] text-amber-400/80">CLI not detected</span>
               ) : sortedAgents.length > 1 && id === sortedAgents[sortedAgents.length - 1].id ? (
                 <span className="ml-auto text-[10px] text-muted-foreground/40">
@@ -1215,11 +1343,11 @@ export function CommandPalette() {
               </>
             )}
 
-            {browsers.length > 0 && (
+            {renderedBrowsers.length > 0 && (
               <>
                 <CommandSeparator />
                 <CommandGroup heading="Browsers">
-                  {browsers.map((b) => (
+                  {renderedBrowsers.map((b) => (
                     <CommandItem
                       key={b.id}
                       onSelect={() => runAction(() => useStore.getState().snapToBrowser(b.id))}
@@ -1232,11 +1360,11 @@ export function CommandPalette() {
               </>
             )}
 
-            {textEditors.length > 0 && (
+            {renderedTextEditors.length > 0 && (
               <>
                 <CommandSeparator />
                 <CommandGroup heading="Editors">
-                  {textEditors.map((editor) => (
+                  {renderedTextEditors.map((editor) => (
                     <CommandItem
                       key={editor.id}
                       value={`editor ${editor.title ?? ''} ${editor.filePath ?? ''}`}
@@ -1260,11 +1388,11 @@ export function CommandPalette() {
               </>
             )}
 
-            {terminals.length > 0 && (
+            {renderedTerminals.length > 0 && (
               <>
                 <CommandSeparator />
                 <CommandGroup heading="Terminals">
-                  {terminals.map((t) => (
+                  {renderedTerminals.map((t) => (
                     <CommandItem
                       key={t.id}
                       onSelect={() => runAction(() => useStore.getState().snapToTerminal(t.id))}
@@ -1332,14 +1460,13 @@ export function CommandPalette() {
 
             {isGitRepo &&
               (() => {
-                const nonBare = worktrees.filter((w) => !w.isBare)
                 const selectedTermIds =
                   selectionMode && selectedNodeIds.length > 0
-                    ? selectedNodeIds.filter((id) => terminals.some((t) => t.id === id))
+                    ? selectedNodeIds.filter((id) => terminalIdSet.has(id))
                     : focusedTerminalId
                       ? [focusedTerminalId]
                       : []
-                const hasMoveTargets = selectedTermIds.length > 0 && nonBare.length > 1
+                const hasMoveTargets = selectedTermIds.length > 0 && nonBareWorktrees.length > 1
                 const focusedAgentWindow = focusedAgentWindowId
                   ? agentWindows.find((agentWindow) => agentWindow.id === focusedAgentWindowId)
                   : null
@@ -1352,7 +1479,7 @@ export function CommandPalette() {
                   <>
                     <CommandSeparator />
                     <CommandGroup heading="Worktrees">
-                      {nonBare.map((wt) => (
+                      {renderedWorktrees.map((wt) => (
                         <CommandItem
                           key={`wt-open-${wt.path}`}
                           value={`open worktree terminal ${getWorktreeName(wt)} ${wt.path}`}
@@ -1370,7 +1497,7 @@ export function CommandPalette() {
                         </CommandItem>
                       ))}
                       {agents.codex === true
-                        ? nonBare.map((wt) => (
+                        ? renderedWorktrees.map((wt) => (
                             <CommandItem
                               key={`wt-codex-${wt.path}`}
                               value={`open codex agent in worktree ${getWorktreeName(wt)} ${wt.path}`}
@@ -1392,7 +1519,7 @@ export function CommandPalette() {
                           ))
                         : null}
                       {agents.claude === true
-                        ? nonBare.map((wt) => (
+                        ? renderedWorktrees.map((wt) => (
                             <CommandItem
                               key={`wt-claude-${wt.path}`}
                               value={`open claude agent in worktree ${getWorktreeName(wt)} ${wt.path}`}
@@ -1414,7 +1541,7 @@ export function CommandPalette() {
                           ))
                         : null}
                       {agents.cursor === true
-                        ? nonBare.map((wt) => (
+                        ? renderedWorktrees.map((wt) => (
                             <CommandItem
                               key={`wt-cursor-${wt.path}`}
                               value={`open cursor agent in worktree ${getWorktreeName(wt)} ${wt.path}`}
@@ -1436,7 +1563,7 @@ export function CommandPalette() {
                           ))
                         : null}
                       {agents.copilot === true
-                        ? nonBare.map((wt) => (
+                        ? renderedWorktrees.map((wt) => (
                             <CommandItem
                               key={`wt-copilot-${wt.path}`}
                               value={`open copilot agent in worktree ${getWorktreeName(wt)} ${wt.path}`}
@@ -1458,7 +1585,7 @@ export function CommandPalette() {
                           ))
                         : null}
                       {agents.opencode === true
-                        ? nonBare.map((wt) => (
+                        ? renderedWorktrees.map((wt) => (
                             <CommandItem
                               key={`wt-opencode-${wt.path}`}
                               value={`open opencode agent in worktree ${getWorktreeName(wt)} ${wt.path}`}
@@ -1479,24 +1606,25 @@ export function CommandPalette() {
                             </CommandItem>
                           ))
                         : null}
-                      {search.trim() && !nonBare.some((wt) => wt.branch === search.trim()) && (
-                        <CommandItem
-                          forceMount
-                          value="create-worktree-new-branch"
-                          onSelect={() =>
-                            runAction(() =>
-                              useStore.getState().createWorktree({ branchName: search.trim() }),
-                            )
-                          }
-                        >
-                          <Plus className="text-muted-foreground" />
-                          Create worktree &ldquo;{search.trim()}&rdquo;
-                        </CommandItem>
-                      )}
+                      {search.trim() &&
+                        !nonBareWorktrees.some((wt) => wt.branch === search.trim()) && (
+                          <CommandItem
+                            forceMount
+                            value="create-worktree-new-branch"
+                            onSelect={() =>
+                              runAction(() =>
+                                useStore.getState().createWorktree({ branchName: search.trim() }),
+                              )
+                            }
+                          >
+                            <Plus className="text-muted-foreground" />
+                            Create worktree &ldquo;{search.trim()}&rdquo;
+                          </CommandItem>
+                        )}
                     </CommandGroup>
                     {hasMoveTargets && (
                       <CommandGroup heading={moveLabel}>
-                        {nonBare.map((wt) => (
+                        {renderedWorktrees.map((wt) => (
                           <CommandItem
                             key={`wt-${wt.path}`}
                             value={`move to worktree ${getWorktreeName(wt)} ${wt.path}`}
@@ -1524,7 +1652,7 @@ export function CommandPalette() {
                     )}
                     {focusedAgentWindow && (
                       <CommandGroup heading="Branch focused agent into">
-                        {nonBare.map((wt) => (
+                        {renderedWorktrees.map((wt) => (
                           <CommandItem
                             key={`agent-wt-${wt.path}`}
                             value={`branch focused agent into worktree ${getWorktreeName(wt)} ${wt.path}`}
@@ -1556,11 +1684,11 @@ export function CommandPalette() {
                 )
               })()}
 
-            {projects.length > 1 && (
+            {renderedProjects.length > 0 && projects.length > 1 && (
               <>
                 <CommandSeparator />
                 <CommandGroup heading="Projects">
-                  {projects.map((p) => (
+                  {renderedProjects.map((p) => (
                     <CommandItem
                       key={p.id}
                       onSelect={() => runAction(() => useStore.getState().switchProject(p.id))}
