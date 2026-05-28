@@ -39,6 +39,11 @@ import type {
 import type { CellsShortcutCommand } from './lib/cells-shortcuts'
 import { sanitizeQueuedMessages } from './lib/agent-session-queue'
 import { sanitizeImportedClaudeUserText } from './lib/agent-session-title'
+import {
+  getNwUpdateMetadataBaseUrl,
+  parseNwUpdateMetadata,
+  type NwUpdateMetadata,
+} from './lib/nw-update-metadata'
 import { useStore } from './lib/store'
 
 type Listener<T extends (...args: any[]) => void> = T
@@ -2565,15 +2570,6 @@ function scheduleNwGatekeeperRepair() {
   window.setTimeout(() => void ensureNwGatekeeperRepair(), 1_000)
 }
 
-type NwUpdateMetadata = {
-  version: string
-  assetUrl: string
-  assetName: string
-  sha512: string
-  size: number | null
-  releaseDate: string | null
-}
-
 type NwDownloadedUpdate = {
   metadata: NwUpdateMetadata
   filePath: string
@@ -2654,41 +2650,6 @@ function getNwUpdateDir(version?: string | null) {
   const statePath = getStatePath()
   const baseDir = statePath ? path.dirname(statePath) : path.join(getHomeDir(), '.cells')
   return path.join(baseDir, 'updates', version || 'pending')
-}
-
-function cleanNwYamlScalar(value: string) {
-  const trimmed = value.trim()
-  if (
-    (trimmed.startsWith("'") && trimmed.endsWith("'")) ||
-    (trimmed.startsWith('"') && trimmed.endsWith('"'))
-  ) {
-    return trimmed.slice(1, -1)
-  }
-  return trimmed
-}
-
-function parseNwUpdateMetadata(text: string, metadataUrl: string): NwUpdateMetadata {
-  const scalar = (key: string) => {
-    const match = text.match(new RegExp(`^${key}:\\s*(.+)$`, 'm'))
-    return match ? cleanNwYamlScalar(match[1]) : null
-  }
-  const version = scalar('version')
-  const assetPath = scalar('path') ?? text.match(/^\s+-\s+url:\s*(.+)$/m)?.[1]
-  const sha512 = scalar('sha512')
-  if (!version || !assetPath || !sha512) {
-    throw new Error('Update metadata is missing version, path, or sha512.')
-  }
-  const assetName = cleanNwYamlScalar(assetPath)
-  const sizeText = scalar('size') ?? text.match(/^\s+size:\s*(\d+)$/m)?.[1] ?? null
-  const size = sizeText ? Number.parseInt(sizeText, 10) : null
-  return {
-    version,
-    assetUrl: new URL(assetName, metadataUrl).toString(),
-    assetName,
-    sha512,
-    size: Number.isFinite(size) ? size : null,
-    releaseDate: scalar('releaseDate'),
-  }
 }
 
 function compareNwVersions(a: string, b: string) {
@@ -2818,8 +2779,12 @@ function downloadNwUrlToFile(
 }
 
 async function fetchNwUpdateMetadata() {
-  const result = await fetchNwUrlBuffer(getNwUpdateFeedUrl())
-  return parseNwUpdateMetadata(result.buffer.toString('utf8'), result.finalUrl)
+  const feedUrl = getNwUpdateFeedUrl()
+  const result = await fetchNwUrlBuffer(feedUrl)
+  return parseNwUpdateMetadata(
+    result.buffer.toString('utf8'),
+    getNwUpdateMetadataBaseUrl(feedUrl, result.finalUrl),
+  )
 }
 
 function verifyNwUpdateArchive(filePath: string, metadata: NwUpdateMetadata) {
