@@ -5631,6 +5631,12 @@ async function startNwCursorCliTurn(
     }),
     stdio: ['pipe', 'pipe', 'pipe'],
   }) as import('node:child_process').ChildProcessWithoutNullStreams
+  // Cursor Agent treats an open stdin as an opportunity for additional input. We pass the
+  // prompt as argv, so close stdin immediately or the CLI can emit assistant text but never
+  // produce the terminal result event that marks the turn complete.
+  try {
+    child.stdin.end()
+  } catch {}
 
   runtime.activeRun = child
   agentProcesses.set(windowId, child)

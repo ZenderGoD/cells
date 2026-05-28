@@ -14,4 +14,5 @@ resources/vendor/zellij/
 /views.json
 /statuses/
 /labels/
+/sessions/
 /.claude-plugin/

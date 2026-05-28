@@ -1319,7 +1319,10 @@ rl.on('line', (line) => {
           'if (args[0] === "models") { console.log("Available models"); console.log("auto - Auto"); console.log("composer-2.5-fast - Composer 2.5 Fast (default)"); console.log("gpt-5.5-high - GPT-5.5 1M High"); process.exit(0) }',
           'const marker = ' + JSON.stringify(marker),
           'console.log(JSON.stringify({ type: "assistant", session_id: "nw-smoke-cursor-session", message: { content: [{ type: "text", text: "cursor smoke " + marker }] } }))',
-          'console.log(JSON.stringify({ type: "result", request_id: "nw-smoke-cursor-request", result: "cursor smoke " + marker, usage: { inputTokens: 1, outputTokens: 2, cacheReadTokens: 0 } }))'
+          'process.stdin.resume()',
+          'process.stdin.on("end", () => {',
+          '  console.log(JSON.stringify({ type: "result", request_id: "nw-smoke-cursor-request", result: "cursor smoke " + marker, usage: { inputTokens: 1, outputTokens: 2, cacheReadTokens: 0 } }))',
+          '})'
         ].join('\\n') + '\\n'
         fs.writeFileSync(cursor, cursorBody, { mode: 0o755 })
         const off = window.cells.agentSession.onUpdate((snapshot) => {
