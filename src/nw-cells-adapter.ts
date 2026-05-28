@@ -315,6 +315,7 @@ const agentQueues = new Map<string, QueuedAgentMessage[]>()
 const agentQueueRequests = new Map<string, AgentSessionRequest>()
 const agentQueuePauseReasons = new Map<string, Set<string>>()
 const codexRuntimes = new Map<string, NwCodexRuntime>()
+const cursorRuntimes = new Map<string, NwCursorRuntime>()
 const pinnedWindows = new Map<string, NwWindowHandle>()
 const pinnedWindowTypes = new Map<string, PinnedWindowType>()
 const pinnedUnpinNotified = new Set<string>()
@@ -3880,6 +3881,198 @@ const NW_OPENCODE_MODELS: Awaited<ReturnType<CellsAPI['agentSession']['listOpenc
   },
 ]
 
+const NW_MODEL_CACHE_MS = 5 * 60_000
+let cachedNwCodexModels: { at: number; list: typeof NW_CODEX_MODELS } | null = null
+let cachedNwCursorModels: { at: number; list: typeof NW_CURSOR_MODELS } | null = null
+let cachedNwOpencodeModels: { at: number; list: typeof NW_OPENCODE_MODELS } | null = null
+
+function getDefaultNwCursorModel() {
+  return (
+    NW_CURSOR_MODELS.flatMap((model) => model.variants ?? [])
+      .find((variant) => variant.isDefault)
+      ?.params.find((param) => param.id === 'model')?.value ||
+    NW_CURSOR_MODELS[0]?.id ||
+    'auto'
+  )
+}
+
+function withNwTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs)
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer)
+        resolve(value)
+      },
+      (error) => {
+        window.clearTimeout(timer)
+        reject(error)
+      },
+    )
+  })
+}
+
+function parseNwCodexModelInfo(
+  model: Record<string, unknown>,
+): (typeof NW_CODEX_MODELS)[number] | null {
+  const id = asString(model.id)
+  if (!id) return null
+  const efforts = Array.isArray(model.supportedReasoningEfforts)
+    ? model.supportedReasoningEfforts
+        .map((value) => {
+          const effort = asRecord(value)
+          if (!effort) return null
+          return {
+            effort: asString(effort.reasoningEffort) || 'medium',
+            description: asString(effort.description) || '',
+          }
+        })
+        .filter((value): value is { effort: string; description: string } => value !== null)
+    : []
+  return {
+    id,
+    displayName: asString(model.displayName) || id,
+    description: asString(model.description) || '',
+    isDefault: Boolean(model.isDefault),
+    hidden: Boolean(model.hidden),
+    supportedReasoningEfforts: efforts,
+    defaultReasoningEffort: asString(model.defaultReasoningEffort) || 'medium',
+  }
+}
+
+async function listNwCodexModels(): Promise<typeof NW_CODEX_MODELS> {
+  if (cachedNwCodexModels && Date.now() - cachedNwCodexModels.at < NW_MODEL_CACHE_MS) {
+    return cachedNwCodexModels.list
+  }
+
+  let client: NwCodexAppServerClient | null = null
+  try {
+    client = await withNwTimeout(createNwCodexAppServerSession({}), 6_000, 'codex model app-server')
+    const models: typeof NW_CODEX_MODELS = []
+    let cursor: string | null = null
+    do {
+      const page: { data?: unknown[]; nextCursor?: string | null } = await withNwTimeout(
+        client.request<{
+          data?: unknown[]
+          nextCursor?: string | null
+        }>('model/list', cursor ? { cursor } : {}),
+        6_000,
+        'codex model list',
+      )
+      const data = Array.isArray(page.data) ? page.data : []
+      for (const item of data) {
+        const parsed = parseNwCodexModelInfo(asRecord(item) ?? {})
+        if (parsed) models.push(parsed)
+      }
+      cursor = asString(page.nextCursor) ?? null
+    } while (cursor)
+    if (models.length > 0) {
+      cachedNwCodexModels = { at: Date.now(), list: models }
+      return models
+    }
+  } catch {
+    // Fall through to the baked-in list so an older Codex CLI never breaks the picker.
+  } finally {
+    await client?.close().catch(() => {})
+  }
+  return NW_CODEX_MODELS
+}
+
+function parseNwCursorCliModels(output: string): typeof NW_CURSOR_MODELS {
+  const models: typeof NW_CURSOR_MODELS = []
+  for (const rawLine of output.split(/\r?\n/)) {
+    const line = rawLine.replace(ANSI_COLOR_RE, '').trim()
+    if (!line || line === 'Available models' || line.startsWith('Tip:')) continue
+    const match = line.match(/^([^\s]+)\s+-\s+(.+)$/)
+    if (!match) continue
+    const id = match[1]?.trim()
+    const labelAndMeta = match[2]?.trim()
+    if (!id || !labelAndMeta) continue
+    const displayName = labelAndMeta.replace(/\s+\([^)]*\)\s*$/, '').trim() || id
+    const meta = labelAndMeta.match(/\(([^)]*)\)\s*$/)?.[1]?.trim()
+    models.push({
+      id,
+      displayName,
+      description: meta || '',
+      variants: meta?.includes('default')
+        ? [{ params: [], displayName, description: meta, isDefault: true }]
+        : undefined,
+    })
+  }
+  return models
+}
+
+async function listNwCursorModels(): Promise<typeof NW_CURSOR_MODELS> {
+  if (cachedNwCursorModels && Date.now() - cachedNwCursorModels.at < NW_MODEL_CACHE_MS) {
+    return cachedNwCursorModels.list
+  }
+  const binary = resolveAgentBinary('cursor')
+  if (!binary) return NW_CURSOR_MODELS
+  try {
+    const result = await runNwCapturedCommand(binary, ['models'], { timeoutMs: 15_000 })
+    if (result.code === 0) {
+      const models = parseNwCursorCliModels(`${result.stdout}\n${result.stderr}`)
+      if (models.length > 0) {
+        cachedNwCursorModels = { at: Date.now(), list: models }
+        return models
+      }
+    }
+  } catch {}
+  return NW_CURSOR_MODELS
+}
+
+function prettifyNwOpencodeModelName(id: string): string {
+  const providerless = id.includes('/') ? id.split('/').slice(1).join('/') : id
+  return providerless
+    .replace(/^gpt-/i, 'GPT-')
+    .replace(/-codex/gi, ' Codex')
+    .replace(/-mini\b/gi, ' Mini')
+    .replace(/-max\b/gi, ' Max')
+    .replace(/-spark\b/gi, ' Spark')
+    .replace(/-/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+    .replace(/^GPT /, 'GPT-')
+    .trim()
+}
+
+async function listNwOpencodeModels(): Promise<typeof NW_OPENCODE_MODELS> {
+  if (cachedNwOpencodeModels && Date.now() - cachedNwOpencodeModels.at < NW_MODEL_CACHE_MS) {
+    return cachedNwOpencodeModels.list
+  }
+  const binary = resolveAgentBinary('opencode')
+  if (!binary) return NW_OPENCODE_MODELS
+  try {
+    const result = await runNwCapturedCommand(binary, ['models'], { timeoutMs: 15_000 })
+    if (result.code !== 0) return NW_OPENCODE_MODELS
+    const seen = new Set<string>()
+    const models: typeof NW_OPENCODE_MODELS = []
+    for (const rawLine of `${result.stdout}\n${result.stderr}`.split(/\r?\n/)) {
+      const id = rawLine.replace(ANSI_COLOR_RE, '').trim()
+      if (!id || !id.includes('/') || seen.has(id)) continue
+      seen.add(id)
+      models.push({
+        id,
+        displayName: prettifyNwOpencodeModelName(id),
+        description: id.startsWith('opencode/')
+          ? 'OpenCode account default provider'
+          : `${id.split('/')[0]} provider`,
+        isDefault: id === 'opencode/gpt-5-nano',
+        hidden: false,
+        supportedReasoningEfforts: ['minimal', 'low', 'medium', 'high', 'max'],
+        defaultReasoningEffort: 'medium',
+        contextWindow: null,
+      })
+    }
+    const hasDefault = models.some((model) => model.isDefault)
+    if (!hasDefault && models.length > 0) models[0].isDefault = true
+    if (models.length > 0) {
+      cachedNwOpencodeModels = { at: Date.now(), list: models }
+      return models
+    }
+  } catch {}
+  return NW_OPENCODE_MODELS
+}
+
 function createAgentMessage(
   role: AgentSessionMessage['role'],
   text: string,
@@ -4168,6 +4361,17 @@ type NwCodexRuntime = {
   closed: boolean
 }
 
+type NwCursorRuntime = {
+  request: AgentSessionRequest
+  snapshot: AgentSessionSnapshot
+  activeRun: import('node:child_process').ChildProcessWithoutNullStreams | null
+  runPromise: Promise<void> | null
+  resolveRun: (() => void) | null
+  rejectRun: ((error: Error) => void) | null
+  streamGeneration: number
+  closed: boolean
+}
+
 const ANSI_COLOR_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, 'g')
 
 function appendBoundedOutput(current: string, next: string, max = 16_000) {
@@ -4197,6 +4401,18 @@ function compactNwText(value: unknown, fallback = '') {
   }
 }
 
+function isNwCursorAuthError(text: string): boolean {
+  const t = text.toLowerCase()
+  return (
+    t.includes('not authenticated') ||
+    t.includes('authentication') ||
+    t.includes('api key') ||
+    t.includes('unauthorized') ||
+    t.includes('forbidden') ||
+    t.includes('login')
+  )
+}
+
 function parseJsonRecord(text: string) {
   const trimmed = text.trim()
   if (!trimmed) return null
@@ -4212,6 +4428,109 @@ function parseJsonRecord(text: string) {
     } catch {}
   }
   return null
+}
+
+function buildNwCursorProviderText(mode: AgentSessionRequest['permissionMode'], text: string) {
+  const guardrails = [
+    'Cells runtime guidance:',
+    '- Avoid broad recursive glob/search/read operations from /Users, ~, $HOME, /Users/raj, /Applications, ~/Library, ~/Desktop, ~/Documents, ~/Downloads, and other macOS privacy-protected roots.',
+    '- Never call the glob tool with targetDirectory set to /Users, ~, $HOME, /Users/raj, /Applications, ~/Library, ~/Desktop, ~/Documents, or ~/Downloads. Use an exact file read or a narrow workspace subdirectory instead.',
+    '- For dotfiles or config files in the home directory, check direct standard paths first with exact file reads or shell tests, for example ~/.tmux.conf, ~/.config/tmux/tmux.conf, and ~/.tmux/tmux.conf.',
+    '- If a broad search hits macOS permission prompts or permission-denied paths, do not retry the same broad search. Narrow the path or ask the user for the exact file.',
+    '- Prefer the current workspace and explicitly referenced files over scanning the whole home directory.',
+  ]
+  if (mode === 'plan') {
+    guardrails.push(
+      'Cells is running this Cursor agent in Plan mode.',
+      'Do not edit files or run mutating commands. Inspect and reason only.',
+      'When the plan is ready, present it inside <proposed_plan>...</proposed_plan> tags and wait for approval before implementation.',
+    )
+  }
+  return [...guardrails, '', text].join('\n')
+}
+
+function buildNwCursorCliPrompt(text: string, imageAttachments: string[]) {
+  if (imageAttachments.length === 0) return text
+  const refs = imageAttachments.map((filePath) => `[${filePath}]`).join(' ')
+  return text ? `${refs}\n\n${text}` : refs
+}
+
+function cursorToolTitle(rawName: string): string {
+  const normalized = rawName
+    .replace(/ToolCall$/i, '')
+    .replace(/[_-]/g, '')
+    .toLowerCase()
+  if (normalized === 'shell' || normalized === 'bash' || normalized === 'terminal') return 'Bash'
+  if (normalized === 'read' || normalized === 'fileread') return 'Read'
+  if (normalized === 'edit' || normalized === 'fileedit') return 'Edit'
+  if (normalized === 'write' || normalized === 'filewrite') return 'Write'
+  if (normalized === 'glob') return 'Glob'
+  if (normalized === 'grep' || normalized === 'search') return 'Grep'
+  if (normalized === 'ls' || normalized === 'list' || normalized === 'listdir') return 'LS'
+  if (normalized === 'webfetch') return 'WebFetch'
+  if (normalized === 'websearch') return 'WebSearch'
+  if (normalized === 'todowrite') return 'TodoWrite'
+  const cleaned = rawName.replace(/ToolCall$/i, '').trim()
+  return cleaned ? cleaned.charAt(0).toUpperCase() + cleaned.slice(1) : 'Tool'
+}
+
+function normalizeNwCursorToolArgs(title: string, rawArgs: Record<string, unknown>) {
+  const args = { ...rawArgs }
+  if (title === 'Glob') {
+    const pattern = asString(args.pattern) ?? asString(args.globPattern)
+    const searchPath =
+      asString(args.path) ?? asString(args.targetDirectory) ?? asString(args.directory)
+    if (pattern) args.pattern = pattern
+    if (searchPath) args.path = searchPath
+  } else if (title === 'Grep') {
+    const pattern = asString(args.pattern) ?? asString(args.query) ?? asString(args.searchPattern)
+    const searchPath =
+      asString(args.path) ?? asString(args.targetDirectory) ?? asString(args.directory)
+    if (pattern) args.pattern = pattern
+    if (searchPath) args.path = searchPath
+  } else if (title === 'LS') {
+    const searchPath =
+      asString(args.path) ?? asString(args.targetDirectory) ?? asString(args.directory)
+    if (searchPath) args.path = searchPath
+  }
+  delete args.globPattern
+  delete args.targetDirectory
+  return args
+}
+
+function isNwCursorBroadProtectedGlob(title: string, args: Record<string, unknown>) {
+  if (title !== 'Glob') return false
+  const searchPath = asString(args.path)
+  const pattern = asString(args.pattern)
+  if (!searchPath || !pattern) return false
+  const path = requireNode<typeof import('node:path')>('node:path')
+  const homeDir = getUserHomeDir() || getHomeDir()
+  if (!homeDir) return false
+  const resolvedPath = path.resolve(searchPath.replace(/^~(?=$|\/)/, homeDir))
+  const protectedRoots = [
+    path.resolve(homeDir, 'Library'),
+    path.resolve(homeDir, 'Desktop'),
+    path.resolve(homeDir, 'Documents'),
+    path.resolve(homeDir, 'Downloads'),
+    path.resolve('/Applications'),
+  ]
+  const isProtectedRoot = protectedRoots.some(
+    (root) => resolvedPath === root || resolvedPath.startsWith(`${root}${path.sep}`),
+  )
+  if (isProtectedRoot) return true
+  const isHomeRoot = resolvedPath === path.resolve(homeDir)
+  return isHomeRoot && pattern.includes('**')
+}
+
+const CODEX_PROPOSED_PLAN_REGEX = /<proposed_plan>\s*\n([\s\S]*?)\n?\s*<\/proposed_plan>/i
+function extractNwProposedPlan(text: string): { plan: string; stripped: string } | null {
+  if (!text || !text.includes('<proposed_plan>')) return null
+  const match = text.match(CODEX_PROPOSED_PLAN_REGEX)
+  if (!match) return null
+  const plan = match[1].trim()
+  if (!plan) return null
+  const stripped = text.replace(CODEX_PROPOSED_PLAN_REGEX, plan).trim()
+  return { plan, stripped }
 }
 
 function getDefaultNwCodexModel() {
@@ -5257,6 +5576,355 @@ async function runNwCodexTurn(
   }
 }
 
+function ensureNwCursorRuntime(snapshot: AgentSessionSnapshot): NwCursorRuntime {
+  const request = getNwAgentRequest(snapshot)
+  const existing = cursorRuntimes.get(snapshot.windowId)
+  if (existing && !existing.closed) {
+    existing.request = { ...existing.request, ...request }
+    existing.snapshot = snapshot
+    return existing
+  }
+  const runtime: NwCursorRuntime = {
+    request,
+    snapshot,
+    activeRun: null,
+    runPromise: null,
+    resolveRun: null,
+    rejectRun: null,
+    streamGeneration: 0,
+    closed: false,
+  }
+  cursorRuntimes.set(snapshot.windowId, runtime)
+  return runtime
+}
+
+async function startNwCursorCliTurn(
+  runtime: NwCursorRuntime,
+  prompt: string,
+  streamGeneration: number,
+) {
+  const binary = resolveAgentBinary('cursor')
+  const windowId = runtime.snapshot.windowId
+  if (!binary) throw new Error('Cursor Agent CLI not found on PATH.')
+
+  const args = ['--print', '--output-format', 'stream-json', '--stream-partial-output', '--sandbox']
+  args.push(runtime.request.permissionMode === 'bypass' ? 'disabled' : 'enabled')
+  args.push('--trust')
+  if (runtime.request.permissionMode === 'bypass') args.push('--force')
+  if (runtime.request.permissionMode === 'plan') args.push('--mode', 'plan')
+  else if (runtime.request.permissionMode === 'ask') args.push('--mode', 'ask')
+  const model = runtime.request.model || getDefaultNwCursorModel()
+  if (model && model !== 'auto') args.push('--model', model)
+  if (runtime.snapshot.cursorAgentId) args.push('--resume', runtime.snapshot.cursorAgentId)
+  args.push(prompt)
+
+  await ensureNwGatekeeperRepair()
+  clearMacQuarantineForExecutable(binary)
+  const childProcess = requireNode<typeof import('node:child_process')>('node:child_process')
+  const child = childProcess.spawn(binary, args, {
+    cwd: runtime.request.cwd ?? undefined,
+    env: buildNwUserEnv({
+      ...(runtime.request.cwd ? { PWD: runtime.request.cwd } : {}),
+      NO_OPEN_BROWSER: '1',
+      NO_COLOR: '1',
+      FORCE_COLOR: '0',
+    }),
+    stdio: ['pipe', 'pipe', 'pipe'],
+  }) as import('node:child_process').ChildProcessWithoutNullStreams
+
+  runtime.activeRun = child
+  agentProcesses.set(windowId, child)
+  runtime.snapshot.status = 'running'
+  runtime.snapshot.error = null
+  emitAgentSnapshot(runtime.snapshot)
+
+  let stdoutBuffer = ''
+  let stderrBuffer = ''
+  let sawResult = false
+  let assistantText = ''
+  let assistantIndex = 0
+  let awaitingPostToolAssistant = false
+  let terminalFailure = false
+
+  const assistantId = () => `${windowId}-cursor-assistant-${streamGeneration}-${assistantIndex}`
+
+  const fail = (message: string) => {
+    if (runtime.closed || runtime.streamGeneration !== streamGeneration) return
+    if (terminalFailure) return
+    terminalFailure = true
+    const trimmed = message.trim() || 'Cursor run failed'
+    const authError = isNwCursorAuthError(trimmed)
+    runtime.activeRun = null
+    agentProcesses.delete(windowId)
+    runtime.snapshot.status = authError ? 'idle' : 'error'
+    runtime.snapshot.error = authError ? null : trimmed
+    upsertNwAgentMessage(runtime.snapshot, {
+      id: `${windowId}-cursor-${authError ? 'auth' : 'error'}-${Date.now()}`,
+      role: authError ? 'auth_request' : 'error',
+      title: authError ? 'Sign in to Cursor' : 'Cursor error',
+      text: authError
+        ? 'Cursor is not authenticated. Sign in with Cursor Agent or set CURSOR_API_KEY, then retry your last message.'
+        : trimmed,
+      status: authError ? 'in_progress' : 'failed',
+      authLoginUrl: authError ? null : undefined,
+      updatedAt: Date.now(),
+    })
+    runtime.rejectRun?.(new Error(trimmed))
+    emitAgentSnapshot(runtime.snapshot)
+  }
+
+  const complete = (result: Record<string, unknown>) => {
+    if (runtime.closed || runtime.streamGeneration !== streamGeneration) return
+    sawResult = true
+    runtime.activeRun = null
+    agentProcesses.delete(windowId)
+    const isError = result.is_error === true || result.subtype === 'error'
+    const resultText = asNonEmptyText(result.result)
+    if (isError) {
+      fail(resultText || 'Cursor run failed')
+      return
+    }
+    if (resultText && !assistantText.trim()) {
+      upsertNwAgentMessage(runtime.snapshot, {
+        id: assistantId(),
+        role: 'assistant',
+        text: resultText,
+        status: 'completed',
+        updatedAt: Date.now(),
+      })
+    }
+    runtime.snapshot.status = 'idle'
+    runtime.snapshot.error = null
+    runtime.snapshot.cursorRunId = asString(result.request_id) ?? runtime.snapshot.cursorRunId
+    const usage = asRecord(result.usage)
+    runtime.snapshot.usage = {
+      model: model || getDefaultNwCursorModel(),
+      inputTokens: typeof usage?.inputTokens === 'number' ? usage.inputTokens : 0,
+      outputTokens: typeof usage?.outputTokens === 'number' ? usage.outputTokens : 0,
+      cachedInputTokens: typeof usage?.cacheReadTokens === 'number' ? usage.cacheReadTokens : 0,
+      contextWindow: null,
+      usedTokens: null,
+      totalProcessedTokens: null,
+      compactsAutomatically: true,
+      updatedAt: Date.now(),
+    }
+    for (const entry of runtime.snapshot.messages) {
+      if (entry.status === 'in_progress') {
+        entry.status = entry.role === 'error' ? 'failed' : 'completed'
+        entry.updatedAt = Date.now()
+      }
+    }
+    runtime.resolveRun?.()
+    emitAgentSnapshot(runtime.snapshot)
+  }
+
+  const handleEvent = (event: Record<string, unknown>) => {
+    if (runtime.closed || runtime.streamGeneration !== streamGeneration) return
+    const type = asString(event.type)
+    const sessionId = asString(event.session_id)
+    if (sessionId) runtime.snapshot.cursorAgentId = sessionId
+
+    if (type === 'assistant') {
+      if (awaitingPostToolAssistant) {
+        assistantIndex += 1
+        assistantText = ''
+        awaitingPostToolAssistant = false
+      }
+      const message = asRecord(event.message)
+      const content = Array.isArray(message?.content) ? message.content : []
+      const text = content
+        .map((block) => {
+          const record = asRecord(block)
+          return record?.type === 'text' ? asNonEmptyText(record.text) : null
+        })
+        .filter((value): value is string => value !== null)
+        .join('\n\n')
+      if (!text) return
+      const isFullAssistantMessage =
+        Boolean(asString(event.model_call_id)) || typeof event.timestamp_ms !== 'number'
+      if (isFullAssistantMessage) {
+        if (text.length >= assistantText.length) assistantText = text
+        else if (!assistantText.endsWith(text)) assistantText += text
+      } else {
+        assistantText += text
+      }
+      upsertNwAgentMessage(runtime.snapshot, {
+        id: assistantId(),
+        role: 'assistant',
+        text: assistantText,
+        status: 'in_progress',
+        updatedAt: Date.now(),
+      })
+      const extracted = extractNwProposedPlan(assistantText)
+      if (runtime.request.permissionMode === 'plan' && extracted) {
+        runtime.snapshot.pendingPlanApproval = {
+          plan: extracted.plan,
+          createdAt: Date.now(),
+        }
+        const assistant = runtime.snapshot.messages.find((entry) => entry.id === assistantId())
+        if (assistant) assistant.text = extracted.stripped || extracted.plan
+      }
+      emitAgentSnapshot(runtime.snapshot)
+      return
+    }
+
+    if (type === 'tool_call') {
+      if (assistantText.trim()) {
+        const assistant = runtime.snapshot.messages.find((entry) => entry.id === assistantId())
+        if (assistant && assistant.status === 'in_progress') {
+          assistant.status = 'completed'
+          assistant.updatedAt = Date.now()
+        }
+      }
+      awaitingPostToolAssistant = true
+      const subtype = asString(event.subtype)
+      const callId = asString(event.call_id) || `${windowId}-cursor-tool-${Date.now()}`
+      const toolCall = asRecord(event.tool_call)
+      const entries = toolCall ? Object.entries(toolCall) : []
+      const [rawToolName, rawPayload] = entries[0] ?? ['toolCall', {}]
+      const payload = asRecord(rawPayload) ?? {}
+      const title = cursorToolTitle(rawToolName)
+      const toolArgs = normalizeNwCursorToolArgs(title, asRecord(payload.args) ?? {})
+      if (rawToolName === 'shellToolCall' && typeof payload.description === 'string') {
+        toolArgs.description = payload.description
+      }
+      if (subtype === 'started' && isNwCursorBroadProtectedGlob(title, toolArgs)) {
+        const detail = compactNwText(toolArgs)
+        try {
+          child.kill('SIGINT')
+        } catch {}
+        fail(`Blocked broad Cursor glob in a macOS protected location.\n\n${detail}`)
+        return
+      }
+      const result = asRecord(payload.result)
+      const success = result ? asRecord(result.success) : null
+      const error = result ? asRecord(result.error) : null
+      const resultText = compactNwText(success ?? error ?? result ?? '', '')
+      upsertNwAgentMessage(runtime.snapshot, {
+        id: `cursor-tool-${callId.replace(/\s+/g, '-')}`,
+        role: 'tool',
+        title,
+        text:
+          subtype === 'completed' || subtype === 'failed' ? resultText : compactNwText(toolArgs),
+        metadata: compactNwText(toolArgs),
+        status:
+          subtype === 'completed'
+            ? error
+              ? 'failed'
+              : 'completed'
+            : subtype === 'failed'
+              ? 'failed'
+              : 'in_progress',
+        toolUseId: callId,
+        updatedAt: Date.now(),
+      })
+      emitAgentSnapshot(runtime.snapshot)
+      return
+    }
+
+    if (type === 'result') complete(event)
+  }
+
+  const handleStdout = (chunk: Buffer | string) => {
+    stdoutBuffer = appendBoundedOutput(stdoutBuffer, String(chunk), 32_000)
+    const lines = stdoutBuffer.split(/\r?\n/)
+    stdoutBuffer = lines.pop() ?? ''
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      try {
+        const parsed = asRecord(JSON.parse(trimmed))
+        if (parsed) handleEvent(parsed)
+      } catch {
+        stderrBuffer = appendBoundedOutput(stderrBuffer, `${trimmed}\n`, 8_000)
+      }
+    }
+  }
+
+  child.stdout.setEncoding('utf8')
+  child.stderr.setEncoding('utf8')
+  child.stdout.on('data', handleStdout)
+  child.stderr.on('data', (chunk: string) => {
+    stderrBuffer = appendBoundedOutput(stderrBuffer, chunk, 8_000)
+  })
+  child.on('error', (err) => fail(err.message))
+  child.on('close', (code, signal) => {
+    if (runtime.closed || runtime.streamGeneration !== streamGeneration) return
+    if (terminalFailure) return
+    if (stdoutBuffer.trim()) handleStdout('\n')
+    runtime.activeRun = null
+    agentProcesses.delete(windowId)
+    if (sawResult) return
+    if (signal === 'SIGINT' || signal === 'SIGTERM') {
+      runtime.snapshot.status = 'idle'
+      runtime.resolveRun?.()
+      emitAgentSnapshot(runtime.snapshot)
+      return
+    }
+    const message =
+      stderrBuffer.trim() ||
+      stdoutBuffer.trim() ||
+      (code === 0 ? 'Cursor finished without a result' : `Cursor exited with code ${code}`)
+    fail(message)
+  })
+}
+
+async function runNwCursorTurn(
+  snapshot: AgentSessionSnapshot,
+  input: string,
+  attachments: string[] = [],
+) {
+  snapshot.status = 'running'
+  snapshot.error = null
+  emitAgentSnapshot(snapshot)
+  const runtime = ensureNwCursorRuntime(snapshot)
+  if (runtime.runPromise) {
+    appendAgentError(snapshot, 'Cursor is still processing the previous turn.')
+    return
+  }
+  runtime.runPromise = new Promise<void>((resolve, reject) => {
+    runtime.resolveRun = resolve
+    runtime.rejectRun = reject
+  }).finally(() => {
+    runtime.runPromise = null
+    runtime.resolveRun = null
+    runtime.rejectRun = null
+  })
+  runtime.runPromise.catch(() => {})
+
+  let completed = false
+  try {
+    const cursorText = buildNwCursorProviderText(runtime.request.permissionMode, input)
+    const prompt = buildNwCursorCliPrompt(cursorText, attachments)
+    await startNwCursorCliTurn(runtime, prompt, ++runtime.streamGeneration)
+    await runtime.runPromise
+    completed = runtime.snapshot.status === 'idle' && !runtime.snapshot.error
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    runtime.rejectRun?.(error instanceof Error ? error : new Error(message))
+    if (!runtime.snapshot.error && runtime.snapshot.status !== 'idle') {
+      if (isNwCursorAuthError(message)) {
+        runtime.snapshot.status = 'idle'
+        runtime.snapshot.error = null
+        upsertNwAgentMessage(runtime.snapshot, {
+          id: `${snapshot.windowId}-cursor-auth-${Date.now()}`,
+          role: 'auth_request',
+          title: 'Sign in to Cursor',
+          text: 'Cursor is not authenticated. Sign in with Cursor Agent or set CURSOR_API_KEY, then retry your last message.',
+          status: 'in_progress',
+          authLoginUrl: null,
+          updatedAt: Date.now(),
+        })
+        emitAgentSnapshot(runtime.snapshot)
+      } else {
+        appendAgentError(snapshot, message)
+      }
+    }
+  } finally {
+    if (completed) window.setTimeout(() => maybeDrainNwAgentQueue(snapshot.windowId), 0)
+  }
+}
+
 function appendAgentError(snapshot: AgentSessionSnapshot, message: string) {
   snapshot.status = 'error'
   snapshot.error = message
@@ -5271,6 +5939,10 @@ async function runAgentTurn(
 ) {
   if (snapshot.agent === 'codex') {
     await runNwCodexTurn(snapshot, input, attachments)
+    return
+  }
+  if (snapshot.agent === 'cursor') {
+    await runNwCursorTurn(snapshot, input, attachments)
     return
   }
 
@@ -5904,6 +6576,13 @@ export function installNwCellsAdapter() {
           await codexRuntime.client.close().catch(() => {})
           codexRuntimes.delete(windowId)
         }
+        const cursorRuntime = cursorRuntimes.get(windowId)
+        if (cursorRuntime) {
+          cursorRuntime.closed = true
+          cursorRuntime.activeRun?.kill()
+          cursorRuntime.resolveRun?.()
+          cursorRuntimes.delete(windowId)
+        }
         const child = agentProcesses.get(windowId)
         if (child) {
           child.kill()
@@ -5985,6 +6664,9 @@ export function installNwCellsAdapter() {
           agentRequests.set(windowId, { ...request, permissionMode: mode })
           const runtime = codexRuntimes.get(windowId)
           if (runtime) runtime.request = { ...runtime.request, permissionMode: mode }
+          const cursorRuntime = cursorRuntimes.get(windowId)
+          if (cursorRuntime)
+            cursorRuntime.request = { ...cursorRuntime.request, permissionMode: mode }
         }
       },
       updateContextLength: async (windowId, length) => {
@@ -6079,11 +6761,11 @@ export function installNwCellsAdapter() {
         }
         clearAgentPendingState(windowId, 'approval', `Approval response: ${decision}`)
       },
-      listCodexModels: async () => NW_CODEX_MODELS,
+      listCodexModels: async () => listNwCodexModels(),
       listClaudeModels: async () => NW_CLAUDE_MODELS,
-      listCursorModels: async () => NW_CURSOR_MODELS,
+      listCursorModels: async () => listNwCursorModels(),
       listCopilotModels: async () => NW_COPILOT_MODELS,
-      listOpencodeModels: async () => NW_OPENCODE_MODELS,
+      listOpencodeModels: async () => listNwOpencodeModels(),
       listSavedSessions: async () => listNwSavedSessions(),
       listRecentSessions: async (agent, limit = DEFAULT_NW_RECENT_SESSION_LIMIT) =>
         listNwRecentSessions(agent, limit),
@@ -6156,6 +6838,9 @@ export function installNwCellsAdapter() {
       },
       setCustomPaths: async (paths) => {
         customAgentPaths = paths
+        cachedNwCodexModels = null
+        cachedNwCursorModels = null
+        cachedNwOpencodeModels = null
       },
     },
     daemon: {

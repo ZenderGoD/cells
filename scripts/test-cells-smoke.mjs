@@ -15,7 +15,8 @@ let executablePath = path.join(appPath, 'Contents', 'MacOS', 'nwjs')
 const logPath = path.join(os.tmpdir(), 'cells-smoke.log')
 const smokeStateDir = path.join(os.tmpdir(), `cells-smoke-${process.pid}`)
 const smokeStatePath = path.join(smokeStateDir, 'state.json')
-const remoteDebuggingUrl = 'http://127.0.0.1:9224/json'
+const smokeRemoteDebuggingPort = Number(process.env.CELLS_SMOKE_REMOTE_DEBUGGING_PORT || 30_000 + (process.pid % 20_000))
+const remoteDebuggingUrl = `http://127.0.0.1:${smokeRemoteDebuggingPort}/json`
 
 const expectedCellsApi = {
   terminal: [
@@ -549,6 +550,10 @@ async function main() {
     .split(/\s+/)
     .filter(Boolean)
     .filter((arg) => !arg.startsWith('--user-data-dir='))
+    .filter((arg) => !arg.startsWith('--remote-debugging-address='))
+    .filter((arg) => !arg.startsWith('--remote-debugging-port='))
+  chromiumArgs.push('--remote-debugging-address=127.0.0.1')
+  chromiumArgs.push(`--remote-debugging-port=${smokeRemoteDebuggingPort}`)
   chromiumArgs.push(`--user-data-dir=${smokeChromiumProfileDir}`)
   manifest['chromium-args'] = chromiumArgs.join(' ')
   fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
@@ -1216,6 +1221,24 @@ rl.on('line', (line) => {
     return
   }
   if (message.method === 'initialized') return
+  if (message.method === 'model/list') {
+    write({
+      id: message.id,
+      result: {
+        data: [{
+          id: 'gpt-5-codex',
+          displayName: 'GPT-5 Codex',
+          description: 'Smoke Codex model',
+          isDefault: true,
+          hidden: false,
+          supportedReasoningEfforts: [{ reasoningEffort: 'medium', description: 'Balanced' }],
+          defaultReasoningEffort: 'medium'
+        }],
+        nextCursor: null
+      }
+    })
+    return
+  }
   if (message.method === 'thread/start' || message.method === 'thread/resume') {
     const thread = { id: message.params?.threadId || 'nw-smoke-codex-thread' }
     write({ id: message.id, result: { thread } })
@@ -1277,6 +1300,100 @@ rl.on('line', (line) => {
       12_000,
     )
     if (!agent.ok) throw new Error(`Agent smoke failed: ${JSON.stringify(agent)}`)
+
+    const cursorAgent = await cdpEval(
+      page.webSocketDebuggerUrl,
+      `new Promise(async (resolve) => {
+        const windowId = 'nw-cursor-agent-smoke'
+        const marker = 'CELLS_BETA_CURSOR_PROBE_' + Date.now()
+        const updates = []
+        const fs = window.require('node:fs')
+        const os = window.require('node:os')
+        const path = window.require('node:path')
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cells-nw-cursor-agent-'))
+        const cursor = path.join(dir, 'cursor-agent')
+        const cursorBody = [
+          '#!/usr/bin/env node',
+          'const args = process.argv.slice(2)',
+          'if (args[0] === "status") { console.log(JSON.stringify({ status: "authenticated", isAuthenticated: true, userInfo: { email: "smoke@example.test" } })); process.exit(0) }',
+          'if (args[0] === "models") { console.log("Available models"); console.log("auto - Auto"); console.log("composer-2.5-fast - Composer 2.5 Fast (default)"); console.log("gpt-5.5-high - GPT-5.5 1M High"); process.exit(0) }',
+          'const marker = ' + JSON.stringify(marker),
+          'console.log(JSON.stringify({ type: "assistant", session_id: "nw-smoke-cursor-session", message: { content: [{ type: "text", text: "cursor smoke " + marker }] } }))',
+          'console.log(JSON.stringify({ type: "result", request_id: "nw-smoke-cursor-request", result: "cursor smoke " + marker, usage: { inputTokens: 1, outputTokens: 2, cacheReadTokens: 0 } }))'
+        ].join('\\n') + '\\n'
+        fs.writeFileSync(cursor, cursorBody, { mode: 0o755 })
+        const off = window.cells.agentSession.onUpdate((snapshot) => {
+          if (snapshot.windowId !== windowId) return
+          updates.push({
+            status: snapshot.status,
+            cursorAgentId: snapshot.cursorAgentId,
+            cursorRunId: snapshot.cursorRunId,
+            messages: snapshot.messages.map((message) => ({
+              role: message.role,
+              text: message.text,
+              status: message.status
+            }))
+          })
+        })
+        const cleanup = async () => {
+          off()
+          await window.cells.agentSession.dispose(windowId).catch(() => {})
+          fs.rmSync(dir, { recursive: true, force: true })
+          if (window.__cellsNwSmokeCodexPath) {
+            await window.cells.agent.setCustomPaths({ codex: window.__cellsNwSmokeCodexPath })
+          }
+        }
+        const finish = async (payload) => {
+          await cleanup()
+          resolve(payload)
+        }
+        try {
+          await window.cells.agent.setCustomPaths({ codex: window.__cellsNwSmokeCodexPath, cursor })
+          const models = await window.cells.agentSession.listCursorModels()
+          await window.cells.agentSession.ensure({
+            windowId,
+            agent: 'cursor',
+            title: 'NW Cursor Smoke',
+            cwd: null,
+            model: 'auto'
+          })
+          await window.cells.agentSession.send(windowId, marker)
+          const started = Date.now()
+          const poll = () => {
+            const done = updates.find((entry) =>
+              entry.status === 'idle' &&
+              entry.cursorAgentId === 'nw-smoke-cursor-session' &&
+              entry.cursorRunId === 'nw-smoke-cursor-request' &&
+              entry.messages.some((message) =>
+                message.role === 'assistant' &&
+                message.status === 'completed' &&
+                message.text.includes(marker)
+              )
+            )
+            const failed = updates.find((entry) => entry.status === 'error')
+            if (done || failed || Date.now() - started > 8000) {
+              void finish({
+                ok:
+                  Boolean(done) &&
+                  models.some((model) => model.id === 'composer-2.5-fast') &&
+                  models.some((model) => model.id === 'gpt-5.5-high'),
+                modelIds: models.map((model) => model.id),
+                updates: updates.slice(-12)
+              })
+              return
+            }
+            setTimeout(poll, 250)
+          }
+          poll()
+        } catch (error) {
+          await finish({ ok: false, error: error instanceof Error ? error.message : String(error), updates })
+        }
+      })`,
+      12_000,
+    )
+    if (!cursorAgent.ok) {
+      throw new Error(`Cursor agent smoke failed: ${JSON.stringify(cursorAgent)}`)
+    }
 
     const agentApi = await cdpEval(
       page.webSocketDebuggerUrl,
@@ -2020,6 +2137,7 @@ process.stdin.on('data', (chunk) => {
           popout: { terminal: terminalUnpin, agent: agentUnpin, browser: browserUnpin },
           terminal,
           agent: { ok: agent.ok },
+          cursorAgent: { ok: cursorAgent.ok, modelIds: cursorAgent.modelIds },
           agentApi,
           agentAuth,
           agentResponses,
