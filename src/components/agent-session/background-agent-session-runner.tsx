@@ -3,6 +3,7 @@ import type { AgentSessionSnapshot, AgentWindowNode } from '@/types'
 import { deriveAgentSessionWindowStatus } from '@/lib/agent-session-activity'
 import { useStore } from '@/lib/store'
 import { useShallow } from 'zustand/react/shallow'
+import { AgentBrowserPane } from './agent-browser-pane'
 
 function shouldRunInBackground(agentWindow: AgentWindowNode) {
   return (
@@ -182,6 +183,41 @@ export function BackgroundAgentSessionHosts() {
       {inactiveAgentWindows.map((agentWindow) => (
         <BackgroundAgentSessionRunner key={agentWindow.id} agentWindow={agentWindow} />
       ))}
+      <BackgroundAgentBrowserHosts />
+    </>
+  )
+}
+
+function BackgroundAgentBrowserHosts() {
+  const inactiveCodexBrowsers = useStore(
+    useShallow((state) =>
+      state.projects.flatMap((project) =>
+        project.id === state.activeProjectId
+          ? []
+          : (project.agentWindows ?? [])
+              .filter(
+                (agentWindow) =>
+                  agentWindow.agent === 'codex' &&
+                  (Boolean(agentWindow.agentBrowser) || shouldRunInBackground(agentWindow)),
+              )
+              .map((agentWindow) => ({ agentWindow, projectId: project.id })),
+      ),
+    ),
+  )
+
+  return (
+    <>
+      {inactiveCodexBrowsers.map(({ agentWindow, projectId }) =>
+        agentWindow.agentBrowser ? (
+          <AgentBrowserPane
+            key={agentWindow.id}
+            state={agentWindow.agentBrowser}
+            projectId={projectId}
+            isRunning={agentWindow.status === 'running'}
+            dock={agentWindow.agentBrowser.dock}
+          />
+        ) : null,
+      )}
     </>
   )
 }

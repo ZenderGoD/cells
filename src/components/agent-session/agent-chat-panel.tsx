@@ -79,6 +79,7 @@ import { AgentTurnCard } from './agent-turn-card'
 import { LoadingIndicator } from './agent-loading-indicator'
 import { SessionDiffsPanel } from './session-diffs-panel'
 import { AgentOverviewPopover } from './agent-overview-popover'
+import { AgentBrowserPane } from './agent-browser-pane'
 import { InlineMentionMenu, useInlineMention } from './inline-mention-menu'
 import { sumDiffStats, hasDiffStats } from '@/lib/tool-diff-stats'
 import { createQueuedMessageId, sanitizeQueuedMessages } from '@/lib/agent-session-queue'
@@ -3157,10 +3158,15 @@ export function AgentChatPanel({
     'branch' | 'interrupt' | 'after-tool' | null
   >(null)
   const [selectingBrowserElement, setSelectingBrowserElement] = useState(false)
+  const activeProjectId = useStore((state) => state.activeProjectId)
   const activeProjectPath = useStore(
     (state) => state.projects.find((project) => project.id === state.activeProjectId)?.path ?? null,
   )
+  const agentBrowserState =
+    agentWindow.agent === 'codex' ? (agentWindow.agentBrowser ?? null) : null
+  const agentBrowserDock = agentWindow.width >= 860 ? 'right' : 'bottom'
   const browserPickTargetId = useStore((state) => {
+    if (agentBrowserState) return agentBrowserState.id
     const focusedBrowser = state.focusedBrowserId
       ? state.browsers.find((browser) => browser.id === state.focusedBrowserId)
       : null
@@ -3174,6 +3180,9 @@ export function AgentChatPanel({
     )
   })
   const browserPickTargetLabel = useStore((state) => {
+    if (agentBrowserState) {
+      return agentBrowserState.title || agentBrowserState.url || 'Codex browser'
+    }
     const browser = browserPickTargetId
       ? state.browsers.find((candidate) => candidate.id === browserPickTargetId)
       : null
@@ -4381,7 +4390,11 @@ export function AgentChatPanel({
     }
 
     setSelectingBrowserElement(true)
-    useStore.getState().snapToBrowser(browserPickTargetId)
+    if (agentBrowserState) {
+      await window.cells.agentBrowser.show(agentWindow.id)
+    } else {
+      useStore.getState().snapToBrowser(browserPickTargetId)
+    }
 
     let started = false
     for (const delay of BROWSER_ELEMENT_PICKER_RETRY_DELAYS_MS) {
@@ -4403,7 +4416,13 @@ export function AgentChatPanel({
 
     activeElementPickerBrowserIdRef.current = browserPickTargetId
     showToast(`Select an element in ${browserPickTargetLabel}`, 'info')
-  }, [agentWindow.id, browserPickTargetId, browserPickTargetLabel, selectingBrowserElement])
+  }, [
+    agentBrowserState,
+    agentWindow.id,
+    browserPickTargetId,
+    browserPickTargetLabel,
+    selectingBrowserElement,
+  ])
 
   const removeAttachment = useCallback(
     (path: string) => {
@@ -5386,6 +5405,7 @@ export function AgentChatPanel({
                 cursorRunId: null,
                 copilotSessionId: null,
                 opencodeSessionId: null,
+                agentBrowser: null,
                 error: null,
                 status: 'idle',
               })
@@ -5414,7 +5434,10 @@ export function AgentChatPanel({
   return (
     <div
       ref={chatPanelRef}
-      className="agent-chat-panel flex h-full min-h-0"
+      className={cn(
+        'agent-chat-panel flex h-full min-h-0',
+        agentBrowserState?.visible && agentBrowserDock === 'bottom' ? 'flex-col' : 'flex-row',
+      )}
       data-focus-zone="chat"
       onDragOver={(event) => {
         if (event.dataTransfer?.types.includes('Files')) {
@@ -6461,6 +6484,14 @@ export function AgentChatPanel({
           </div>
         </div>
       </div>
+      {agentBrowserState ? (
+        <AgentBrowserPane
+          state={agentBrowserState}
+          projectId={activeProjectId}
+          isRunning={isRunning}
+          dock={agentBrowserDock}
+        />
+      ) : null}
       <AnimatePresence initial={false}>
         {sidePanel === 'diffs' ? (
           <motion.div

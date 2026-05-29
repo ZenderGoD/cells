@@ -11,6 +11,8 @@ import {
   ArrowUpRight,
   ChevronDown,
   ClipboardCopy,
+  Eye,
+  EyeOff,
   ExternalLink,
   FileText,
   FolderOpen,
@@ -564,6 +566,33 @@ export function AgentOverviewPopover({
     void window.cells.app.revealPath(cwd)
   }, [cwd])
 
+  const openAgentBrowser = useCallback(() => {
+    const current = agentWindow.agentBrowser?.url
+    const next = window.prompt(
+      'Open URL',
+      current && current !== 'about:blank' ? current : 'https://www.google.com',
+    )
+    if (next === null) return
+    void window.cells.agentBrowser.ensure(agentWindow.id, { url: next, visible: true })
+  }, [agentWindow.agentBrowser?.url, agentWindow.id])
+
+  const toggleAgentBrowser = useCallback(() => {
+    if (!agentWindow.agentBrowser) {
+      void window.cells.agentBrowser.ensure(agentWindow.id, {
+        url: 'https://www.google.com',
+        visible: true,
+      })
+      return
+    }
+    void (agentWindow.agentBrowser.visible
+      ? window.cells.agentBrowser.hide(agentWindow.id)
+      : window.cells.agentBrowser.show(agentWindow.id))
+  }, [agentWindow.agentBrowser, agentWindow.id])
+
+  const closeAgentBrowser = useCallback(() => {
+    void window.cells.agentBrowser.destroy(agentWindow.id)
+  }, [agentWindow.id])
+
   return (
     <div
       className={cn(
@@ -741,7 +770,49 @@ export function AgentOverviewPopover({
             </OverviewSection>
           ) : null}
 
-          {browser ? (
+          {agentWindow.agent === 'codex' ? (
+            <OverviewSection title="Browser">
+              <OverviewRow
+                icon={<Globe2 className="size-3.5" />}
+                label={
+                  agentWindow.agentBrowser
+                    ? agentWindow.agentBrowser.title || hostLabel(agentWindow.agentBrowser.url)
+                    : 'Open browser'
+                }
+                detail={
+                  agentWindow.agentBrowser
+                    ? formatUrl(agentWindow.agentBrowser.url)
+                    : 'Codex-owned browser'
+                }
+                onSelect={() => runAction(openAgentBrowser)}
+                trailing={
+                  agentWindow.agentBrowser?.isLoading ? (
+                    <Loader2 className="size-3.5 animate-spin text-muted-foreground/45" />
+                  ) : null
+                }
+              />
+              <OverviewRow
+                icon={
+                  agentWindow.agentBrowser?.visible ? (
+                    <EyeOff className="size-3.5" />
+                  ) : (
+                    <Eye className="size-3.5" />
+                  )
+                }
+                label={agentWindow.agentBrowser?.visible ? 'Hide browser' : 'Show browser'}
+                detail={agentWindow.agentBrowser ? 'Keeps running in background' : null}
+                onSelect={() => runAction(toggleAgentBrowser)}
+              />
+              {agentWindow.agentBrowser ? (
+                <OverviewRow
+                  icon={<XCircle className="size-3.5" />}
+                  label="Close browser"
+                  tone="danger"
+                  onSelect={() => runAction(closeAgentBrowser)}
+                />
+              ) : null}
+            </OverviewSection>
+          ) : browser ? (
             <OverviewSection title="Browser">
               <OverviewRow
                 icon={<Globe2 className="size-3.5" />}

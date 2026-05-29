@@ -256,6 +256,7 @@ export const AgentWindowNode = memo(function AgentWindowNode({
         cursorRunId: null,
         copilotSessionId: null,
         opencodeSessionId: null,
+        agentBrowser: null,
         error: null,
         status: 'idle',
       })

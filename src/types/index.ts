@@ -139,6 +139,29 @@ export interface BrowserViewStateSnapshot {
   failure: BrowserViewFailure | null
 }
 
+export type AgentBrowserDock = 'right' | 'bottom'
+
+export interface AgentBrowserSessionState extends BrowserViewStateSnapshot {
+  id: string
+  agentWindowId: string
+  visible: boolean
+  dock: AgentBrowserDock
+  splitRatio: number
+  history: { entries: BrowserHistoryEntry[]; activeIndex: number }
+  createdAt: number
+  updatedAt: number
+  lastActiveAt: number
+}
+
+export interface AgentBrowserEnsureOptions {
+  projectId?: string | null
+  url?: string | null
+  visible?: boolean | null
+  splitRatio?: number | null
+  dock?: AgentBrowserDock | null
+  history?: { entries: BrowserHistoryEntry[]; activeIndex: number } | null
+}
+
 export interface BrowserElementSelection {
   url: string
   title: string
@@ -458,6 +481,8 @@ export interface AgentWindowNode {
   color?: import('../lib/agent-window-colors').AgentWindowColorId | null
   /** True while this agent window is popped out into its own OS window. */
   pinned?: boolean
+  /** Codex-only in v1: embedded browser session owned by this agent window. */
+  agentBrowser?: AgentBrowserSessionState | null
 }
 
 export interface AgentSessionDefaults {
@@ -1246,6 +1271,22 @@ export interface CellsAPI {
     onElementPickerCancelled(
       callback: (browserId: string, targetAgentWindowId: string | null) => void,
     ): () => void
+  }
+  agentBrowser: {
+    ensure(
+      agentWindowId: string,
+      options?: AgentBrowserEnsureOptions,
+    ): Promise<AgentBrowserSessionState>
+    navigate(
+      agentWindowId: string,
+      url: string,
+      searchEngineUrl?: string,
+    ): Promise<AgentBrowserSessionState>
+    show(agentWindowId: string): Promise<AgentBrowserSessionState>
+    hide(agentWindowId: string): Promise<AgentBrowserSessionState>
+    destroy(agentWindowId: string): Promise<void>
+    getState(agentWindowId: string): Promise<AgentBrowserSessionState | null>
+    onStateChanged(callback: (state: AgentBrowserSessionState) => void): () => void
   }
   editor: {
     readFile(filePath: string): Promise<{

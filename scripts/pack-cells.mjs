@@ -18,6 +18,8 @@ const artifactName = `${appName}-${appVersion}-mac-${process.arch}.zip`
 const artifactPath = path.join(outDir, artifactName)
 const dmgName = `${appName}-${appVersion}-mac-${process.arch}.dmg`
 const dmgPath = path.join(outDir, dmgName)
+const dmgReadWritePath = path.join(outDir, `${appName}-${appVersion}-mac-${process.arch}.rw.dmg`)
+const dmgBackgroundPath = path.join(root, 'resources', 'dmg', 'cells-dmg-background.png')
 const entitlementsPath = path.join(root, 'resources', 'mac-entitlements.plist')
 const requireNotarization = process.env.CELLS_REQUIRE_NOTARIZATION === '1'
 const machOMagicValues = new Set([
@@ -79,6 +81,10 @@ function runCapture(command, args, options = {}) {
       reject(error)
     })
   })
+}
+
+function appleScriptString(value) {
+  return String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')
 }
 
 async function printNotaryLog(submissionId, profile) {
@@ -247,12 +253,16 @@ async function createDmg() {
   const dmgRoot = path.join(outDir, 'dmg-root')
   fs.rmSync(dmgRoot, { recursive: true, force: true })
   fs.rmSync(dmgPath, { force: true })
+  fs.rmSync(dmgReadWritePath, { force: true })
   fs.mkdirSync(dmgRoot, { recursive: true })
+  fs.mkdirSync(path.join(dmgRoot, '.background'), { recursive: true })
   fs.cpSync(stagedApp, path.join(dmgRoot, `${appName}.app`), {
     recursive: true,
     verbatimSymlinks: true,
   })
   fs.symlinkSync('/Applications', path.join(dmgRoot, 'Applications'))
+  fs.copyFileSync(dmgBackgroundPath, path.join(dmgRoot, '.background', 'cells-dmg-background.png'))
+  await run('SetFile', ['-a', 'V', path.join(dmgRoot, '.background')]).catch(() => {})
   await run('hdiutil', [
     'create',
     '-volname',
@@ -261,10 +271,43 @@ async function createDmg() {
     dmgRoot,
     '-ov',
     '-format',
-    'UDZO',
-    dmgPath,
+    'UDRW',
+    dmgReadWritePath,
   ])
-  fs.rmSync(dmgRoot, { recursive: true, force: true })
+  let attached = false
+  try {
+    await run('hdiutil', ['attach', dmgReadWritePath, '-readwrite', '-noverify', '-noautoopen'])
+    attached = true
+    await run('osascript', [
+      '-e',
+      `
+tell application "Finder"
+  set volumePath to POSIX file "/Volumes/${appleScriptString(appName)}"
+  open volumePath
+  delay 0.4
+  set theDisk to disk "${appleScriptString(appName)}"
+  set theWindow to front Finder window
+  set current view of theWindow to icon view
+  set toolbar visible of theWindow to false
+  set statusbar visible of theWindow to false
+  set bounds of theWindow to {120, 120, 840, 560}
+  set viewOptions to icon view options of theWindow
+  set arrangement of viewOptions to not arranged
+  set icon size of viewOptions to 104
+  set background picture of viewOptions to POSIX file "/Volumes/${appleScriptString(appName)}/.background/cells-dmg-background.png"
+  set position of item "Cells.app" of theDisk to {180, 238}
+  set position of item "Applications" of theDisk to {540, 238}
+  delay 0.2
+  close theWindow
+end tell
+`,
+    ])
+  } finally {
+    if (attached) await run('hdiutil', ['detach', `/Volumes/${appName}`, '-quiet']).catch(() => {})
+    fs.rmSync(dmgRoot, { recursive: true, force: true })
+  }
+  await run('hdiutil', ['convert', dmgReadWritePath, '-format', 'UDZO', '-o', dmgPath, '-ov'])
+  fs.rmSync(dmgReadWritePath, { force: true })
 }
 
 async function signDmgIfPossible() {

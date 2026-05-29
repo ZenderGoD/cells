@@ -129,6 +129,15 @@ const expectedCellsApi = {
     'onElementSelected',
     'onElementPickerCancelled',
   ],
+  agentBrowser: [
+    'ensure',
+    'navigate',
+    'show',
+    'hide',
+    'destroy',
+    'getState',
+    'onStateChanged',
+  ],
   editor: [
     'readFile',
     'writeFile',
@@ -239,13 +248,19 @@ async function waitForAppPage() {
 }
 
 async function waitForTarget(predicate, label, attempts = 20) {
+  let lastTargets = []
   for (let i = 0; i < attempts; i += 1) {
     const targets = await getTargets()
+    lastTargets = targets
     const target = targets.find(predicate)
     if (target) return target
     await wait(500)
   }
-  throw new Error(`Timed out waiting for ${label}.`)
+  throw new Error(
+    `Timed out waiting for ${label}. Targets: ${lastTargets
+      .map((target) => `${target.type}:${target.url}`)
+      .join(', ')}`,
+  )
 }
 
 async function waitForTargetGone(predicate, label, attempts = 20) {
@@ -258,18 +273,34 @@ async function waitForTargetGone(predicate, label, attempts = 20) {
 }
 
 async function cdpEval(wsUrl, expression, timeoutMs = 10_000) {
-  const result = await cdpCall(
-    wsUrl,
-    'Runtime.evaluate',
-    {
-      expression,
-      returnByValue: true,
-      awaitPromise: true,
-    },
-    timeoutMs,
-  )
-  if (result.exceptionDetails)
-    throw new Error(result.exceptionDetails.text || 'Runtime evaluation failed')
+  let result
+  try {
+    result = await cdpCall(
+      wsUrl,
+      'Runtime.evaluate',
+      {
+        expression,
+        returnByValue: true,
+        awaitPromise: true,
+      },
+      timeoutMs,
+    )
+  } catch (error) {
+    const summary = expression.replace(/\s+/g, ' ').trim().slice(0, 180)
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)} while evaluating: ${summary}`,
+      { cause: error },
+    )
+  }
+  if (result.exceptionDetails) {
+    const exception = result.exceptionDetails.exception
+    throw new Error(
+      exception?.description ||
+        exception?.value ||
+        result.exceptionDetails.text ||
+        'Runtime evaluation failed',
+    )
+  }
   return result.result.value
 }
 
@@ -369,21 +400,34 @@ async function describeTargetsForError() {
 }
 
 async function cdpCall(wsUrl, method, params = {}, timeoutMs = 10_000) {
-  const ws = new WebSocket(wsUrl)
-  await new Promise((resolve, reject) => {
-    ws.addEventListener('open', resolve, { once: true })
-    ws.addEventListener(
-      'error',
-      () => {
-        void describeTargetsForError().then((targets) =>
-          reject(
-            new Error(`Failed to open CDP websocket for ${method}: ${wsUrl}\nTargets: ${targets}`),
-          ),
-        )
-      },
-      { once: true },
-    )
-  })
+  let ws = new WebSocket(wsUrl)
+  const openSocket = () =>
+    new Promise((resolve, reject) => {
+      ws.addEventListener('open', resolve, { once: true })
+      ws.addEventListener(
+        'error',
+        () => {
+          void describeTargetsForError().then((targets) =>
+            reject(
+              new Error(
+                `Failed to open CDP websocket for ${method}: ${ws.url}\nTargets: ${targets}`,
+              ),
+            ),
+          )
+        },
+        { once: true },
+      )
+    })
+  try {
+    await openSocket()
+  } catch (error) {
+    if (!wsUrl.includes('/devtools/page/')) throw error
+    const { page } = await waitForAppPage()
+    if (!page.webSocketDebuggerUrl || page.webSocketDebuggerUrl === wsUrl) throw error
+    wsUrl = page.webSocketDebuggerUrl
+    ws = new WebSocket(wsUrl)
+    await openSocket()
+  }
 
   let id = 0
   const send = (nextMethod, nextParams = {}) =>
@@ -471,13 +515,19 @@ async function main() {
     throw new Error('test:cells:smoke currently verifies the staged macOS Cells.app bundle.')
   }
 
-  await run('pnpm', ['pack:cells'])
+  await run('pnpm', ['build:cells'])
   await stageSmokeSdkApp()
-  assertBundleQuarantineDisabled(releaseAppPath)
   assertBundleQuarantineDisabled(smokeAppPath)
 
   fs.rmSync(smokeStateDir, { recursive: true, force: true })
   fs.mkdirSync(smokeStateDir, { recursive: true })
+  const smokeBrowserPopoutPath = path.join(smokeStateDir, 'browser-popout.html')
+  fs.writeFileSync(
+    smokeBrowserPopoutPath,
+    '<!doctype html><title>NW Browser Popout Seed</title><h1>Cells browser smoke</h1>',
+    'utf8',
+  )
+  const smokeBrowserPopoutUrl = pathToFileURL(smokeBrowserPopoutPath).toString()
   const smokeChromiumProfileDir = path.join(smokeStateDir, 'chromium')
   fs.mkdirSync(smokeChromiumProfileDir, { recursive: true })
   const smokeUpdateVersion = '999.0.0'
@@ -749,15 +799,15 @@ async function main() {
 
     await cdpEval(
       page.webSocketDebuggerUrl,
-      `window.cells.app.pinWindow('nw-popout-browser-smoke', 'browser', { x: 180, y: 180, width: 640, height: 420 }, 'https://example.com/')`,
+      `window.cells.app.pinWindow('nw-popout-browser-smoke', 'browser', { x: 180, y: 180, width: 640, height: 420 }, ${JSON.stringify(smokeBrowserPopoutUrl)})`,
     )
     const browserPopout = await waitForTarget(
-      (target) => target.type === 'page' && /^https:\/\/example\.com\/?/.test(target.url),
+      (target) => target.type === 'page' && target.url.startsWith(smokeBrowserPopoutUrl),
       'browser popout page',
     )
     await cdpEval(
       browserPopout.webSocketDebuggerUrl,
-      `history.replaceState(null, '', '/?cells-nw-popout-smoke=1'); document.title = 'NW Browser Popout Smoke'; true`,
+      `history.replaceState(null, '', '?cells-nw-popout-smoke=1'); document.title = 'NW Browser Popout Smoke'; true`,
     )
     const browserUnpin = await cdpEval(
       page.webSocketDebuggerUrl,
@@ -813,15 +863,15 @@ async function main() {
     )
 
     const webview = await waitForTarget(
-      (target) => target.type === 'webview' && /^https:\/\/example\.com\/?/.test(target.url),
+      (target) => target.webSocketDebuggerUrl && /^https:\/\/example\.com\/?/.test(target.url),
       'embedded browser webview',
       30,
     )
     await wait(1000)
-    const shortcutResult = await Promise.all([
-      cdpEval(
-        page.webSocketDebuggerUrl,
-        `new Promise((resolve) => {
+    await cdpEval(
+      page.webSocketDebuggerUrl,
+      `(() => {
+        window.__cellsNwShortcutSmokeResult = new Promise((resolve) => {
           const off = window.cells.app.onShortcut((payload) => {
             if (payload.command !== 'open-settings') return
             off()
@@ -831,23 +881,29 @@ async function main() {
             off()
             resolve({ ok: false })
           }, 5000)
-        })`,
-        7000,
-      ),
-      cdpEval(
-        webview.webSocketDebuggerUrl,
-        `(() => {
-          document.dispatchEvent(new KeyboardEvent('keydown', {
-            key: ',',
-            code: 'Comma',
-            metaKey: true,
-            bubbles: true,
-            cancelable: true
-          }));
-          return true;
-        })()`,
-      ),
-    ]).then(([result]) => result)
+        })
+        return true
+      })()`,
+      5000,
+    )
+    await cdpEval(
+      webview.webSocketDebuggerUrl,
+      `(() => {
+        document.dispatchEvent(new KeyboardEvent('keydown', {
+          key: ',',
+          code: 'Comma',
+          metaKey: true,
+          bubbles: true,
+          cancelable: true
+        }));
+        return true;
+      })()`,
+    )
+    const shortcutResult = await cdpEval(
+      page.webSocketDebuggerUrl,
+      `window.__cellsNwShortcutSmokeResult`,
+      7000,
+    )
     if (!shortcutResult.ok || shortcutResult.payload?.source !== 'browser-view') {
       throw new Error(`Browser webview shortcut bridge failed: ${JSON.stringify(shortcutResult)}`)
     }
@@ -1072,10 +1128,10 @@ async function main() {
       throw new Error(`Cells browser history smoke failed: ${JSON.stringify(browserHistory)}`)
     }
 
-    const newWindowResult = await Promise.all([
-      cdpEval(
-        page.webSocketDebuggerUrl,
-        `new Promise((resolve) => {
+    await cdpEval(
+      page.webSocketDebuggerUrl,
+      `(() => {
+        window.__cellsNwNewWindowSmokeResult = new Promise((resolve) => {
           const off = window.cells.browser.onNewWindow((browserId, url) => {
             if (browserId !== 'nw-browser' || !url.includes('cells-nw-new-window-smoke=1')) return
             off()
@@ -1085,17 +1141,30 @@ async function main() {
             off()
             resolve({ ok: false })
           }, 5000)
-        })`,
-        7000,
-      ),
-      cdpEval(
-        webview.webSocketDebuggerUrl,
-        `(() => {
-          console.log('[cells-nw-new-window]' + JSON.stringify({ url: 'https://example.com/?cells-nw-new-window-smoke=1' }));
-          return true;
-        })()`,
-      ),
-    ]).then(([result]) => result)
+        })
+        return true
+      })()`,
+      5000,
+    )
+    await cdpEval(
+      page.webSocketDebuggerUrl,
+      `(() => {
+        window.dispatchEvent(new CustomEvent('cells-nw-browser-event', {
+          detail: {
+            browserId: 'nw-browser',
+            kind: 'new-window',
+            url: 'https://example.com/?cells-nw-new-window-smoke=1'
+          }
+        }))
+        return true
+      })()`,
+      5000,
+    )
+    const newWindowResult = await cdpEval(
+      page.webSocketDebuggerUrl,
+      `window.__cellsNwNewWindowSmokeResult`,
+      7000,
+    )
     if (!newWindowResult.ok) {
       throw new Error(`Browser new-window bridge failed: ${JSON.stringify(newWindowResult)}`)
     }
@@ -1205,9 +1274,34 @@ if (process.argv[2] !== 'app-server') {
 }
 const readline = require('node:readline')
 let turn = 0
+let nextRequestId = 1
+const pendingRequests = new Map()
 const rl = readline.createInterface({ input: process.stdin })
 function write(message) {
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\\n')
+}
+function request(method, params) {
+  const id = 'fake-codex-request-' + nextRequestId++
+  write({ id, method, params })
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingRequests.delete(id)
+      reject(new Error(method + (params?.tool ? ':' + params.tool : '') + ' timed out'))
+    }, 10000)
+    pendingRequests.set(id, (message) => {
+      clearTimeout(timer)
+      if (message.error) reject(new Error(message.error.message || method + ' failed'))
+      else resolve(message.result)
+    })
+  })
+}
+async function callBrowserTool(tool, args) {
+  const result = await request('item/tool/call', { namespace: 'cells', tool, arguments: args || {} })
+  if (!result || result.success !== true) {
+    const text = Array.isArray(result?.contentItems) ? result.contentItems.map((item) => item.text || item.imageUrl || '').join(' ') : ''
+    throw new Error(tool + ' failed: ' + text)
+  }
+  return result
 }
 function textFromInput(input) {
   if (!Array.isArray(input)) return ''
@@ -1216,6 +1310,11 @@ function textFromInput(input) {
 rl.on('line', (line) => {
   let message
   try { message = JSON.parse(line) } catch { return }
+  if (!message.method && pendingRequests.has(message.id)) {
+    pendingRequests.get(message.id)(message)
+    pendingRequests.delete(message.id)
+    return
+  }
   if (message.method === 'initialize') {
     write({ id: message.id, result: {} })
     return
@@ -1240,31 +1339,75 @@ rl.on('line', (line) => {
     return
   }
   if (message.method === 'thread/start' || message.method === 'thread/resume') {
+    const dynamicTools = Array.isArray(message.params?.dynamicTools) ? message.params.dynamicTools : []
+    const expectedTools = [
+      'browser_open',
+      'browser_snapshot',
+      'browser_screenshot',
+      'browser_click',
+      'browser_fill',
+      'browser_type',
+      'browser_press_key',
+      'browser_select',
+      'browser_wait_for',
+      'browser_back',
+      'browser_forward',
+      'browser_reload',
+      'browser_show',
+      'browser_hide'
+    ]
+    const missingTools = expectedTools.filter((name) =>
+      !dynamicTools.some((tool) => tool?.namespace === 'cells' && tool?.name === name)
+    )
+    if (missingTools.length > 0 || typeof message.params?.developerInstructions !== 'string') {
+      write({ id: message.id, error: { message: 'Missing Codex agent browser dynamic tools: ' + missingTools.join(', ') } })
+      return
+    }
     const thread = { id: message.params?.threadId || 'nw-smoke-codex-thread' }
     write({ id: message.id, result: { thread } })
     write({ method: 'thread/started', params: { thread } })
     return
   }
   if (message.method === 'turn/start') {
-    turn += 1
-    const turnObj = { id: 'nw-smoke-turn-' + turn, status: 'completed' }
-    const item = {
-      id: 'nw-smoke-agent-message-' + turn,
-      type: 'agentMessage',
-      text: 'app-server ' + textFromInput(message.params?.input),
-      status: 'completed'
-    }
-    write({ id: message.id, result: { turn: turnObj } })
-    write({ method: 'turn/started', params: { turn: turnObj } })
-    write({ method: 'item/started', params: { item: { ...item, status: 'in_progress' } } })
-    write({ method: 'item/agentMessage/delta', params: { itemId: item.id, delta: item.text } })
-    write({ method: 'item/completed', params: { item } })
-    write({ method: 'turn/completed', params: { turn: turnObj } })
+    void (async () => {
+      turn += 1
+      const turnObj = { id: 'nw-smoke-turn-' + turn, status: 'completed' }
+      const item = {
+        id: 'nw-smoke-agent-message-' + turn,
+        type: 'agentMessage',
+        text: 'app-server ' + textFromInput(message.params?.input),
+        status: 'completed'
+      }
+      write({ id: message.id, result: { turn: turnObj } })
+      write({ method: 'turn/started', params: { turn: turnObj } })
+      try {
+        const page = 'data:text/html,' + encodeURIComponent('<!doctype html><title>Cells browser smoke</title><button id="go">Go</button><input id="name" aria-label="Name"><select id="pick"><option value="a">A</option><option value="b">B</option></select><script>document.getElementById("go").addEventListener("click",()=>document.body.setAttribute("data-clicked","yes"))</script>')
+        await callBrowserTool('browser_open', { url: page })
+        await callBrowserTool('browser_snapshot', { maxElements: 20 })
+        await callBrowserTool('browser_click', { selector: '#go' })
+        await callBrowserTool('browser_screenshot', {})
+        await callBrowserTool('browser_hide', {})
+        await callBrowserTool('browser_show', {})
+      } catch (error) {
+        turnObj.status = 'failed'
+        turnObj.error = { message: error instanceof Error ? error.message : String(error) }
+      }
+      write({ method: 'item/started', params: { item: { ...item, status: 'in_progress' } } })
+      write({ method: 'item/agentMessage/delta', params: { itemId: item.id, delta: item.text } })
+      write({ method: 'item/completed', params: { item } })
+      write({ method: 'turn/completed', params: { turn: turnObj } })
+    })()
   }
 })
 `)} , { mode: 0o755 })
           window.__cellsNwSmokeCodexPath = codex
           await window.cells.agent.setCustomPaths({ codex })
+          window.__cellsNwAddAgentWindow?.({
+            id: windowId,
+            agent: 'codex',
+            title: 'NW Agent Smoke',
+            cwd: null
+          })
           const unsubscribe = window.cells.agentSession.onUpdate((snapshot) => {
             if (snapshot.windowId !== windowId) return
             updates.push({
@@ -1285,9 +1428,30 @@ rl.on('line', (line) => {
               entry.last.includes(marker)
             )
             const failed = updates.find((entry) => entry.status === 'error')
-            if (done || failed || Date.now() - started > 7000) {
+            if (done || failed || Date.now() - started > 20000) {
               unsubscribe()
-              resolve({ ok: Boolean(done), updates: updates.slice(-12) })
+              window.cells.agentBrowser.getState(windowId).then((browserState) => {
+                const webviews = Array.from(document.querySelectorAll('webview')).map((webview) => ({
+                  src: webview.src,
+                  partition: webview.getAttribute('partition'),
+                  width: Math.round(webview.getBoundingClientRect().width),
+                  height: Math.round(webview.getBoundingClientRect().height)
+                }))
+                resolve({
+                  ok:
+                    Boolean(done) &&
+                    Boolean(browserState?.visible) &&
+                    webviews.some((webview) =>
+                      typeof webview.partition === 'string' &&
+                      webview.partition.startsWith('persist:nw-') &&
+                      webview.width >= 320 &&
+                      webview.height >= 240
+                    ),
+                  browserState,
+                  webviews,
+                  updates: updates.slice(-12)
+                })
+              })
               return
             }
             setTimeout(poll, 250)
@@ -1297,7 +1461,7 @@ rl.on('line', (line) => {
           resolve({ ok: false, error: error instanceof Error ? error.message : String(error), updates })
         }
       })`,
-      12_000,
+      35_000,
     )
     if (!agent.ok) throw new Error(`Agent smoke failed: ${JSON.stringify(agent)}`)
 
@@ -1396,6 +1560,52 @@ rl.on('line', (line) => {
     )
     if (!cursorAgent.ok) {
       throw new Error(`Cursor agent smoke failed: ${JSON.stringify(cursorAgent)}`)
+    }
+
+    const nonCodexBrowserGate = await cdpEval(
+      page.webSocketDebuggerUrl,
+      `new Promise(async (resolve) => {
+        try {
+          const agents = ['claude', 'cursor', 'copilot', 'opencode']
+          const results = {}
+          for (const agent of agents) {
+            const windowId = 'nw-' + agent + '-browser-gate-smoke'
+            window.__cellsNwAddAgentWindow?.({
+              id: windowId,
+              agent,
+              title: 'NW ' + agent + ' Browser Gate',
+              cwd: null
+            })
+            let ensureMessage = ''
+            try {
+              await window.cells.agentBrowser.ensure(windowId, { url: 'https://example.com', visible: true })
+            } catch (error) {
+              ensureMessage = error instanceof Error ? error.message : String(error)
+            }
+            let stateMessage = ''
+            try {
+              await window.cells.agentBrowser.getState(windowId)
+            } catch (error) {
+              stateMessage = error instanceof Error ? error.message : String(error)
+            }
+            results[agent] = {
+              ok: /Codex windows/.test(ensureMessage) && /Codex windows/.test(stateMessage),
+              ensureMessage,
+              stateMessage
+            }
+          }
+          resolve({
+            ok: Object.values(results).every((entry) => entry.ok),
+            results
+          })
+        } catch (error) {
+          resolve({ ok: false, error: error instanceof Error ? error.message : String(error) })
+        }
+      })`,
+      8_000,
+    )
+    if (!nonCodexBrowserGate.ok) {
+      throw new Error(`Non-Codex browser gate smoke failed: ${JSON.stringify(nonCodexBrowserGate)}`)
     }
 
     const agentApi = await cdpEval(

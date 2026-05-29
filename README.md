@@ -56,6 +56,8 @@ Embed browser panes alongside terminals, with browsing data scoped to each proje
 
 ![Browser pane showing AI SDK documentation](docs/screenshots/browser.png)
 
+Codex agent windows can also own an embedded browser pane for Codex browser tools. This v1 browser surface is Codex-only; other agents can use the same model later once Cells has a NW.js MCP browser bridge or provider-native dynamic tools. See [docs/agent-browser.md](docs/agent-browser.md).
+
 ### Minimap
 
 Each project includes a minimap showing its nodes at a glance, plus activity indicators for work happening in other projects.

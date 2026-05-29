@@ -1,5 +1,6 @@
 import type {
   AgentName,
+  AgentBrowserSessionState,
   AgentSessionMessage,
   AgentSessionName,
   AgentSessionRequest,
@@ -37,6 +38,20 @@ import type {
   QueuedAgentMessage,
 } from './types'
 import type { CellsShortcutCommand } from './lib/cells-shortcuts'
+import {
+  ensureAgentBrowserRuntimeState,
+  failedTool,
+  getAgentBrowserController,
+  getAgentWindowIdFromAgentBrowserId,
+  getAgentBrowserRuntimeState,
+  getCodexAgentBrowserDynamicTools,
+  normalizeAgentBrowserUrl,
+  onAgentBrowserRuntimeStateChanged,
+  removeAgentBrowserRuntimeState,
+  runAgentBrowserDynamicTool,
+  updateAgentBrowserRuntimeState,
+  waitForAgentBrowserController,
+} from './lib/agent-browser-runtime'
 import { sanitizeQueuedMessages } from './lib/agent-session-queue'
 import { sanitizeImportedClaudeUserText } from './lib/agent-session-title'
 import {
@@ -214,6 +229,7 @@ const browserElementSelected =
   >()
 const browserPickerCancelled =
   createEmitter<(browserId: string, targetAgentWindowId: string | null) => void>()
+const agentBrowserStateChanged = createEmitter<(state: AgentBrowserSessionState) => void>()
 
 const appWindowFocus = createEmitter<(focused: boolean) => void>()
 const focusAgentWindow = createEmitter<(request: FocusAgentWindowRequest) => void>()
@@ -329,6 +345,7 @@ let messageCounter = 0
 let lastNwWebviewFocusAt = 0
 let nwAppBlurTimer: number | null = null
 let beforeQuitEmitted = false
+let agentBrowserRuntimeListenerInstalled = false
 
 function emitBeforeQuitOnce() {
   if (beforeQuitEmitted) return
@@ -4116,6 +4133,39 @@ function emitAgentSnapshot(snapshot: AgentSessionSnapshot) {
   scheduleNwAgentSnapshotPersist(snapshot)
 }
 
+function emitAgentBrowserState(state: AgentBrowserSessionState) {
+  agentBrowserStateChanged.emit(state)
+  const agentWindow = findNwAgentWindow(state.agentWindowId)
+  if (!agentWindow || agentWindow.agent !== 'codex') return
+  useStore.getState().syncAgentWindow(state.agentWindowId, { agentBrowser: state })
+}
+
+function clearAgentBrowserState(agentWindowId: string) {
+  removeAgentBrowserRuntimeState(agentWindowId)
+  const store = useStore.getState()
+  store.syncAgentWindow(agentWindowId, { agentBrowser: null })
+}
+
+function findNwAgentWindow(agentWindowId: string) {
+  const store = useStore.getState()
+  return (
+    store.agentWindows.find((entry) => entry.id === agentWindowId) ??
+    store.projects
+      .flatMap((project) => project.agentWindows ?? [])
+      .find((entry) => entry.id === agentWindowId) ??
+    null
+  )
+}
+
+function requireCodexAgentBrowserWindow(agentWindowId: string) {
+  const agentWindow = findNwAgentWindow(agentWindowId)
+  if (!agentWindow) throw new Error('Agent browser window not found.')
+  if (agentWindow.agent !== 'codex') {
+    throw new Error('Agent browser is only available for Codex windows in this build.')
+  }
+  return agentWindow
+}
+
 function appendAgentSystemMessage(snapshot: AgentSessionSnapshot, text: string) {
   snapshot.messages.push(createAgentMessage('system', text, { status: 'completed' }))
 }
@@ -4581,6 +4631,9 @@ function nwCodexThreadStartParams(request: AgentSessionRequest) {
     approvalPolicy: nwCodexApprovalPolicy(request.permissionMode),
     sandbox: nwCodexThreadSandbox(request.permissionMode),
     model: request.model || getDefaultNwCodexModel(),
+    developerInstructions:
+      'Cells provides a Codex-owned browser through cells browser tools. Keep browser work hidden by default. Call browser_show only when the user asks to watch, inspect, or directly use the browser pane.',
+    dynamicTools: getCodexAgentBrowserDynamicTools(),
   }
 }
 
@@ -5196,6 +5249,20 @@ async function handleNwCodexServerRequest(
   request: NwCodexAppServerRequest,
 ) {
   const payload = asRecord(request.params) ?? {}
+  if (request.method === 'item/tool/call') {
+    const namespace = asString(payload.namespace)
+    const tool = asString(payload.tool) ?? asString(payload.name)
+    if (runtime.snapshot.agent !== 'codex') {
+      return failedTool('Browser tools are Codex-only in this build.')
+    }
+    if (namespace !== 'cells' || !tool) {
+      return failedTool(`Unsupported dynamic tool namespace: ${namespace || 'none'}`)
+    }
+    return await runAgentBrowserDynamicTool(runtime.snapshot.windowId, tool, payload.arguments, {
+      searchEngineUrl: useStore.getState().searchEngine,
+    })
+  }
+
   if (request.method === 'item/tool/requestUserInput') {
     const questions = (Array.isArray(payload.questions) ? payload.questions : [])
       .map((value) => {
@@ -6175,6 +6242,12 @@ function setupNwSmokeHooks() {
         windowId: string,
         kind: 'plan' | 'question' | 'approval',
       ) => boolean
+      __cellsNwAddAgentWindow?: (options: {
+        id: string
+        agent: AgentSessionName
+        title?: string
+        cwd?: string | null
+      }) => boolean
     }
   ).__cellsNwSetAgentPending = (windowId, kind) => {
     const snapshot = agentSessions.get(windowId)
@@ -6210,10 +6283,32 @@ function setupNwSmokeHooks() {
     emitAgentSnapshot(snapshot)
     return true
   }
+  ;(
+    window as typeof window & {
+      __cellsNwAddAgentWindow?: (options: {
+        id: string
+        agent: AgentSessionName
+        title?: string
+        cwd?: string | null
+      }) => boolean
+    }
+  ).__cellsNwAddAgentWindow = (options) => {
+    if (!options?.id || !options.agent) return false
+    useStore.getState().addAgentWindow(options.agent, {
+      id: options.id,
+      title: options.title,
+      cwd: options.cwd ?? null,
+    })
+    return true
+  }
 }
 
 export function installNwCellsAdapter() {
   window.cellsRuntime = 'nw'
+  if (!agentBrowserRuntimeListenerInstalled) {
+    agentBrowserRuntimeListenerInstalled = true
+    onAgentBrowserRuntimeStateChanged(emitAgentBrowserState)
+  }
   initializeExtensionState()
   startNwPerfMonitor()
   setupPinnedNwWindowLifecycle()
@@ -6269,6 +6364,27 @@ export function installNwCellsAdapter() {
     const detail = (event as CustomEvent).detail ?? {}
     const browserId = String(detail.browserId ?? '')
     if (!browserId) return
+    const agentBrowserWindowId = getAgentWindowIdFromAgentBrowserId(browserId)
+    if (agentBrowserWindowId) {
+      switch (detail.kind) {
+        case 'element-selected':
+          if (detail.selection && typeof detail.selection === 'object') {
+            browserElementSelected.emit(
+              browserId,
+              typeof detail.targetAgentWindowId === 'string' ? detail.targetAgentWindowId : null,
+              detail.selection as BrowserElementSelection,
+            )
+          }
+          break
+        case 'element-picker-cancelled':
+          browserPickerCancelled.emit(
+            browserId,
+            typeof detail.targetAgentWindowId === 'string' ? detail.targetAgentWindowId : null,
+          )
+          break
+      }
+      return
+    }
     const state = getBrowserState(browserId)
     if (typeof detail.url === 'string') state.url = detail.url
     if (typeof detail.title === 'string') state.title = detail.title
@@ -6576,6 +6692,7 @@ export function installNwCellsAdapter() {
       },
       dispose: async (windowId) => {
         await window.cells.agentSession.close(windowId)
+        clearAgentBrowserState(windowId)
         agentSessions.delete(windowId)
         agentRequests.delete(windowId)
       },
@@ -6912,10 +7029,24 @@ export function installNwCellsAdapter() {
       goForward: (browserId) => dispatchBrowserCommand(browserId, 'forward'),
       reload: (browserId) => dispatchBrowserCommand(browserId, 'reload'),
       startElementPicker: async (browserId, targetAgentWindowId = null) => {
+        const agentWindowId = getAgentWindowIdFromAgentBrowserId(browserId)
+        if (agentWindowId) {
+          requireCodexAgentBrowserWindow(agentWindowId)
+          updateAgentBrowserRuntimeState(agentWindowId, { visible: true })
+          const controller = await waitForAgentBrowserController(agentWindowId)
+          if (!controller.startElementPicker) return false
+          return await controller.startElementPicker(targetAgentWindowId)
+        }
         dispatchBrowserCommand(browserId, 'picker-start', { targetAgentWindowId })
         return true
       },
       cancelElementPicker: (browserId) => {
+        const agentWindowId = getAgentWindowIdFromAgentBrowserId(browserId)
+        if (agentWindowId) {
+          const controller = getAgentBrowserController(agentWindowId)
+          void controller?.cancelElementPicker?.()
+          return
+        }
         dispatchBrowserCommand(browserId, 'picker-cancel')
       },
       updateBounds: () => {},
@@ -6943,6 +7074,44 @@ export function installNwCellsAdapter() {
       onProjectCycle: browserProjectCycle.on,
       onElementSelected: browserElementSelected.on,
       onElementPickerCancelled: browserPickerCancelled.on,
+    },
+    agentBrowser: {
+      ensure: async (agentWindowId, options = {}) => {
+        const agentWindow = requireCodexAgentBrowserWindow(agentWindowId)
+        return ensureAgentBrowserRuntimeState(agentWindowId, {
+          ...options,
+          history: options.history ?? agentWindow.agentBrowser?.history ?? null,
+          splitRatio: options.splitRatio ?? agentWindow.agentBrowser?.splitRatio ?? null,
+          dock: options.dock ?? agentWindow.agentBrowser?.dock ?? null,
+          visible: options.visible ?? agentWindow.agentBrowser?.visible ?? null,
+          url: options.url ?? agentWindow.agentBrowser?.url ?? null,
+        })
+      },
+      navigate: async (agentWindowId, url, searchEngineUrl) => {
+        requireCodexAgentBrowserWindow(agentWindowId)
+        const finalUrl = normalizeAgentBrowserUrl(url, searchEngineUrl)
+        const state = ensureAgentBrowserRuntimeState(agentWindowId, { url: finalUrl })
+        const controller = getAgentBrowserController(agentWindowId)
+        if (controller) await controller.navigate(finalUrl)
+        return state
+      },
+      show: async (agentWindowId) => {
+        requireCodexAgentBrowserWindow(agentWindowId)
+        return updateAgentBrowserRuntimeState(agentWindowId, { visible: true })
+      },
+      hide: async (agentWindowId) => {
+        requireCodexAgentBrowserWindow(agentWindowId)
+        return updateAgentBrowserRuntimeState(agentWindowId, { visible: false })
+      },
+      destroy: async (agentWindowId) => {
+        requireCodexAgentBrowserWindow(agentWindowId)
+        clearAgentBrowserState(agentWindowId)
+      },
+      getState: async (agentWindowId) => {
+        requireCodexAgentBrowserWindow(agentWindowId)
+        return getAgentBrowserRuntimeState(agentWindowId)
+      },
+      onStateChanged: agentBrowserStateChanged.on,
     },
     editor: {
       readFile: async (filePath) => {
