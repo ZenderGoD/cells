@@ -808,6 +808,18 @@ function setComposerSelectionOffset(root: HTMLElement | null, targetOffset: numb
   selection.addRange(range)
 }
 
+function selectComposerContents(root: HTMLElement | null) {
+  if (!root) return false
+  root.focus()
+  const selection = window.getSelection()
+  if (!selection) return false
+  const range = document.createRange()
+  range.selectNodeContents(root)
+  selection.removeAllRanges()
+  selection.addRange(range)
+  return true
+}
+
 function insertPlainTextIntoComposer(root: HTMLElement | null, text: string) {
   if (!root || text.length === 0) return false
   root.focus()
@@ -1384,6 +1396,17 @@ function ComposerRichEditor({
         suppressContentEditableWarning
         onInput={emitChange}
         onKeyDown={(event) => {
+          if (
+            event.key.toLowerCase() === 'a' &&
+            !event.shiftKey &&
+            !event.altKey &&
+            hasPrimaryModifier(event.nativeEvent)
+          ) {
+            event.preventDefault()
+            event.stopPropagation()
+            selectComposerContents(editorRef.current)
+            return
+          }
           if (
             event.key.toLowerCase() === 'v' &&
             event.shiftKey &&

@@ -21,6 +21,7 @@ import React, {
   startTransition,
   type ReactNode,
 } from 'react'
+import { flushSync } from 'react-dom'
 import {
   Globe,
   Plus,
@@ -768,13 +769,15 @@ export function CommandPalette() {
   }, [])
 
   const togglePalette = useCallback(() => {
-    setOpen((o) => {
-      const next = !o
-      setOverlayOpen('command-palette', next)
-      if (!next) setSearch('')
-      hapticNudge()
-      return next
+    flushSync(() => {
+      setOpen((openNow) => {
+        const next = !openNow
+        setOverlayOpen('command-palette', next)
+        if (!next) setSearch('')
+        return next
+      })
     })
+    hapticNudge()
   }, [setOverlayOpen])
 
   useEffect(() => {
@@ -791,6 +794,8 @@ export function CommandPalette() {
   useEffect(() => {
     if (!open) return
     let cancelled = false
+    let frame: number | null = null
+    let recentFilesTimer: number | null = null
 
     setAgents((prev) => {
       let changed = false
@@ -804,55 +809,59 @@ export function CommandPalette() {
       return changed ? next : prev
     })
 
-    Promise.all([
-      window.cells.agent
-        .checkAvailable(agentAliases, agentPaths)
-        .catch((): Record<string, boolean> => ({})),
-      Promise.allSettled(AGENT_OPTIONS.map(({ id }) => window.cells.agentSession.getAuth(id))),
-    ]).then(([detected, authResults]) => {
+    frame = window.requestAnimationFrame(() => {
       if (cancelled) return
-      const authByAgent = new Map(
-        authResults
-          .map((result) => (result.status === 'fulfilled' ? result.value : null))
-          .filter((status): status is NonNullable<typeof status> => Boolean(status))
-          .map((status) => [status.agent, status] as const),
-      )
-      const merged = { ...DEFAULT_AGENT_AVAILABILITY }
-      for (const { id } of AGENT_OPTIONS) {
-        const override = enabledAgents[id]
-        const auth = authByAgent.get(id)
-        const installed = detected[id] === true || Boolean(auth?.binaryPath)
-        const authenticated = auth?.authenticated === true
-        merged[id] = override === false ? false : installed && authenticated
-      }
-      startTransition(() => setAgents(merged))
-    })
-    useStore.getState().refreshWorktrees()
-    window.cells.app
-      .getShellHistory()
-      .then((history) => {
-        if (!cancelled) setShellHistory(history)
+      Promise.all([
+        window.cells.agent
+          .checkAvailable(agentAliases, agentPaths)
+          .catch((): Record<string, boolean> => ({})),
+        Promise.allSettled(AGENT_OPTIONS.map(({ id }) => window.cells.agentSession.getAuth(id))),
+      ]).then(([detected, authResults]) => {
+        if (cancelled) return
+        const authByAgent = new Map(
+          authResults
+            .map((result) => (result.status === 'fulfilled' ? result.value : null))
+            .filter((status): status is NonNullable<typeof status> => Boolean(status))
+            .map((status) => [status.agent, status] as const),
+        )
+        const merged = { ...DEFAULT_AGENT_AVAILABILITY }
+        for (const { id } of AGENT_OPTIONS) {
+          const override = enabledAgents[id]
+          const auth = authByAgent.get(id)
+          const installed = detected[id] === true || Boolean(auth?.binaryPath)
+          const authenticated = auth?.authenticated === true
+          merged[id] = override === false ? false : installed && authenticated
+        }
+        startTransition(() => setAgents(merged))
       })
-      .catch(() => {})
-    window.cells.agentSession
-      .listSavedSessions()
-      .then((sessions) => {
-        if (!cancelled) setSavedSessions(sessions)
-      })
-      .catch(() => {})
-
-    const recentFilesTimer = window.setTimeout(() => {
+      useStore.getState().refreshWorktrees()
       window.cells.app
-        .listRecentFiles()
-        .then((files) => {
-          if (!cancelled) setRecentFiles(files)
+        .getShellHistory()
+        .then((history) => {
+          if (!cancelled) setShellHistory(history)
         })
         .catch(() => {})
-    }, 200)
+      window.cells.agentSession
+        .listSavedSessions()
+        .then((sessions) => {
+          if (!cancelled) setSavedSessions(sessions)
+        })
+        .catch(() => {})
+
+      recentFilesTimer = window.setTimeout(() => {
+        window.cells.app
+          .listRecentFiles()
+          .then((files) => {
+            if (!cancelled) setRecentFiles(files)
+          })
+          .catch(() => {})
+      }, 200)
+    })
 
     return () => {
       cancelled = true
-      window.clearTimeout(recentFilesTimer)
+      if (frame !== null) window.cancelAnimationFrame(frame)
+      if (recentFilesTimer !== null) window.clearTimeout(recentFilesTimer)
     }
   }, [open, agentAliases, agentPaths, enabledAgents])
 

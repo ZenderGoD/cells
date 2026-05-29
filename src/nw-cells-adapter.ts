@@ -98,10 +98,10 @@ interface NwGui {
 const NW_SHORTCUT_MENU_ITEMS: Array<{
   label: string
   command: CellsShortcutCommand
-  key: string
-  modifiers: string
+  key?: string
+  modifiers?: string
 }> = [
-  { label: 'Command Palette', command: 'toggle-command-palette', key: 't', modifiers: 'cmd' },
+  { label: 'Command Palette', command: 'toggle-command-palette' },
   { label: 'Settings', command: 'open-settings', key: ',', modifiers: 'cmd' },
   { label: 'Project Switcher', command: 'toggle-project-switcher', key: 'a', modifiers: 'ctrl' },
   { label: 'Selection Mode', command: 'toggle-selection-mode', key: 's', modifiers: 'ctrl' },
@@ -1916,6 +1916,15 @@ function emitNwMenuCommand(command: CellsShortcutCommand) {
 
 function runDocumentEditCommand(command: string) {
   try {
+    const active = document.activeElement
+    if (command === 'selectAll' && active instanceof HTMLElement && active.isContentEditable) {
+      const selection = window.getSelection()
+      const range = document.createRange()
+      range.selectNodeContents(active)
+      selection?.removeAllRanges()
+      selection?.addRange(range)
+      return
+    }
     document.execCommand(command)
   } catch {}
 }

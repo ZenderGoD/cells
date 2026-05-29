@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type CSSProperties,
   type ReactNode,
@@ -472,8 +473,8 @@ export function AgentOverviewPopover({
       }),
     [agentWindow.agent, messages],
   )
-  const hasSources =
-    webSearchSeen || browserSelectionCount > 0 || attachmentCount > 0 || Boolean(cwd)
+  const hasSources = webSearchSeen || browserSelectionCount > 0 || attachmentCount > 0
+  const allowCloseRef = useRef(false)
 
   useEffect(() => {
     return () => setOverlayOpen(owner, false)
@@ -507,21 +508,22 @@ export function AgentOverviewPopover({
 
   const handleOpenChange = useCallback(
     (next: boolean) => {
+      if (!next && !allowCloseRef.current) return
+      allowCloseRef.current = false
       setOpen(next)
       setOverlayOpen(owner, next)
     },
     [owner, setOverlayOpen],
   )
 
-  const close = useCallback(() => handleOpenChange(false), [handleOpenChange])
+  const close = useCallback(() => {
+    allowCloseRef.current = true
+    handleOpenChange(false)
+  }, [handleOpenChange])
 
-  const runAndClose = useCallback(
-    (action: () => void) => {
-      action()
-      close()
-    },
-    [close],
-  )
+  const runAction = useCallback((action: () => void) => {
+    action()
+  }, [])
 
   const openTerminalCommand = useCallback(
     (command: string, title: string) => {
@@ -555,6 +557,15 @@ export function AgentOverviewPopover({
     >
       <Popover open={open} onOpenChange={handleOpenChange}>
         <PopoverTrigger
+          onClick={(event) => {
+            event.preventDefault()
+            if (open) {
+              allowCloseRef.current = true
+              handleOpenChange(false)
+            } else {
+              handleOpenChange(true)
+            }
+          }}
           className="flex h-7 items-center gap-1 rounded-[8px] border border-border/35 bg-background/72 px-1.5 text-muted-foreground/75 shadow-minimal backdrop-blur-xl transition-colors hover:bg-foreground/8 hover:text-foreground data-[popup-open]:bg-foreground/10 data-[popup-open]:text-foreground"
           aria-label="Agent overview"
           title="Agent overview"
@@ -595,10 +606,10 @@ export function AgentOverviewPopover({
               active={diffsPanelOpen}
               onSelect={
                 hasSessionDiffs
-                  ? () => runAndClose(onToggleDiffs)
+                  ? () => runAction(onToggleDiffs)
                   : cwd
                     ? () =>
-                        runAndClose(() =>
+                        runAction(() =>
                           openTerminalCommand(
                             'git status --short && git diff --stat',
                             'git status',
@@ -631,7 +642,7 @@ export function AgentOverviewPopover({
                       aria-label="Reveal working directory"
                       onClick={(event) => {
                         event.stopPropagation()
-                        runAndClose(revealCwd)
+                        runAction(revealCwd)
                       }}
                     >
                       <FolderOpen className="size-3.5" />
@@ -678,7 +689,7 @@ export function AgentOverviewPopover({
               }
               disabled={!cwd || !currentWorktree?.isDirty}
               onSelect={() =>
-                runAndClose(() =>
+                runAction(() =>
                   openTerminalCommand(
                     'git status --short && git diff --stat && echo && git add -p; git commit',
                     'git commit',
@@ -692,104 +703,86 @@ export function AgentOverviewPopover({
               detail={currentWorktree?.branch ?? null}
               disabled={!cwd || !currentWorktree?.branch}
               onSelect={() =>
-                runAndClose(() => openTerminalCommand('gh pr create --web', 'gh pr create'))
+                runAction(() => openTerminalCommand('gh pr create --web', 'gh pr create'))
               }
             />
           </OverviewSection>
 
-          <OverviewSection title="Tasks">
-            {taskRows.length > 0 ? (
-              taskRows.map((row) => (
+          {taskRows.length > 0 ? (
+            <OverviewSection title="Tasks">
+              {taskRows.map((row) => (
                 <OverviewRow
                   key={row.id}
                   icon={row.icon}
                   label={row.label}
                   detail={row.detail}
                   tone={row.tone}
-                  onSelect={row.onSelect ? () => runAndClose(row.onSelect!) : undefined}
+                  onSelect={row.onSelect ? () => runAction(row.onSelect!) : undefined}
                 />
-              ))
-            ) : (
-              <OverviewRow
-                icon={<ListTodo className="size-3.5" />}
-                label="Idle"
-                detail="No active tasks"
-                disabled
-              />
-            )}
-          </OverviewSection>
+              ))}
+            </OverviewSection>
+          ) : null}
 
-          <OverviewSection title="Browser">
-            {browser ? (
+          {browser ? (
+            <OverviewSection title="Browser">
               <OverviewRow
                 icon={<Globe2 className="size-3.5" />}
                 label={browser.title || hostLabel(browser.url)}
                 detail={formatUrl(browser.url)}
-                onSelect={() => runAndClose(() => snapToBrowser(browser.id))}
+                onSelect={() => runAction(() => snapToBrowser(browser.id))}
                 trailing={<ExternalLink className="size-3.5 text-muted-foreground/45" />}
               />
-            ) : (
-              <OverviewRow
-                icon={<Globe2 className="size-3.5" />}
-                label="No browser windows"
-                disabled
-              />
-            )}
-          </OverviewSection>
+            </OverviewSection>
+          ) : null}
 
-          <OverviewSection title="Sources">
-            {webSearchSeen ? (
-              <OverviewRow icon={<Search className="size-3.5" />} label="Web search" />
-            ) : null}
-            {browserSelectionCount > 0 ? (
-              <OverviewRow
-                icon={<Globe2 className="size-3.5" />}
-                label="Browser selections"
-                detail={plural(browserSelectionCount, 'selection')}
-              />
-            ) : null}
-            {attachmentCount > 0 ? (
-              <OverviewRow
-                icon={<FileText className="size-3.5" />}
-                label="Attachments"
-                detail={plural(attachmentCount, 'file')}
-              />
-            ) : null}
-            {cwd ? (
-              <OverviewRow
-                icon={<FolderOpen className="size-3.5" />}
-                label="Workspace"
-                detail={shortenFsPath(cwd)}
-              />
-            ) : null}
-            {!hasSources ? (
-              <OverviewRow icon={<FileText className="size-3.5" />} label="No sources" disabled />
-            ) : null}
-          </OverviewSection>
+          {hasSources ? (
+            <OverviewSection title="Sources">
+              {webSearchSeen ? (
+                <OverviewRow icon={<Search className="size-3.5" />} label="Web search" />
+              ) : null}
+              {browserSelectionCount > 0 ? (
+                <OverviewRow
+                  icon={<Globe2 className="size-3.5" />}
+                  label="Browser selections"
+                  detail={plural(browserSelectionCount, 'selection')}
+                />
+              ) : null}
+              {attachmentCount > 0 ? (
+                <OverviewRow
+                  icon={<FileText className="size-3.5" />}
+                  label="Attachments"
+                  detail={plural(attachmentCount, 'file')}
+                />
+              ) : null}
+            </OverviewSection>
+          ) : null}
 
           <OverviewSection title="Session">
             <OverviewRow
               icon={<PencilLine className="size-3.5" />}
               label="Rename"
-              onSelect={() => runAndClose(chromeActions.onRename)}
+              onSelect={() => runAction(chromeActions.onRename)}
             />
             <OverviewRow
               icon={
                 <ArrowUpRight className={cn('size-3.5', chromeActions.isPinned && 'rotate-180')} />
               }
               label={chromeActions.isPinned ? 'Pop back in' : 'Pop out to window'}
-              onSelect={() => runAndClose(chromeActions.onTogglePin)}
+              onSelect={() => runAction(chromeActions.onTogglePin)}
             />
             <OverviewRow
               icon={<RotateCcw className="size-3.5" />}
               label="Clear conversation"
-              onSelect={() => runAndClose(chromeActions.onClearConversation)}
+              onSelect={() => runAction(chromeActions.onClearConversation)}
             />
             <OverviewRow
               icon={<XCircle className="size-3.5" />}
               label="Close session"
               tone="danger"
-              onSelect={() => runAndClose(chromeActions.onCloseSession)}
+              onSelect={() => {
+                chromeActions.onCloseSession()
+                close()
+              }}
             />
           </OverviewSection>
         </PopoverContent>

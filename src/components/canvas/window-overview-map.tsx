@@ -88,7 +88,8 @@ export function WindowOverviewMap({
   onSelect,
   onMove,
 }: WindowOverviewMapProps) {
-  const sectionRects = sections.map((section) => ({
+  const visibleSections = sections.filter((section) => section.windowIds.length > 0)
+  const sectionRects = visibleSections.map((section) => ({
     x: section.x,
     y: section.y,
     width: section.width ?? viewport?.width ?? 800,
@@ -221,7 +222,7 @@ export function WindowOverviewMap({
         />
       )}
 
-      {sections.map((section) => {
+      {visibleSections.map((section) => {
         const color = SECTION_COLOR_CLASSES[section.color ?? 'blue']
         return (
           <div
