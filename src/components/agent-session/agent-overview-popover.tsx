@@ -403,6 +403,7 @@ export function AgentOverviewPopover({
   const worktreesLoading = useStore((state) => state.worktreesLoading)
   const refreshWorktrees = useStore((state) => state.refreshWorktrees)
   const setOverlayOpen = useStore((state) => state.setOverlayOpen)
+  const focusedAgentWindowId = useStore((state) => state.focusedAgentWindowId)
   const terminals = useStore((state) => state.terminals)
   const browsers = useStore((state) => state.browsers)
   const focusedBrowserId = useStore((state) => state.focusedBrowserId)
@@ -476,9 +477,26 @@ export function AgentOverviewPopover({
   const hasSources = webSearchSeen || browserSelectionCount > 0 || attachmentCount > 0
   const allowCloseRef = useRef(false)
 
+  const forceClose = useCallback(() => {
+    allowCloseRef.current = false
+    setOpen(false)
+    setOverlayOpen(owner, false)
+  }, [owner, setOverlayOpen])
+
   useEffect(() => {
     return () => setOverlayOpen(owner, false)
   }, [owner, setOverlayOpen])
+
+  useEffect(() => {
+    forceClose()
+    setWorktreeStatus(null)
+    setStatusLoading(false)
+  }, [agentWindow.id, forceClose])
+
+  useEffect(() => {
+    if (!open) return
+    if (focusedAgentWindowId && focusedAgentWindowId !== agentWindow.id) forceClose()
+  }, [agentWindow.id, focusedAgentWindowId, forceClose, open])
 
   useEffect(() => {
     if (!open) return
